@@ -11,15 +11,27 @@ import qg.qgent.api.RequestIdFilter;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * 登录、注册相关接口
+ * AuthController
+ */
 @RestController
 @RequestMapping("/api/v1")
 public class AuthController {
+
     private final AuthService auth;
 
     public AuthController(AuthService auth) {
         this.auth = auth;
     }
 
+
+    /**
+     * 注册
+     * @param body
+     * @param req
+     * @return
+     */
     @PostMapping("/auth/register")
     @ResponseStatus(HttpStatus.CREATED)
     ApiResponse<?> register(@Valid @RequestBody AuthDtos.Register body, HttpServletRequest req) {

@@ -44,7 +44,8 @@ public class UserRepository {
     }
 
     void updateProfile(UUID id, String displayName, String avatarUrl) {
-        jdbc.update("update users set display_name=coalesce(?,display_name), avatar_url=coalesce(?,avatar_url) where id=?",
+        jdbc.update(
+                "update users set display_name=coalesce(?,display_name), avatar_url=coalesce(?,avatar_url) where id=?",
                 displayName, avatarUrl, bytes(id));
     }
 
@@ -98,7 +99,9 @@ public class UserRepository {
     List<AuthDtos.TeamView> teams(UUID userId) {
         return jdbc.query(
                 "select t.id,t.name,tm.role from team_members tm join teams t on t.id=tm.team_id where tm.user_id=? and t.status='ACTIVE'",
-                (rs, n) -> new AuthDtos.TeamView(uuid(rs.getBytes("id")).toString(), rs.getString("name"), rs.getString("role")), bytes(userId));
+                (rs, n) -> new AuthDtos.TeamView(uuid(rs.getBytes("id")).toString(), rs.getString("name"),
+                        rs.getString("role")),
+                bytes(userId));
     }
 
     List<AuthDtos.ProjectView> projects(UUID userId) {
@@ -106,7 +109,8 @@ public class UserRepository {
                 "select p.id,p.team_id,p.name,pm.role,p.status from project_members pm join projects p on p.id=pm.project_id where pm.user_id=? and p.status='ACTIVE'",
                 (rs, n) -> new AuthDtos.ProjectView(uuid(rs.getBytes("id")).toString(),
                         uuid(rs.getBytes("team_id")).toString(), rs.getString("name"), rs.getString("role"),
-                        rs.getString("status")), bytes(userId));
+                        rs.getString("status")),
+                bytes(userId));
     }
 
     private User user(ResultSet rs, int n) throws SQLException {

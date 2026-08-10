@@ -6,7 +6,8 @@ import java.util.UUID;
 final class UuidV7 {
     private static final SecureRandom RANDOM = new SecureRandom();
 
-    private UuidV7() {}
+    private UuidV7() {
+    }
 
     static UUID next() {
         long timestamp = System.currentTimeMillis() & 0x0000FFFFFFFFFFFFL;

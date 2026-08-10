@@ -19,20 +19,37 @@ import java.util.Map;
 
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
-    private final TokenService tokens; private final ObjectMapper mapper;
-    public JwtAuthenticationFilter(TokenService tokens,ObjectMapper mapper){this.tokens=tokens;this.mapper=mapper;}
-    @Override protected void doFilterInternal(HttpServletRequest req,HttpServletResponse res,FilterChain chain) throws ServletException,IOException {
-        String header=req.getHeader("Authorization");
-        if(header!=null&&header.startsWith("Bearer ")){
-            var userId=tokens.verifyAccess(header.substring(7));
-            if(userId==null){ unauthorized(req,res); return; }
-            SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(userId,null,List.of()));
-        }
-        chain.doFilter(req,res);
+    private final TokenService tokens;
+    private final ObjectMapper mapper;
+
+    public JwtAuthenticationFilter(TokenService tokens, ObjectMapper mapper) {
+        this.tokens = tokens;
+        this.mapper = mapper;
     }
-    private void unauthorized(HttpServletRequest req,HttpServletResponse res)throws IOException{
-        res.setStatus(401);res.setCharacterEncoding(StandardCharsets.UTF_8.name());res.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        mapper.writeValue(res.getWriter(),Map.of("error",Map.of("code","INVALID_ACCESS_TOKEN","message","access token无效或已过期","details",List.of()),
-                "requestId",String.valueOf(req.getAttribute(RequestIdFilter.ATTRIBUTE))));
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+            throws ServletException, IOException {
+        String header = req.getHeader("Authorization");
+        if (header != null && header.startsWith("Bearer ")) {
+            var userId = tokens.verifyAccess(header.substring(7));
+            if (userId == null) {
+                unauthorized(req, res);
+                return;
+            }
+            SecurityContextHolder.getContext()
+                    .setAuthentication(new UsernamePasswordAuthenticationToken(userId, null, List.of()));
+        }
+        chain.doFilter(req, res);
+    }
+
+    private void unauthorized(HttpServletRequest req, HttpServletResponse res) throws IOException {
+        res.setStatus(401);
+        res.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        res.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        mapper.writeValue(res.getWriter(),
+                Map.of("error",
+                        Map.of("code", "INVALID_ACCESS_TOKEN", "message", "access token无效或已过期", "details", List.of()),
+                        "requestId", String.valueOf(req.getAttribute(RequestIdFilter.ATTRIBUTE))));
     }
 }
