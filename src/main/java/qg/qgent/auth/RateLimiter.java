@@ -57,6 +57,13 @@ public class RateLimiter {
         }
     }
 
-    private record LocalWindow(AtomicInteger count, long expiresAt) {
+    private static final class LocalWindow {
+        private final AtomicInteger count;
+        private final long expiresAt;
+
+        private LocalWindow(AtomicInteger count, long expiresAt) {
+            this.count = count;
+            this.expiresAt = expiresAt;
+        }
     }
 }

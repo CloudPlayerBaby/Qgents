@@ -1,5 +1,6 @@
 # Target directory
 target/
+.m2/
 
 # Compiled class file
 *.class
