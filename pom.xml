@@ -9,10 +9,10 @@
         <relativePath/> <!-- lookup parent from repository -->
     </parent>
     <groupId>QG.qgent</groupId>
-    <artifactId>Qgent-Back</artifactId>
+    <artifactId>Qgents</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>Qgent-Back</name>
-    <description>Qgent-Back</description>
+    <name>Qgents</name>
+    <description>Qgents</description>
     <url/>
     <licenses>
         <license/>
