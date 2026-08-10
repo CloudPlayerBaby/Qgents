@@ -180,15 +180,28 @@ CREATE TABLE
         name VARCHAR(255) NOT NULL COMMENT '群聊名称',
         description TEXT NULL COMMENT '群聊目标和需求背景说明',
         group_type VARCHAR(32) NOT NULL DEFAULT 'REQUIREMENT' COMMENT '群类型：PROJECT_MAIN/REQUIREMENT',
-        pinned TINYINT (1) NOT NULL DEFAULT 0 COMMENT '是否全局置顶：0否1是',
         status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '群状态枚举：ACTIVE/ARCHIVED',
+        project_main_project_id BINARY(16)
+            GENERATED ALWAYS AS (
+                CASE
+                    WHEN group_type = 'PROJECT_MAIN' THEN project_id
+                    ELSE NULL
+                END
+            ) STORED COMMENT 'PROJECT_MAIN uniqueness key; NULL for requirement groups',
         last_message_at DATETIME (6) NULL COMMENT '最近消息时间（UTC）',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
         KEY idx_rg_project (project_id, status, last_message_at),
         KEY idx_rg_creator (created_by),
+        UNIQUE KEY uk_rg_project_main (project_main_project_id),
         CONSTRAINT fk_rg_project FOREIGN KEY (project_id) REFERENCES projects (id),
-        CONSTRAINT fk_rg_creator FOREIGN KEY (created_by) REFERENCES users (id)
+        CONSTRAINT fk_rg_creator FOREIGN KEY (created_by) REFERENCES users (id),
+        CONSTRAINT chk_rg_group_type
+            CHECK (group_type IN ('PROJECT_MAIN', 'REQUIREMENT')),
+        CONSTRAINT chk_rg_status
+            CHECK (status IN ('ACTIVE', 'ARCHIVED')),
+        CONSTRAINT chk_rg_project_main_active
+            CHECK (group_type <> 'PROJECT_MAIN' OR status = 'ACTIVE')
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目需求讨论与协作上下文群';
 
 CREATE TABLE
