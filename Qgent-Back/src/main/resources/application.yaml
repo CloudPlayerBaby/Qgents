@@ -1,0 +1,85 @@
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  ai:
+    openai:
+      api-key: ${DEEPSEEK_API_KEY}
+      base-url: https://api.deepseek.com/
+      chat:
+        options:
+          model: deepseek-v4-flash
+          temperature: 0.2
+        response-format:
+          type: JSON_OBJECT
+  application:
+    name: Qgent-Back
+  datasource:
+    url: ${DB_URL:jdbc:mysql://47.113.224.195:3306/ai_decision?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: false
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:1234}
+      database: 0
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 2
+
+jwt:
+  secret: ${JWT_SECRET}
+  expiration: 7200
+
+cors:
+  # 允许的跨域来源，逗号分隔；生产环境通过 CORS_ALLOWED_ORIGINS 覆盖
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: qg.po.midterm.entity
+
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+tavily:
+  api-key: ${TAVILY_API_KEY:}
+
+# 汇率 API 配置
+exchange-rate:
+  api-key: ${EXCHANGERATE_API_KEY:}
+
+# Sentry 错误日志监控配置
+app:
+  async:
+    workflow:
+      core-pool-size: ${WORKFLOW_ASYNC_CORE_POOL_SIZE:4}
+      max-pool-size: ${WORKFLOW_ASYNC_MAX_POOL_SIZE:8}
+      queue-capacity: ${WORKFLOW_ASYNC_QUEUE_CAPACITY:100}
+      await-termination-seconds: ${WORKFLOW_ASYNC_AWAIT_TERMINATION_SECONDS:30}
+  demo:
+    fail-option-generation-once: ${DEMO_FAIL_OPTION_GENERATION_ONCE:false}
+
+sentry:
+  # 必须配置 DSN，否则 Sentry 不会启动。这个链接是从你刚才贴出的官方文档中提取的
+  dsn: https://e46378eb75244b37876c1adcfe6990fd@o4511829869199360.ingest.us.sentry.io/4511830110306304
+  send-default-pii: true
+  # 区分环境
+  environment: ${SPRING_PROFILES_ACTIVE:development}
+  # 发送 100% 的错误（生产环境可以调低）
+  traces-sample-rate: 1.0
+  # 开启日志收集，使得 log.error 也会被作为错误上报，并且带上前面的正常日志作为面包屑
+  logging:
+    minimum-event-level: error
+    minimum-breadcrumb-level: info
+  logs:
+    enabled: true
