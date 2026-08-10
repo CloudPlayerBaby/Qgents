@@ -1,4 +1,5 @@
--- Qgents MVP core schema, MySQL 8.0.16+.
+-- Qgents MVP database initialization schema, MySQL 8.0.16+.
+-- 手动执行：mysql -u <user> -p <database> < database/qgents_schema.sql
 SET
     NAMES utf8mb4;
 
