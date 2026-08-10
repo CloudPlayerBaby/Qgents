@@ -123,6 +123,7 @@
 
 ## 9. Git 与文件卫生
 
+- 新功能分支统一使用 `feat/<功能名>`，功能名采用简短的小写 kebab-case，例如 `feat/login-register`。
 - Commit 使用 Conventional Commits：`<type>(scope): <description>`。
 - 一个 Commit 尽量只表达一个明确目的。
 - 具体忽略规则以各仓库 `.gitignore` 为准。
