@@ -37,3 +37,6 @@ replay_pid*
 
 # ai doc files
 docs/
+
+# RSA 私钥（只留后端，勿提交；公钥 public_key.pem 可提交）
+src/main/resources/rsa/*.pem
