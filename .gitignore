@@ -39,4 +39,4 @@ replay_pid*
 docs/
 
 # RSA 私钥（只留后端，勿提交；公钥 public_key.pem 可提交）
-src/main/resources/rsa/*.pem
+src/main/resources/rsa/private_key.pem
