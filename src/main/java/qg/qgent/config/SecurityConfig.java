@@ -87,6 +87,7 @@ public class SecurityConfig {
                 // 配置异常处理
                 .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> {
                     res.setStatus(401);
+                    res.setCharacterEncoding("UTF-8");
                     res.setContentType(MediaType.APPLICATION_JSON_VALUE);
                     mapper.writeValue(res.getWriter(),
                             Map.of("error", Map.of("code", "UNAUTHORIZED", "message", "需要登录", "details", List.of()),
