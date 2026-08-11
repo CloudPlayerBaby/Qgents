@@ -72,7 +72,7 @@ class IdempotencyServiceTest {
                         return 0;
                     }
                     current.setResponseStatus(responseStatus);
-                    current.setResponseBodyRedacted(responseBody);
+                    current.setResponseBodyRedacted(new ObjectMapper().readValue(responseBody, Map.class));
                     return 1;
                 });
         when(mapper.deleteById(any(UUID.class))).thenAnswer(invocation -> {
