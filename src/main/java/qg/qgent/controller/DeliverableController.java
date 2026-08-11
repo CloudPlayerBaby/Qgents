@@ -38,7 +38,9 @@ public class DeliverableController {
         this.deliverableService = deliverableService;
     }
 
-    /** 查询工作包产出的交付物（游标分页）。 */
+    /**
+     * 查询工作包产出的交付物（游标分页）。
+     */
     @GetMapping("/work-packages/{workPackageId}/deliverables")
     public ApiPageResponse<DeliverableResponse> listByWorkPackage(@PathVariable UUID projectId,
             @PathVariable UUID workPackageId, @AuthenticationPrincipal UUID userId,
@@ -48,14 +50,18 @@ public class DeliverableController {
                 requestId(request));
     }
 
-    /** 获取交付物、关联运行、分支和检查摘要。 */
+    /**
+     * 获取交付物、关联运行、分支和检查摘要。
+     */
     @GetMapping("/deliverables/{deliverableId}")
     public ApiResponse<?> detail(@PathVariable UUID projectId, @PathVariable UUID deliverableId,
             @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         return ok(deliverableService.detail(projectId, deliverableId, userId), request);
     }
 
-    /** 接受通过必要检查的交付物。 */
+    /**
+     * 接受通过必要检查的交付物。
+     */
     @PostMapping("/deliverables/{deliverableId}/accept")
     public ApiResponse<?> accept(@PathVariable UUID projectId, @PathVariable UUID deliverableId,
             @AuthenticationPrincipal UUID userId, @RequestBody(required = false) DeliverableDecisionRequest body,
@@ -65,7 +71,9 @@ public class DeliverableController {
         return ok(data, request);
     }
 
-    /** 拒绝交付物并给出退回原因。 */
+    /**
+     * 拒绝交付物并给出退回原因。
+     */
     @PostMapping("/deliverables/{deliverableId}/reject")
     public ApiResponse<?> reject(@PathVariable UUID projectId, @PathVariable UUID deliverableId,
             @AuthenticationPrincipal UUID userId, @Valid @RequestBody DeliverableDecisionRequest body,
@@ -74,7 +82,9 @@ public class DeliverableController {
         return ok(data, request);
     }
 
-    /** 查询 Diff 的变更统计和关联提交。 */
+    /**
+     * 查询 Diff 的变更统计和关联提交。
+     */
     @GetMapping("/diffs/{diffId}")
     public ApiResponse<?> diff(@PathVariable UUID projectId, @PathVariable UUID diffId,
             @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
@@ -82,7 +92,9 @@ public class DeliverableController {
         return ok(data, request);
     }
 
-    /** 游标读取 Diff 文件、hunk 和二进制文件摘要。 */
+    /**
+     * 游标读取 Diff 文件、hunk 和二进制文件摘要。
+     */
     @GetMapping("/diffs/{diffId}/files")
     public ApiPageResponse<DiffFileResponse> diffFiles(@PathVariable UUID projectId, @PathVariable UUID diffId,
             @AuthenticationPrincipal UUID userId, @RequestParam(required = false) String cursor,
@@ -90,7 +102,9 @@ public class DeliverableController {
         return deliverableService.diffFiles(projectId, diffId, userId, cursor, limit, requestId(request));
     }
 
-    /** 查询 Diff 审查意见列表。 */
+    /**
+     * 查询 Diff 审查意见列表。
+     */
     @GetMapping("/diffs/{diffId}/comments")
     public ApiResponse<?> diffComments(@PathVariable UUID projectId, @PathVariable UUID diffId,
             @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
@@ -98,7 +112,9 @@ public class DeliverableController {
         return ok(data, request);
     }
 
-    /** 添加一条 Diff 审查意见，绑定当前 Diff 头提交。 */
+    /**
+     * 添加一条 Diff 审查意见，绑定当前 Diff 头提交。
+     */
     @PostMapping("/diffs/{diffId}/comments")
     public ApiResponse<?> addDiffComment(@PathVariable UUID projectId, @PathVariable UUID diffId,
             @AuthenticationPrincipal UUID userId, @Valid @RequestBody DiffCommentRequest body,

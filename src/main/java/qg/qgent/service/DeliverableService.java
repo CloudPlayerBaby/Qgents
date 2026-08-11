@@ -64,15 +64,20 @@ public class DeliverableService {
      */
     public ApiPageResponse<DeliverableResponse> listByWorkPackage(UUID projectId, UUID workPackageId, UUID userId,
             String cursor, int limit, String requestId) {
+        // 确认是项目成员
         projectAccess.requireProjectMember(projectId, userId);
+
         int size = clampLimit(limit);
         UUID cursorUuid = parseCursor(cursor);
+
         List<DeliverableEntity> rows = deliverableMapper.selectList(Wrappers.<DeliverableEntity>lambdaQuery()
                 .eq(DeliverableEntity::getProjectId, projectId)
                 .eq(DeliverableEntity::getWorkPackageId, workPackageId)
                 .lt(cursorUuid != null, DeliverableEntity::getId, cursorUuid)
                 .orderByDesc(DeliverableEntity::getId)
                 .last("LIMIT " + (size + 1)));
+
+        // 如果能多查到一条，说明还有更多数据
         boolean hasMore = rows.size() > size;
         List<DeliverableResponse> items = (hasMore ? rows.subList(0, size) : rows).stream()
                 .map(this::toResponse)
@@ -85,6 +90,7 @@ public class DeliverableService {
      * 获取交付物详情：关联运行、分支与检查摘要。
      */
     public DeliverableResponse detail(UUID projectId, UUID deliverableId, UUID userId) {
+        // 确认是项目成员
         projectAccess.requireProjectMember(projectId, userId);
         return toResponse(requireDeliverable(projectId, deliverableId));
     }
@@ -95,10 +101,16 @@ public class DeliverableService {
      */
     @Transactional
     public DeliverableResponse accept(UUID projectId, UUID deliverableId, UUID userId, String reason) {
+        // 确认是项目成员
         projectAccess.requireProjectMember(projectId, userId);
+        // 获取交付物实体
         DeliverableEntity d = requireDeliverable(projectId, deliverableId);
+        // 需要是发起人或者是 Project Admin
         requireOwner(d, projectId, userId);
+        // 确认是 PENDING_REVIEW 状态
         requirePending(d);
+
+        // 插入到数据库
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         d.setStatus("ACCEPTED");
         d.setReviewedBy(userId);
@@ -106,6 +118,7 @@ public class DeliverableService {
         d.setReviewedAt(now);
         d.setUpdatedAt(now);
         deliverableMapper.updateById(d);
+
         publishUpdated(d);
         return toResponse(d);
     }
@@ -115,13 +128,21 @@ public class DeliverableService {
      */
     @Transactional
     public DeliverableResponse reject(UUID projectId, UUID deliverableId, UUID userId, String reason) {
+        // 需要是project成员
         projectAccess.requireProjectMember(projectId, userId);
+        // 需要给出拒绝原因
         if (reason == null || reason.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "DELIVERABLE_REJECT_REASON_REQUIRED", "拒绝交付物必须给出退回原因");
         }
+
+        // 查询到这个交付物实体
         DeliverableEntity d = requireDeliverable(projectId, deliverableId);
+        // 看是发起人还是 Project Admin
         requireOwner(d, projectId, userId);
+        // 确认是 PENDING_REVIEW 状态
         requirePending(d);
+
+        // 插入到数据库
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         d.setStatus("REJECTED");
         d.setReviewedBy(userId);
@@ -129,6 +150,8 @@ public class DeliverableService {
         d.setReviewedAt(now);
         d.setUpdatedAt(now);
         deliverableMapper.updateById(d);
+
+        // 发布事件
         publishUpdated(d);
         return toResponse(d);
     }
@@ -137,6 +160,7 @@ public class DeliverableService {
      * 查询 Diff 的变更统计和关联提交。
      */
     public DiffResponse diff(UUID projectId, UUID diffId, UUID userId) {
+        // 需要是项目成员
         projectAccess.requireProjectMember(projectId, userId);
         return toResponse(requireDiff(projectId, diffId));
     }
@@ -146,8 +170,11 @@ public class DeliverableService {
      */
     public ApiPageResponse<DiffFileResponse> diffFiles(UUID projectId, UUID diffId, UUID userId, String cursor,
             int limit, String requestId) {
+        // 确认是项目成员
         projectAccess.requireProjectMember(projectId, userId);
+
         requireDiff(projectId, diffId);
+
         int size = clampLimit(limit);
         long after = parseLongCursor(cursor);
         List<DiffFileEntity> rows = diffFileMapper.selectList(Wrappers.<DiffFileEntity>lambdaQuery()
@@ -157,7 +184,8 @@ public class DeliverableService {
                 .last("LIMIT " + (size + 1)));
         boolean hasMore = rows.size() > size;
         List<DiffFileResponse> items = (hasMore ? rows.subList(0, size) : rows).stream().map(this::toResponse).toList();
-        PageMeta page = new PageMeta(hasMore ? String.valueOf(items.get(items.size() - 1).getSequence()) : null, hasMore);
+        PageMeta page = new PageMeta(hasMore ? String.valueOf(items.get(items.size() - 1).getSequence()) : null,
+                hasMore);
         return new ApiPageResponse<>(items, page, requestId);
     }
 
@@ -165,11 +193,16 @@ public class DeliverableService {
      * 查询 Diff 审查意见列表。
      */
     public List<DiffCommentResponse> diffComments(UUID projectId, UUID diffId, UUID userId) {
+        // 确认是项目成员
         projectAccess.requireProjectMember(projectId, userId);
+        // 看是否存在这个 Diff
         requireDiff(projectId, diffId);
         return diffCommentMapper.selectList(Wrappers.<DiffCommentEntity>lambdaQuery()
-                .eq(DiffCommentEntity::getDiffId, diffId).orderByAsc(DiffCommentEntity::getCreatedAt))
-                .stream().map(this::toResponse).toList();
+                .eq(DiffCommentEntity::getDiffId, diffId)
+                .orderByAsc(DiffCommentEntity::getCreatedAt))
+                .stream()
+                .map(this::toResponse)
+                .toList();
     }
 
     /**
@@ -178,11 +211,15 @@ public class DeliverableService {
     @Transactional
     public DiffCommentResponse addDiffComment(UUID projectId, UUID diffId, UUID userId, String path, String side,
             Integer line, String hunkId, String body) {
+        // 确认是项目成员
         projectAccess.requireProjectMember(projectId, userId);
+        // 获取到 Diff 实体
         DiffEntity diff = requireDiff(projectId, diffId);
         if (body == null || body.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "DIFF_COMMENT_BODY_REQUIRED", "审查意见正文不能为空");
         }
+
+        // 插入到数据库
         DiffCommentEntity c = new DiffCommentEntity();
         c.setId(UuidV7.next());
         c.setDiffId(diffId);
@@ -280,7 +317,9 @@ public class DeliverableService {
     }
 
     private void publishUpdated(DeliverableEntity d) {
+        // 创建一个 payload 用于包含交付物信息
         Map<String, Object> payload = new HashMap<>();
+        // 开始放进去信息
         payload.put("projectId", d.getProjectId());
         if (d.getRequirementGroupId() != null) {
             payload.put("groupId", d.getRequirementGroupId());
@@ -291,6 +330,8 @@ public class DeliverableService {
         payload.put("status", d.getStatus());
         payload.put("sequence", 0);
         payload.put("timestamp", Instant.now().toString());
+
+        // 发布事件
         eventService.publish(d.getProjectId(), d.getRequirementGroupId(), "deliverable.updated", d.getId().toString(),
                 payload);
     }
