@@ -10,6 +10,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import lombok.extern.slf4j.Slf4j;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 
 import qg.qgent.api.ApiException;
@@ -38,6 +40,7 @@ import qg.qgent.mapper.RepositoryBranchConfigMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 
 @Service
+@Slf4j
 public class GitHubRepositoryService {
     private final GitHubInstallationMapper installationMapper;
     private final GitHubRepositoryMapper repositoryMapper;
@@ -66,6 +69,7 @@ public class GitHubRepositoryService {
     }
 
     public GitHubInstallationUrlResponse createInstallationUrl(UUID actorId, UUID teamId) {
+        log.info("Generating GitHub installation URL for teamId: {}, requested by actorId: {}", teamId, actorId);
         requireTeamOwner(actorId, teamId);
         return new GitHubInstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId),
                 Instant.now(clock).plusSeconds(600));
@@ -118,6 +122,7 @@ public class GitHubRepositoryService {
     @Transactional
     public ProjectRepositoryResponse bindProjectRepository(UUID actorId, UUID projectId,
                                                            BindProjectRepositoryRequest request) {
+        log.info("Binding GitHub repository (ID: {}) to projectId: {} by actorId: {}", request.getRepositoryId(), projectId, actorId);
         requireProjectAdmin(actorId, projectId);
         GitHubRepositoryEntity repository = findActiveRepositoryForProject(request.getInstallationId(),
                 request.getRepositoryId(), projectId);
@@ -173,6 +178,7 @@ public class GitHubRepositoryService {
 
     @Transactional
     public void handleInstallationCallback(long providerInstallationId, String state) {
+        log.info("Handling GitHub App installation callback. providerInstallationId: {}", providerInstallationId);
         UUID teamId = gitHubClient.verifyInstallationState(state);
         GitHubInstallationDetails installation = gitHubClient.getInstallation(providerInstallationId);
         GitHubInstallationEntity installationEntity = installationMapper.selectOne(

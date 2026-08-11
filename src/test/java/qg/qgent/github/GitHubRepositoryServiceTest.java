@@ -67,6 +67,7 @@ class GitHubRepositoryServiceTest {
     @BeforeAll
     static void initializeMyBatisPlusMetadata() {
         MybatisConfiguration configuration = new MybatisConfiguration();
+        configuration.getTypeHandlerRegistry().register(UUID.class, qg.qgent.handler.UuidBinaryTypeHandler.class);
         MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "GitHubRepositoryServiceTest");
         TableInfoHelper.initTableInfo(assistant, GitHubInstallationEntity.class);
         TableInfoHelper.initTableInfo(assistant, GitHubRepositoryEntity.class);
