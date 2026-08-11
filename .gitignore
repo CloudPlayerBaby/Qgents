@@ -41,3 +41,6 @@ replay_pid*
 docs/
 .env
 src/main/resources/rsa/private_key.pem
+
+# Private keys
+*.pem

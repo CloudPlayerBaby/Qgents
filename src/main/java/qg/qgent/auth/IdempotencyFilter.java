@@ -93,10 +93,11 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 
         ContentCachingRequestWrapper cachedRequest = new ContentCachingRequestWrapper(request, BODY_CACHE_LIMIT);
         ContentCachingResponseWrapper cachedResponse = new ContentCachingResponseWrapper(response);
-        byte[] requestHash = hash(readBody(cachedRequest));
+        
         try {
             chain.doFilter(cachedRequest, cachedResponse);
         } finally {
+            byte[] requestHash = hash(cachedRequest.getContentAsByteArray());
             int status = cachedResponse.getStatus();
             byte[] body = cachedResponse.getContentAsByteArray();
             if (status >= 200 && status < 300 && body.length > 0) {

@@ -44,6 +44,7 @@ public class GlobalExceptionHandler {
     // 处理其他异常
     @ExceptionHandler(Exception.class)
     ResponseEntity<?> unexpected(Exception ex, HttpServletRequest request) {
+        log.error("Unexpected error", ex);
         // 返回 500 错误
         return ResponseEntity
                 .status(HttpStatus.INTERNAL_SERVER_ERROR)
