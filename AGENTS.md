@@ -59,6 +59,7 @@
 ## 4. 不可违背的业务边界
 
 - Team 是最高协作边界，Project 是 Skill、Memory、群聊、任务和代码资源的主要隔离边界。
+- 每个 Team 必须恰有一名 `TEAM_OWNER`，且该成员必须与 `teams.owner_user_id` 一致；成员角色接口不得创建、转移、降级或删除 Team Owner。
 - 授权必须由服务端根据已认证用户、团队成员关系、项目成员关系和资源归属判断。
 - 不得信任客户端提交的 `userId`、`role`、`ownerId`、`admin` 等字段来决定权限。
 - 一个 Project 可以关联多个 Repository；跨仓库需求应拆成独立 Work Package 和 Workspace。
