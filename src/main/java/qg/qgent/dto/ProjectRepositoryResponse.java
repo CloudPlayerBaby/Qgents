@@ -1,6 +1,6 @@
 package qg.qgent.dto;
 
-import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 import lombok.AllArgsConstructor;
@@ -8,24 +8,24 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * 项目与已授权 GitHub 仓库之间的绑定记录。
+ * 椤圭洰涓庡凡鎺堟潈 GitHub 浠撳簱涔嬮棿鐨勭粦瀹氳褰曘€?
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class ProjectRepositoryResponse {
-    /** 项目仓库绑定 ID。 */
+    /** 椤圭洰浠撳簱缁戝畾 ID銆?*/
     private UUID id;
 
-    /** 被绑定的 GitHub 仓库镜像 ID。 */
+    /** 琚粦瀹氱殑 GitHub 浠撳簱闀滃儚 ID銆?*/
     private UUID repositoryId;
 
-    /** 项目使用的默认分支。 */
+    /** 椤圭洰浣跨敤鐨勯粯璁ゅ垎鏀€?*/
     private String defaultBranch;
 
-    /** 仓库在项目内的显示名称。 */
+    /** 浠撳簱鍦ㄩ」鐩唴鐨勬樉绀哄悕绉般€?*/
     private String displayName;
 
-    /** 绑定创建时间，UTC。 */
-    private Instant boundAt;
+    /** 缁戝畾鍒涘缓鏃堕棿锛孶TC銆?*/
+    private LocalDateTime boundAt;
 }

@@ -1,6 +1,6 @@
 package qg.qgent.dto;
 
-import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 import lombok.AllArgsConstructor;
@@ -8,27 +8,27 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * 团队已授权的 GitHub App 安装记录。
+ * 鍥㈤槦宸叉巿鏉冪殑 GitHub App 瀹夎璁板綍銆?
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class GitHubInstallationResponse {
-    /** Qgents 安装记录 ID。 */
+    /** Qgents 瀹夎璁板綍 ID銆?*/
     private UUID id;
 
-    /** GitHub 提供的安装数字 ID。 */
+    /** GitHub 鎻愪緵鐨勫畨瑁呮暟瀛?ID銆?*/
     private long providerInstallationId;
 
-    /** GitHub 授权账号登录名。 */
+    /** GitHub 鎺堟潈璐﹀彿鐧诲綍鍚嶃€?*/
     private String accountLogin;
 
-    /** GitHub 授权账号类型。 */
+    /** GitHub 鎺堟潈璐﹀彿绫诲瀷銆?*/
     private String accountType;
 
-    /** 安装状态。 */
+    /** 瀹夎鐘舵€併€?*/
     private String status;
 
-    /** 安装记录最近同步时间，UTC。 */
-    private Instant updatedAt;
+    /** 瀹夎璁板綍鏈€杩戝悓姝ユ椂闂达紝UTC銆?*/
+    private LocalDateTime updatedAt;
 }

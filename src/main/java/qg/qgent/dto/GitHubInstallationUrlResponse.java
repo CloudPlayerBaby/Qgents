@@ -1,21 +1,21 @@
 package qg.qgent.dto;
 
-import java.time.Instant;
+import java.time.LocalDateTime;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * GitHub App 安装跳转地址。
+ * GitHub App 瀹夎璺宠浆鍦板潃銆?
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class GitHubInstallationUrlResponse {
-    /** GitHub App 安装页面地址，含短时有效的签名 state。 */
+    /** GitHub App 瀹夎椤甸潰鍦板潃锛屽惈鐭椂鏈夋晥鐨勭鍚?state銆?*/
     private String installationUrl;
 
-    /** 安装跳转地址失效时间，UTC。 */
-    private Instant expiresAt;
+    /** 瀹夎璺宠浆鍦板潃澶辨晥鏃堕棿锛孶TC銆?*/
+    private LocalDateTime expiresAt;
 }

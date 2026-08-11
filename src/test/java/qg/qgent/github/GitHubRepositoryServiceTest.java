@@ -9,7 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Clock;
-import java.time.Instant;
+import java.time.Instant; import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
 
@@ -175,7 +175,7 @@ class GitHubRepositoryServiceTest {
         repository.setDefaultBranch(branch);
         repository.setVisibility("PRIVATE");
         repository.setArchived(false);
-        repository.setSyncedAt(Instant.now());
+        repository.setSyncedAt(LocalDateTime.now());
         return repository;
     }
 
@@ -184,8 +184,8 @@ class GitHubRepositoryServiceTest {
         project.setId(projectId);
         project.setTeamId(UUID.randomUUID());
         when(projectMapper.selectById(projectId)).thenReturn(project);
-        when(teamMemberMapper.countByTeamIdAndUserIdAndRole(any(UUID.class), any(UUID.class), anyString())).thenReturn(0L);
-        when(projectMemberMapper.countByProjectIdAndUserIdAndRole(any(UUID.class), any(UUID.class), anyString()))
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(projectMemberMapper.selectCount(any(Wrapper.class)))
                 .thenReturn(1L);
         GitHubInstallationEntity installation = new GitHubInstallationEntity();
         installation.setId(installationId);

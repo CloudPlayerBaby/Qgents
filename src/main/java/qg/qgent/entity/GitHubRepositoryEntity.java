@@ -1,6 +1,6 @@
 package qg.qgent.entity;
 
-import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 import com.baomidou.mybatisplus.annotation.IdType;
@@ -30,5 +30,5 @@ public class GitHubRepositoryEntity {
     private String defaultBranch;
     private String visibility;
     private Boolean archived;
-    private Instant syncedAt;
+    private LocalDateTime syncedAt;
 }

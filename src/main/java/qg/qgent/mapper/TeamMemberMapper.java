@@ -15,8 +15,10 @@ import qg.qgent.handler.UuidBinaryTypeHandler;
 import java.util.List;
 import java.util.UUID;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+
 @Mapper
-public interface TeamMemberMapper {
+public interface TeamMemberMapper extends BaseMapper<TeamMemberEntity> {
         @Select("SELECT team_id, user_id, role FROM team_members WHERE team_id = #{teamId} AND user_id = #{userId}")
         @Results({ @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class),
                         @Result(column = "user_id", property = "userId", typeHandler = UuidBinaryTypeHandler.class),
@@ -56,4 +58,5 @@ public interface TeamMemberMapper {
                         @Result(column = "role", property = "role")
         })
         List<TeamMemberEntity> selectByUserId(UUID userId);
+
 }

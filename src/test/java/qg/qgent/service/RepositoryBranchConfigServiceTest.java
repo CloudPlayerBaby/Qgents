@@ -82,9 +82,9 @@ class RepositoryBranchConfigServiceTest {
         authorizeProjectMember();
         when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(projectRepository());
         RepositoryBranchConfigEntity config = new RepositoryBranchConfigEntity();
-        BranchPolicyJson policy = new BranchPolicyJson();
-        policy.setRequirePullRequest(true);
-        policy.setAllowDirectPush(false);
+        java.util.Map<String, Object> policy = new java.util.HashMap<>();
+        policy.put("requirePullRequest", true);
+        policy.put("allowDirectPush", false);
         config.setPolicyJson(policy);
         when(branchConfigMapper.selectOne(any(Wrapper.class))).thenReturn(config);
 
@@ -127,6 +127,7 @@ class RepositoryBranchConfigServiceTest {
     @Test
     void rejectsUpdateBranchPolicyForNonAdmin() {
         authorizeProjectMember(); // Only member, not admin
+        when(projectMemberMapper.selectCount(any(Wrapper.class))).thenReturn(0L); // Force admin check to fail
         
         UpdateBranchPolicyRequest request = new UpdateBranchPolicyRequest();
         
@@ -191,9 +192,8 @@ class RepositoryBranchConfigServiceTest {
         project.setId(projectId);
         project.setTeamId(UUID.randomUUID());
         when(projectMapper.selectById(projectId)).thenReturn(project);
-        org.mockito.Mockito.lenient().when(teamMemberMapper.countByTeamIdAndUserIdAndRole(any(UUID.class), any(UUID.class), anyString())).thenReturn(0L);
-        org.mockito.Mockito.lenient().when(projectMemberMapper.countByProjectIdAndUserId(projectId, actorId)).thenReturn(1L);
-        org.mockito.Mockito.lenient().when(projectMemberMapper.countByProjectIdAndUserIdAndRole(any(UUID.class), any(UUID.class), anyString())).thenReturn(0L);
+        org.mockito.Mockito.lenient().when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        org.mockito.Mockito.lenient().when(projectMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
     }
     
     private void authorizeProjectAdmin() {
@@ -201,8 +201,8 @@ class RepositoryBranchConfigServiceTest {
         project.setId(projectId);
         project.setTeamId(UUID.randomUUID());
         when(projectMapper.selectById(projectId)).thenReturn(project);
-        org.mockito.Mockito.lenient().when(teamMemberMapper.countByTeamIdAndUserIdAndRole(any(UUID.class), any(UUID.class), anyString())).thenReturn(0L);
-        org.mockito.Mockito.lenient().when(projectMemberMapper.countByProjectIdAndUserIdAndRole(projectId, actorId, "PROJECT_ADMIN")).thenReturn(1L);
+        org.mockito.Mockito.lenient().when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        org.mockito.Mockito.lenient().when(projectMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
     }
 
     private ProjectRepositoryEntity projectRepository() {

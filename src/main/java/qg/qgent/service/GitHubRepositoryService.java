@@ -2,6 +2,7 @@ package qg.qgent.service;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -72,7 +73,7 @@ public class GitHubRepositoryService {
         log.info("Generating GitHub installation URL for teamId: {}, requested by actorId: {}", teamId, actorId);
         requireTeamOwner(actorId, teamId);
         return new GitHubInstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId),
-                Instant.now(clock).plusSeconds(600));
+                LocalDateTime.now(clock).plusSeconds(600));
     }
 
     public List<GitHubInstallationResponse> listInstallations(UUID actorId, UUID teamId) {
@@ -142,7 +143,7 @@ public class GitHubRepositoryService {
         binding.setRepositoryId(repository.getId());
         binding.setDefaultBranch(blankToDefault(request.getDefaultBranch(), repository.getDefaultBranch()));
         binding.setDisplayName(request.getDisplayName());
-        binding.setBoundAt(Instant.now(clock));
+        binding.setBoundAt(LocalDateTime.now(clock));
         projectRepositoryMapper.insert(binding);
         return toProjectRepositoryResponse(binding);
     }
@@ -215,7 +216,7 @@ public class GitHubRepositoryService {
             repositoryEntity.setDefaultBranch(repository.getDefaultBranch());
             repositoryEntity.setVisibility(normalizeEnum(repository.getVisibility()));
             repositoryEntity.setArchived(repository.isArchived());
-            repositoryEntity.setSyncedAt(Instant.now(clock));
+            repositoryEntity.setSyncedAt(LocalDateTime.now(clock));
             if (newRepository) {
                 repositoryMapper.insert(repositoryEntity);
             } else {
@@ -245,17 +246,17 @@ public class GitHubRepositoryService {
     private boolean hasProjectAccess(UUID projectId, UUID actorId) {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
-                || projectMemberMapper.countByProjectIdAndUserId(projectId, actorId) > 0);
+                || projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId)) > 0);
     }
 
     private boolean hasProjectAdminAccess(UUID projectId, UUID actorId) {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
-                || projectMemberMapper.countByProjectIdAndUserIdAndRole(projectId, actorId, "PROJECT_ADMIN") > 0);
+                || projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId).eq(ProjectMemberEntity::getRole, "PROJECT_ADMIN")) > 0);
     }
 
     private boolean isTeamOwner(UUID teamId, UUID actorId) {
-        return teamMemberMapper.countByTeamIdAndUserIdAndRole(teamId, actorId, "TEAM_OWNER") > 0;
+        return teamMemberMapper.selectCount(new LambdaQueryWrapper<TeamMemberEntity>().eq(TeamMemberEntity::getTeamId, teamId).eq(TeamMemberEntity::getUserId, actorId).eq(TeamMemberEntity::getRole, "TEAM_OWNER")) > 0;
     }
 
     private boolean hasTeamRepositoryAccess(UUID teamId, UUID actorId) {
@@ -267,7 +268,7 @@ public class GitHubRepositoryService {
                         .select(ProjectEntity::getId))
                 .stream().map(ProjectEntity::getId).toList();
         return projectIds.stream().anyMatch(projectId ->
-                projectMemberMapper.countByProjectIdAndUserIdAndRole(projectId, actorId, "PROJECT_ADMIN") > 0);
+                projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId).eq(ProjectMemberEntity::getRole, "PROJECT_ADMIN")) > 0);
     }
 
     private GitHubRepositoryEntity findActiveRepositoryForProject(UUID installationId, UUID repositoryId, UUID projectId) {

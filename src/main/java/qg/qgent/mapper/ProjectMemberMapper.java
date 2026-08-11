@@ -13,8 +13,10 @@ import qg.qgent.handler.UuidBinaryTypeHandler;
 import java.util.List;
 import java.util.UUID;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+
 @Mapper
-public interface ProjectMemberMapper {
+public interface ProjectMemberMapper extends BaseMapper<ProjectMemberEntity> {
     @Delete("DELETE pm FROM project_members pm INNER JOIN projects p ON p.id = pm.project_id WHERE p.team_id = #{teamId} AND pm.user_id = #{userId}")
     int deleteByTeamAndUser(@Param("teamId") UUID teamId, @Param("userId") UUID userId);
     @Select("SELECT project_id, user_id, role FROM project_members WHERE user_id = #{userId}")
@@ -32,4 +34,5 @@ public interface ProjectMemberMapper {
             @Result(column = "role", property = "role")
     })
     ProjectMemberEntity selectByProjectAndUser(@Param("projectId") UUID projectId, @Param("userId") UUID userId);
+
 }

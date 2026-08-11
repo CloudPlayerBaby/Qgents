@@ -18,9 +18,11 @@ import qg.qgent.dto.UpdateBranchPolicyRequest;
 import qg.qgent.dto.UpdateQualityGateRequest;
 import qg.qgent.entity.BranchPolicyJson;
 import qg.qgent.entity.ProjectEntity;
+import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.entity.RepositoryBranchConfigTestsetEntity;
+import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
@@ -58,9 +60,10 @@ public class RepositoryBranchConfigService {
 
         BranchPolicyDto dto = new BranchPolicyDto();
         if (config.getPolicyJson() != null) {
-            dto.setRequirePullRequest(config.getPolicyJson().getRequirePullRequest());
-            dto.setMinimumHumanApprovals(config.getPolicyJson().getMinimumHumanApprovals());
-            dto.setAllowDirectPush(config.getPolicyJson().getAllowDirectPush());
+            java.util.Map<String, Object> p = config.getPolicyJson();
+            dto.setRequirePullRequest(p.containsKey("requirePullRequest") ? (Boolean) p.get("requirePullRequest") : null);
+            dto.setMinimumHumanApprovals(p.containsKey("minimumHumanApprovals") ? (Integer) p.get("minimumHumanApprovals") : null);
+            dto.setAllowDirectPush(p.containsKey("allowDirectPush") ? (Boolean) p.get("allowDirectPush") : null);
         }
         return dto;
     }
@@ -71,22 +74,22 @@ public class RepositoryBranchConfigService {
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
         RepositoryBranchConfigEntity config = getOrCreateConfig(projectRepo.getId(), branchName);
 
-        BranchPolicyJson policyJson = config.getPolicyJson();
+        java.util.Map<String, Object> policyJson = config.getPolicyJson();
         if (policyJson == null) {
-            policyJson = new BranchPolicyJson();
+            policyJson = new java.util.HashMap<>();
         }
-        policyJson.setRequirePullRequest(request.getRequirePullRequest());
-        policyJson.setMinimumHumanApprovals(request.getMinimumHumanApprovals());
-        policyJson.setAllowDirectPush(request.getAllowDirectPush());
+        if (request.getRequirePullRequest() != null) policyJson.put("requirePullRequest", request.getRequirePullRequest());
+        if (request.getMinimumHumanApprovals() != null) policyJson.put("minimumHumanApprovals", request.getMinimumHumanApprovals());
+        if (request.getAllowDirectPush() != null) policyJson.put("allowDirectPush", request.getAllowDirectPush());
         config.setPolicyJson(policyJson);
         config.setUpdatedAt(LocalDateTime.now());
         
         branchConfigMapper.updateById(config);
         
         BranchPolicyDto dto = new BranchPolicyDto();
-        dto.setRequirePullRequest(policyJson.getRequirePullRequest());
-        dto.setMinimumHumanApprovals(policyJson.getMinimumHumanApprovals());
-        dto.setAllowDirectPush(policyJson.getAllowDirectPush());
+        dto.setRequirePullRequest(policyJson.containsKey("requirePullRequest") ? (Boolean) policyJson.get("requirePullRequest") : null);
+        dto.setMinimumHumanApprovals(policyJson.containsKey("minimumHumanApprovals") ? (Integer) policyJson.get("minimumHumanApprovals") : null);
+        dto.setAllowDirectPush(policyJson.containsKey("allowDirectPush") ? (Boolean) policyJson.get("allowDirectPush") : null);
         return dto;
     }
 
@@ -98,8 +101,7 @@ public class RepositoryBranchConfigService {
         QualityGateDto dto = new QualityGateDto();
         dto.setRequiredChecks(config.getRequiredChecks() != null ? config.getRequiredChecks() : List.of());
         
-        List<UUID> testsetIds = branchConfigTestsetMapper.selectList(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>()
-                .eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()))
+        List<UUID> testsetIds = branchConfigTestsetMapper.selectList(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>().eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()))
                 .stream()
                 .map(RepositoryBranchConfigTestsetEntity::getTestsetId)
                 .collect(Collectors.toList());
@@ -118,8 +120,7 @@ public class RepositoryBranchConfigService {
         config.setUpdatedAt(LocalDateTime.now());
         branchConfigMapper.updateById(config);
         
-        branchConfigTestsetMapper.delete(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>()
-                .eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()));
+        branchConfigTestsetMapper.delete(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>().eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()));
                 
         if (request.getRequiredTestsetIds() != null) {
             for (UUID testsetId : request.getRequiredTestsetIds()) {
@@ -177,17 +178,17 @@ public class RepositoryBranchConfigService {
     private boolean hasProjectAccess(UUID projectId, UUID actorId) {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
-                || projectMemberMapper.countByProjectIdAndUserId(projectId, actorId) > 0);
+                || projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId)) > 0);
     }
 
     private boolean hasProjectAdminAccess(UUID projectId, UUID actorId) {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
-                || projectMemberMapper.countByProjectIdAndUserIdAndRole(projectId, actorId, "PROJECT_ADMIN") > 0);
+                || projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId).eq(ProjectMemberEntity::getRole, "PROJECT_ADMIN")) > 0);
     }
 
     private boolean isTeamOwner(UUID teamId, UUID actorId) {
-        return teamMemberMapper.countByTeamIdAndUserIdAndRole(teamId, actorId, "TEAM_OWNER") > 0;
+        return teamMemberMapper.selectCount(new LambdaQueryWrapper<TeamMemberEntity>().eq(TeamMemberEntity::getTeamId, teamId).eq(TeamMemberEntity::getUserId, actorId).eq(TeamMemberEntity::getRole, "TEAM_OWNER")) > 0;
     }
 
     private ApiException forbidden(String message) {
