@@ -16,7 +16,9 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import qg.qgent.auth.IdempotencyFilter;
 import qg.qgent.auth.JwtAuthenticationFilter;
+import qg.qgent.service.IdempotencyService;
 
 import java.util.List;
 import java.util.Map;
@@ -45,16 +47,26 @@ public class SecurityConfig {
     }
 
     /**
+     * 幂等过滤器 Bean：在 JwtAuthenticationFilter 之后注册，保证读取请求体前鉴权已就绪。
+     */
+    @Bean
+    IdempotencyFilter idempotencyFilter(IdempotencyService idempotency, ObjectMapper mapper) {
+        return new IdempotencyFilter(idempotency, mapper);
+    }
+
+    /**
      * 安全过滤链
-     * 
+     *
      * @param http
      * @param jwt
+     * @param idempotency 写接口幂等过滤器，位于 JWT 鉴权之后
      * @param mapper
      * @return
      * @throws Exception
      */
     @Bean
-    SecurityFilterChain security(HttpSecurity http, JwtAuthenticationFilter jwt, ObjectMapper mapper) throws Exception {
+    SecurityFilterChain security(HttpSecurity http, JwtAuthenticationFilter jwt, IdempotencyFilter idempotency,
+            ObjectMapper mapper) throws Exception {
         return http
                 // 不启用 CSRF
                 .csrf(c -> c.disable())
@@ -69,11 +81,13 @@ public class SecurityConfig {
                                 "/api/v1/auth/refresh", "/api/v1/auth/password-reset-requests",
                                 "/api/v1/auth/password-resets")
                         .permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/integrations/github/callback").permitAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/error").permitAll().anyRequest()
                         .authenticated())
                 // 配置异常处理
                 .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> {
                     res.setStatus(401);
+                    res.setCharacterEncoding("UTF-8");
                     res.setContentType(MediaType.APPLICATION_JSON_VALUE);
                     mapper.writeValue(res.getWriter(),
                             Map.of("error", Map.of("code", "UNAUTHORIZED", "message", "需要登录", "details", List.of()),
@@ -81,6 +95,8 @@ public class SecurityConfig {
                 }))
                 // 配置 JWT 过滤器
                 .addFilterBefore(jwt, UsernamePasswordAuthenticationFilter.class)
+                // 幂等过滤器紧跟 JWT 之后，仅处理已鉴权的 /api/v1/projects/** POST
+                .addFilterAfter(idempotency, JwtAuthenticationFilter.class)
                 .build();
     }
 
@@ -97,9 +113,10 @@ public class SecurityConfig {
         // 允许的来源
         c.setAllowedOrigins(List.of(origins.split(",")));
         // 允许的请求方法
-        c.setAllowedMethods(List.of("GET", "POST", "PATCH", "OPTIONS"));
-        // 允许的请求头
-        c.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Request-Id"));
+        c.setAllowedMethods(List.of("GET", "POST", "PATCH", "DELETE", "OPTIONS"));
+        // 允许的请求头：Idempotency-Key（写接口幂等）、Last-Event-ID（SSE 续传）
+        c.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key",
+                "Last-Event-ID", "Idempotency-Key"));
         // 允许携带 Cookie
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         // 注册跨域配置

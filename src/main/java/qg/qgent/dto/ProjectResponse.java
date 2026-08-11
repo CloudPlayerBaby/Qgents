@@ -11,6 +11,7 @@ public class ProjectResponse {
     private String id;
     private String teamId;
     private String name;
+    private String description;
     private String role;
     private String status;
 }

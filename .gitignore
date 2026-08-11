@@ -29,6 +29,7 @@ replay_pid*
 
 # intelliJ IDEA
 .idea/
+*.iml
 
 # VsCode
 .vscode/

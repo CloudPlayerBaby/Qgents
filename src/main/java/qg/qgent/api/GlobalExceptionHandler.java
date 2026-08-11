@@ -1,6 +1,7 @@
 package qg.qgent.api;
 
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -17,11 +18,13 @@ import java.util.Map;
  * 全局异常处理
  * GlobalExceptionHandler
  */
+@Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
     // 处理 ApiException 异常
     @ExceptionHandler(ApiException.class)
     ResponseEntity<?> api(ApiException ex, HttpServletRequest request) {
+        log.warn("API Exception [{}]: {} - {}", request.getRequestURI(), ex.code(), ex.getMessage());
         return ResponseEntity
                 .status(ex.status())
                 .body(error(ex.code(), ex.getMessage(), List.of(), request));

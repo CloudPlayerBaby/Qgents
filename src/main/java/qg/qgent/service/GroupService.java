@@ -91,7 +91,7 @@ public class GroupService {
      */
     @Transactional
     public GroupResponse create(UUID actor, UUID projectId, GroupCreateRequest body) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         String type = body.getType() == null || body.getType().isBlank() ? "REQUIREMENT" : body.getType().trim();
         if (!"REQUIREMENT".equals(type)) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SYSTEM_GROUP_MANAGED",
@@ -121,7 +121,7 @@ public class GroupService {
      * @return 群视图列表
      */
     public List<GroupResponse> list(UUID actor, UUID projectId) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         return groupMapper.listByProject(projectId).stream().map(this::toResponse).toList();
     }
 
@@ -134,7 +134,7 @@ public class GroupService {
      * @return 群视图
      */
     public GroupResponse get(UUID actor, UUID projectId, UUID groupId) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         return toResponse(requireGroupInProject(projectId, groupId));
     }
 
@@ -149,10 +149,10 @@ public class GroupService {
      */
     @Transactional
     public GroupResponse update(UUID actor, UUID projectId, UUID groupId, GroupUpdateRequest body) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
         if (!group.getCreatedBy().equals(actor)) {
-            access.requireAdmin(projectId, actor);
+            access.requireProjectAdmin(projectId, actor);
         }
         if (body.getRepositoryIds() != null) {
             List<UUID> repositories = validateRepositories(projectId, body.getRepositoryIds());
@@ -179,10 +179,10 @@ public class GroupService {
      */
     @Transactional
     public GroupResponse archive(UUID actor, UUID projectId, UUID groupId) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
         if (!group.getCreatedBy().equals(actor)) {
-            access.requireAdmin(projectId, actor);
+            access.requireProjectAdmin(projectId, actor);
         }
         if ("PROJECT_MAIN".equals(group.getGroupType())) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SYSTEM_GROUP_MANAGED", "项目主群不可归档");
@@ -204,7 +204,7 @@ public class GroupService {
      * @return 成员视图列表
      */
     public List<GroupMemberResponse> members(UUID actor, UUID projectId, UUID groupId) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         requireGroupInProject(projectId, groupId);
         return projectMemberMapper.selectMembers(projectId).stream()
                 .map(m -> new GroupMemberResponse(m.getUserId().toString(), m.getDisplayName(), m.getAvatarUrl()))
@@ -222,12 +222,12 @@ public class GroupService {
      */
     @Transactional
     public void leave(UUID actor, UUID projectId, UUID groupId) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         requireGroupInProject(projectId, groupId);
         ProjectMemberEntity member = projectMemberMapper.selectByProjectAndUser(projectId, actor);
         if (member != null && "PROJECT_ADMIN".equals(member.getRole())) {
-            Long admins = projectMemberMapper.countAdmins(projectId);
-            if (admins == null || admins <= 1) {
+            int admins = projectMemberMapper.countAdmins(projectId);
+            if (admins <= 1) {
                 throw new ApiException(HttpStatus.CONFLICT, "PROJECT_ADMIN_CANNOT_LEAVE",
                         "最后一名项目 Admin 不可退出项目");
             }

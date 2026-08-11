@@ -63,7 +63,7 @@ public class MessageService {
      */
     @Transactional
     public MessageResponse send(UUID actor, UUID projectId, UUID groupId, MessageSendRequest body) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         RequirementGroupEntity group = groupMapper.selectOne(Wrappers.<RequirementGroupEntity>lambdaQuery()
                 .eq(RequirementGroupEntity::getId, groupId)
                 .last("FOR UPDATE"));
@@ -130,7 +130,7 @@ public class MessageService {
      * @return 消息分页结果
      */
     public MessageListResponse list(UUID actor, UUID projectId, UUID groupId, String cursor, int limit) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         RequirementGroupEntity group = groupMapper.selectById(groupId);
         if (group == null || !group.getProjectId().equals(projectId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");

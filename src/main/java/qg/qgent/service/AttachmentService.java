@@ -40,7 +40,7 @@ public class AttachmentService {
     @Transactional
     public AttachmentUploadCredentialResponse createCredential(UUID actor, UUID projectId,
             AttachmentCreateRequest body) {
-        access.requireMember(projectId, actor);
+        access.requireProjectMember(projectId, actor);
         AttachmentEntity attachment = new AttachmentEntity();
         attachment.setId(UuidV7.next());
         attachment.setProjectId(projectId);

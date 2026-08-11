@@ -1,9 +1,10 @@
 -- Qgents MVP database initialization schema, MySQL 8.0.16+.
 -- 手动执行：mysql -u <user> -p <database> < database/qgents_schema.sql
+-- 脚本幂等：可对同一数据库重复执行；已存在的表自动跳过，缺失的列/外键通过条件判断补齐。
 SET
     NAMES utf8mb4;
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     users (
         id BINARY(16) PRIMARY KEY COMMENT '用户UUIDv7（二进制存储）',
         email VARCHAR(320) NOT NULL COMMENT '归一化后的用户登录邮箱，用于大小写无关唯一校验',
@@ -17,7 +18,7 @@ CREATE TABLE
         UNIQUE KEY uk_users_email (email)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '用户账号与登录凭据';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     refresh_tokens (
         id BINARY(16) PRIMARY KEY COMMENT '刷新令牌记录UUIDv7',
         user_id BINARY(16) NOT NULL COMMENT '令牌所属用户ID',
@@ -30,7 +31,7 @@ CREATE TABLE
         CONSTRAINT fk_refresh_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '登录刷新令牌，仅保存不可逆哈希';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     password_reset_tokens (
         id BINARY(16) PRIMARY KEY COMMENT '密码重置记录UUIDv7',
         user_id BINARY(16) NOT NULL COMMENT '申请重置的用户ID',
@@ -43,7 +44,7 @@ CREATE TABLE
         CONSTRAINT fk_reset_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '密码重置一次性令牌';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     teams (
         id BINARY(16) PRIMARY KEY COMMENT '团队UUIDv7',
         owner_user_id BINARY(16) NOT NULL COMMENT '团队所有者用户ID',
@@ -55,7 +56,7 @@ CREATE TABLE
         CONSTRAINT fk_team_owner FOREIGN KEY (owner_user_id) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '团队协作顶层边界';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     team_members (
         team_id BINARY(16) NOT NULL COMMENT '团队ID',
         user_id BINARY(16) NOT NULL COMMENT '成员用户ID',
@@ -67,7 +68,7 @@ CREATE TABLE
         CONSTRAINT fk_tm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '团队成员及角色关系';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     team_invitations (
         id BINARY(16) PRIMARY KEY COMMENT '团队邀请UUIDv7',
         team_id BINARY(16) NOT NULL COMMENT '目标团队ID',
@@ -85,7 +86,7 @@ CREATE TABLE
         CONSTRAINT fk_invite_user FOREIGN KEY (invited_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '团队邮箱邀请';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     projects (
         id BINARY(16) PRIMARY KEY COMMENT '项目UUIDv7',
         team_id BINARY(16) NOT NULL COMMENT '所属团队ID',
@@ -101,7 +102,7 @@ CREATE TABLE
         CONSTRAINT fk_project_creator FOREIGN KEY (created_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目隔离边界';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     project_members (
         project_id BINARY(16) NOT NULL COMMENT '项目ID',
         user_id BINARY(16) NOT NULL COMMENT '项目成员用户ID',
@@ -113,7 +114,7 @@ CREATE TABLE
         CONSTRAINT fk_pm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目成员及角色关系';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     github_installations (
         id BINARY(16) PRIMARY KEY COMMENT '安装记录UUIDv7',
         team_id BINARY(16) NOT NULL COMMENT '授权所属团队ID',
@@ -128,7 +129,7 @@ CREATE TABLE
         CONSTRAINT fk_ghi_team FOREIGN KEY (team_id) REFERENCES teams (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '团队GitHub App安装授权元数据，不存访问令牌';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     github_repositories (
         id BINARY(16) PRIMARY KEY COMMENT '仓库镜像UUIDv7',
         installation_id BINARY(16) NOT NULL COMMENT '所属GitHub安装记录ID',
@@ -144,7 +145,7 @@ CREATE TABLE
         CONSTRAINT fk_ghr_install FOREIGN KEY (installation_id) REFERENCES github_installations (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'GitHub仓库元数据镜像';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     project_repositories (
         id BINARY(16) PRIMARY KEY COMMENT '项目仓库绑定UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '项目ID',
@@ -158,7 +159,7 @@ CREATE TABLE
         CONSTRAINT fk_pr_repo FOREIGN KEY (repository_id) REFERENCES github_repositories (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目与GitHub仓库绑定';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     repository_branch_configs (
         id BINARY(16) PRIMARY KEY COMMENT '仓库分支配置UUIDv7',
         project_repository_id BINARY(16) NOT NULL COMMENT '所属项目仓库绑定ID',
@@ -171,7 +172,7 @@ CREATE TABLE
         CONSTRAINT fk_branch_config_repo FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id) ON DELETE CASCADE
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目仓库按分支配置的保护和质量门禁策略';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     requirement_groups (
         id BINARY(16) PRIMARY KEY COMMENT '需求群UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
@@ -203,7 +204,7 @@ CREATE TABLE
             CHECK (group_type <> 'PROJECT_MAIN' OR status = 'ACTIVE')
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目需求讨论与协作上下文群';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     requirement_group_repositories (
         requirement_group_id BINARY(16) NOT NULL COMMENT '需求群ID',
         project_repository_id BINARY(16) NOT NULL COMMENT '关联的项目仓库绑定ID',
@@ -213,7 +214,7 @@ CREATE TABLE
         CONSTRAINT fk_rgr_repo FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '需求群与多个项目仓库关联';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     messages (
         id BINARY(16) PRIMARY KEY COMMENT '消息UUIDv7',
         requirement_group_id BINARY(16) NOT NULL COMMENT '所属需求群ID',
@@ -244,7 +245,7 @@ CREATE TABLE
         )
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '需求群有序消息，提及在MVP内以JSON保存';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     attachments (
         id BINARY(16) PRIMARY KEY COMMENT '附件UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '附件所属项目ID，用于上传前权限隔离',
@@ -265,7 +266,7 @@ CREATE TABLE
         CONSTRAINT fk_attachment_user FOREIGN KEY (uploaded_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '消息文件、图片和Diff附件元数据';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     skills (
         id BINARY(16) PRIMARY KEY COMMENT 'Skill UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
@@ -288,7 +289,7 @@ CREATE TABLE
         CONSTRAINT fk_skill_reviewer FOREIGN KEY (reviewer_id) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目Skill，MVP标签内嵌JSON';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     memories (
         id BINARY(16) PRIMARY KEY COMMENT 'Memory UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
@@ -311,7 +312,7 @@ CREATE TABLE
         CONSTRAINT fk_memory_reviewer FOREIGN KEY (reviewer_id) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目确认知识，MVP标签内嵌JSON';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     memory_message_sources (
         memory_id BINARY(16) NOT NULL COMMENT 'Memory ID',
         message_id BINARY(16) NOT NULL COMMENT '作为知识依据的消息ID',
@@ -321,7 +322,7 @@ CREATE TABLE
         CONSTRAINT fk_mms_message FOREIGN KEY (message_id) REFERENCES messages (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Memory与多条来源消息关系';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     testsets (
         id BINARY(16) PRIMARY KEY COMMENT '测试集UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
@@ -340,7 +341,7 @@ CREATE TABLE
         CONSTRAINT fk_testset_creator FOREIGN KEY (created_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目自定义测试集';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     repository_branch_config_testsets (
         branch_config_id BINARY(16) NOT NULL COMMENT '仓库分支配置ID',
         testset_id BINARY(16) NOT NULL COMMENT '该分支门禁强制执行的测试集ID',
@@ -350,7 +351,7 @@ CREATE TABLE
         CONSTRAINT fk_rbct_testset FOREIGN KEY (testset_id) REFERENCES testsets (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '分支质量门禁与强制测试集关系';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     merge_requests (
         id BINARY(16) PRIMARY KEY COMMENT 'MR镜像UUIDv7',
         project_repository_id BINARY(16) NOT NULL COMMENT '所属项目仓库绑定ID',
@@ -374,7 +375,7 @@ CREATE TABLE
         CONSTRAINT fk_mr_repo FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'GitHub Pull Request业务镜像';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     merge_request_groups (
         merge_request_id BINARY(16) NOT NULL COMMENT 'MR镜像ID',
         requirement_group_id BINARY(16) NOT NULL COMMENT 'MR关联的需求群ID',
@@ -384,7 +385,7 @@ CREATE TABLE
         CONSTRAINT fk_mrg_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'MR与多个需求群关系';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     quality_check_results (
         id BINARY(16) PRIMARY KEY COMMENT '质量检查结果UUIDv7',
         merge_request_id BINARY(16) NOT NULL COMMENT '所属MR ID',
@@ -410,7 +411,7 @@ CREATE TABLE
         CONSTRAINT fk_check_test FOREIGN KEY (testset_id) REFERENCES testsets (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'MR真实质量门禁执行结果';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     merge_request_reviews (
         id BINARY(16) PRIMARY KEY COMMENT 'MR审查UUIDv7',
         merge_request_id BINARY(16) NOT NULL COMMENT '所属MR ID',
@@ -440,7 +441,7 @@ CREATE TABLE
         )
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'MR人工或外部AI审查记录';
 
-CREATE TABLE
+CREATE TABLE IF NOT EXISTS
     idempotency_records (
         id BINARY(16) PRIMARY KEY COMMENT '幂等记录UUIDv7',
         actor_user_id BINARY(16) NULL COMMENT '已认证调用用户ID；匿名请求为空',
@@ -458,3 +459,242 @@ CREATE TABLE
         KEY idx_idem_expiry (expires_at),
         CONSTRAINT fk_idem_user FOREIGN KEY (actor_user_id) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '写接口幂等请求与脱敏响应缓存';
+
+-- ============================================================================
+-- 接口第 12、13 节：受控执行、交付物、实时事件与 MR/质量状态
+-- 说明：orchestration_runs / work_packages / sub_tasks 由第 11 节团队建表；
+--       task_runs / deliverables / test_runs / dry_runs 仅以 UUID 列锚定这些 ID，
+--       建表后需由第 11 节团队补外键。
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS
+    task_runs (
+        id BINARY(16) PRIMARY KEY COMMENT '任务运行UUIDv7',
+        project_id BINARY(16) NOT NULL COMMENT '所属项目ID，用于项目隔离',
+        orchestration_run_id BINARY(16) NULL COMMENT '所属编排运行ID；第11节建表后补FK，当前仅作归属锚定',
+        work_package_id BINARY(16) NULL COMMENT '所属工作包ID；第11节建表后补FK，当前仅作归属锚定',
+        sub_task_id BINARY(16) NULL COMMENT '关联子任务ID；第11节建表后补FK，当前仅作归属锚定',
+        project_repository_id BINARY(16) NULL COMMENT '项目仓库绑定ID',
+        requirement_group_id BINARY(16) NULL COMMENT '关联需求群ID',
+        role VARCHAR(32) NOT NULL COMMENT '执行角色枚举：ORCHESTRATOR/PLANNER/DEVELOPER/TESTER/REVIEWER/GENERAL',
+        status VARCHAR(32) NOT NULL DEFAULT 'QUEUED' COMMENT '运行状态枚举：QUEUED/RUNNING/SUCCEEDED/FAILED/WAITING_INPUT/WAITING_APPROVAL/BLOCKED/CANCELLING/CANCELLED',
+        retry_of_task_run_id BINARY(16) NULL COMMENT '重试来源的任务运行ID，为空表示首次运行',
+        workspace_id VARCHAR(255) NULL COMMENT '关联持久Workspace标识，由受控执行服务填充',
+        sandbox_status VARCHAR(32) NULL COMMENT '沙箱状态摘要，由受控执行服务填充',
+        base_ref VARCHAR(512) NULL COMMENT '基线分支或基线提交',
+        head_ref VARCHAR(512) NULL COMMENT '执行使用的工作分支或提交',
+        started_at DATETIME (6) NULL COMMENT '开始执行时间（UTC）',
+        expires_at DATETIME (6) NULL COMMENT 'Workspace/Sandbox会话过期时间（UTC）',
+        finished_at DATETIME (6) NULL COMMENT '结束时间（UTC）',
+        created_by BINARY(16) NOT NULL COMMENT '发起用户ID',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+        updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
+        KEY idx_task_run_project (project_id, status),
+        KEY idx_task_run_work_package (work_package_id),
+        KEY idx_task_run_sub_task (sub_task_id),
+        KEY idx_task_run_creator (created_by),
+        CONSTRAINT fk_task_run_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_task_run_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
+        CONSTRAINT fk_task_run_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id),
+        CONSTRAINT fk_task_run_creator FOREIGN KEY (created_by) REFERENCES users (id),
+        CONSTRAINT fk_task_run_retry FOREIGN KEY (retry_of_task_run_id) REFERENCES task_runs (id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '子任务受控执行记录，关联既有编排运行、工作包与子任务';
+
+CREATE TABLE IF NOT EXISTS
+    task_run_steps (
+        id BINARY(16) PRIMARY KEY COMMENT '步骤UUIDv7',
+        task_run_id BINARY(16) NOT NULL COMMENT '所属任务运行ID',
+        node VARCHAR(64) NOT NULL COMMENT '工作流节点名，如DEVELOPER/TESTER/REVIEWER',
+        status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '节点状态枚举：PENDING/RUNNING/PASSED/FAILED/SKIPPED/CANCELLED',
+        started_at DATETIME (6) NULL COMMENT '节点开始时间（UTC）',
+        finished_at DATETIME (6) NULL COMMENT '节点结束时间（UTC）',
+        duration_ms BIGINT UNSIGNED NULL COMMENT '节点耗时，单位毫秒',
+        error_code VARCHAR(64) NULL COMMENT '节点失败的错误码',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+        KEY idx_step_run (task_run_id),
+        CONSTRAINT fk_step_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '任务运行内的工作流节点状态';
+
+CREATE TABLE IF NOT EXISTS
+    execution_logs (
+        id BINARY(16) PRIMARY KEY COMMENT '日志UUIDv7',
+        task_run_id BINARY(16) NOT NULL COMMENT '所属任务运行ID',
+        sequence_no BIGINT UNSIGNED NOT NULL COMMENT '运行内单调递增日志序号',
+        node VARCHAR(64) NULL COMMENT '产生日志的节点名',
+        content TEXT NOT NULL COMMENT '已脱敏的日志内容，禁止包含Token/密码/密钥',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '写入时间（UTC）',
+        UNIQUE KEY uk_log_seq (task_run_id, sequence_no),
+        CONSTRAINT fk_log_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '已脱敏的执行日志，支持游标续读';
+
+CREATE TABLE IF NOT EXISTS
+    input_requests (
+        id BINARY(16) PRIMARY KEY COMMENT '输入请求UUIDv7',
+        task_run_id BINARY(16) NOT NULL COMMENT '所属任务运行ID',
+        kind VARCHAR(16) NOT NULL COMMENT '请求类型枚举：INPUT/APPROVAL',
+        status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '状态枚举：PENDING/ANSWERED/APPROVED/REJECTED/EXPIRED',
+        prompt TEXT NOT NULL COMMENT '面向用户或审批人的问题描述',
+        options JSON NULL COMMENT '可选答案选项JSON数组',
+        answer JSON NULL COMMENT 'INPUT类型的用户回答JSON',
+        reason TEXT NULL COMMENT '审批/拒绝理由或回复备注',
+        created_by BINARY(16) NOT NULL COMMENT '发起请求的用户ID（一般为编排发起人）',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+        resolved_at DATETIME (6) NULL COMMENT '回答/审批/拒绝处理时间（UTC）',
+        KEY idx_input_run (task_run_id, status),
+        KEY idx_input_creator (created_by),
+        CONSTRAINT fk_input_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE,
+        CONSTRAINT fk_input_creator FOREIGN KEY (created_by) REFERENCES users (id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '任务运行期间的人机输入/审批请求';
+
+CREATE TABLE IF NOT EXISTS
+    deliverables (
+        id BINARY(16) PRIMARY KEY COMMENT '交付物UUIDv7',
+        project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+        requirement_group_id BINARY(16) NULL COMMENT '关联需求群ID',
+        work_package_id BINARY(16) NULL COMMENT '所属工作包ID；第11节建表后补FK',
+        task_run_id BINARY(16) NULL COMMENT '产出交付物的任务运行ID',
+        project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
+        source_branch VARCHAR(512) NOT NULL COMMENT '交付变更所在源分支',
+        head_commit VARCHAR(128) NOT NULL COMMENT '交付提交SHA',
+        summary JSON NULL COMMENT '交付摘要JSON，如变更统计和检查摘要',
+        status VARCHAR(32) NOT NULL DEFAULT 'PENDING_REVIEW' COMMENT '状态枚举：PENDING_REVIEW/ACCEPTED/REJECTED',
+        created_by BINARY(16) NOT NULL COMMENT '发起用户ID',
+        reviewed_by BINARY(16) NULL COMMENT '最近审查用户ID',
+        review_reason TEXT NULL COMMENT '接受/拒绝原因',
+        reviewed_at DATETIME (6) NULL COMMENT '审查时间（UTC）',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+        updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
+        KEY idx_deliverable_project (project_id, status),
+        KEY idx_deliverable_work_package (work_package_id),
+        KEY idx_deliverable_creator (created_by),
+        CONSTRAINT fk_deliverable_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_deliverable_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id),
+        CONSTRAINT fk_deliverable_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id),
+        CONSTRAINT fk_deliverable_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
+        CONSTRAINT fk_deliverable_creator FOREIGN KEY (created_by) REFERENCES users (id),
+        CONSTRAINT fk_deliverable_reviewer FOREIGN KEY (reviewed_by) REFERENCES users (id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '受控执行产出的交付物，客户端不得伪造其提交/测试/Diff';
+
+CREATE TABLE IF NOT EXISTS
+    diffs (
+        id BINARY(16) PRIMARY KEY COMMENT 'Diff UUIDv7',
+        project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+        deliverable_id BINARY(16) NULL COMMENT '关联交付物ID',
+        project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
+        base_ref VARCHAR(512) NOT NULL COMMENT 'Diff基线引用',
+        head_ref VARCHAR(512) NOT NULL COMMENT 'Diff头引用',
+        head_commit VARCHAR(128) NOT NULL COMMENT 'Diff对应的头提交SHA',
+        change_stats JSON NULL COMMENT '变更统计JSON，如文件数、增删行数',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+        KEY idx_diff_project (project_id),
+        KEY idx_diff_deliverable (deliverable_id),
+        CONSTRAINT fk_diff_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_diff_deliverable FOREIGN KEY (deliverable_id) REFERENCES deliverables (id),
+        CONSTRAINT fk_diff_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '交付关联的Diff元数据与变更统计';
+
+CREATE TABLE IF NOT EXISTS
+    diff_files (
+        id BINARY(16) PRIMARY KEY COMMENT 'Diff文件UUIDv7',
+        diff_id BINARY(16) NOT NULL COMMENT '所属Diff ID',
+        sequence_no BIGINT UNSIGNED NOT NULL COMMENT 'Diff内单调递增文件序号',
+        path VARCHAR(1024) NOT NULL COMMENT '文件路径',
+        change_type VARCHAR(16) NOT NULL COMMENT '变更类型枚举：ADDED/MODIFIED/DELETED/RENAMED',
+        additions INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '新增行数',
+        deletions INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '删除行数',
+        binary_flag TINYINT (1) NOT NULL DEFAULT 0 COMMENT '是否二进制文件：0否1是',
+        hunks JSON NULL COMMENT 'hunk摘要JSON数组，完整行级内容由受控服务按需提供',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+        UNIQUE KEY uk_diff_file_seq (diff_id, sequence_no),
+        CONSTRAINT fk_diff_file_diff FOREIGN KEY (diff_id) REFERENCES diffs (id) ON DELETE CASCADE
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Diff文件变更摘要';
+
+CREATE TABLE IF NOT EXISTS
+    diff_comments (
+        id BINARY(16) PRIMARY KEY COMMENT 'Diff审查意见UUIDv7',
+        diff_id BINARY(16) NOT NULL COMMENT '所属Diff ID',
+        path VARCHAR(1024) NOT NULL COMMENT '评论指向的文件路径',
+        side VARCHAR(8) NULL COMMENT '变更侧枚举：LEFT/RIGHT',
+        line INT UNSIGNED NULL COMMENT '行号，行级评论必填',
+        hunk_id VARCHAR(64) NULL COMMENT 'hunk标识，hunk级评论使用',
+        commit_sha VARCHAR(128) NOT NULL COMMENT '评论绑定的提交SHA，避免Diff更新后错位',
+        body TEXT NOT NULL COMMENT '审查意见正文',
+        author_user_id BINARY(16) NOT NULL COMMENT '评论作者用户ID',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+        KEY idx_diff_comment_diff (diff_id, created_at),
+        KEY idx_diff_comment_author (author_user_id),
+        CONSTRAINT fk_diff_comment_diff FOREIGN KEY (diff_id) REFERENCES diffs (id) ON DELETE CASCADE,
+        CONSTRAINT fk_diff_comment_author FOREIGN KEY (author_user_id) REFERENCES users (id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Diff行级或hunk级审查意见';
+
+CREATE TABLE IF NOT EXISTS
+    test_runs (
+        id BINARY(16) PRIMARY KEY COMMENT '测试运行UUIDv7',
+        project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+        project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
+        work_package_id BINARY(16) NULL COMMENT '关联工作包ID；第11节建表后补FK',
+        ref VARCHAR(512) NULL COMMENT '目标提交或分支引用',
+        testset_ids JSON NOT NULL COMMENT '启用测试集ID JSON数组',
+        status VARCHAR(32) NOT NULL DEFAULT 'QUEUED' COMMENT '状态枚举：QUEUED/RUNNING/PASSED/FAILED/CANCELLED',
+        summary JSON NULL COMMENT '用例与结果摘要JSON',
+        created_by BINARY(16) NOT NULL COMMENT '发起用户ID',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+        updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
+        KEY idx_test_run_project (project_id, status),
+        KEY idx_test_run_repository (project_repository_id),
+        CONSTRAINT fk_test_run_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_test_run_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
+        CONSTRAINT fk_test_run_creator FOREIGN KEY (created_by) REFERENCES users (id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '受控测试运行，真实执行由执行服务承担';
+
+CREATE TABLE IF NOT EXISTS
+    dry_runs (
+        id BINARY(16) PRIMARY KEY COMMENT '试运行UUIDv7',
+        project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+        project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
+        work_package_id BINARY(16) NULL COMMENT '关联工作包ID；第11节建表后补FK',
+        source_ref VARCHAR(512) NOT NULL COMMENT '源分支或提交引用',
+        target_branch VARCHAR(512) NOT NULL COMMENT '目标分支名',
+        status VARCHAR(32) NOT NULL DEFAULT 'QUEUED' COMMENT '状态枚举：QUEUED/RUNNING/PASSED/FAILED/CANCELLED',
+        report JSON NULL COMMENT '试运行报告JSON，含冲突与测试摘要',
+        created_by BINARY(16) NOT NULL COMMENT '发起用户ID',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+        updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
+        KEY idx_dry_run_project (project_id, status),
+        KEY idx_dry_run_repository (project_repository_id),
+        CONSTRAINT fk_dry_run_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_dry_run_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
+        CONSTRAINT fk_dry_run_creator FOREIGN KEY (created_by) REFERENCES users (id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '合并前试运行，真实报告由执行服务写入';
+
+CREATE TABLE IF NOT EXISTS
+    events (
+        id BINARY(16) PRIMARY KEY COMMENT '事件UUIDv7',
+        project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+        requirement_group_id BINARY(16) NULL COMMENT '可选关联需求群ID',
+        sequence_no BIGINT UNSIGNED NOT NULL COMMENT '项目内单调递增事件序号，作为SSE游标',
+        event_type VARCHAR(64) NOT NULL COMMENT '事件类型，如task-run.updated/deliverable.created',
+        resource_id VARCHAR(128) NULL COMMENT '关联资源ID字符串，如taskRunId',
+        payload JSON NOT NULL COMMENT '脱敏事件载荷JSON，禁止包含凭证',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '产生时间（UTC）',
+        UNIQUE KEY uk_event_seq (project_id, sequence_no),
+        KEY idx_event_type (event_type, created_at),
+        CONSTRAINT fk_event_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_event_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目级实时事件存储，至少保留24小时';
+
+-- 幂等增量迁移：为 merge_requests 补充 MR 作者列与外键（服务端判定 CQ 审查人时使用）。
+-- 全新整库初始化时上方 merge_requests 建表不包含该列，由本 ALTER 补齐；
+-- 已存在该列的库自动跳过，脚本整体可重复执行。
+-- 说明：MySQL 不支持 ADD COLUMN IF NOT EXISTS，此处用 information_schema 探测 + PREPARE 动态执行实现幂等。
+SET @mr_col_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'merge_requests' AND COLUMN_NAME = 'author_user_id'
+);
+SET @mr_alter_sql = IF(@mr_col_exists = 0,
+    CONCAT('ALTER TABLE merge_requests ADD COLUMN author_user_id BINARY(16) NULL COMMENT ''MR作者用户ID，用于CQ权限校验'' AFTER title, ',
+           'ADD CONSTRAINT fk_mr_author FOREIGN KEY (author_user_id) REFERENCES users (id)'),
+    'SELECT 1');
+PREPARE mr_alter_stmt FROM @mr_alter_sql;
+EXECUTE mr_alter_stmt;
+DEALLOCATE PREPARE mr_alter_stmt;
