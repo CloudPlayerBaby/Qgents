@@ -6,6 +6,7 @@ import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoCon
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
+// 不用这个默认的配置
 @SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)
 @EnableAsync
 @EnableScheduling

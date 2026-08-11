@@ -111,10 +111,10 @@ public class SecurityConfig {
         // 允许的来源
         c.setAllowedOrigins(List.of(origins.split(",")));
         // 允许的请求方法
-        c.setAllowedMethods(List.of("GET", "POST", "PATCH", "OPTIONS"));
+        c.setAllowedMethods(List.of("GET", "POST", "PATCH", "DELETE", "OPTIONS"));
         // 允许的请求头：Idempotency-Key（写接口幂等）、Last-Event-ID（SSE 续传）
         c.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key",
-                "Last-Event-ID"));
+                "Last-Event-ID", "Idempotency-Key"));
         // 允许携带 Cookie
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         // 注册跨域配置
