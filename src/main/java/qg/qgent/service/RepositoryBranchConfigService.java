@@ -49,6 +49,11 @@ public class RepositoryBranchConfigService {
     private final TestsetMapper testsetMapper;
 
     public RepositoryBranchConfigService(RepositoryBranchConfigMapper branchConfigMapper,
+            RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper,
+            ProjectRepositoryMapper projectRepositoryMapper,
+            ProjectMapper projectMapper,
+            ProjectMemberMapper projectMemberMapper,
+            TeamMemberMapper teamMemberMapper) {
                                          RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper,
                                          ProjectRepositoryMapper projectRepositoryMapper,
                                          ProjectMapper projectMapper,
@@ -85,9 +90,11 @@ public class RepositoryBranchConfigService {
 
         BranchPolicyDto dto = new BranchPolicyDto();
         if (config.getPolicyJson() != null) {
-            java.util.Map<String, Object> p = config.getPolicyJson();
-            dto.setRequirePullRequest(p.containsKey("requirePullRequest") ? (Boolean) p.get("requirePullRequest") : null);
-            dto.setMinimumHumanApprovals(p.containsKey("minimumHumanApprovals") ? (Integer) p.get("minimumHumanApprovals") : null);
+            Map<String, Object> p = config.getPolicyJson();
+            dto.setRequirePullRequest(
+                    p.containsKey("requirePullRequest") ? (Boolean) p.get("requirePullRequest") : null);
+            dto.setMinimumHumanApprovals(
+                    p.containsKey("minimumHumanApprovals") ? (Integer) p.get("minimumHumanApprovals") : null);
             dto.setAllowDirectPush(p.containsKey("allowDirectPush") ? (Boolean) p.get("allowDirectPush") : null);
         }
         return dto;
@@ -118,18 +125,28 @@ public class RepositoryBranchConfigService {
         if (policyJson == null) {
             policyJson = new java.util.HashMap<>();
         }
-        if (request.getRequirePullRequest() != null) policyJson.put("requirePullRequest", request.getRequirePullRequest());
-        if (request.getMinimumHumanApprovals() != null) policyJson.put("minimumHumanApprovals", request.getMinimumHumanApprovals());
-        if (request.getAllowDirectPush() != null) policyJson.put("allowDirectPush", request.getAllowDirectPush());
+        // 开始根据请求设置
+        if (request.getRequirePullRequest() != null)
+            policyJson.put("requirePullRequest", request.getRequirePullRequest());
+        if (request.getMinimumHumanApprovals() != null)
+            policyJson.put("minimumHumanApprovals", request.getMinimumHumanApprovals());
+        if (request.getAllowDirectPush() != null)
+            policyJson.put("allowDirectPush", request.getAllowDirectPush());
+        // 更新到数据库
         config.setPolicyJson(policyJson);
         config.setUpdatedAt(LocalDateTime.now());
-        
+
         branchConfigMapper.updateById(config);
-        
+
+        // 返回更新后的策略配置
         BranchPolicyDto dto = new BranchPolicyDto();
-        dto.setRequirePullRequest(policyJson.containsKey("requirePullRequest") ? (Boolean) policyJson.get("requirePullRequest") : null);
-        dto.setMinimumHumanApprovals(policyJson.containsKey("minimumHumanApprovals") ? (Integer) policyJson.get("minimumHumanApprovals") : null);
-        dto.setAllowDirectPush(policyJson.containsKey("allowDirectPush") ? (Boolean) policyJson.get("allowDirectPush") : null);
+        dto.setRequirePullRequest(
+                policyJson.containsKey("requirePullRequest") ? (Boolean) policyJson.get("requirePullRequest") : null);
+        dto.setMinimumHumanApprovals(
+                policyJson.containsKey("minimumHumanApprovals") ? (Integer) policyJson.get("minimumHumanApprovals")
+                        : null);
+        dto.setAllowDirectPush(
+                policyJson.containsKey("allowDirectPush") ? (Boolean) policyJson.get("allowDirectPush") : null);
         return dto;
     }
 
@@ -157,7 +174,7 @@ public class RepositoryBranchConfigService {
                     .collect(Collectors.toList());
         }
         dto.setRequiredTestsetIds(testsetIds);
-        
+
         return dto;
     }
 
@@ -195,9 +212,10 @@ public class RepositoryBranchConfigService {
         config.setRequiredChecks(request.getRequiredChecks());
         config.setUpdatedAt(LocalDateTime.now());
         branchConfigMapper.updateById(config);
-        
-        branchConfigTestsetMapper.delete(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>().eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()));
-                
+
+        branchConfigTestsetMapper.delete(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>()
+                .eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()));
+
         if (request.getRequiredTestsetIds() != null) {
             for (UUID testsetId : request.getRequiredTestsetIds()) {
                 RepositoryBranchConfigTestsetEntity testsetEntity = new RepositoryBranchConfigTestsetEntity();
@@ -206,10 +224,11 @@ public class RepositoryBranchConfigService {
                 branchConfigTestsetMapper.insert(testsetEntity);
             }
         }
-        
+
         QualityGateDto dto = new QualityGateDto();
         dto.setRequiredChecks(request.getRequiredChecks());
-        dto.setRequiredTestsetIds(request.getRequiredTestsetIds() != null ? request.getRequiredTestsetIds() : List.of());
+        dto.setRequiredTestsetIds(
+                request.getRequiredTestsetIds() != null ? request.getRequiredTestsetIds() : List.of());
         return dto;
     }
 
@@ -250,11 +269,13 @@ public class RepositoryBranchConfigService {
      * 会同时校验该仓库是否真的被该项目绑定。
      */
     private ProjectRepositoryEntity getProjectRepository(UUID projectId, UUID repositoryId) {
-        ProjectRepositoryEntity projectRepo = projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
-                .eq(ProjectRepositoryEntity::getProjectId, projectId)
-                .eq(ProjectRepositoryEntity::getRepositoryId, repositoryId));
+        ProjectRepositoryEntity projectRepo = projectRepositoryMapper
+                .selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
+                        .eq(ProjectRepositoryEntity::getProjectId, projectId)
+                        .eq(ProjectRepositoryEntity::getRepositoryId, repositoryId));
         if (projectRepo == null) {
-            throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_REPOSITORY_NOT_FOUND", "Project repository binding not found");
+            throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_REPOSITORY_NOT_FOUND",
+                    "Project repository binding not found");
         }
         return projectRepo;
     }
@@ -291,11 +312,15 @@ public class RepositoryBranchConfigService {
     private boolean hasProjectAdminAccess(UUID projectId, UUID actorId) {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
-                || projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId).eq(ProjectMemberEntity::getRole, "PROJECT_ADMIN")) > 0);
+                || projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>()
+                        .eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId)
+                        .eq(ProjectMemberEntity::getRole, "PROJECT_ADMIN")) > 0);
     }
 
     private boolean isTeamOwner(UUID teamId, UUID actorId) {
-        return teamMemberMapper.selectCount(new LambdaQueryWrapper<TeamMemberEntity>().eq(TeamMemberEntity::getTeamId, teamId).eq(TeamMemberEntity::getUserId, actorId).eq(TeamMemberEntity::getRole, "TEAM_OWNER")) > 0;
+        return teamMemberMapper
+                .selectCount(new LambdaQueryWrapper<TeamMemberEntity>().eq(TeamMemberEntity::getTeamId, teamId)
+                        .eq(TeamMemberEntity::getUserId, actorId).eq(TeamMemberEntity::getRole, "TEAM_OWNER")) > 0;
     }
 
     private ApiException forbidden(String message) {

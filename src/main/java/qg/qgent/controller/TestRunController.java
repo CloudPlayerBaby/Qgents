@@ -35,7 +35,7 @@ public class TestRunController {
         this.testRunService = testRunService;
     }
 
-    /** 对指定提交或工作包发起已启用 Testset 的受控运行。 */
+    /** 对指定提交或 Task 发起已启用 Testset 的受控运行。 */
     @PostMapping("/test-runs")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> createTestRun(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,

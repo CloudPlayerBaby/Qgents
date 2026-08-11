@@ -18,7 +18,6 @@ public class TestRunResponse {
     private String id;
     private String projectId;
     private String repositoryId;
-    private String workPackageId;
     private String ref;
     private List<String> testsetIds;
     private String status;

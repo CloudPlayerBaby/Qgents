@@ -467,13 +467,80 @@ CREATE TABLE IF NOT EXISTS
 --       建表后需由第 11 节团队补外键。
 -- ============================================================================
 
+CREATE TABLE IF NOT EXISTS agents (
+    id BINARY(16) PRIMARY KEY, team_id BINARY(16) NOT NULL, created_by BINARY(16) NULL,
+    name VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL, visibility VARCHAR(16) NOT NULL DEFAULT 'TEAM',
+    status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+    KEY idx_agent_team(team_id,status), CONSTRAINT fk_agent_team FOREIGN KEY(team_id) REFERENCES teams(id),
+    CONSTRAINT fk_agent_creator FOREIGN KEY(created_by) REFERENCES users(id),
+    CONSTRAINT ck_agent_visibility CHECK(visibility IN ('TEAM','PRIVATE'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Team-scoped assignable Agent identities';
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL, requirement_group_id BINARY(16) NOT NULL,
+    trigger_message_id BINARY(16) NULL, title VARCHAR(255) NOT NULL, requirement TEXT NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PLANNING', created_by BINARY(16) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    KEY idx_task_project(project_id,status), KEY idx_task_group(requirement_group_id),
+    CONSTRAINT fk_task_project FOREIGN KEY(project_id) REFERENCES projects(id),
+    CONSTRAINT fk_task_group FOREIGN KEY(requirement_group_id) REFERENCES requirement_groups(id),
+    CONSTRAINT fk_task_message FOREIGN KEY(trigger_message_id) REFERENCES messages(id),
+    CONSTRAINT fk_task_creator FOREIGN KEY(created_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='User-visible requirement execution';
+
+CREATE TABLE IF NOT EXISTS workspaces (
+    id BINARY(16) PRIMARY KEY, task_id BINARY(16) NOT NULL, project_id BINARY(16) NOT NULL,
+    storage_key VARCHAR(512) NOT NULL COMMENT 'Opaque storage key, not a host path', status VARCHAR(32) NOT NULL DEFAULT 'PROVISIONING',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uk_workspace_task(task_id), UNIQUE KEY uk_workspace_storage(storage_key),
+    CONSTRAINT fk_workspace_task FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    CONSTRAINT fk_workspace_project FOREIGN KEY(project_id) REFERENCES projects(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Persistent task-level workspace root';
+
+CREATE TABLE IF NOT EXISTS task_repositories (
+    task_id BINARY(16) NOT NULL, project_repository_id BINARY(16) NOT NULL, workspace_path VARCHAR(255) NOT NULL,
+    base_ref VARCHAR(512) NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY(task_id,project_repository_id), UNIQUE KEY uk_task_workspace_path(task_id,workspace_path),
+    CONSTRAINT fk_task_repo_task FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    CONSTRAINT fk_task_repo_repository FOREIGN KEY(project_repository_id) REFERENCES project_repositories(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Repositories and worktrees available to one Task';
+
+CREATE TABLE IF NOT EXISTS task_steps (
+    id BINARY(16) PRIMARY KEY, task_id BINARY(16) NOT NULL, sequence_no INT UNSIGNED NOT NULL,
+    title VARCHAR(255) NOT NULL, instruction TEXT NOT NULL, role VARCHAR(32) NOT NULL, assigned_agent_id BINARY(16) NULL,
+    acceptance_criteria TEXT NULL, status VARCHAR(32) NOT NULL DEFAULT 'PENDING', created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uk_task_step_sequence(task_id,sequence_no),
+    CONSTRAINT fk_task_step_task FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    CONSTRAINT fk_task_step_agent FOREIGN KEY(assigned_agent_id) REFERENCES agents(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Planner-defined workflow steps';
+
+CREATE TABLE IF NOT EXISTS task_step_dependencies (
+    task_step_id BINARY(16) NOT NULL, depends_on_task_step_id BINARY(16) NOT NULL,
+    PRIMARY KEY(task_step_id,depends_on_task_step_id),
+    CONSTRAINT fk_step_dep_step FOREIGN KEY(task_step_id) REFERENCES task_steps(id) ON DELETE CASCADE,
+    CONSTRAINT fk_step_dep_parent FOREIGN KEY(depends_on_task_step_id) REFERENCES task_steps(id) ON DELETE CASCADE,
+    CONSTRAINT ck_step_not_self CHECK(task_step_id <> depends_on_task_step_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Task-step dependency DAG edges';
+
+CREATE TABLE IF NOT EXISTS task_step_repositories (
+    task_step_id BINARY(16) NOT NULL, project_repository_id BINARY(16) NOT NULL, access_mode VARCHAR(8) NOT NULL DEFAULT 'READ',
+    PRIMARY KEY(task_step_id,project_repository_id),
+    CONSTRAINT fk_step_repo_step FOREIGN KEY(task_step_id) REFERENCES task_steps(id) ON DELETE CASCADE,
+    CONSTRAINT fk_step_repo_repository FOREIGN KEY(project_repository_id) REFERENCES project_repositories(id),
+    CONSTRAINT ck_step_repo_access CHECK(access_mode IN ('READ','WRITE'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Repository access scope per task step';
+
 CREATE TABLE IF NOT EXISTS
     task_runs (
         id BINARY(16) PRIMARY KEY COMMENT '任务运行UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID，用于项目隔离',
-        orchestration_run_id BINARY(16) NULL COMMENT '所属编排运行ID；第11节建表后补FK，当前仅作归属锚定',
-        work_package_id BINARY(16) NULL COMMENT '所属工作包ID；第11节建表后补FK，当前仅作归属锚定',
-        sub_task_id BINARY(16) NULL COMMENT '关联子任务ID；第11节建表后补FK，当前仅作归属锚定',
+        task_id BINARY(16) NULL COMMENT 'Confirmed owning Task',
+        task_step_id BINARY(16) NULL COMMENT 'Confirmed planned TaskStep',
+        agent_id BINARY(16) NULL COMMENT 'Execution-time Agent identity; FK deferred',
+        orchestration_run_id BINARY(16) NULL COMMENT 'DEPRECATED read-only compatibility anchor',
+        sub_task_id BINARY(16) NULL COMMENT 'DEPRECATED read-only compatibility anchor',
         project_repository_id BINARY(16) NULL COMMENT '项目仓库绑定ID',
         requirement_group_id BINARY(16) NULL COMMENT '关联需求群ID',
         role VARCHAR(32) NOT NULL COMMENT '执行角色枚举：ORCHESTRATOR/PLANNER/DEVELOPER/TESTER/REVIEWER/GENERAL',
@@ -490,10 +557,13 @@ CREATE TABLE IF NOT EXISTS
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
         KEY idx_task_run_project (project_id, status),
-        KEY idx_task_run_work_package (work_package_id),
+        KEY idx_task_run_task (task_id, task_step_id),
         KEY idx_task_run_sub_task (sub_task_id),
         KEY idx_task_run_creator (created_by),
         CONSTRAINT fk_task_run_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_task_run_task FOREIGN KEY (task_id) REFERENCES tasks (id),
+        CONSTRAINT fk_task_run_task_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id),
+        CONSTRAINT fk_task_run_agent FOREIGN KEY (agent_id) REFERENCES agents (id),
         CONSTRAINT fk_task_run_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
         CONSTRAINT fk_task_run_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id),
         CONSTRAINT fk_task_run_creator FOREIGN KEY (created_by) REFERENCES users (id),
@@ -547,11 +617,28 @@ CREATE TABLE IF NOT EXISTS
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '任务运行期间的人机输入/审批请求';
 
 CREATE TABLE IF NOT EXISTS
+    task_deliveries (
+        id BINARY(16) PRIMARY KEY, task_id BINARY(16) NOT NULL, project_id BINARY(16) NOT NULL,
+        version INT UNSIGNED NOT NULL COMMENT 'Monotonic delivery version within the Task',
+        status VARCHAR(32) NOT NULL DEFAULT 'PENDING_REVIEW', created_by BINARY(16) NOT NULL,
+        reviewed_by BINARY(16) NULL, review_reason TEXT NULL, reviewed_at DATETIME(6) NULL,
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+        UNIQUE KEY uk_task_delivery_version(task_id, version),
+        CONSTRAINT fk_task_delivery_task FOREIGN KEY(task_id) REFERENCES tasks(id),
+        CONSTRAINT fk_task_delivery_project FOREIGN KEY(project_id) REFERENCES projects(id),
+        CONSTRAINT fk_task_delivery_creator FOREIGN KEY(created_by) REFERENCES users(id),
+        CONSTRAINT fk_task_delivery_reviewer FOREIGN KEY(reviewed_by) REFERENCES users(id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Overall Task delivery review decision';
+
+CREATE TABLE IF NOT EXISTS
     deliverables (
         id BINARY(16) PRIMARY KEY COMMENT '交付物UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+        task_id BINARY(16) NULL COMMENT 'Confirmed owning Task',
+        task_step_id BINARY(16) NULL COMMENT 'Producing TaskStep',
+        task_delivery_id BINARY(16) NULL COMMENT 'Overall Task delivery parent',
         requirement_group_id BINARY(16) NULL COMMENT '关联需求群ID',
-        work_package_id BINARY(16) NULL COMMENT '所属工作包ID；第11节建表后补FK',
         task_run_id BINARY(16) NULL COMMENT '产出交付物的任务运行ID',
         project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
         source_branch VARCHAR(512) NOT NULL COMMENT '交付变更所在源分支',
@@ -565,9 +652,12 @@ CREATE TABLE IF NOT EXISTS
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
         KEY idx_deliverable_project (project_id, status),
-        KEY idx_deliverable_work_package (work_package_id),
+        KEY idx_deliverable_task (task_id, task_step_id),
         KEY idx_deliverable_creator (created_by),
         CONSTRAINT fk_deliverable_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_deliverable_task FOREIGN KEY (task_id) REFERENCES tasks (id),
+        CONSTRAINT fk_deliverable_task_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id),
+        CONSTRAINT fk_deliverable_task_delivery FOREIGN KEY (task_delivery_id) REFERENCES task_deliveries (id),
         CONSTRAINT fk_deliverable_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id),
         CONSTRAINT fk_deliverable_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id),
         CONSTRAINT fk_deliverable_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
@@ -631,8 +721,9 @@ CREATE TABLE IF NOT EXISTS
     test_runs (
         id BINARY(16) PRIMARY KEY COMMENT '测试运行UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+        task_id BINARY(16) NULL COMMENT 'Owning Task when workflow-triggered',
+        task_step_id BINARY(16) NULL COMMENT 'Requesting TaskStep',
         project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
-        work_package_id BINARY(16) NULL COMMENT '关联工作包ID；第11节建表后补FK',
         ref VARCHAR(512) NULL COMMENT '目标提交或分支引用',
         testset_ids JSON NOT NULL COMMENT '启用测试集ID JSON数组',
         status VARCHAR(32) NOT NULL DEFAULT 'QUEUED' COMMENT '状态枚举：QUEUED/RUNNING/PASSED/FAILED/CANCELLED',
@@ -641,8 +732,11 @@ CREATE TABLE IF NOT EXISTS
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
         KEY idx_test_run_project (project_id, status),
+        KEY idx_test_run_task (task_id, task_step_id),
         KEY idx_test_run_repository (project_repository_id),
         CONSTRAINT fk_test_run_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_test_run_task FOREIGN KEY (task_id) REFERENCES tasks (id),
+        CONSTRAINT fk_test_run_task_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id),
         CONSTRAINT fk_test_run_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
         CONSTRAINT fk_test_run_creator FOREIGN KEY (created_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '受控测试运行，真实执行由执行服务承担';
@@ -651,8 +745,9 @@ CREATE TABLE IF NOT EXISTS
     dry_runs (
         id BINARY(16) PRIMARY KEY COMMENT '试运行UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+        task_id BINARY(16) NULL COMMENT 'Owning Task when workflow-triggered',
+        task_step_id BINARY(16) NULL COMMENT 'Requesting TaskStep',
         project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
-        work_package_id BINARY(16) NULL COMMENT '关联工作包ID；第11节建表后补FK',
         source_ref VARCHAR(512) NOT NULL COMMENT '源分支或提交引用',
         target_branch VARCHAR(512) NOT NULL COMMENT '目标分支名',
         status VARCHAR(32) NOT NULL DEFAULT 'QUEUED' COMMENT '状态枚举：QUEUED/RUNNING/PASSED/FAILED/CANCELLED',
@@ -661,8 +756,11 @@ CREATE TABLE IF NOT EXISTS
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
         KEY idx_dry_run_project (project_id, status),
+        KEY idx_dry_run_task (task_id, task_step_id),
         KEY idx_dry_run_repository (project_repository_id),
         CONSTRAINT fk_dry_run_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_dry_run_task FOREIGN KEY (task_id) REFERENCES tasks (id),
+        CONSTRAINT fk_dry_run_task_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id),
         CONSTRAINT fk_dry_run_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
         CONSTRAINT fk_dry_run_creator FOREIGN KEY (created_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '合并前试运行，真实报告由执行服务写入';

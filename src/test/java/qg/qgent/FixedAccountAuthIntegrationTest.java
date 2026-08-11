@@ -130,12 +130,9 @@ public class FixedAccountAuthIntegrationTest {
         System.out.println("\n\n=======================================================");
         System.out.println("🚀🚀🚀 [开发环境固定账号] 登录成功！用于 Apifox 测试：");
         System.out.println("-------------------------------------------------------");
-        System.out.println("邮箱 (Email): " + fixedEmail);
-        System.out.println("密码 (Password): " + rawPassword);
         System.out.println("团队 UUID (teamId): " + teamUuid);
         System.out.println("-------------------------------------------------------");
-        System.out.println("👉 Access Token (放到请求头 Authorization: Bearer xxx 中):");
-        System.out.println(loginTokens.getAccessToken());
+        System.out.println("认证验证完成；敏感账号与 Token 不写入测试日志。");
         System.out.println("=======================================================\n\n");
     }
 }

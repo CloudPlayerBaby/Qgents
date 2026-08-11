@@ -12,14 +12,24 @@ import qg.qgent.dto.DiffCommentResponse;
 import qg.qgent.dto.DiffFileResponse;
 import qg.qgent.dto.DiffResponse;
 import qg.qgent.dto.PageMeta;
+import qg.qgent.dto.TaskDeliveryResponse;
 import qg.qgent.entity.DeliverableEntity;
 import qg.qgent.entity.DiffCommentEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.DiffFileEntity;
+import qg.qgent.entity.TaskDeliveryEntity;
+import qg.qgent.entity.TaskEntity;
+import qg.qgent.entity.TaskRunEntity;
+import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.mapper.DeliverableMapper;
 import qg.qgent.mapper.DiffCommentMapper;
 import qg.qgent.mapper.DiffFileMapper;
 import qg.qgent.mapper.DiffMapper;
+import qg.qgent.mapper.TaskDeliveryMapper;
+import qg.qgent.mapper.TaskMapper;
+import qg.qgent.mapper.TaskRepositoryMapper;
+import qg.qgent.mapper.TaskRunMapper;
+import qg.qgent.mapper.TaskStepMapper;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -27,6 +37,7 @@ import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -45,24 +56,33 @@ public class DeliverableService {
     private final DiffMapper diffMapper;
     private final DiffFileMapper diffFileMapper;
     private final DiffCommentMapper diffCommentMapper;
+    private final TaskDeliveryMapper taskDeliveryMapper;
+    private final TaskMapper taskMapper;
+    private final TaskStepMapper taskStepMapper;
+    private final TaskRunMapper taskRunMapper;
+    private final TaskRepositoryMapper taskRepositoryMapper;
     private final ProjectAccessService projectAccess;
     private final EventService eventService;
 
     public DeliverableService(DeliverableMapper deliverableMapper, DiffMapper diffMapper,
-            DiffFileMapper diffFileMapper, DiffCommentMapper diffCommentMapper, ProjectAccessService projectAccess,
+            DiffFileMapper diffFileMapper, DiffCommentMapper diffCommentMapper, TaskDeliveryMapper taskDeliveryMapper,
+            TaskMapper taskMapper, TaskStepMapper taskStepMapper, TaskRunMapper taskRunMapper,
+            TaskRepositoryMapper taskRepositoryMapper, ProjectAccessService projectAccess,
             EventService eventService) {
         this.deliverableMapper = deliverableMapper;
         this.diffMapper = diffMapper;
         this.diffFileMapper = diffFileMapper;
         this.diffCommentMapper = diffCommentMapper;
+        this.taskDeliveryMapper = taskDeliveryMapper;
+        this.taskMapper = taskMapper;
+        this.taskStepMapper = taskStepMapper;
+        this.taskRunMapper = taskRunMapper;
+        this.taskRepositoryMapper = taskRepositoryMapper;
         this.projectAccess = projectAccess;
         this.eventService = eventService;
     }
 
-    /**
-     * 查询工作包产出的交付物（游标分页，按交付物 ID 倒序）。
-     */
-    public ApiPageResponse<DeliverableResponse> listByWorkPackage(UUID projectId, UUID workPackageId, UUID userId,
+    private ApiPageResponse<DeliverableResponse> listTaskResults(UUID projectId, UUID taskId, UUID userId,
             String cursor, int limit, String requestId) {
         // 确认是项目成员
         projectAccess.requireProjectMember(projectId, userId);
@@ -72,7 +92,7 @@ public class DeliverableService {
 
         List<DeliverableEntity> rows = deliverableMapper.selectList(Wrappers.<DeliverableEntity>lambdaQuery()
                 .eq(DeliverableEntity::getProjectId, projectId)
-                .eq(DeliverableEntity::getWorkPackageId, workPackageId)
+                .eq(DeliverableEntity::getTaskId, taskId)
                 .lt(cursorUuid != null, DeliverableEntity::getId, cursorUuid)
                 .orderByDesc(DeliverableEntity::getId)
                 .last("LIMIT " + (size + 1)));
@@ -84,6 +104,78 @@ public class DeliverableService {
                 .toList();
         PageMeta page = new PageMeta(hasMore ? items.get(items.size() - 1).getId() : null, hasMore);
         return new ApiPageResponse<>(items, page, requestId);
+    }
+
+    /** Lists all repository-scoped deliverable versions belonging to one task. */
+    public ApiPageResponse<DeliverableResponse> listByTask(UUID projectId, UUID taskId, UUID userId,
+            String cursor, int limit, String requestId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        int size = clampLimit(limit); UUID cursorUuid = parseCursor(cursor);
+        List<DeliverableEntity> rows = deliverableMapper.selectList(Wrappers.<DeliverableEntity>lambdaQuery()
+                .eq(DeliverableEntity::getProjectId, projectId).eq(DeliverableEntity::getTaskId, taskId)
+                .lt(cursorUuid != null, DeliverableEntity::getId, cursorUuid)
+                .orderByDesc(DeliverableEntity::getId).last("LIMIT " + (size + 1)));
+        boolean hasMore = rows.size() > size;
+        List<DeliverableResponse> items=(hasMore?rows.subList(0,size):rows).stream().map(this::toResponse).toList();
+        return new ApiPageResponse<>(items,new PageMeta(hasMore?items.get(items.size()-1).getId():null,hasMore),requestId);
+    }
+
+    /** Returns the overall Task delivery together with all repository-specific Deliverable items. */
+    public TaskDeliveryResponse taskDelivery(UUID projectId, UUID taskId, UUID userId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        TaskDeliveryEntity delivery = requireTaskDelivery(projectId, taskId);
+        List<DeliverableResponse> items = deliverableMapper.selectList(Wrappers.<DeliverableEntity>lambdaQuery()
+                .eq(DeliverableEntity::getTaskDeliveryId, delivery.getId())
+                .orderByAsc(DeliverableEntity::getProjectRepositoryId)).stream().map(this::toResponse).toList();
+        return toResponse(delivery, items);
+    }
+
+    /** Accepts the complete Task delivery without bypassing repository MR quality gates. */
+    @Transactional
+    public TaskDeliveryResponse acceptTaskDelivery(UUID projectId, UUID taskId, UUID userId, String reason) {
+        return decideTaskDelivery(projectId, taskId, userId, "ACCEPTED", reason);
+    }
+
+    /** Rejects the complete Task delivery; repository items and Workspace remain available for revision. */
+    @Transactional
+    public TaskDeliveryResponse rejectTaskDelivery(UUID projectId, UUID taskId, UUID userId, String reason) {
+        if (reason == null || reason.isBlank()) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REVIEW_REASON_REQUIRED", "拒绝整体交付时必须说明原因");
+        }
+        return decideTaskDelivery(projectId, taskId, userId, "REJECTED", reason);
+    }
+
+    private TaskDeliveryResponse decideTaskDelivery(UUID projectId, UUID taskId, UUID userId, String status,
+            String reason) {
+        projectAccess.requireProjectAdmin(projectId, userId);
+        TaskDeliveryEntity delivery = requireTaskDelivery(projectId, taskId);
+        if (!"PENDING_REVIEW".equals(delivery.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_DELIVERY_ALREADY_REVIEWED", "整体交付已经完成审查");
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        delivery.setStatus(status);
+        delivery.setReviewedBy(userId);
+        delivery.setReviewReason(reason);
+        delivery.setReviewedAt(now);
+        delivery.setUpdatedAt(now);
+        taskDeliveryMapper.updateById(delivery);
+        return taskDelivery(projectId, taskId, userId);
+    }
+
+    private TaskDeliveryEntity requireTaskDelivery(UUID projectId, UUID taskId) {
+        TaskDeliveryEntity delivery = taskDeliveryMapper.selectOne(Wrappers.<TaskDeliveryEntity>lambdaQuery()
+                .eq(TaskDeliveryEntity::getProjectId, projectId).eq(TaskDeliveryEntity::getTaskId, taskId)
+                .orderByDesc(TaskDeliveryEntity::getVersion).last("LIMIT 1"));
+        if (delivery == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "TASK_DELIVERY_NOT_FOUND", "任务整体交付不存在");
+        }
+        return delivery;
+    }
+
+    private TaskDeliveryResponse toResponse(TaskDeliveryEntity delivery, List<DeliverableResponse> items) {
+        return new TaskDeliveryResponse(id(delivery.getId()), id(delivery.getTaskId()), id(delivery.getProjectId()),
+                delivery.getVersion(), delivery.getStatus(), id(delivery.getReviewedBy()), delivery.getReviewReason(),
+                iso(delivery.getReviewedAt()), items);
     }
 
     /**
@@ -241,7 +333,6 @@ public class DeliverableService {
      *
      * @param projectId     所属项目ID
      * @param taskRunId     产出交付物的任务运行ID
-     * @param workPackageId 所属工作包ID
      * @param groupId       可选需求群ID
      * @param repositoryId  项目仓库绑定ID
      * @param sourceBranch  交付变更所在源分支
@@ -250,7 +341,7 @@ public class DeliverableService {
      * @param createdBy     发起用户ID
      */
     @Transactional
-    public DeliverableResponse createFromExecution(UUID projectId, UUID taskRunId, UUID workPackageId, UUID groupId,
+    public DeliverableResponse createFromExecution(UUID projectId, UUID taskRunId, UUID taskId, UUID groupId,
             UUID repositoryId, String sourceBranch, String headCommit, Map<String, Object> summary, UUID createdBy) {
         // TODO 接缝：由受控执行服务在真实完成提交与检查后调用；本方法仅持久化交付物并发布事件
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
@@ -258,7 +349,7 @@ public class DeliverableService {
         d.setId(UuidV7.next());
         d.setProjectId(projectId);
         d.setRequirementGroupId(groupId);
-        d.setWorkPackageId(workPackageId);
+        d.setTaskId(taskId);
         d.setTaskRunId(taskRunId);
         d.setProjectRepositoryId(repositoryId);
         d.setSourceBranch(sourceBranch);
@@ -274,7 +365,7 @@ public class DeliverableService {
         if (groupId != null) {
             payload.put("groupId", groupId);
         }
-        payload.put("workPackageId", workPackageId);
+        payload.put("taskId", taskId);
         payload.put("taskRunId", taskRunId);
         payload.put("deliverableId", d.getId());
         payload.put("sourceBranch", sourceBranch);
@@ -284,6 +375,71 @@ public class DeliverableService {
         payload.put("timestamp", Instant.now().toString());
         eventService.publish(projectId, groupId, "deliverable.created", d.getId().toString(), payload);
         return toResponse(d);
+    }
+
+    /**
+     * Persists a repository-specific item under the single overall Task delivery.
+     * This internal seam must only be called after a controlled executor has produced a real commit and checks.
+     */
+    @Transactional
+    public DeliverableResponse createFromTaskExecution(UUID projectId, UUID taskId, UUID taskStepId,
+            UUID taskRunId, UUID groupId, UUID repositoryId, String sourceBranch, String headCommit,
+            Map<String, Object> summary, UUID createdBy) {
+        TaskEntity task = taskMapper.selectByIdForUpdate(taskId);
+        if (task == null || !Objects.equals(projectId, task.getProjectId())
+                || !Objects.equals(groupId, task.getRequirementGroupId())
+                || !Objects.equals(createdBy, task.getCreatedBy())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "TASK_DELIVERY_CONTEXT_INVALID",
+                    "Task、Project、Group 或创建者归属不一致");
+        }
+        TaskStepEntity step = taskStepMapper.selectById(taskStepId);
+        TaskRunEntity run = taskRunMapper.selectById(taskRunId);
+        boolean repositoryAllowed = taskRepositoryMapper.selectByTask(taskId).stream()
+                .anyMatch(link -> repositoryId.equals(link.getProjectRepositoryId()));
+        if (step == null || !Objects.equals(taskId, step.getTaskId()) || run == null
+                || !Objects.equals(taskId, run.getTaskId()) || !Objects.equals(taskStepId, run.getTaskStepId())
+                || !Objects.equals(projectId, run.getProjectId())
+                || !repositoryAllowed) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "TASK_DELIVERY_EXECUTION_INVALID",
+                    "Step、TaskRun 或 Repository 不属于当前 Task");
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        TaskDeliveryEntity parent = taskDeliveryMapper.selectOne(Wrappers.<TaskDeliveryEntity>lambdaQuery()
+                .eq(TaskDeliveryEntity::getProjectId, projectId).eq(TaskDeliveryEntity::getTaskId, taskId)
+                .orderByDesc(TaskDeliveryEntity::getVersion).last("LIMIT 1"));
+        if (parent == null || "REJECTED".equals(parent.getStatus())) {
+            parent = new TaskDeliveryEntity();
+            parent.setId(UuidV7.next());
+            parent.setTaskId(taskId);
+            parent.setProjectId(projectId);
+            parent.setVersion(taskDeliveryMapper.maxVersion(taskId) + 1);
+            parent.setStatus("PENDING_REVIEW");
+            parent.setCreatedBy(createdBy);
+            parent.setCreatedAt(now);
+            parent.setUpdatedAt(now);
+            taskDeliveryMapper.insert(parent);
+        } else if (!"PENDING_REVIEW".equals(parent.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_DELIVERY_ALREADY_REVIEWED",
+                    "已审查的整体交付不能追加仓库产物；请创建新的修订 TaskStep");
+        }
+        DeliverableEntity item = new DeliverableEntity();
+        item.setId(UuidV7.next());
+        item.setProjectId(projectId);
+        item.setTaskId(taskId);
+        item.setTaskStepId(taskStepId);
+        item.setTaskDeliveryId(parent.getId());
+        item.setRequirementGroupId(groupId);
+        item.setTaskRunId(taskRunId);
+        item.setProjectRepositoryId(repositoryId);
+        item.setSourceBranch(sourceBranch);
+        item.setHeadCommit(headCommit);
+        item.setSummary(summary);
+        item.setStatus("PENDING_REVIEW");
+        item.setCreatedBy(createdBy);
+        item.setCreatedAt(now);
+        item.setUpdatedAt(now);
+        deliverableMapper.insert(item);
+        return toResponse(item);
     }
 
     // ---------- 私有辅助 ----------
@@ -324,7 +480,7 @@ public class DeliverableService {
         if (d.getRequirementGroupId() != null) {
             payload.put("groupId", d.getRequirementGroupId());
         }
-        payload.put("workPackageId", d.getWorkPackageId());
+        payload.put("taskId", d.getTaskId());
         payload.put("taskRunId", d.getTaskRunId());
         payload.put("deliverableId", d.getId());
         payload.put("status", d.getStatus());
@@ -337,8 +493,8 @@ public class DeliverableService {
     }
 
     private DeliverableResponse toResponse(DeliverableEntity d) {
-        return new DeliverableResponse(id(d.getId()), id(d.getProjectId()), id(d.getRequirementGroupId()),
-                id(d.getWorkPackageId()), id(d.getTaskRunId()), id(d.getProjectRepositoryId()), d.getSourceBranch(),
+        return new DeliverableResponse(id(d.getId()), id(d.getProjectId()), id(d.getTaskId()), id(d.getTaskStepId()), id(d.getRequirementGroupId()),
+                id(d.getTaskRunId()), id(d.getProjectRepositoryId()), d.getSourceBranch(),
                 d.getHeadCommit(), d.getSummary(), d.getStatus(), id(d.getCreatedBy()), id(d.getReviewedBy()),
                 d.getReviewReason(), iso(d.getReviewedAt()), iso(d.getCreatedAt()));
     }

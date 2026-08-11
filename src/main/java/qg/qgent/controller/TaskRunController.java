@@ -42,14 +42,13 @@ public class TaskRunController {
         this.taskRunService = taskRunService;
     }
 
-    /** 查询工作包下各子任务的运行记录（游标分页）。 */
-    @GetMapping("/work-packages/{workPackageId}/task-runs")
-    public ApiPageResponse<TaskRunSummaryResponse> listByWorkPackage(@PathVariable UUID projectId,
-            @PathVariable UUID workPackageId, @AuthenticationPrincipal UUID userId,
+    /** Lists execution attempts for the confirmed task model. */
+    @GetMapping("/tasks/{taskId}/task-runs")
+    public ApiPageResponse<TaskRunSummaryResponse> listByTask(@PathVariable UUID projectId,
+            @PathVariable UUID taskId, @AuthenticationPrincipal UUID userId,
             @RequestParam(required = false) String cursor, @RequestParam(defaultValue = "20") int limit,
             HttpServletRequest request) {
-        return taskRunService.listByWorkPackage(projectId, workPackageId, userId, cursor, limit,
-                requestId(request));
+        return taskRunService.listByTask(projectId, taskId, userId, cursor, limit, requestId(request));
     }
 
     /** 获取单次运行的状态、关联子任务和产物摘要。 */
