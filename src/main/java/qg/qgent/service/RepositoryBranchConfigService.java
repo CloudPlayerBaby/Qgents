@@ -24,12 +24,14 @@ import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.entity.RepositoryBranchConfigTestsetEntity;
 import qg.qgent.entity.TeamMemberEntity;
+import qg.qgent.entity.TestsetEntity;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.RepositoryBranchConfigMapper;
 import qg.qgent.mapper.RepositoryBranchConfigTestsetMapper;
 import qg.qgent.mapper.TeamMemberMapper;
+import qg.qgent.mapper.TestsetMapper;
 
 /**
  * 6.1 分支策略与质量门禁服务。
@@ -44,19 +46,22 @@ public class RepositoryBranchConfigService {
     private final ProjectMapper projectMapper;
     private final ProjectMemberMapper projectMemberMapper;
     private final TeamMemberMapper teamMemberMapper;
+    private final TestsetMapper testsetMapper;
 
     public RepositoryBranchConfigService(RepositoryBranchConfigMapper branchConfigMapper,
                                          RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper,
                                          ProjectRepositoryMapper projectRepositoryMapper,
                                          ProjectMapper projectMapper,
                                          ProjectMemberMapper projectMemberMapper,
-                                         TeamMemberMapper teamMemberMapper) {
+                                         TeamMemberMapper teamMemberMapper,
+                                         TestsetMapper testsetMapper) {
         this.branchConfigMapper = branchConfigMapper;
         this.branchConfigTestsetMapper = branchConfigTestsetMapper;
         this.projectRepositoryMapper = projectRepositoryMapper;
         this.projectMapper = projectMapper;
         this.projectMemberMapper = projectMemberMapper;
         this.teamMemberMapper = teamMemberMapper;
+        this.testsetMapper = testsetMapper;
     }
 
     /**
@@ -75,8 +80,8 @@ public class RepositoryBranchConfigService {
         // 获取项目与仓库的绑定记录，确保该仓库真的被这个项目绑定了
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
         
-        // 懒加载设计：获取该分支现有的配置，如果没有则自动创建并返回默认配置
-        RepositoryBranchConfigEntity config = getOrCreateConfig(projectRepo.getId(), branchName);
+        // 懒加载设计：获取该分支现有的配置，如果没有则只在内存里返回默认配置
+        RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, false);
 
         BranchPolicyDto dto = new BranchPolicyDto();
         if (config.getPolicyJson() != null) {
@@ -107,7 +112,7 @@ public class RepositoryBranchConfigService {
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
         
         // 获取或初始化该分支的配置实体
-        RepositoryBranchConfigEntity config = getOrCreateConfig(projectRepo.getId(), branchName);
+        RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, true);
 
         Map<String, Object> policyJson = config.getPolicyJson();
         if (policyJson == null) {
@@ -138,16 +143,19 @@ public class RepositoryBranchConfigService {
         // 验证仓库绑定关系
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
         
-        // 获取该分支的配置实体（没有则初始化）
-        RepositoryBranchConfigEntity config = getOrCreateConfig(projectRepo.getId(), branchName);
+        // 获取该分支的配置实体（没有则不落库，直接在内存构造）
+        RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, false);
 
         QualityGateDto dto = new QualityGateDto();
         dto.setRequiredChecks(config.getRequiredChecks() != null ? config.getRequiredChecks() : List.of());
         
-        List<UUID> testsetIds = branchConfigTestsetMapper.selectList(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>().eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()))
-                .stream()
-                .map(RepositoryBranchConfigTestsetEntity::getTestsetId)
-                .collect(Collectors.toList());
+        List<UUID> testsetIds = List.of();
+        if (config.getId() != null) {
+            testsetIds = branchConfigTestsetMapper.selectList(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>().eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()))
+                    .stream()
+                    .map(RepositoryBranchConfigTestsetEntity::getTestsetId)
+                    .collect(Collectors.toList());
+        }
         dto.setRequiredTestsetIds(testsetIds);
         
         return dto;
@@ -162,7 +170,26 @@ public class RepositoryBranchConfigService {
         // 必须是项目管理员才能修改门禁
         requireProjectAdmin(actorId, projectId);
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
-        RepositoryBranchConfigEntity config = getOrCreateConfig(projectRepo.getId(), branchName);
+        
+        if (request.getRequiredTestsetIds() != null && !request.getRequiredTestsetIds().isEmpty()) {
+            List<TestsetEntity> testsets = testsetMapper.selectBatchIds(request.getRequiredTestsetIds());
+            if (testsets.size() != request.getRequiredTestsetIds().size()) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET", "Some required testsets do not exist");
+            }
+            for (TestsetEntity testset : testsets) {
+                if (!testset.getProjectId().equals(projectId)) {
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET", "Testset does not belong to the project");
+                }
+                if (testset.getProjectRepositoryId() != null && !testset.getProjectRepositoryId().equals(projectRepo.getId())) {
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET", "Testset does not belong to the repository");
+                }
+                if (!"ENABLED".equals(testset.getStatus())) {
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET", "Testset is not enabled");
+                }
+            }
+        }
+        
+        RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, true);
 
         // 1. 更新主配置表中的 Required Checks 列表
         config.setRequiredChecks(request.getRequiredChecks());
@@ -187,14 +214,15 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 【内部方法】懒加载获取分支配置：如果数据库中已经存在该分支的配置，则直接返回；
-     * 否则在数据库中初始化一条该分支的默认空配置并返回。
+     * 【内部方法】获取分支配置：如果数据库中已经存在该分支的配置，则直接返回；
+     * 否则根据 createIfMissing 决定是否在数据库中初始化，如果不初始化，只在内存中返回一个空配置
      *
      * @param projectRepositoryId 仓库绑定关系 ID
      * @param branchName          分支名称
+     * @param createIfMissing     如果不存在，是否要写入数据库
      * @return 分支配置实体
      */
-    private RepositoryBranchConfigEntity getOrCreateConfig(UUID projectRepositoryId, String branchName) {
+    private RepositoryBranchConfigEntity getConfig(UUID projectRepositoryId, String branchName, boolean createIfMissing) {
         // 尝试从数据库查询该分支配置
         RepositoryBranchConfigEntity config = branchConfigMapper.selectOne(new LambdaQueryWrapper<RepositoryBranchConfigEntity>()
                 .eq(RepositoryBranchConfigEntity::getProjectRepositoryId, projectRepositoryId)
@@ -203,12 +231,16 @@ public class RepositoryBranchConfigService {
         // 如果不存在，则进行初始化
         if (config == null) {
             config = new RepositoryBranchConfigEntity();
-            config.setId(UUID.randomUUID());
+            if (createIfMissing) {
+                config.setId(UUID.randomUUID());
+            }
             config.setProjectRepositoryId(projectRepositoryId);
             config.setBranchName(branchName);
             config.setCreatedAt(LocalDateTime.now());
             config.setUpdatedAt(LocalDateTime.now());
-            branchConfigMapper.insert(config);
+            if (createIfMissing) {
+                branchConfigMapper.insert(config);
+            }
         }
         return config;
     }
