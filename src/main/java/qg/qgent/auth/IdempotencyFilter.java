@@ -52,8 +52,13 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !"POST".equalsIgnoreCase(request.getMethod())
-                || !request.getRequestURI().startsWith("/api/v1/projects/");
+        if (!"POST".equalsIgnoreCase(request.getMethod())
+                || !request.getRequestURI().startsWith("/api/v1/projects/")) {
+            return true;
+        }
+        // ProjectController 已使用事务型 IdempotencyService，避免过滤器再次创建同键记录。
+        String path = request.getRequestURI();
+        return path.matches("^/api/v1/projects/[^/]+/(archive|restore|members)$");
     }
 
     @Override

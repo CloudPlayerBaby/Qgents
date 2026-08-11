@@ -22,15 +22,12 @@ import qg.qgent.dto.TeamResponse;
 import qg.qgent.dto.UpdateMeRequest;
 import qg.qgent.dto.UserResponse;
 import qg.qgent.entity.PasswordResetTokenEntity;
-import qg.qgent.entity.ProjectEntity;
-import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.RefreshTokenEntity;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.PasswordResetTokenMapper;
 import qg.qgent.mapper.ProjectMapper;
-import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.RefreshTokenMapper;
 import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.TeamMemberMapper;
@@ -58,7 +55,6 @@ public class AuthService {
     private final TeamMapper teamMapper;
     private final TeamMemberMapper teamMemberMapper;
     private final ProjectMapper projectMapper;
-    private final ProjectMemberMapper projectMemberMapper;
     private final RsaPasswordDecryptor rsa;
     private final PasswordEncoder passwords;
     private final TokenService tokens;
@@ -68,7 +64,7 @@ public class AuthService {
 
     public AuthService(UserMapper userMapper, RefreshTokenMapper refreshTokenMapper,
             PasswordResetTokenMapper resetTokenMapper, TeamMapper teamMapper, TeamMemberMapper teamMemberMapper,
-            ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper, RsaPasswordDecryptor rsa,
+            ProjectMapper projectMapper, RsaPasswordDecryptor rsa,
             PasswordEncoder passwords, TokenService tokens, PasswordResetMailer mailer, RateLimiter limiter) {
         this.userMapper = userMapper;
         this.refreshTokenMapper = refreshTokenMapper;
@@ -76,7 +72,6 @@ public class AuthService {
         this.teamMapper = teamMapper;
         this.teamMemberMapper = teamMemberMapper;
         this.projectMapper = projectMapper;
-        this.projectMemberMapper = projectMemberMapper;
         this.rsa = rsa;
         this.passwords = passwords;
         this.tokens = tokens;
@@ -270,20 +265,11 @@ public class AuthService {
     }
 
     private List<ProjectResponse> projects(UUID userId) {
-        List<ProjectMemberEntity> members = projectMemberMapper.selectByUserId(userId);
-        if (members.isEmpty()) {
-            return Collections.emptyList();
-        }
-        Map<UUID, ProjectEntity> projects = projectMapper.selectBatchIds(
-                members.stream().map(ProjectMemberEntity::getProjectId).toList()).stream()
-                .filter(project -> "ACTIVE".equals(project.getStatus()))
-                .collect(Collectors.toMap(ProjectEntity::getId, Function.identity()));
-        return members.stream().filter(member -> projects.containsKey(member.getProjectId()))
-                .map(member -> {
-                    ProjectEntity project = projects.get(member.getProjectId());
-                    return new ProjectResponse(project.getId().toString(), project.getTeamId().toString(),
-                            project.getName(), member.getRole(), project.getStatus());
-                }).toList();
+        // 单次查询合并项目成员权限与 canonical Team Owner 兜底，并由 SQL 去重。
+        return projectMapper.selectAccessibleByUser(userId).stream()
+                .map(project -> new ProjectResponse(project.getId().toString(), project.getTeamId().toString(),
+                        project.getName(), project.getDescription(), project.getRole(), project.getStatus()))
+                .toList();
     }
 
     private UserResponse view(UserEntity user) {

@@ -6,7 +6,8 @@ import org.apache.ibatis.annotations.Result;
 import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Delete;
-import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Update;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 
@@ -32,4 +33,29 @@ public interface ProjectMemberMapper {
             @Result(column = "role", property = "role")
     })
     ProjectMemberEntity selectByProjectAndUser(@Param("projectId") UUID projectId, @Param("userId") UUID userId);
+
+    @Select({ "<script>",
+            "SELECT project_id, user_id, role FROM project_members WHERE project_id = #{projectId}",
+            "<if test='anchor != null'>AND user_id &gt; #{anchor}</if>",
+            "ORDER BY user_id LIMIT #{limit}",
+            "</script>" })
+    @Results({
+            @Result(column = "project_id", property = "projectId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "user_id", property = "userId", typeHandler = UuidBinaryTypeHandler.class)
+    })
+    List<ProjectMemberEntity> selectMemberPage(@Param("projectId") UUID projectId,
+            @Param("anchor") UUID anchor, @Param("limit") int limit);
+
+    @Insert("INSERT INTO project_members (project_id, user_id, role) VALUES (#{projectId}, #{userId}, #{role})")
+    int insert(ProjectMemberEntity member);
+
+    @Update("UPDATE project_members SET role = #{role} WHERE project_id = #{projectId} AND user_id = #{userId}")
+    int updateRole(@Param("projectId") UUID projectId, @Param("userId") UUID userId,
+            @Param("role") String role);
+
+    @Delete("DELETE FROM project_members WHERE project_id = #{projectId} AND user_id = #{userId}")
+    int deleteByProjectAndUser(@Param("projectId") UUID projectId, @Param("userId") UUID userId);
+
+    @Select("SELECT COUNT(*) FROM project_members WHERE project_id = #{projectId} AND role = 'PROJECT_ADMIN'")
+    int countAdmins(@Param("projectId") UUID projectId);
 }

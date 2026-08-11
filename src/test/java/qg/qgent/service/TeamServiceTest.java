@@ -13,8 +13,10 @@ import qg.qgent.dto.TeamMembershipView;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.entity.TeamInvitationEntity;
+import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.ProjectMemberMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.TeamInvitationMapper;
 import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.TeamMemberMapper;
@@ -38,9 +40,11 @@ class TeamServiceTest {
     private final TeamMemberMapper memberMapper = mock(TeamMemberMapper.class);
     private final TeamInvitationMapper invitationMapper = mock(TeamInvitationMapper.class);
     private final ProjectMemberMapper projectMemberMapper = mock(ProjectMemberMapper.class);
+    private final ProjectMapper projectMapper = mock(ProjectMapper.class);
     private final UserMapper userMapper = mock(UserMapper.class);
     private final TeamService service = new TeamService(teamMapper, memberMapper, invitationMapper,
-            projectMemberMapper, userMapper, mock(TokenService.class), mock(TeamInvitationMailer.class));
+            projectMemberMapper, projectMapper, userMapper, mock(TokenService.class),
+            mock(TeamInvitationMailer.class));
 
     @Test
     void createAddsCreatorAsOwner() {
@@ -137,6 +141,39 @@ class TeamServiceTest {
     }
 
     @Test
+    void removingTeamMemberCannotOrphanProjectAdminRole() {
+        UUID teamId = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        UUID admin = UUID.randomUUID();
+        UUID projectId = UUID.randomUUID();
+        when(teamMapper.selectByIdForUpdate(teamId)).thenReturn(team(teamId, owner));
+        when(memberMapper.selectByTeamAndUser(teamId, owner)).thenReturn(member(teamId, owner, "TEAM_OWNER"));
+        when(memberMapper.selectByTeamAndUser(teamId, admin)).thenReturn(member(teamId, admin, "TEAM_MEMBER"));
+        ProjectEntity project = new ProjectEntity();
+        project.setId(projectId);
+        project.setTeamId(teamId);
+        when(projectMapper.selectByTeamForUpdate(teamId)).thenReturn(java.util.List.of(project));
+        qg.qgent.entity.ProjectMemberEntity projectMember = new qg.qgent.entity.ProjectMemberEntity();
+        projectMember.setProjectId(projectId);
+        projectMember.setUserId(admin);
+        projectMember.setRole("PROJECT_ADMIN");
+        when(projectMemberMapper.selectByProjectAndUser(projectId, admin)).thenReturn(projectMember);
+        when(projectMemberMapper.countAdmins(projectId)).thenReturn(1);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.removeMember(owner, teamId, admin));
+
+        assertEquals("LAST_PROJECT_ADMIN_REQUIRED", error.code());
+        org.mockito.Mockito.verify(projectMemberMapper, org.mockito.Mockito.never())
+                .deleteByTeamAndUser(teamId, admin);
+        var order = inOrder(teamMapper, projectMapper, projectMemberMapper);
+        order.verify(teamMapper).selectByIdForUpdate(teamId);
+        order.verify(projectMapper).selectByTeamForUpdate(teamId);
+        order.verify(projectMemberMapper).selectByProjectAndUser(projectId, admin);
+        order.verify(projectMemberMapper).countAdmins(projectId);
+    }
+
+    @Test
     void canonicalOwnerCanNormalizeExtraOwnerRole() {
         UUID teamId = UUID.randomUUID();
         UUID owner = UUID.randomUUID();
@@ -197,7 +234,7 @@ class TeamServiceTest {
         invitation.setExpiresAt(LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1));
         TokenService tokens = mock(TokenService.class);
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
-                userMapper, tokens, mock(TeamInvitationMailer.class));
+                projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class));
         when(userMapper.selectById(actor)).thenReturn(user);
         when(tokens.hash("raw-token")).thenReturn(new byte[] { 1 });
         when(invitationMapper.selectOne(any())).thenReturn(invitation);
@@ -243,7 +280,7 @@ class TeamServiceTest {
         when(tokens.opaque()).thenReturn("raw-token");
         when(tokens.hash("raw-token")).thenReturn(new byte[] { 1 });
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
-                userMapper, tokens, mock(TeamInvitationMailer.class));
+                projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class));
         InviteTeamMemberRequest request = new InviteTeamMemberRequest();
         request.setEmail("new@example.com");
         request.setRole("TEAM_MEMBER");

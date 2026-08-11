@@ -32,6 +32,11 @@ import qg.qgent.service.TeamService;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * 团队与团队邀请端点（5.1）。
+ * 团队创建、资料修改、成员管理与角色调整、成员邀请与邀请撤销；
+ * 除列表/详情外均需 Team Owner 权限，canonical Owner 不可通过成员角色接口降级或移除。
+ */
 @RestController
 @RequestMapping("/api/v1/teams")
 public class TeamController {
@@ -44,12 +49,7 @@ public class TeamController {
     }
 
     /**
-     * 新建一个团队
-     * @param actor
-     * @param key
-     * @param body
-     * @param request
-     * @return
+     * 由当前用户创建团队，并同时写入 canonical Owner 的 TEAM_OWNER 成员行。
      */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -62,12 +62,7 @@ public class TeamController {
     }
 
     /**
-     * 获取团队列表
-     * @param actor
-     * @param cursor
-     * @param limit
-     * @param request
-     * @return
+     * 分页列出当前用户加入的团队，canonical Owner 返回 TEAM_OWNER 角色。
      */
     @GetMapping
     public PagedApiResponse<TeamResponse> list(@AuthenticationPrincipal UUID actor,
@@ -77,11 +72,7 @@ public class TeamController {
     }
 
     /**
-     * 获取团队详情
-     * @param actor
-     * @param teamId
-     * @param request
-     * @return
+     * 获取团队详情与当前用户在团队中的生效角色。
      */
     @GetMapping("/{teamId}")
     public ApiResponse<TeamResponse> get(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
@@ -90,13 +81,7 @@ public class TeamController {
     }
 
     /**
-     * 更新团队信息
-     * @param actor
-     * @param teamId
-     * @param key
-     * @param body
-     * @param request
-     * @return
+     * Team Owner 修改团队名称。
      */
     @PatchMapping("/{teamId}")
     public ApiResponse<TeamResponse> update(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
@@ -109,13 +94,7 @@ public class TeamController {
     }
 
     /**
-     * 获取团队成员列表
-     * @param actor
-     * @param teamId
-     * @param cursor
-     * @param limit
-     * @param request
-     * @return
+     * 分页获取团队成员及其生效角色。
      */
     @GetMapping("/{teamId}/members")
     public PagedApiResponse<TeamMemberResponse> members(@AuthenticationPrincipal UUID actor,
@@ -125,13 +104,7 @@ public class TeamController {
     }
 
     /**
-     * 邀请成员加入团队
-     * @param actor
-     * @param teamId
-     * @param key
-     * @param body
-     * @param request
-     * @return
+     * Team Owner 邀请成员加入团队，受邀邮箱未注册时发送注册链接与邀请令牌。
      */
     @PostMapping("/{teamId}/invitations")
     @ResponseStatus(HttpStatus.CREATED)
@@ -145,13 +118,7 @@ public class TeamController {
     }
 
     /**
-     * 获取团队邀请列表
-     * @param actor
-     * @param teamId
-     * @param cursor
-     * @param limit
-     * @param request
-     * @return
+     * 分页获取团队待处理邀请，仅 Team Owner 可见。
      */
     @GetMapping("/{teamId}/invitations")
     public PagedApiResponse<TeamInvitationResponse> invitations(@AuthenticationPrincipal UUID actor,
@@ -161,13 +128,7 @@ public class TeamController {
     }
 
     /**
-     * 接受团队邀请
-     * @param actor
-     * @param teamId
-     * @param invitationId
-     * @param key
-     * @param request
-     * @return
+     * 撤销一条待处理团队邀请；已过期或非 PENDING 状态返回 409。
      */
     @DeleteMapping("/{teamId}/invitations/{invitationId}")
     public ApiResponse<TeamInvitationResponse> revoke(@AuthenticationPrincipal UUID actor,
@@ -181,14 +142,7 @@ public class TeamController {
     }
 
     /**
-     * 更新团队成员信息
-     * @param actor
-     * @param teamId
-     * @param userId
-     * @param key
-     * @param body
-     * @param request
-     * @return
+     * 将成员角色调整为 TEAM_MEMBER，不能创建、转移或降级 canonical Owner。
      */
     @PatchMapping("/{teamId}/members/{userId}")
     public ApiResponse<TeamMemberResponse> updateMember(@AuthenticationPrincipal UUID actor,
@@ -202,13 +156,7 @@ public class TeamController {
     }
 
     /**
-     * 删除团队成员
-     * @param actor
-     * @param teamId
-     * @param userId
-     * @param key
-     * @param request
-     * @return
+     * 移除团队成员并同步清理其项目成员关系，保护最后一名 Project Admin。
      */
     @DeleteMapping("/{teamId}/members/{userId}")
     public ApiResponse<TeamMemberResponse> removeMember(@AuthenticationPrincipal UUID actor,

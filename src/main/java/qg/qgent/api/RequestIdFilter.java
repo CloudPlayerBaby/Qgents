@@ -18,7 +18,7 @@ import java.util.UUID;
  * 最高优先级执行，确保安全过滤链与幂等过滤器读取 requestId 时已就绪。
  */
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
+@Order(Ordered.HIGHEST_PRECEDENCE) // 最先执行
 public class RequestIdFilter extends OncePerRequestFilter {
     public static final String ATTRIBUTE = "requestId";
 

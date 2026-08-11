@@ -26,6 +26,7 @@ import qg.qgent.entity.TeamInvitationEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.ProjectMemberMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.TeamInvitationMapper;
 import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.TeamMemberMapper;
@@ -50,17 +51,19 @@ public class TeamService {
     private final TeamMemberMapper memberMapper;
     private final TeamInvitationMapper invitationMapper;
     private final ProjectMemberMapper projectMemberMapper;
+    private final ProjectMapper projectMapper;
     private final UserMapper userMapper;
     private final TokenService tokens;
     private final TeamInvitationMailer invitationMailer;
 
     public TeamService(TeamMapper teamMapper, TeamMemberMapper memberMapper,
-            TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, UserMapper userMapper,
-            TokenService tokens, TeamInvitationMailer invitationMailer) {
+            TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, ProjectMapper projectMapper,
+            UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
         this.invitationMapper = invitationMapper;
         this.projectMemberMapper = projectMemberMapper;
+        this.projectMapper = projectMapper;
         this.userMapper = userMapper;
         this.tokens = tokens;
         this.invitationMailer = invitationMailer;
@@ -388,6 +391,15 @@ public class TeamService {
         TeamMemberEntity target = requireMember(teamId, userId);
         if (team.getOwnerUserId().equals(userId)) {
             throw conflict("TEAM_OWNER_IMMUTABLE", "Team Owner 不能被移除");
+        }
+        // 团队行锁后按项目ID锁定受影响项目，避免并发删除/降级造成项目失去最后一名 Admin。
+        for (qg.qgent.entity.ProjectEntity project : projectMapper.selectByTeamForUpdate(teamId)) {
+            qg.qgent.entity.ProjectMemberEntity projectMember = projectMemberMapper
+                    .selectByProjectAndUser(project.getId(), userId);
+            if (projectMember != null && "PROJECT_ADMIN".equals(projectMember.getRole())
+                    && projectMemberMapper.countAdmins(project.getId()) <= 1) {
+                throw conflict("LAST_PROJECT_ADMIN_REQUIRED", "该成员是项目最后一名 Project Admin");
+            }
         }
         // 移除团队成员在项目中
         projectMemberMapper.deleteByTeamAndUser(teamId, userId);

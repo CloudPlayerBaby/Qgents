@@ -13,7 +13,7 @@ import qg.qgent.service.EventService;
 import java.util.UUID;
 
 /**
- * 项目级实时事件流端点。
+ * 项目级实时事件流端点（12.1）。
  * 返回 text/event-stream，不套用 JSON 成功响应；客户端可用 Last-Event-ID 断线续传，
  * 续传点超出 24 小时保留窗口时返回 409 EVENT_CURSOR_EXPIRED。
  */

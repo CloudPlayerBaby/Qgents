@@ -24,6 +24,12 @@ import qg.qgent.service.AuthService;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * 认证与账户端点（4）。
+ * 注册、登录、Token 刷新、登出与密码重置，以及当前用户信息查询/修改；
+ * 除登出与 /me 外均无需已认证 Token。注册、登录、密码重置中的 password 必须是
+ * 平台 RSA 公钥加密后的 Base64 密文（见契约 4.1）。
+ */
 @RestController
 @RequestMapping("/api/v1")
 public class AuthController {
@@ -34,10 +40,7 @@ public class AuthController {
     }
 
     /**
-     * 用户注册
-     * @param body
-     * @param request
-     * @return
+     * 注册新用户并直接签发 accessToken / refreshToken；密码须为平台 RSA 公钥加密后的 Base64 密文，邮箱重复返回 409。
      */
     @PostMapping("/auth/register")
     @ResponseStatus(HttpStatus.CREATED)
@@ -46,10 +49,7 @@ public class AuthController {
     }
 
     /**
-     * 用户登录
-     * @param body
-     * @param request
-     * @return
+     * 校验邮箱与 RSA 加密密码后签发新的 accessToken / refreshToken；连续失败会触发限流（429）。
      */
     @PostMapping("/auth/login")
     public ApiResponse<?> login(@Valid @RequestBody LoginRequest body, HttpServletRequest request) {
@@ -57,10 +57,7 @@ public class AuthController {
     }
 
     /**
-     * 刷新 token
-     * @param body
-     * @param request
-     * @return
+     * 用未过期的 refreshToken 换取一组新 Token，旧 refreshToken 随即失效。
      */
     @PostMapping("/auth/refresh")
     public ApiResponse<?> refresh(@Valid @RequestBody RefreshTokenRequest body, HttpServletRequest request) {
@@ -68,11 +65,7 @@ public class AuthController {
     }
 
     /**
-     * 用户登出
-     * @param userId
-     * @param body
-     * @param request
-     * @return
+     * 注销当前登录态，使请求中的 refreshToken 失效。
      */
     @PostMapping("/auth/logout")
     public ApiResponse<?> logout(@AuthenticationPrincipal UUID userId,
@@ -82,10 +75,7 @@ public class AuthController {
     }
 
     /**
-     * 请求密码重置
-     * @param body
-     * @param request
-     * @return
+     * 请求密码重置；邮箱已注册时发送重置邮件，未注册时同样返回成功以规避邮箱枚举。
      */
     @PostMapping("/auth/password-reset-requests")
     @ResponseStatus(HttpStatus.ACCEPTED)
@@ -96,10 +86,7 @@ public class AuthController {
     }
 
     /**
-     * 重置密码
-     * @param body
-     * @param request
-     * @return
+     * 使用重置令牌与新密码（RSA 密文）重置密码，并撤销该用户全部 refreshToken。
      */
     @PostMapping("/auth/password-resets")
     public ApiResponse<?> reset(@Valid @RequestBody ResetPasswordRequest body, HttpServletRequest request) {
@@ -108,10 +95,7 @@ public class AuthController {
     }
 
     /**
-     * 获取当前用户信息
-     * @param userId
-     * @param request
-     * @return
+     * 获取当前用户的资料、所属团队与可见项目。
      */
     @GetMapping("/me")
     public ApiResponse<?> me(@AuthenticationPrincipal UUID userId, HttpServletRequest request) {
@@ -119,11 +103,7 @@ public class AuthController {
     }
 
     /**
-     * 更新当前用户信息
-     * @param userId
-     * @param body
-     * @param request
-     * @return
+     * 更新当前用户昵称或头像地址，至少提供一个修改字段。
      */
     @PatchMapping("/me")
     public ApiResponse<?> updateMe(@AuthenticationPrincipal UUID userId, @Valid @RequestBody UpdateMeRequest body,

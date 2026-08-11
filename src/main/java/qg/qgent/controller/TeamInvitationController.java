@@ -16,6 +16,11 @@ import qg.qgent.service.TeamService;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * 团队邀请接受端点（5.1）。
+ * 用户持邀请令牌加入团队成为 TEAM_MEMBER；令牌与当前登录邮箱必须匹配，
+ * 邀请已过期、已撤销或非待处理时返回 409。
+ */
 @RestController
 @RequestMapping("/api/v1/team-invitations")
 public class TeamInvitationController {
@@ -27,6 +32,9 @@ public class TeamInvitationController {
         this.idempotency = idempotency;
     }
 
+    /**
+     * 接受邀请令牌并加入对应团队，返回当前用户在该团队中的成员信息。
+     */
     @PostMapping("/{token}/accept")
     public ApiResponse<TeamMemberResponse> accept(@AuthenticationPrincipal UUID actor, @PathVariable String token,
             @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {

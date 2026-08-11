@@ -63,6 +63,7 @@ springdoc:
     path: /swagger-ui.html
 
 mybatis-plus:
+  type-handlers-package: qg.qgent.handler
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl

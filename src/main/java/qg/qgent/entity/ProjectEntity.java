@@ -13,6 +13,8 @@ public class ProjectEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
     private UUID teamId;
+    private UUID createdBy;
     private String name;
+    private String description;
     private String status;
 }
