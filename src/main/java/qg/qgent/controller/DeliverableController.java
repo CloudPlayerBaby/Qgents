@@ -50,6 +50,39 @@ public class DeliverableController {
                 requestId(request));
     }
 
+    /** Lists repository-scoped deliverables and prior rejected versions for a task. */
+    @GetMapping("/tasks/{taskId}/deliverables")
+    public ApiPageResponse<DeliverableResponse> listByTask(@PathVariable UUID projectId,
+            @PathVariable UUID taskId, @AuthenticationPrincipal UUID userId,
+            @RequestParam(required = false) String cursor, @RequestParam(defaultValue = "20") int limit,
+            HttpServletRequest request) {
+        return deliverableService.listByTask(projectId, taskId, userId, cursor, limit, requestId(request));
+    }
+
+    /** Returns the overall Task delivery and its repository items. */
+    @GetMapping("/tasks/{taskId}/delivery")
+    public ApiResponse<?> taskDelivery(@PathVariable UUID projectId, @PathVariable UUID taskId,
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        return ok(deliverableService.taskDelivery(projectId, taskId, userId), request);
+    }
+
+    /** Accepts the overall Task delivery; repository MRs still pass their own quality gates. */
+    @PostMapping("/tasks/{taskId}/delivery/accept")
+    public ApiResponse<?> acceptTaskDelivery(@PathVariable UUID projectId, @PathVariable UUID taskId,
+            @AuthenticationPrincipal UUID userId, @RequestBody(required = false) DeliverableDecisionRequest body,
+            HttpServletRequest request) {
+        return ok(deliverableService.acceptTaskDelivery(projectId, taskId, userId,
+                body == null ? null : body.getReason()), request);
+    }
+
+    /** Rejects the overall Task delivery and keeps its Task Workspace for revision. */
+    @PostMapping("/tasks/{taskId}/delivery/reject")
+    public ApiResponse<?> rejectTaskDelivery(@PathVariable UUID projectId, @PathVariable UUID taskId,
+            @AuthenticationPrincipal UUID userId, @Valid @RequestBody DeliverableDecisionRequest body,
+            HttpServletRequest request) {
+        return ok(deliverableService.rejectTaskDelivery(projectId, taskId, userId, body.getReason()), request);
+    }
+
     /**
      * 获取交付物、关联运行、分支和检查摘要。
      */

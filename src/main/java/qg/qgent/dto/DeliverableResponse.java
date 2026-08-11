@@ -16,6 +16,8 @@ import java.util.Map;
 public class DeliverableResponse {
     private String id;
     private String projectId;
+    private String taskId;
+    private String taskStepId;
     private String groupId;
     private String workPackageId;
     private String taskRunId;

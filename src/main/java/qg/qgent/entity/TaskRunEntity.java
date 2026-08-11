@@ -21,11 +21,23 @@ public class TaskRunEntity {
     private UUID id;
     /** 所属项目ID，用于项目隔离与鉴权。 */
     private UUID projectId;
+    /** Confirmed top-level task owning this immutable execution attempt. */
+    private UUID taskId;
+    /** Planned task step executed by this attempt. */
+    private UUID taskStepId;
+    /** Agent selected when this attempt was created; retained when later steps change assignment. */
+    private UUID agentId;
     /** 所属编排运行ID；第11节建表后补外键，当前仅作归属锚定。 */
+    /** @deprecated Legacy read-only compatibility anchor; new writes use taskId. */
+    @Deprecated
     private UUID orchestrationRunId;
     /** 所属工作包ID；第11节建表后补外键，当前仅作归属锚定。 */
+    /** @deprecated Legacy read-only compatibility anchor; new writes use taskId. */
+    @Deprecated
     private UUID workPackageId;
     /** 关联子任务ID；第11节建表后补外键，当前仅作归属锚定。 */
+    /** @deprecated Legacy read-only compatibility anchor; new writes use taskStepId. */
+    @Deprecated
     private UUID subTaskId;
     /** 项目仓库绑定ID，继承自工作包的仓库。 */
     private UUID projectRepositoryId;

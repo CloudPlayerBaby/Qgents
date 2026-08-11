@@ -24,9 +24,15 @@ public class TestRunEntity {
     private UUID id;
     /** 所属项目ID。 */
     private UUID projectId;
+    /** Task whose workspace/ref is tested, when task-triggered. */
+    private UUID taskId;
+    /** Task step requesting this run, when workflow-triggered. */
+    private UUID taskStepId;
     /** 项目仓库绑定ID。 */
     private UUID projectRepositoryId;
     /** 关联工作包ID；第11节建表后补外键，可为空。 */
+    /** @deprecated Legacy read-only compatibility anchor; new writes use taskId. */
+    @Deprecated
     private UUID workPackageId;
     /** 目标提交或分支引用，与 workPackageId 二选一。 */
     private String ref;

@@ -13,6 +13,9 @@ import lombok.NoArgsConstructor;
 public class TaskRunSummaryResponse {
     private String id;
     private String projectId;
+    private String taskId;
+    private String taskStepId;
+    private String agentId;
     private String orchestrationRunId;
     private String workPackageId;
     private String subTaskId;

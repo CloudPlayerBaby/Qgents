@@ -99,6 +99,21 @@ public class TaskRunService {
         return new ApiPageResponse<>(items, page, requestId);
     }
 
+    /** Lists immutable execution attempts belonging to the confirmed top-level task. */
+    public ApiPageResponse<TaskRunSummaryResponse> listByTask(UUID projectId, UUID taskId, UUID userId,
+            String cursor, int limit, String requestId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        int size = clampLimit(limit);
+        UUID cursorUuid = parseCursor(cursor);
+        List<TaskRunEntity> rows = taskRunMapper.selectList(Wrappers.<TaskRunEntity>lambdaQuery()
+                .eq(TaskRunEntity::getProjectId, projectId).eq(TaskRunEntity::getTaskId, taskId)
+                .lt(cursorUuid != null, TaskRunEntity::getId, cursorUuid).orderByDesc(TaskRunEntity::getId)
+                .last("LIMIT " + (size + 1)));
+        boolean hasMore = rows.size() > size;
+        List<TaskRunSummaryResponse> items = (hasMore ? rows.subList(0, size) : rows).stream().map(this::toSummary).toList();
+        return new ApiPageResponse<>(items, new PageMeta(hasMore ? items.get(items.size()-1).getId() : null, hasMore), requestId);
+    }
+
     /**
      * 获取单次运行的状态、关联子任务、步骤与产物摘要。
      */
@@ -110,7 +125,7 @@ public class TaskRunService {
                         .eq(TaskRunStepEntity::getTaskRunId, taskRunId).orderByAsc(TaskRunStepEntity::getCreatedAt))
                 .stream().map(this::toStep).toList();
         return new TaskRunDetailResponse(
-                id(run.getId()), id(run.getProjectId()), id(run.getOrchestrationRunId()), id(run.getWorkPackageId()),
+                id(run.getId()), id(run.getProjectId()), id(run.getTaskId()), id(run.getTaskStepId()), id(run.getAgentId()), id(run.getOrchestrationRunId()), id(run.getWorkPackageId()),
                 id(run.getSubTaskId()), id(run.getProjectRepositoryId()), id(run.getRequirementGroupId()),
                 run.getRole(), run.getStatus(), id(run.getRetryOfTaskRunId()), steps,
                 artifactSummary(run.getId()), iso(run.getStartedAt()), iso(run.getFinishedAt()), iso(run.getCreatedAt()),
@@ -133,6 +148,9 @@ public class TaskRunService {
         TaskRunEntity run = new TaskRunEntity();
         run.setId(UuidV7.next());
         run.setProjectId(projectId);
+        run.setTaskId(source.getTaskId());
+        run.setTaskStepId(source.getTaskStepId());
+        run.setAgentId(source.getAgentId());
         run.setOrchestrationRunId(source.getOrchestrationRunId());
         run.setWorkPackageId(source.getWorkPackageId());
         run.setSubTaskId(source.getSubTaskId());
@@ -372,7 +390,7 @@ public class TaskRunService {
     }
 
     private TaskRunSummaryResponse toSummary(TaskRunEntity run) {
-        return new TaskRunSummaryResponse(id(run.getId()), id(run.getProjectId()), id(run.getOrchestrationRunId()),
+        return new TaskRunSummaryResponse(id(run.getId()), id(run.getProjectId()), id(run.getTaskId()), id(run.getTaskStepId()), id(run.getAgentId()), id(run.getOrchestrationRunId()),
                 id(run.getWorkPackageId()), id(run.getSubTaskId()), id(run.getProjectRepositoryId()),
                 id(run.getRequirementGroupId()), run.getRole(), run.getStatus(), id(run.getRetryOfTaskRunId()),
                 iso(run.getCreatedAt()), iso(run.getUpdatedAt()));

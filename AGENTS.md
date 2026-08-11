@@ -36,7 +36,7 @@
 ### 当前业务/API 契约（v1.1.1，未定案）
 
 - 契约全文见 `docs/api-contract-v1.1.1.md`；其处于未定案状态，不得当作已确认的实现契约。
-- 执行层级只能为 `orchestrationRun -> workPackage -> 子任务`；`TaskRun` 仅为关联该层级的执行记录，不得作为平行顶层任务。
+- 执行层级采用 `Task -> TaskStep -> TaskRun`；群内一次需求创建一个 Task，Planner 生成步骤，TaskRun 是步骤的一次执行尝试。
 - Group 仅可为 `PROJECT_MAIN` 或 `REQUIREMENT`；编排只接受同一项目中状态为 `ACTIVE` 的 `REQUIREMENT`。
 - 客户端不得直接控制 Workspace、Sandbox、Git 或宿主机；所有写接口必须按契约处理 `Idempotency-Key`。
 - 授权必须由服务端依据认证身份、成员关系和资源归属判断。
@@ -62,7 +62,7 @@
 - Team 的唯一 canonical Owner 由 `teams.owner_user_id` 指定，且其成员行角色必须为 `TEAM_OWNER`；成员角色接口不得创建、转移、降级或删除 canonical Owner。历史异常的额外 `TEAM_OWNER` 不具备 Owner 权限，允许 canonical Owner 将其改为 `TEAM_MEMBER` 或移除。
 - 授权必须由服务端根据已认证用户、团队成员关系、项目成员关系和资源归属判断。
 - 不得信任客户端提交的 `userId`、`role`、`ownerId`、`admin` 等字段来决定权限。
-- 一个 Project 可以关联多个 Repository；跨仓库需求应拆成独立 Work Package 和 Workspace。
+- 一个 Project 可以关联多个 Repository；一个 Task 可操作多个 Repository，并拥有一个 Workspace 根目录，各 Repository 在其下使用独立 worktree。
 - Requirement Group 是讨论和上下文边界，不等于 Git Branch，也不与 Branch 天然一对一。
 - Skill 定义可复用的做事方式；Memory 保存经确认的项目事实。二者不得混用。
 - 只加载当前项目中与任务相关且有权访问的 Skill / Memory；不得默认注入全部内容。
@@ -75,7 +75,7 @@
 完整代码交付不得由单一 Agent 独自包办。默认职责边界为：
 
 - `ORCHESTRATOR`：理解需求、调度、汇总；不独自完成完整交付。
-- `PLANNER`：拆分 Work Package / Subtask、依赖和验收条件。
+- `PLANNER`：拆分 TaskStep、依赖、仓库访问范围和验收条件。
 - `DEVELOPER`：在授权范围内实现代码并产出可验证 Diff。
 - `TESTER`：独立执行适用的 Testset / 测试并记录真实结果。
 - `REVIEWER`：独立审查 Diff、风险和契约一致性。
@@ -110,7 +110,7 @@
 - 未经明确授权，不进行大规模重构、框架或依赖替换、公共 API 变更、权限模型变更、数据库模型变更或大批量重命名。
 - 发现范围外问题时记录并报告，不顺手扩大修改。
 - 写操作应按最新契约处理幂等性；不要让客户端重试重复创建或重复变更业务数据。
-- Git 分支由 Work Package 或用户决定；不要因创建 Requirement Group 自动创建分支。
+- Git 分支由 Task 或用户决定；不要因创建 Requirement Group 自动创建分支。
 - 未经用户或工作包授权，不执行 commit、push、创建 MR、合并 MR 或修改远端状态。
 - 当前契约未提供 Git、MR、Sandbox 或执行接口时，不得自行猜测接口实现。
 

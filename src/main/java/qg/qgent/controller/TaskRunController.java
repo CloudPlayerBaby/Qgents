@@ -52,6 +52,15 @@ public class TaskRunController {
                 requestId(request));
     }
 
+    /** Lists execution attempts for the confirmed task model. */
+    @GetMapping("/tasks/{taskId}/task-runs")
+    public ApiPageResponse<TaskRunSummaryResponse> listByTask(@PathVariable UUID projectId,
+            @PathVariable UUID taskId, @AuthenticationPrincipal UUID userId,
+            @RequestParam(required = false) String cursor, @RequestParam(defaultValue = "20") int limit,
+            HttpServletRequest request) {
+        return taskRunService.listByTask(projectId, taskId, userId, cursor, limit, requestId(request));
+    }
+
     /** 获取单次运行的状态、关联子任务和产物摘要。 */
     @GetMapping("/task-runs/{taskRunId}")
     public ApiResponse<?> detail(@PathVariable UUID projectId, @PathVariable UUID taskRunId,

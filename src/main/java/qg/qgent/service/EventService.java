@@ -121,10 +121,13 @@ public class EventService {
             }
         }
         long cursor = lastEventId != null ? lastEventId : eventMapper.maxSequence(projectId);
+        
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+
         emitter.onTimeout(() -> log.info("SSE timeout, projectId={}, cursor={}", projectId, cursor));
         emitter.onError(e -> log.info("SSE error, projectId={}: {}", projectId, e.getMessage()));
         emitter.onCompletion(() -> log.info("SSE completed, projectId={}, cursor={}", projectId, cursor));
+
         executor.execute(() -> pump(emitter, projectId, cursor));
         return emitter;
     }
