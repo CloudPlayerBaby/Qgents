@@ -14,7 +14,6 @@ public class UserEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
     private String email;
-    private String emailNormalized;
     private String displayName;
     private String avatarUrl;
     private String passwordHash;

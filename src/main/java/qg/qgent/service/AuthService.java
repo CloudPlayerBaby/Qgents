@@ -87,13 +87,14 @@ public class AuthService {
 
     @Transactional
     public AuthTokensResponse register(RegisterRequest input) {
+        // 获取邮箱和密码
         String email = normalize(input.getEmail());
         String password = validated(rsa.decrypt(input.getPasswordKeyId(), input.getPassword()));
 
+        // 新建一个 User
         UserEntity user = new UserEntity();
         user.setId(UuidV7.next());
         user.setEmail(email);
-        user.setEmailNormalized(email);
         user.setDisplayName(input.getDisplayName().trim());
         user.setPasswordHash(passwords.encode(password));
         user.setPasswordAlgorithm("BCRYPT");
@@ -238,7 +239,7 @@ public class AuthService {
 
     private UserEntity findByEmail(String email) {
         return userMapper.selectOne(Wrappers.<UserEntity>lambdaQuery()
-                .eq(UserEntity::getEmailNormalized, email));
+                .eq(UserEntity::getEmail, email));
     }
 
     private UserEntity requireUser(UUID userId) {

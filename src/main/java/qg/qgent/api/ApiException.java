@@ -3,7 +3,7 @@ package qg.qgent.api;
 import org.springframework.http.HttpStatus;
 
 /**
- * ai相关异常
+ * api 相关异常
  * ApiException
  */
 public class ApiException extends RuntimeException {

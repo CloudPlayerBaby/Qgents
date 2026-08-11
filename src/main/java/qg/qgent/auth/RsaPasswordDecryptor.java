@@ -11,11 +11,16 @@ import java.security.PrivateKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
 
+/**
+ * 私钥解密器，用于解密客户端使用公钥加密的密码
+ * RsaPasswordDecryptor
+ */
 @Component
 public class RsaPasswordDecryptor {
     private final PrivateKey privateKey;
     private final String keyId;
 
+    // 构造函数，加载RSA私钥和密钥ID
     public RsaPasswordDecryptor(@Value("${app.rsa-private-key}") Resource resource,
             @Value("${app.rsa-key-id}") String keyId) {
         this.keyId = keyId;
@@ -30,6 +35,7 @@ public class RsaPasswordDecryptor {
         }
     }
 
+    // 解密方法，使用RSA私钥解密客户端发送的加密密码
     public String decrypt(String requestedKeyId, String encrypted) {
         if (!keyId.equals(requestedKeyId)) {
             throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,

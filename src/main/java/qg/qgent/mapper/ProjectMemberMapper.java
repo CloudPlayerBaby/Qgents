@@ -5,7 +5,7 @@ import org.apache.ibatis.annotations.Result;
 import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 import qg.qgent.entity.ProjectMemberEntity;
-import qg.qgent.typehandler.UuidBinaryTypeHandler;
+import qg.qgent.handler.UuidBinaryTypeHandler;
 
 import java.util.List;
 import java.util.UUID;

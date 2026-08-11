@@ -6,8 +6,7 @@ SET
 CREATE TABLE
     users (
         id BINARY(16) PRIMARY KEY COMMENT '用户UUIDv7（二进制存储）',
-        email VARCHAR(320) NOT NULL COMMENT '用户登录邮箱原始值',
-        email_normalized VARCHAR(320) NOT NULL COMMENT '归一化邮箱，用于大小写无关唯一校验',
+        email VARCHAR(320) NOT NULL COMMENT '归一化后的用户登录邮箱，用于大小写无关唯一校验',
         display_name VARCHAR(120) NOT NULL COMMENT '用户展示名称',
         avatar_url TEXT NULL COMMENT '用户头像URL',
         password_hash VARCHAR(255) NOT NULL COMMENT '密码单向哈希，禁止存储明文',
@@ -15,7 +14,7 @@ CREATE TABLE
         status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '账号状态枚举：ACTIVE/DISABLED',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
-        UNIQUE KEY uk_users_email (email_normalized)
+        UNIQUE KEY uk_users_email (email)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '用户账号与登录凭据';
 
 CREATE TABLE

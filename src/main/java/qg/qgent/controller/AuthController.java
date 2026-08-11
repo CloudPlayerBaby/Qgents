@@ -33,22 +33,47 @@ public class AuthController {
         this.authService = authService;
     }
 
+    /**
+     * 用户注册
+     * @param body
+     * @param request
+     * @return
+     */
     @PostMapping("/auth/register")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<?> register(@Valid @RequestBody RegisterRequest body, HttpServletRequest request) {
         return ok(authService.register(body), request);
     }
 
+    /**
+     * 用户登录
+     * @param body
+     * @param request
+     * @return
+     */
     @PostMapping("/auth/login")
     public ApiResponse<?> login(@Valid @RequestBody LoginRequest body, HttpServletRequest request) {
         return ok(authService.login(body, fingerprint(request)), request);
     }
 
+    /**
+     * 刷新 token
+     * @param body
+     * @param request
+     * @return
+     */
     @PostMapping("/auth/refresh")
     public ApiResponse<?> refresh(@Valid @RequestBody RefreshTokenRequest body, HttpServletRequest request) {
         return ok(authService.refresh(body.getRefreshToken()), request);
     }
 
+    /**
+     * 用户登出
+     * @param userId
+     * @param body
+     * @param request
+     * @return
+     */
     @PostMapping("/auth/logout")
     public ApiResponse<?> logout(@AuthenticationPrincipal UUID userId,
             @Valid @RequestBody RefreshTokenRequest body, HttpServletRequest request) {
@@ -56,6 +81,12 @@ public class AuthController {
         return ok(Map.of(), request);
     }
 
+    /**
+     * 请求密码重置
+     * @param body
+     * @param request
+     * @return
+     */
     @PostMapping("/auth/password-reset-requests")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> requestReset(@Valid @RequestBody PasswordResetRequest body,
@@ -64,27 +95,48 @@ public class AuthController {
         return ok(Map.of("message", "如果邮箱已注册，重置邮件将很快发送"), request);
     }
 
+    /**
+     * 重置密码
+     * @param body
+     * @param request
+     * @return
+     */
     @PostMapping("/auth/password-resets")
     public ApiResponse<?> reset(@Valid @RequestBody ResetPasswordRequest body, HttpServletRequest request) {
         authService.reset(body);
         return ok(Map.of(), request);
     }
 
+    /**
+     * 获取当前用户信息
+     * @param userId
+     * @param request
+     * @return
+     */
     @GetMapping("/me")
     public ApiResponse<?> me(@AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         return ok(authService.me(userId), request);
     }
 
+    /**
+     * 更新当前用户信息
+     * @param userId
+     * @param body
+     * @param request
+     * @return
+     */
     @PatchMapping("/me")
     public ApiResponse<?> updateMe(@AuthenticationPrincipal UUID userId, @Valid @RequestBody UpdateMeRequest body,
             HttpServletRequest request) {
         return ok(authService.updateMe(userId, body), request);
     }
 
+    // 生成统一的 API 响应
     private ApiResponse<?> ok(Object data, HttpServletRequest request) {
         return ApiResponse.ok(data, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
 
+    // 获取请求的指纹（IP 地址）
     private String fingerprint(HttpServletRequest request) {
         return request.getRemoteAddr();
     }

@@ -47,10 +47,12 @@ public class GlobalExceptionHandler {
                 .body(error("INTERNAL_ERROR", "服务暂时不可用", List.of(), request));
     }
 
+    // 获取error的message，如果没有则返回默认值"不合法"
     private String message(FieldError error) {
         return error.getDefaultMessage() == null ? "不合法" : error.getDefaultMessage();
     }
 
+    // 按照指定格式返回错误信息
     private Map<String, Object> error(String code, String message, List<?> details, HttpServletRequest request) {
         return Map.of("error", Map.of("code", code, "message", message, "details", details),
                 "requestId", request.getAttribute(RequestIdFilter.ATTRIBUTE));
