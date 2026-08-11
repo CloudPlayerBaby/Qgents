@@ -4,10 +4,12 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.List;
 import java.util.Map;
@@ -39,6 +41,24 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .badRequest()
                 .body(error("INVALID_ARGUMENT", "请求参数不合法", details, request));
+    }
+
+    // 处理参数类型转换失败（如 path/query 中的 UUID 格式错误）
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    ResponseEntity<?> typeMismatch(MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        // 返回 400 错误
+        return ResponseEntity
+                .badRequest()
+                .body(error("INVALID_ARGUMENT", "请求参数格式不正确", List.of(), request));
+    }
+
+    // 处理请求体 JSON 解析失败
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    ResponseEntity<?> unreadable(HttpMessageNotReadableException ex, HttpServletRequest request) {
+        // 返回 400 错误
+        return ResponseEntity
+                .badRequest()
+                .body(error("INVALID_ARGUMENT", "请求体格式不正确", List.of(), request));
     }
 
     // 处理其他异常

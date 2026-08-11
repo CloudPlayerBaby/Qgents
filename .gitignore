@@ -39,7 +39,10 @@ replay_pid*
 
 # ai doc files
 docs/
+
+# 环境变量文件
 .env
+# RSA 私钥（只留后端，勿提交；公钥 public_key.pem 可提交）
 src/main/resources/rsa/private_key.pem
 
 # Private keys

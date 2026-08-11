@@ -1,5 +1,6 @@
 package qg.qgent.service;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,14 +39,16 @@ public class ProjectService {
     private final TeamMapper teamMapper;
     private final TeamMemberMapper teamMemberMapper;
     private final ProjectAccessService access;
+    private final ApplicationEventPublisher eventPublisher;
 
     public ProjectService(ProjectMapper projectMapper, ProjectMemberMapper memberMapper, TeamMapper teamMapper,
-            TeamMemberMapper teamMemberMapper, ProjectAccessService access) {
+            TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher) {
         this.projectMapper = projectMapper;
         this.memberMapper = memberMapper;
         this.teamMapper = teamMapper;
         this.teamMemberMapper = teamMemberMapper;
         this.access = access;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -77,6 +80,8 @@ public class ProjectService {
             requireTeamMember(teamId, userId);
             insertMember(project.getId(), userId, "PROJECT_MEMBER");
         }
+        // 触发自动创建唯一 PROJECT_MAIN 群（契约 §7），监听方为 GroupService
+        eventPublisher.publishEvent(new ProjectCreatedEvent(project.getId(), project.getName(), actor));
         return response(project, "PROJECT_ADMIN");
     }
 

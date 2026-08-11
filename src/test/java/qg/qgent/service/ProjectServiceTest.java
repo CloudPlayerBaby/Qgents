@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.CreateProjectRequest;
 import qg.qgent.dto.AddProjectMemberRequest;
@@ -34,7 +35,9 @@ class ProjectServiceTest {
     private final TeamMapper teams = mock(TeamMapper.class);
     private final TeamMemberMapper teamMembers = mock(TeamMemberMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
-    private final ProjectService service = new ProjectService(projects, members, teams, teamMembers, access);
+    private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
+    private final ProjectService service = new ProjectService(projects, members, teams, teamMembers, access,
+            eventPublisher);
 
     @Test
     void createAddsCreatorAdminAndUniqueInitialMembers() {

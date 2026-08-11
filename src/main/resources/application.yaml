@@ -57,6 +57,10 @@ app:
   access-token-minutes: ${ACCESS_TOKEN_MINUTES:15}
   refresh-token-days: ${REFRESH_TOKEN_DAYS:30}
   reset-token-minutes: ${RESET_TOKEN_MINUTES:30}
+  # 附件直传凭证：对象存储未接入前默认返回本地签名 URL，接入后由对应策略替换
+  attachment-upload-base: ${ATTACHMENT_UPLOAD_BASE:/api/v1/internal/attachments}
+  attachment-signing-secret: ${ATTACHMENT_SIGNING_SECRET:dev-only-change-me}
+  attachment-upload-expiry-seconds: ${ATTACHMENT_UPLOAD_EXPIRY_SECONDS:900}
 
 springdoc:
   swagger-ui:
