@@ -38,6 +38,9 @@ spring:
       mail.smtp.writetimeout: 5000
 
 
+# TODO(Deployment): 部署到生产环境（有真实的公网域名）时，必须在 GitHub 开发者后台创建一个全新的 GitHub App。
+# 注意1：生产环境的 GitHub App 必须将其 Callback URL 配置为线上真实的 HTTPS 域名地址（例如 https://api.qgents.com/api/v1/integrations/github/callback），否则将面临严重的安全泄露风险并被 GitHub 拦截。
+# 注意2：必须同时在 GitHub App 设置中开启并配置 Webhook 功能（Webhook URL 及 Webhook Secret），用于接收仓库的动态事件（如 MR 状态、代码推送等）。
 github:
   app:
     app-id: ${GITHUB_APP_ID:}
