@@ -29,7 +29,7 @@ import qg.qgent.security.CurrentActorProvider;
 import qg.qgent.service.GitHubRepositoryService;
 
 /**
- * GitHub App 团队授权与项目仓库绑定接口。除 GitHub 回调外，调用者身份均从安全上下文获取，
+ * 6.GitHub App 团队授权与项目仓库绑定接口。除 GitHub 回调外，调用者身份均从安全上下文获取，
  * 具体团队和项目权限由服务层根据资源归属校验。
  */
 @RestController
