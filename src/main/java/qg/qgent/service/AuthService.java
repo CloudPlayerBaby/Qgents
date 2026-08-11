@@ -262,7 +262,10 @@ public class AuthService {
         return members.stream().filter(member -> teams.containsKey(member.getTeamId()))
                 .map(member -> {
                     TeamEntity team = teams.get(member.getTeamId());
-                    return new TeamResponse(team.getId().toString(), team.getName(), member.getRole());
+                    String role = team.getOwnerUserId().equals(userId) && "TEAM_OWNER".equals(member.getRole())
+                            ? "TEAM_OWNER"
+                            : "TEAM_MEMBER";
+                    return new TeamResponse(team.getId().toString(), team.getName(), role);
                 }).toList();
     }
 

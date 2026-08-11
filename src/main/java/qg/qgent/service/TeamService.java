@@ -107,7 +107,8 @@ public class TeamService {
         List<TeamMembershipView> rows = teamMapper.selectMembershipPage(actor, anchor, pageSize + 1);
         // 转成指定的分页响应
         return keysetPage(rows, pageSize, scope, TeamMembershipView::getId,
-                row -> new TeamResponse(row.getId().toString(), row.getName(), row.getRole()));
+                row -> new TeamResponse(row.getId().toString(), row.getName(),
+                        effectiveRole(row.getOwnerUserId(), actor, row.getRole())));
     }
 
     /**
@@ -120,7 +121,8 @@ public class TeamService {
     public TeamResponse get(UUID actor, UUID teamId) {
         // 获取一个团队的详情
         TeamMemberEntity member = requireMember(teamId, actor);
-        return team(requireTeam(teamId), member.getRole());
+        TeamEntity team = requireTeam(teamId);
+        return team(team, effectiveRole(team.getOwnerUserId(), actor, member.getRole()));
     }
 
     /**
@@ -155,12 +157,14 @@ public class TeamService {
     public PageSlice<TeamMemberResponse> members(UUID actor, UUID teamId, String cursor, Integer limit) {
         // 检查用户是否是团队的成员
         requireMember(teamId, actor);
+        TeamEntity team = requireTeam(teamId);
         int pageSize = pageSize(limit);
         String scope = "team-members:" + teamId;
         UUID anchor = decodeCursor(cursor, scope);
         List<TeamMemberEntity> rows = memberMapper.selectMemberPage(teamId, anchor, pageSize + 1);
         return keysetPage(rows, pageSize, scope, TeamMemberEntity::getUserId,
-                member -> new TeamMemberResponse(member.getUserId().toString(), member.getRole()));
+                member -> new TeamMemberResponse(member.getUserId().toString(),
+                        effectiveRole(team.getOwnerUserId(), member.getUserId(), member.getRole())));
     }
 
     /**
@@ -267,7 +271,9 @@ public class TeamService {
         if ("ACCEPTED".equals(invitation.getStatus())) {
             TeamMemberEntity existing = memberMapper.selectByTeamAndUser(invitation.getTeamId(), actor);
             if (existing != null) {
-                return new TeamMemberResponse(actor.toString(), existing.getRole());
+                TeamEntity team = requireTeam(invitation.getTeamId());
+                return new TeamMemberResponse(actor.toString(),
+                        effectiveRole(team.getOwnerUserId(), actor, existing.getRole()));
             }
         }
         // 判断邀请是否是待处理状态
@@ -294,7 +300,9 @@ public class TeamService {
         invitation.setStatus("ACCEPTED");
         invitation.setAcceptedAt(now());
         invitationMapper.updateById(invitation);
-        return new TeamMemberResponse(actor.toString(), member.getRole());
+        TeamEntity team = requireTeam(invitation.getTeamId());
+        return new TeamMemberResponse(actor.toString(),
+                effectiveRole(team.getOwnerUserId(), actor, member.getRole()));
     }
 
     /**
@@ -359,7 +367,8 @@ public class TeamService {
         // 更新团队成员角色
         target.setRole(request.getRole());
         memberMapper.updateRole(teamId, userId, request.getRole());
-        return new TeamMemberResponse(userId.toString(), target.getRole());
+        return new TeamMemberResponse(userId.toString(),
+                effectiveRole(team.getOwnerUserId(), userId, target.getRole()));
     }
 
     /**
@@ -384,7 +393,8 @@ public class TeamService {
         projectMemberMapper.deleteByTeamAndUser(teamId, userId);
         // 移除团队成员在团队成员列表
         memberMapper.deleteByTeamAndUser(teamId, userId);
-        return new TeamMemberResponse(userId.toString(), target.getRole());
+        return new TeamMemberResponse(userId.toString(),
+                effectiveRole(team.getOwnerUserId(), userId, target.getRole()));
     }
 
     // 查询到团队和成员信息并检查是否存在
@@ -403,6 +413,12 @@ public class TeamService {
         if (!team.getOwnerUserId().equals(userId) || !"TEAM_OWNER".equals(member.getRole())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "TEAM_OWNER_REQUIRED", "需要 Team Owner 权限");
         }
+    }
+
+    private String effectiveRole(UUID ownerUserId, UUID userId, String storedRole) {
+        return ownerUserId != null && ownerUserId.equals(userId) && "TEAM_OWNER".equals(storedRole)
+                ? "TEAM_OWNER"
+                : "TEAM_MEMBER";
     }
 
     // 查询到team并检查是否存在

@@ -137,6 +137,53 @@ class TeamServiceTest {
     }
 
     @Test
+    void canonicalOwnerCanNormalizeExtraOwnerRole() {
+        UUID teamId = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        UUID extraOwner = UUID.randomUUID();
+        when(teamMapper.selectByIdForUpdate(teamId)).thenReturn(team(teamId, owner));
+        when(memberMapper.selectByTeamAndUser(teamId, owner)).thenReturn(member(teamId, owner, "TEAM_OWNER"));
+        when(memberMapper.selectByTeamAndUser(teamId, extraOwner))
+                .thenReturn(member(teamId, extraOwner, "TEAM_OWNER"));
+        UpdateTeamMemberRequest request = new UpdateTeamMemberRequest();
+        request.setRole("TEAM_MEMBER");
+
+        var response = service.updateMember(owner, teamId, extraOwner, request);
+
+        assertEquals("TEAM_MEMBER", response.getRole());
+        verify(memberMapper).updateRole(teamId, extraOwner, "TEAM_MEMBER");
+    }
+
+    @Test
+    void teamDetailsNormalizeExtraOwnerRole() {
+        UUID teamId = UUID.randomUUID();
+        UUID canonicalOwner = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        when(memberMapper.selectByTeamAndUser(teamId, actor)).thenReturn(member(teamId, actor, "TEAM_OWNER"));
+        when(teamMapper.selectById(teamId)).thenReturn(team(teamId, canonicalOwner));
+
+        var response = service.get(actor, teamId);
+
+        assertEquals("TEAM_MEMBER", response.getRole());
+    }
+
+    @Test
+    void memberListNormalizesExtraOwnerRole() {
+        UUID teamId = UUID.randomUUID();
+        UUID canonicalOwner = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        UUID extraOwner = UUID.randomUUID();
+        when(memberMapper.selectByTeamAndUser(teamId, actor)).thenReturn(member(teamId, actor, "TEAM_MEMBER"));
+        when(teamMapper.selectById(teamId)).thenReturn(team(teamId, canonicalOwner));
+        when(memberMapper.selectMemberPage(teamId, null, 31))
+                .thenReturn(java.util.List.of(member(teamId, extraOwner, "TEAM_OWNER")));
+
+        var response = service.members(actor, teamId, null, null);
+
+        assertEquals("TEAM_MEMBER", response.getData().get(0).getRole());
+    }
+
+    @Test
     void acceptExpiredInvitationPersistsExpiredBeforeReturningError() {
         UUID actor = UUID.randomUUID();
         UUID invitationId = UUID.randomUUID();
@@ -223,8 +270,9 @@ class TeamServiceTest {
             UUID teamId = new UUID(0, i + 1L);
             TeamMembershipView row = new TeamMembershipView();
             row.setId(teamId);
+            row.setOwnerUserId(UUID.randomUUID());
             row.setName("team-" + i);
-            row.setRole("TEAM_MEMBER");
+            row.setRole(i == 0 ? "TEAM_OWNER" : "TEAM_MEMBER");
             firstRows.add(row);
         }
         when(teamMapper.selectMembershipPage(actor, null, 31)).thenReturn(firstRows);
@@ -234,6 +282,7 @@ class TeamServiceTest {
         var page = service.list(actor, null, null);
 
         assertEquals(30, page.getData().size());
+        assertEquals("TEAM_MEMBER", page.getData().get(0).getRole());
         assertEquals(true, page.getPage().isHasMore());
 
         var nextPage = service.list(actor, page.getPage().getNextCursor(), null);
@@ -247,15 +296,18 @@ class TeamServiceTest {
         UUID teamId = UUID.randomUUID();
         TeamMembershipView first = new TeamMembershipView();
         first.setId(new UUID(0, 1));
+        first.setOwnerUserId(UUID.randomUUID());
         first.setName("one");
         first.setRole("TEAM_MEMBER");
         TeamMembershipView second = new TeamMembershipView();
         second.setId(new UUID(0, 2));
+        second.setOwnerUserId(UUID.randomUUID());
         second.setName("two");
         second.setRole("TEAM_MEMBER");
         when(teamMapper.selectMembershipPage(actor, null, 2)).thenReturn(java.util.List.of(first, second));
         String teamListCursor = service.list(actor, null, 1).getPage().getNextCursor();
         when(memberMapper.selectByTeamAndUser(teamId, actor)).thenReturn(member(teamId, actor, "TEAM_MEMBER"));
+        when(teamMapper.selectById(teamId)).thenReturn(team(teamId, UUID.randomUUID()));
 
         ApiException error = assertThrows(ApiException.class,
                 () -> service.members(actor, teamId, teamListCursor, 1));

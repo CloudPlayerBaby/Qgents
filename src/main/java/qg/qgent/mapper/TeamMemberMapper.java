@@ -39,12 +39,6 @@ public interface TeamMemberMapper {
         List<TeamMemberEntity> selectMemberPage(@Param("teamId") UUID teamId, @Param("anchor") UUID anchor,
                         @Param("limit") int limit);
 
-        @Select("SELECT team_id, user_id, role FROM team_members WHERE team_id = #{teamId} AND role = 'TEAM_OWNER' ORDER BY user_id FOR UPDATE")
-        @Results({ @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class),
-                        @Result(column = "user_id", property = "userId", typeHandler = UuidBinaryTypeHandler.class),
-                        @Result(column = "role", property = "role") })
-        List<TeamMemberEntity> selectOwnersForUpdate(@Param("teamId") UUID teamId);
-
         @Insert("INSERT INTO team_members (team_id, user_id, role) VALUES (#{teamId}, #{userId}, #{role})")
         int insert(TeamMemberEntity member);
 

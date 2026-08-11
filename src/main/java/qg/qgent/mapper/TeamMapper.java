@@ -25,13 +25,14 @@ public interface TeamMapper extends BaseMapper<TeamEntity> {
     TeamEntity selectByIdForUpdate(UUID teamId);
 
     @Select({ "<script>",
-            "SELECT t.id, t.name, tm.role FROM team_members tm INNER JOIN teams t ON t.id = tm.team_id",
+            "SELECT t.id, t.owner_user_id, t.name, tm.role FROM team_members tm INNER JOIN teams t ON t.id = tm.team_id",
             "WHERE tm.user_id = #{userId}",
             "<if test='anchor != null'>AND t.id &gt; #{anchor}</if>",
             "ORDER BY t.id LIMIT #{limit}",
             "</script>" })
     @Results({
             @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "owner_user_id", property = "ownerUserId", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "name", property = "name"),
             @Result(column = "role", property = "role")
     })
