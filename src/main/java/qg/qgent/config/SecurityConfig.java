@@ -81,11 +81,13 @@ public class SecurityConfig {
                                 "/api/v1/auth/refresh", "/api/v1/auth/password-reset-requests",
                                 "/api/v1/auth/password-resets")
                         .permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/integrations/github/callback").permitAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/error").permitAll().anyRequest()
                         .authenticated())
                 // 配置异常处理
                 .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> {
                     res.setStatus(401);
+                    res.setCharacterEncoding("UTF-8");
                     res.setContentType(MediaType.APPLICATION_JSON_VALUE);
                     mapper.writeValue(res.getWriter(),
                             Map.of("error", Map.of("code", "UNAUTHORIZED", "message", "需要登录", "details", List.of()),
