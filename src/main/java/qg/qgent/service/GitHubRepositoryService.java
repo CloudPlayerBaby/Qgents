@@ -40,6 +40,10 @@ import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.RepositoryBranchConfigMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 
+/**
+ * GitHub 仓库与团队/项目授权绑定服务。
+ * 负责处理 GitHub App 的安装、卸载、仓库同步，以及仓库与具体 Qgents 项目的绑定与解绑逻辑。
+ */
 @Service
 @Slf4j
 public class GitHubRepositoryService {
@@ -69,9 +73,18 @@ public class GitHubRepositoryService {
         this.clock = clock;
     }
 
+    /**
+     * 为团队生成 GitHub App 安装的授权跳转链接。
+     * 只有 Team Owner 才能执行此操作。
+     *
+     * @param actorId 当前操作用户的 ID
+     * @param teamId  团队 ID
+     * @return 包含安装跳转 URL 和过期时间的响应对象
+     */
     public GitHubInstallationUrlResponse createInstallationUrl(UUID actorId, UUID teamId) {
         log.info("Generating GitHub installation URL for teamId: {}, requested by actorId: {}", teamId, actorId);
         requireTeamOwner(actorId, teamId);
+        // 调用底层 GitHub SDK 生成包含状态（加密的 teamId）的安装链接，时效为 10 分钟
         return new GitHubInstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId),
                 LocalDateTime.now(clock).plusSeconds(600));
     }
@@ -84,24 +97,40 @@ public class GitHubRepositoryService {
                 .stream().map(this::toInstallationResponse).toList();
     }
 
+    /**
+     * 移除团队已安装的 GitHub App 授权记录。
+     * 如果该安装下的仓库已经被绑定到某个具体项目里，则拒绝删除（需要先解绑项目仓库）。
+     *
+     * @param actorId        操作人 ID
+     * @param teamId         团队 ID
+     * @param installationId Qgents 内部的安装记录 ID
+     */
     @Transactional
     public void removeInstallation(UUID actorId, UUID teamId, UUID installationId) {
         requireTeamOwner(actorId, teamId);
+        
+        // 查找属于该团队的这条安装记录
         GitHubInstallationEntity installation = installationMapper.selectOne(new LambdaQueryWrapper<GitHubInstallationEntity>()
                 .eq(GitHubInstallationEntity::getId, installationId)
                 .eq(GitHubInstallationEntity::getTeamId, teamId));
         if (installation == null) {
             throw notFound("GitHub installation does not exist");
         }
+        
+        // 查询该安装记录下同步过来的所有仓库 ID
         List<UUID> repositoryIds = repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
                         .eq(GitHubRepositoryEntity::getInstallationId, installationId)
                         .select(GitHubRepositoryEntity::getId))
                 .stream().map(GitHubRepositoryEntity::getId).toList();
+                
+        // 如果有仓库，并且这些仓库有任何一个正在被某个项目绑定使用，就抛出冲突异常
         if (!repositoryIds.isEmpty() && projectRepositoryMapper.selectCount(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .in(ProjectRepositoryEntity::getRepositoryId, repositoryIds)) > 0) {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_IN_USE",
                     "Unbind project repositories before removing this GitHub installation");
         }
+        
+        // 只有所有仓库都没被项目引用时，才允许物理删除这条安装记录
         installationMapper.deleteById(installationId);
     }
 
@@ -120,30 +149,45 @@ public class GitHubRepositoryService {
                 .stream().map(this::toProjectRepositoryResponse).toList();
     }
 
+    /**
+     * 将团队层面已经授权的 GitHub 仓库，正式“绑定”到某个具体的项目中去使用。
+     *
+     * @param actorId   操作人（需要 Project Admin 权限）
+     * @param projectId 项目 ID
+     * @param request   绑定请求，包含仓库 ID 等
+     */
     @Transactional
     public ProjectRepositoryResponse bindProjectRepository(UUID actorId, UUID projectId,
                                                            BindProjectRepositoryRequest request) {
         log.info("Binding GitHub repository (ID: {}) to projectId: {} by actorId: {}", request.getRepositoryId(), projectId, actorId);
         requireProjectAdmin(actorId, projectId);
+        
+        // 查找该团队激活状态的安装记录里，是否包含要绑定的这个仓库
         GitHubRepositoryEntity repository = findActiveRepositoryForProject(request.getInstallationId(),
                 request.getRepositoryId(), projectId);
         if (repository == null) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REPOSITORY_NOT_AUTHORIZED_FOR_PROJECT",
                     "Repository is not available through an active installation for this project team");
         }
+        
+        // 防止重复绑定：如果该仓库已经被当前项目绑定过，抛出冲突
         if (projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .eq(ProjectRepositoryEntity::getProjectId, projectId)
                 .eq(ProjectRepositoryEntity::getRepositoryId, repository.getId())) != null) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_ALREADY_BOUND",
                     "Repository is already bound to this project");
         }
+        
+        // 创建项目与仓库的绑定关系记录 (ProjectRepositoryEntity)
         ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
         binding.setId(UUID.randomUUID());
         binding.setProjectId(projectId);
         binding.setRepositoryId(repository.getId());
+        // 如果请求未指定默认分支，则回退使用 GitHub 上该仓库真实的默认分支
         binding.setDefaultBranch(blankToDefault(request.getDefaultBranch(), repository.getDefaultBranch()));
         binding.setDisplayName(request.getDisplayName());
         binding.setBoundAt(LocalDateTime.now(clock));
+        
         projectRepositoryMapper.insert(binding);
         return toProjectRepositoryResponse(binding);
     }
@@ -177,38 +221,58 @@ public class GitHubRepositoryService {
         projectRepositoryMapper.deleteById(projectRepositoryId);
     }
 
+    /**
+     * 处理来自 GitHub App 的安装/授权回调请求。
+     * 当用户在 GitHub 网页上点击“Install”或“Save”后，GitHub 会携带 state 调回这个接口。
+     *
+     * @param providerInstallationId GitHub 底层真实的 Installation ID
+     * @param state                  授权时生成的加密状态，内含发起的团队 teamId
+     */
     @Transactional
     public void handleInstallationCallback(long providerInstallationId, String state) {
         log.info("Handling GitHub App installation callback. providerInstallationId: {}", providerInstallationId);
+        
+        // 1. 验证 state 签名，并从中解析出真正发起授权的团队 ID
         UUID teamId = gitHubClient.verifyInstallationState(state);
+        
+        // 2. 调 GitHub API 查询这个安装记录的详细信息
         GitHubInstallationDetails installation = gitHubClient.getInstallation(providerInstallationId);
+        
+        // 3. 在本地库查找这条安装记录（如果用户是点 Configure 更新已有的授权，这里就能查出老记录）
         GitHubInstallationEntity installationEntity = installationMapper.selectOne(
                 new LambdaQueryWrapper<GitHubInstallationEntity>().eq(GitHubInstallationEntity::getProviderInstallationId,
                         providerInstallationId));
         boolean newInstallation = installationEntity == null;
+        
         if (newInstallation) {
             installationEntity = new GitHubInstallationEntity();
             installationEntity.setId(UUID.randomUUID());
         }
+        // 更新安装记录的核心信息
         installationEntity.setTeamId(teamId);
         installationEntity.setProviderInstallationId(installation.getInstallationId());
         installationEntity.setAccountLogin(installation.getAccountLogin());
         installationEntity.setAccountType(normalizeEnum(installation.getAccountType()));
         installationEntity.setStatus("ACTIVE");
+        
         if (newInstallation) {
             installationMapper.insert(installationEntity);
         } else {
             installationMapper.updateById(installationEntity);
         }
+        
+        // 4. 同步该安装授权范围内的所有仓库到本地库
         for (GitHubRepositoryDetails repository : gitHubClient.listRepositories(providerInstallationId)) {
             GitHubRepositoryEntity repositoryEntity = repositoryMapper.selectOne(
                     new LambdaQueryWrapper<GitHubRepositoryEntity>().eq(GitHubRepositoryEntity::getProviderRepositoryId,
                             repository.getRepositoryId()));
+                            
             boolean newRepository = repositoryEntity == null;
             if (newRepository) {
                 repositoryEntity = new GitHubRepositoryEntity();
                 repositoryEntity.setId(UUID.randomUUID());
             }
+            // 更新仓库的基础信息
             repositoryEntity.setInstallationId(installationEntity.getId());
             repositoryEntity.setProviderRepositoryId(repository.getRepositoryId());
             repositoryEntity.setOwnerLogin(repository.getOwnerLogin());
@@ -217,6 +281,7 @@ public class GitHubRepositoryService {
             repositoryEntity.setVisibility(normalizeEnum(repository.getVisibility()));
             repositoryEntity.setArchived(repository.isArchived());
             repositoryEntity.setSyncedAt(LocalDateTime.now(clock));
+            
             if (newRepository) {
                 repositoryMapper.insert(repositoryEntity);
             } else {
