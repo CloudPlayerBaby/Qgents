@@ -31,10 +31,7 @@ public class DeliverableEntity {
     private UUID taskDeliveryId;
     /** 关联需求群ID，可为空。 */
     private UUID requirementGroupId;
-    /** 所属工作包ID；第11节建表后补外键。 */
     /** @deprecated Legacy read-only compatibility anchor; new writes use taskId and taskDeliveryId. */
-    @Deprecated
-    private UUID workPackageId;
     /** 产出交付物的任务运行ID，可为空。 */
     private UUID taskRunId;
     /** 项目仓库绑定ID。 */

@@ -29,10 +29,7 @@ public class DryRunEntity {
     private UUID taskStepId;
     /** 项目仓库绑定ID。 */
     private UUID projectRepositoryId;
-    /** 关联工作包ID；第11节建表后补外键，可为空。 */
     /** @deprecated Legacy read-only compatibility anchor; new writes use taskId. */
-    @Deprecated
-    private UUID workPackageId;
     /** 源分支或提交引用。 */
     private String sourceRef;
     /** 目标分支名。 */

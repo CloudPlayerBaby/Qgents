@@ -39,8 +39,7 @@ import java.util.stream.Collectors;
  * 仅管理配置与状态，真实执行由执行服务承担（202 接缝）；testsetIds 必须属于该仓库且为 ENABLED，
  * 受保护分支的必选测试集由分支门禁决定，客户端不能传入较少测试集跳过。
  * 创建为受理接缝：持久化 QUEUED 并返回，真实执行由执行服务（TODO 接缝）推进状态与写入结果；
- * 受保护分支必选测试集暂以仓库默认分支的 branch config 为准，待第 11 节 workPackage 落地后
- * 改按 workPackage.baseBranch 精确校验。
+ * 受保护分支必选测试集暂以仓库默认分支的 branch config 为准；后续由 TaskRepository.baseRef 精确校验。
  */
 @Service
 public class TestRunService {
@@ -70,7 +69,7 @@ public class TestRunService {
 
     /**
      * 发起受控测试运行。
-     * 校验 repositoryId 归属项目、workPackageId 与 ref 二选一、testsetIds 属于仓库且 ENABLED，
+     * 校验 repositoryId 归属项目、taskId 与 ref 二选一、testsetIds 属于仓库且 ENABLED，
      * 并确保覆盖受保护分支必选测试集；受理后持久化 QUEUED 并发布 test-run.updated。
      *
      * @return 新测试运行摘要（受理态，真实执行后续由执行服务推进）
@@ -79,11 +78,11 @@ public class TestRunService {
     public TestRunResponse createTestRun(UUID projectId, UUID userId, TestRunCreateRequest request) {
         projectAccess.requireProjectMember(projectId, userId);
         ProjectRepositoryEntity repo = requireRepository(projectId, request.getRepositoryId());
-        boolean hasWorkPackage = request.getWorkPackageId() != null;
+        boolean hasTask = request.getTaskId() != null;
         boolean hasRef = request.getRef() != null && !request.getRef().isBlank();
-        if (hasWorkPackage == hasRef) {
+        if (hasTask == hasRef) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TEST_RUN_TARGET",
-                    "workPackageId 与 ref 必须二选一");
+                    "taskId 与 ref 必须二选一");
         }
         validateTestsets(projectId, request);
         enforceRequiredTestsets(repo, request);
@@ -92,7 +91,7 @@ public class TestRunService {
         run.setId(UuidV7.next());
         run.setProjectId(projectId);
         run.setProjectRepositoryId(request.getRepositoryId());
-        run.setWorkPackageId(request.getWorkPackageId());
+        run.setTaskId(request.getTaskId());
         run.setRef(request.getRef());
         run.setTestsetIds(request.getTestsetIds().stream().map(UUID::toString).toList());
         run.setStatus("QUEUED");
@@ -130,7 +129,7 @@ public class TestRunService {
         run.setId(UuidV7.next());
         run.setProjectId(projectId);
         run.setProjectRepositoryId(request.getRepositoryId());
-        run.setWorkPackageId(request.getWorkPackageId());
+        run.setTaskId(request.getTaskId());
         run.setSourceRef(request.getSourceRef());
         run.setTargetBranch(request.getTargetBranch());
         run.setStatus("QUEUED");
@@ -203,8 +202,8 @@ public class TestRunService {
         p.put("projectId", run.getProjectId());
         p.put("testRunId", run.getId());
         p.put("repositoryId", run.getProjectRepositoryId());
-        if (run.getWorkPackageId() != null) {
-            p.put("workPackageId", run.getWorkPackageId());
+        if (run.getTaskId() != null) {
+            p.put("taskId", run.getTaskId());
         }
         p.put("ref", run.getRef());
         p.put("status", run.getStatus());
@@ -218,8 +217,8 @@ public class TestRunService {
         p.put("projectId", run.getProjectId());
         p.put("dryRunId", run.getId());
         p.put("repositoryId", run.getProjectRepositoryId());
-        if (run.getWorkPackageId() != null) {
-            p.put("workPackageId", run.getWorkPackageId());
+        if (run.getTaskId() != null) {
+            p.put("taskId", run.getTaskId());
         }
         p.put("sourceRef", run.getSourceRef());
         p.put("targetBranch", run.getTargetBranch());
@@ -231,13 +230,13 @@ public class TestRunService {
 
     private TestRunResponse toTestRun(TestRunEntity run) {
         return new TestRunResponse(id(run.getId()), id(run.getProjectId()), id(run.getProjectRepositoryId()),
-                id(run.getWorkPackageId()), run.getRef(), run.getTestsetIds(), run.getStatus(), run.getSummary(),
+                run.getRef(), run.getTestsetIds(), run.getStatus(), run.getSummary(),
                 id(run.getCreatedBy()), iso(run.getCreatedAt()));
     }
 
     private DryRunResponse toDryRun(DryRunEntity run) {
         return new DryRunResponse(id(run.getId()), id(run.getProjectId()), id(run.getProjectRepositoryId()),
-                id(run.getWorkPackageId()), run.getSourceRef(), run.getTargetBranch(), run.getStatus(),
+                run.getSourceRef(), run.getTargetBranch(), run.getStatus(),
                 run.getReport(), id(run.getCreatedBy()), iso(run.getCreatedAt()));
     }
 

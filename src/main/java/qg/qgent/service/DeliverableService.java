@@ -82,10 +82,7 @@ public class DeliverableService {
         this.eventService = eventService;
     }
 
-    /**
-     * 查询工作包产出的交付物（游标分页，按交付物 ID 倒序）。
-     */
-    public ApiPageResponse<DeliverableResponse> listByWorkPackage(UUID projectId, UUID workPackageId, UUID userId,
+    private ApiPageResponse<DeliverableResponse> listTaskResults(UUID projectId, UUID taskId, UUID userId,
             String cursor, int limit, String requestId) {
         // 确认是项目成员
         projectAccess.requireProjectMember(projectId, userId);
@@ -95,7 +92,7 @@ public class DeliverableService {
 
         List<DeliverableEntity> rows = deliverableMapper.selectList(Wrappers.<DeliverableEntity>lambdaQuery()
                 .eq(DeliverableEntity::getProjectId, projectId)
-                .eq(DeliverableEntity::getWorkPackageId, workPackageId)
+                .eq(DeliverableEntity::getTaskId, taskId)
                 .lt(cursorUuid != null, DeliverableEntity::getId, cursorUuid)
                 .orderByDesc(DeliverableEntity::getId)
                 .last("LIMIT " + (size + 1)));
@@ -336,7 +333,6 @@ public class DeliverableService {
      *
      * @param projectId     所属项目ID
      * @param taskRunId     产出交付物的任务运行ID
-     * @param workPackageId 所属工作包ID
      * @param groupId       可选需求群ID
      * @param repositoryId  项目仓库绑定ID
      * @param sourceBranch  交付变更所在源分支
@@ -345,7 +341,7 @@ public class DeliverableService {
      * @param createdBy     发起用户ID
      */
     @Transactional
-    public DeliverableResponse createFromExecution(UUID projectId, UUID taskRunId, UUID workPackageId, UUID groupId,
+    public DeliverableResponse createFromExecution(UUID projectId, UUID taskRunId, UUID taskId, UUID groupId,
             UUID repositoryId, String sourceBranch, String headCommit, Map<String, Object> summary, UUID createdBy) {
         // TODO 接缝：由受控执行服务在真实完成提交与检查后调用；本方法仅持久化交付物并发布事件
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
@@ -353,7 +349,7 @@ public class DeliverableService {
         d.setId(UuidV7.next());
         d.setProjectId(projectId);
         d.setRequirementGroupId(groupId);
-        d.setWorkPackageId(workPackageId);
+        d.setTaskId(taskId);
         d.setTaskRunId(taskRunId);
         d.setProjectRepositoryId(repositoryId);
         d.setSourceBranch(sourceBranch);
@@ -369,7 +365,7 @@ public class DeliverableService {
         if (groupId != null) {
             payload.put("groupId", groupId);
         }
-        payload.put("workPackageId", workPackageId);
+        payload.put("taskId", taskId);
         payload.put("taskRunId", taskRunId);
         payload.put("deliverableId", d.getId());
         payload.put("sourceBranch", sourceBranch);
@@ -484,7 +480,7 @@ public class DeliverableService {
         if (d.getRequirementGroupId() != null) {
             payload.put("groupId", d.getRequirementGroupId());
         }
-        payload.put("workPackageId", d.getWorkPackageId());
+        payload.put("taskId", d.getTaskId());
         payload.put("taskRunId", d.getTaskRunId());
         payload.put("deliverableId", d.getId());
         payload.put("status", d.getStatus());
@@ -498,7 +494,7 @@ public class DeliverableService {
 
     private DeliverableResponse toResponse(DeliverableEntity d) {
         return new DeliverableResponse(id(d.getId()), id(d.getProjectId()), id(d.getTaskId()), id(d.getTaskStepId()), id(d.getRequirementGroupId()),
-                id(d.getWorkPackageId()), id(d.getTaskRunId()), id(d.getProjectRepositoryId()), d.getSourceBranch(),
+                id(d.getTaskRunId()), id(d.getProjectRepositoryId()), d.getSourceBranch(),
                 d.getHeadCommit(), d.getSummary(), d.getStatus(), id(d.getCreatedBy()), id(d.getReviewedBy()),
                 d.getReviewReason(), iso(d.getReviewedAt()), iso(d.getCreatedAt()));
     }

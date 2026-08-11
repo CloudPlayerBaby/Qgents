@@ -11,7 +11,7 @@ import java.util.UUID;
 /**
  * 子任务受控执行记录（TaskRun）。
  * 将编排产生的子任务实际执行持久化；它不是平行顶层任务，必须锚定既有编排运行、
- * 工作包与子任务，并继承其项目、需求群与仓库归属。
+ * Task 与 TaskStep，并继承其项目、需求群与仓库归属。
  * 状态枚举：QUEUED/RUNNING/SUCCEEDED/FAILED/WAITING_INPUT/WAITING_APPROVAL/BLOCKED/CANCELLING/CANCELLED。
  */
 @Data
@@ -31,15 +31,12 @@ public class TaskRunEntity {
     /** @deprecated Legacy read-only compatibility anchor; new writes use taskId. */
     @Deprecated
     private UUID orchestrationRunId;
-    /** 所属工作包ID；第11节建表后补外键，当前仅作归属锚定。 */
     /** @deprecated Legacy read-only compatibility anchor; new writes use taskId. */
-    @Deprecated
-    private UUID workPackageId;
     /** 关联子任务ID；第11节建表后补外键，当前仅作归属锚定。 */
     /** @deprecated Legacy read-only compatibility anchor; new writes use taskStepId. */
     @Deprecated
     private UUID subTaskId;
-    /** 项目仓库绑定ID，继承自工作包的仓库。 */
+    /** 项目仓库绑定ID，属于当前 Task 的仓库范围。 */
     private UUID projectRepositoryId;
     /** 关联需求群ID，可为空。 */
     private UUID requirementGroupId;

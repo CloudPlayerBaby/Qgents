@@ -19,7 +19,6 @@ public class DeliverableResponse {
     private String taskId;
     private String taskStepId;
     private String groupId;
-    private String workPackageId;
     private String taskRunId;
     private String repositoryId;
     private String sourceBranch;

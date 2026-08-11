@@ -16,7 +16,6 @@ public class DryRunResponse {
     private String id;
     private String projectId;
     private String repositoryId;
-    private String workPackageId;
     private String sourceRef;
     private String targetBranch;
     private String status;

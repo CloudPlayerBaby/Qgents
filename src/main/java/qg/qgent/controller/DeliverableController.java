@@ -38,18 +38,6 @@ public class DeliverableController {
         this.deliverableService = deliverableService;
     }
 
-    /**
-     * 查询工作包产出的交付物（游标分页）。
-     */
-    @GetMapping("/work-packages/{workPackageId}/deliverables")
-    public ApiPageResponse<DeliverableResponse> listByWorkPackage(@PathVariable UUID projectId,
-            @PathVariable UUID workPackageId, @AuthenticationPrincipal UUID userId,
-            @RequestParam(required = false) String cursor, @RequestParam(defaultValue = "20") int limit,
-            HttpServletRequest request) {
-        return deliverableService.listByWorkPackage(projectId, workPackageId, userId, cursor, limit,
-                requestId(request));
-    }
-
     /** Lists repository-scoped deliverables and prior rejected versions for a task. */
     @GetMapping("/tasks/{taskId}/deliverables")
     public ApiPageResponse<DeliverableResponse> listByTask(@PathVariable UUID projectId,
