@@ -12,6 +12,10 @@ import java.util.HexFormat;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * 限流
+ * RateLimiter
+ */
 @Component
 public class RateLimiter {
     private static final Logger log = LoggerFactory.getLogger(RateLimiter.class);
@@ -35,6 +39,7 @@ public class RateLimiter {
         }
     }
 
+    // 使用本地内存作为 Redis 不可用时的回退限流机制
     private boolean allowLocal(String key, int limit, Duration window) {
         long now = System.currentTimeMillis();
         LocalWindow current = fallback.compute(key, (ignored, old) -> {
@@ -48,6 +53,7 @@ public class RateLimiter {
         return current.count.get() <= limit;
     }
 
+    // 计算指纹的哈希值
     private String fingerprintHash(String value) {
         try {
             return HexFormat.of()
@@ -57,6 +63,13 @@ public class RateLimiter {
         }
     }
 
-    private record LocalWindow(AtomicInteger count, long expiresAt) {
+    private static final class LocalWindow {
+        private final AtomicInteger count;
+        private final long expiresAt;
+
+        private LocalWindow(AtomicInteger count, long expiresAt) {
+            this.count = count;
+            this.expiresAt = expiresAt;
+        }
     }
 }

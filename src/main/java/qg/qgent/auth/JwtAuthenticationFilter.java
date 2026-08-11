@@ -30,6 +30,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
             throws ServletException, IOException {
+        // 尝试获取响应头
         String header = req.getHeader("Authorization");
         if (header != null && header.startsWith("Bearer ")) {
             var userId = tokens.verifyAccess(header.substring(7));
@@ -43,6 +44,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         chain.doFilter(req, res);
     }
 
+    // 处理未授权的请求，返回401错误
     private void unauthorized(HttpServletRequest req, HttpServletResponse res) throws IOException {
         res.setStatus(401);
         res.setCharacterEncoding(StandardCharsets.UTF_8.name());

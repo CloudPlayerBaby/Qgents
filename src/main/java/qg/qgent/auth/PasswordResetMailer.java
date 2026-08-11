@@ -9,6 +9,10 @@ import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 发送密码重置邮件
+ * PasswordResetMailer
+ */
 @Component
 public class PasswordResetMailer {
     private static final Logger log = LoggerFactory.getLogger(PasswordResetMailer.class);

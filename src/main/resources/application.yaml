@@ -44,8 +44,6 @@ app:
       max-pool-size: ${WORKFLOW_ASYNC_MAX_POOL_SIZE:8}
       queue-capacity: ${WORKFLOW_ASYNC_QUEUE_CAPACITY:100}
       await-termination-seconds: ${WORKFLOW_ASYNC_AWAIT_TERMINATION_SECONDS:30}
-  demo:
-    fail-option-generation-once: ${DEMO_FAIL_OPTION_GENERATION_ONCE:false}
   frontend-url: ${FRONTEND_URL:http://localhost:5173}
   cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
   rsa-private-key: ${RSA_PRIVATE_KEY_PATH:file:./src/main/resources/rsa/private_key.pem}
@@ -61,13 +59,11 @@ springdoc:
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
-  type-aliases-package: qg.po.midterm.entity
+  type-aliases-package: qg.qgent.entity
+  type-handlers-package: qg.qgent.handler
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
-
-tavily:
-  api-key: ${TAVILY_API_KEY:}
 
 exchange-rate:
   api-key: ${EXCHANGERATE_API_KEY:}

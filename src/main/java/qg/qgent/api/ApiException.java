@@ -2,6 +2,10 @@ package qg.qgent.api;
 
 import org.springframework.http.HttpStatus;
 
+/**
+ * api 相关异常
+ * ApiException
+ */
 public class ApiException extends RuntimeException {
     private final HttpStatus status;
     private final String code;

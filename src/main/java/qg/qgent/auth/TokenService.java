@@ -14,6 +14,10 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.UUID;
 
+/**
+ * 生成和验证JWT Token的服务
+ * TokenService
+ */
 @Component
 public class TokenService {
     private final Algorithm algorithm;
@@ -34,27 +38,41 @@ public class TokenService {
         resetTtl = Duration.ofMinutes(resetMinutes);
     }
 
+    // 生成 access token
     public String access(UUID userId) {
         Instant now = Instant.now();
-        return JWT.create().withIssuer("qgents").withAudience("qgents-api").withJWTId(UUID.randomUUID().toString())
-                .withSubject(userId.toString()).withIssuedAt(now).withExpiresAt(now.plus(accessTtl)).sign(algorithm);
+        return JWT.create()
+                .withIssuer("qgents")
+                .withAudience("qgents-api")
+                .withJWTId(UUID.randomUUID().toString())
+                .withSubject(userId.toString())
+                .withIssuedAt(now) // 签发时间
+                .withExpiresAt(now.plus(accessTtl)) // 过期时间
+                .sign(algorithm);
     }
 
+    // 验证 access token 并返回用户ID
     public UUID verifyAccess(String token) {
         try {
-            return UUID.fromString(JWT.require(algorithm).withIssuer("qgents").withAudience("qgents-api").build()
-                    .verify(token).getSubject());
+            return UUID.fromString(
+                    JWT.require(algorithm)
+                            .withIssuer("qgents")
+                            .withAudience("qgents-api")
+                            .build()
+                            .verify(token).getSubject());
         } catch (JWTVerificationException | IllegalArgumentException e) {
             return null;
         }
     }
 
+    // 生成随机的 refresh token
     public String opaque() {
         byte[] b = new byte[32];
         random.nextBytes(b);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
     }
 
+    // 计算 refresh token 的 SHA-256 哈希值
     public byte[] hash(String token) {
         try {
             return MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8));
@@ -63,18 +81,22 @@ public class TokenService {
         }
     }
 
+    // 获取 access token 的过期时间
     public Instant refreshExpiry() {
         return Instant.now().plus(refreshTtl);
     }
 
+    // 获取 reset token 的过期时间
     public Instant resetExpiry() {
         return Instant.now().plus(resetTtl);
     }
 
+    // 获取 access token 的过期时间（秒）
     public long accessSeconds() {
         return accessTtl.toSeconds();
     }
 
+    // 获取 refresh token 的过期时间（秒）
     public long refreshSeconds() {
         return refreshTtl.toSeconds();
     }
