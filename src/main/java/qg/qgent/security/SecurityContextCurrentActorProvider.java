@@ -7,7 +7,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 
-import qg.qgent.common.ApiException;
+import qg.qgent.api.ApiException;
 
 @Component
 public class SecurityContextCurrentActorProvider implements CurrentActorProvider {

@@ -12,8 +12,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 
-import qg.qgent.common.ApiException;
-import qg.qgent.dto.GitHubRepositoryDtos;
+import qg.qgent.api.ApiException;
+import qg.qgent.dto.BindProjectRepositoryRequest;
+import qg.qgent.dto.GitHubInstallationResponse;
+import qg.qgent.dto.GitHubInstallationUrlResponse;
+import qg.qgent.dto.GitHubRepositoryResponse;
+import qg.qgent.dto.ProjectRepositoryResponse;
+import qg.qgent.dto.UpdateProjectRepositoryRequest;
 import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.GitHubRepositoryEntity;
 import qg.qgent.entity.ProjectEntity;
@@ -22,6 +27,8 @@ import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.github.GitHubAppClient;
+import qg.qgent.github.GitHubInstallationDetails;
+import qg.qgent.github.GitHubRepositoryDetails;
 import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
 import qg.qgent.mapper.ProjectMapper;
@@ -58,13 +65,13 @@ public class GitHubRepositoryService {
         this.clock = clock;
     }
 
-    public GitHubRepositoryDtos.InstallationUrlResponse createInstallationUrl(UUID actorId, UUID teamId) {
+    public GitHubInstallationUrlResponse createInstallationUrl(UUID actorId, UUID teamId) {
         requireTeamOwner(actorId, teamId);
-        return new GitHubRepositoryDtos.InstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId),
+        return new GitHubInstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId),
                 Instant.now(clock).plusSeconds(600));
     }
 
-    public List<GitHubRepositoryDtos.InstallationResponse> listInstallations(UUID actorId, UUID teamId) {
+    public List<GitHubInstallationResponse> listInstallations(UUID actorId, UUID teamId) {
         requireTeamOwner(actorId, teamId);
         return installationMapper.selectList(new LambdaQueryWrapper<GitHubInstallationEntity>()
                         .eq(GitHubInstallationEntity::getTeamId, teamId)
@@ -93,14 +100,14 @@ public class GitHubRepositoryService {
         installationMapper.deleteById(installationId);
     }
 
-    public List<GitHubRepositoryDtos.RepositoryResponse> listTeamRepositories(UUID actorId, UUID teamId) {
+    public List<GitHubRepositoryResponse> listTeamRepositories(UUID actorId, UUID teamId) {
         if (!hasTeamRepositoryAccess(teamId, actorId)) {
             throw forbidden("Team owner or project admin access is required");
         }
         return findActiveRepositoriesByTeam(teamId).stream().map(this::toRepositoryResponse).toList();
     }
 
-    public List<GitHubRepositoryDtos.ProjectRepositoryResponse> listProjectRepositories(UUID actorId, UUID projectId) {
+    public List<ProjectRepositoryResponse> listProjectRepositories(UUID actorId, UUID projectId) {
         requireProjectMember(actorId, projectId);
         return projectRepositoryMapper.selectList(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                         .eq(ProjectRepositoryEntity::getProjectId, projectId)
@@ -109,10 +116,11 @@ public class GitHubRepositoryService {
     }
 
     @Transactional
-    public GitHubRepositoryDtos.ProjectRepositoryResponse bindProjectRepository(UUID actorId, UUID projectId,
-                                                                                  GitHubRepositoryDtos.BindProjectRepositoryRequest request) {
+    public ProjectRepositoryResponse bindProjectRepository(UUID actorId, UUID projectId,
+                                                           BindProjectRepositoryRequest request) {
         requireProjectAdmin(actorId, projectId);
-        GitHubRepositoryEntity repository = findActiveRepositoryForProject(request.repositoryId(), projectId);
+        GitHubRepositoryEntity repository = findActiveRepositoryForProject(request.getInstallationId(),
+                request.getRepositoryId(), projectId);
         if (repository == null) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REPOSITORY_NOT_AUTHORIZED_FOR_PROJECT",
                     "Repository is not available through an active installation for this project team");
@@ -127,24 +135,23 @@ public class GitHubRepositoryService {
         binding.setId(UUID.randomUUID());
         binding.setProjectId(projectId);
         binding.setRepositoryId(repository.getId());
-        binding.setDefaultBranch(blankToDefault(request.defaultBranch(), repository.getDefaultBranch()));
-        binding.setDisplayName(request.displayName());
+        binding.setDefaultBranch(blankToDefault(request.getDefaultBranch(), repository.getDefaultBranch()));
+        binding.setDisplayName(request.getDisplayName());
         binding.setBoundAt(Instant.now(clock));
         projectRepositoryMapper.insert(binding);
         return toProjectRepositoryResponse(binding);
     }
 
     @Transactional
-    public GitHubRepositoryDtos.ProjectRepositoryResponse updateProjectRepository(UUID actorId, UUID projectId,
-                                                                                    UUID projectRepositoryId,
-                                                                                    GitHubRepositoryDtos.UpdateProjectRepositoryRequest request) {
+    public ProjectRepositoryResponse updateProjectRepository(UUID actorId, UUID projectId, UUID projectRepositoryId,
+                                                             UpdateProjectRepositoryRequest request) {
         requireProjectAdmin(actorId, projectId);
         ProjectRepositoryEntity current = projectRepositoryMapper.selectById(projectRepositoryId);
         if (current == null || !projectId.equals(current.getProjectId())) {
             throw notFound("Project repository binding does not exist");
         }
-        current.setDefaultBranch(request.defaultBranch());
-        current.setDisplayName(request.displayName());
+        current.setDefaultBranch(request.getDefaultBranch());
+        current.setDisplayName(request.getDisplayName());
         projectRepositoryMapper.updateById(current);
         return toProjectRepositoryResponse(current);
     }
@@ -167,7 +174,7 @@ public class GitHubRepositoryService {
     @Transactional
     public void handleInstallationCallback(long providerInstallationId, String state) {
         UUID teamId = gitHubClient.verifyInstallationState(state);
-        GitHubAppClient.InstallationDetails installation = gitHubClient.getInstallation(providerInstallationId);
+        GitHubInstallationDetails installation = gitHubClient.getInstallation(providerInstallationId);
         GitHubInstallationEntity installationEntity = installationMapper.selectOne(
                 new LambdaQueryWrapper<GitHubInstallationEntity>().eq(GitHubInstallationEntity::getProviderInstallationId,
                         providerInstallationId));
@@ -177,31 +184,31 @@ public class GitHubRepositoryService {
             installationEntity.setId(UUID.randomUUID());
         }
         installationEntity.setTeamId(teamId);
-        installationEntity.setProviderInstallationId(installation.installationId());
-        installationEntity.setAccountLogin(installation.accountLogin());
-        installationEntity.setAccountType(normalizeEnum(installation.accountType()));
+        installationEntity.setProviderInstallationId(installation.getInstallationId());
+        installationEntity.setAccountLogin(installation.getAccountLogin());
+        installationEntity.setAccountType(normalizeEnum(installation.getAccountType()));
         installationEntity.setStatus("ACTIVE");
         if (newInstallation) {
             installationMapper.insert(installationEntity);
         } else {
             installationMapper.updateById(installationEntity);
         }
-        for (GitHubAppClient.RepositoryDetails repository : gitHubClient.listRepositories(providerInstallationId)) {
+        for (GitHubRepositoryDetails repository : gitHubClient.listRepositories(providerInstallationId)) {
             GitHubRepositoryEntity repositoryEntity = repositoryMapper.selectOne(
                     new LambdaQueryWrapper<GitHubRepositoryEntity>().eq(GitHubRepositoryEntity::getProviderRepositoryId,
-                            repository.repositoryId()));
+                            repository.getRepositoryId()));
             boolean newRepository = repositoryEntity == null;
             if (newRepository) {
                 repositoryEntity = new GitHubRepositoryEntity();
                 repositoryEntity.setId(UUID.randomUUID());
             }
             repositoryEntity.setInstallationId(installationEntity.getId());
-            repositoryEntity.setProviderRepositoryId(repository.repositoryId());
-            repositoryEntity.setOwnerLogin(repository.ownerLogin());
-            repositoryEntity.setName(repository.name());
-            repositoryEntity.setDefaultBranch(repository.defaultBranch());
-            repositoryEntity.setVisibility(normalizeEnum(repository.visibility()));
-            repositoryEntity.setArchived(repository.archived());
+            repositoryEntity.setProviderRepositoryId(repository.getRepositoryId());
+            repositoryEntity.setOwnerLogin(repository.getOwnerLogin());
+            repositoryEntity.setName(repository.getName());
+            repositoryEntity.setDefaultBranch(repository.getDefaultBranch());
+            repositoryEntity.setVisibility(normalizeEnum(repository.getVisibility()));
+            repositoryEntity.setArchived(repository.isArchived());
             repositoryEntity.setSyncedAt(Instant.now(clock));
             if (newRepository) {
                 repositoryMapper.insert(repositoryEntity);
@@ -257,15 +264,15 @@ public class GitHubRepositoryService {
                 projectMemberMapper.countByProjectIdAndUserIdAndRole(projectId, actorId, "PROJECT_ADMIN") > 0);
     }
 
-    private GitHubRepositoryEntity findActiveRepositoryForProject(UUID repositoryId, UUID projectId) {
+    private GitHubRepositoryEntity findActiveRepositoryForProject(UUID installationId, UUID repositoryId, UUID projectId) {
         ProjectEntity project = projectMapper.selectById(projectId);
         if (project == null) {
             return null;
         }
         List<UUID> installationIds = activeInstallationIdsForTeam(project.getTeamId());
-        return installationIds.isEmpty() ? null : repositoryMapper.selectOne(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+        return !installationIds.contains(installationId) ? null : repositoryMapper.selectOne(new LambdaQueryWrapper<GitHubRepositoryEntity>()
                 .eq(GitHubRepositoryEntity::getId, repositoryId)
-                .in(GitHubRepositoryEntity::getInstallationId, installationIds)
+                .eq(GitHubRepositoryEntity::getInstallationId, installationId)
                 .eq(GitHubRepositoryEntity::getArchived, false));
     }
 
@@ -284,19 +291,19 @@ public class GitHubRepositoryService {
                 .stream().map(GitHubInstallationEntity::getId).toList();
     }
 
-    private GitHubRepositoryDtos.InstallationResponse toInstallationResponse(GitHubInstallationEntity installation) {
-        return new GitHubRepositoryDtos.InstallationResponse(installation.getId(), installation.getProviderInstallationId(),
+    private GitHubInstallationResponse toInstallationResponse(GitHubInstallationEntity installation) {
+        return new GitHubInstallationResponse(installation.getId(), installation.getProviderInstallationId(),
                 installation.getAccountLogin(), installation.getAccountType(), installation.getStatus(), installation.getUpdatedAt());
     }
 
-    private GitHubRepositoryDtos.RepositoryResponse toRepositoryResponse(GitHubRepositoryEntity repository) {
-        return new GitHubRepositoryDtos.RepositoryResponse(repository.getId(), repository.getProviderRepositoryId(),
+    private GitHubRepositoryResponse toRepositoryResponse(GitHubRepositoryEntity repository) {
+        return new GitHubRepositoryResponse(repository.getId(), repository.getProviderRepositoryId(),
                 repository.getOwnerLogin(), repository.getName(), repository.getDefaultBranch(), repository.getVisibility(),
                 Boolean.TRUE.equals(repository.getArchived()), repository.getSyncedAt());
     }
 
-    private GitHubRepositoryDtos.ProjectRepositoryResponse toProjectRepositoryResponse(ProjectRepositoryEntity binding) {
-        return new GitHubRepositoryDtos.ProjectRepositoryResponse(binding.getId(), binding.getRepositoryId(),
+    private ProjectRepositoryResponse toProjectRepositoryResponse(ProjectRepositoryEntity binding) {
+        return new ProjectRepositoryResponse(binding.getId(), binding.getRepositoryId(),
                 binding.getDefaultBranch(), binding.getDisplayName(), binding.getBoundAt());
     }
 

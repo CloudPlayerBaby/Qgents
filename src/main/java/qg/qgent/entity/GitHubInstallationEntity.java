@@ -5,10 +5,12 @@ import java.util.UUID;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import qg.qgent.handler.UuidBinaryTypeHandler;
 
 /**
  * GitHub App installation metadata authorized by one team. The mapped table stores no installation token;
@@ -20,6 +22,7 @@ import lombok.NoArgsConstructor;
 public class GitHubInstallationEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
+    @TableField(typeHandler = UuidBinaryTypeHandler.class)
     private UUID teamId;
     private Long providerInstallationId;
     private String accountLogin;

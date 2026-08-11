@@ -27,8 +27,9 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 
-import qg.qgent.common.ApiException;
-import qg.qgent.dto.GitHubRepositoryDtos;
+import qg.qgent.api.ApiException;
+import qg.qgent.dto.BindProjectRepositoryRequest;
+import qg.qgent.dto.ProjectRepositoryResponse;
 import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.GitHubRepositoryEntity;
 import qg.qgent.entity.ProjectEntity;
@@ -49,6 +50,7 @@ import qg.qgent.service.GitHubRepositoryService;
 class GitHubRepositoryServiceTest {
     private final UUID actorId = UUID.randomUUID();
     private final UUID projectId = UUID.randomUUID();
+    private final UUID installationId = UUID.randomUUID();
     private final UUID repositoryId = UUID.randomUUID();
 
     @Mock private GitHubInstallationMapper installationMapper;
@@ -87,13 +89,13 @@ class GitHubRepositoryServiceTest {
         when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(repository);
         when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(null);
 
-        GitHubRepositoryDtos.ProjectRepositoryResponse response = service.bindProjectRepository(actorId, projectId,
-                new GitHubRepositoryDtos.BindProjectRepositoryRequest(repositoryId, null, "Backend"));
+        ProjectRepositoryResponse response = service.bindProjectRepository(actorId, projectId,
+                bindRequest(installationId, repositoryId, null, "Backend"));
 
         ArgumentCaptor<ProjectRepositoryEntity> binding = ArgumentCaptor.forClass(ProjectRepositoryEntity.class);
         verify(projectRepositoryMapper).insert(binding.capture());
-        assertEquals(repositoryId, response.repositoryId());
-        assertEquals("main", response.defaultBranch());
+        assertEquals(repositoryId, response.getRepositoryId());
+        assertEquals("main", response.getDefaultBranch());
         assertEquals("Backend", binding.getValue().getDisplayName());
     }
 
@@ -104,7 +106,7 @@ class GitHubRepositoryServiceTest {
         when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(new ProjectRepositoryEntity());
 
         ApiException exception = assertThrows(ApiException.class, () -> service.bindProjectRepository(actorId, projectId,
-                new GitHubRepositoryDtos.BindProjectRepositoryRequest(repositoryId, null, null)));
+                bindRequest(installationId, repositoryId, null, null)));
 
         assertEquals(HttpStatus.CONFLICT, exception.status());
         assertEquals("PROJECT_REPOSITORY_ALREADY_BOUND", exception.code());
@@ -116,16 +118,29 @@ class GitHubRepositoryServiceTest {
         authorizeProjectAdmin();
 
         ApiException exception = assertThrows(ApiException.class, () -> service.bindProjectRepository(actorId, projectId,
-                new GitHubRepositoryDtos.BindProjectRepositoryRequest(repositoryId, "main", null)));
+                bindRequest(installationId, repositoryId, "main", null)));
 
         assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, exception.status());
         assertEquals("REPOSITORY_NOT_AUTHORIZED_FOR_PROJECT", exception.code());
     }
 
     @Test
+    void rejectsRepositoryWhenRequestInstallationIsNotAuthorizedForProjectTeam() {
+        GitHubRepositoryEntity repository = repository("main");
+        authorizeProjectAdmin();
+
+        ApiException exception = assertThrows(ApiException.class, () -> service.bindProjectRepository(actorId, projectId,
+                bindRequest(UUID.randomUUID(), repository.getId(), "main", null)));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, exception.status());
+        assertEquals("REPOSITORY_NOT_AUTHORIZED_FOR_PROJECT", exception.code());
+        verify(repositoryMapper, never()).selectOne(any(Wrapper.class));
+    }
+
+    @Test
     void rejectsNonAdminBeforeLookingUpRepository() {
         ApiException exception = assertThrows(ApiException.class, () -> service.bindProjectRepository(actorId, projectId,
-                new GitHubRepositoryDtos.BindProjectRepositoryRequest(repositoryId, "main", null)));
+                bindRequest(installationId, repositoryId, "main", null)));
 
         assertEquals(HttpStatus.FORBIDDEN, exception.status());
         verify(repositoryMapper, never()).selectOne(any(Wrapper.class));
@@ -152,7 +167,7 @@ class GitHubRepositoryServiceTest {
     private GitHubRepositoryEntity repository(String branch) {
         GitHubRepositoryEntity repository = new GitHubRepositoryEntity();
         repository.setId(repositoryId);
-        repository.setInstallationId(UUID.randomUUID());
+        repository.setInstallationId(installationId);
         repository.setProviderRepositoryId(42L);
         repository.setOwnerLogin("qgents");
         repository.setName("backend");
@@ -172,8 +187,18 @@ class GitHubRepositoryServiceTest {
         when(projectMemberMapper.countByProjectIdAndUserIdAndRole(any(UUID.class), any(UUID.class), anyString()))
                 .thenReturn(1L);
         GitHubInstallationEntity installation = new GitHubInstallationEntity();
-        installation.setId(UUID.randomUUID());
+        installation.setId(installationId);
         org.mockito.Mockito.lenient().when(installationMapper.selectList(any(Wrapper.class)))
                 .thenReturn(java.util.List.of(installation));
+    }
+
+    private BindProjectRepositoryRequest bindRequest(UUID requestedInstallationId, UUID requestedRepositoryId,
+            String defaultBranch, String displayName) {
+        BindProjectRepositoryRequest request = new BindProjectRepositoryRequest();
+        request.setInstallationId(requestedInstallationId);
+        request.setRepositoryId(requestedRepositoryId);
+        request.setDefaultBranch(defaultBranch);
+        request.setDisplayName(displayName);
+        return request;
     }
 }

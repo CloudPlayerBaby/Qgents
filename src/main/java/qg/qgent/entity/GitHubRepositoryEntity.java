@@ -5,10 +5,12 @@ import java.util.UUID;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import qg.qgent.handler.UuidBinaryTypeHandler;
 
 /**
  * Local mirror of a repository exposed by a GitHub App installation. It represents GitHub metadata only,
@@ -20,6 +22,7 @@ import lombok.NoArgsConstructor;
 public class GitHubRepositoryEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
+    @TableField(typeHandler = UuidBinaryTypeHandler.class)
     private UUID installationId;
     private Long providerRepositoryId;
     private String ownerLogin;

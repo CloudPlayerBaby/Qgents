@@ -27,7 +27,7 @@ import com.auth0.jwt.interfaces.DecodedJWT;
 import com.auth0.jwt.JWTVerifier;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
-import qg.qgent.common.ApiException;
+import qg.qgent.api.ApiException;
 import qg.qgent.config.GitHubAppProperties;
 
 public class RestGitHubAppClient implements GitHubAppClient {
@@ -76,7 +76,7 @@ public class RestGitHubAppClient implements GitHubAppClient {
     }
 
     @Override
-    public InstallationDetails getInstallation(long installationId) {
+    public GitHubInstallationDetails getInstallation(long installationId) {
         requireConfigured();
         try {
             InstallationResponse response = client.get()
@@ -87,17 +87,17 @@ public class RestGitHubAppClient implements GitHubAppClient {
             if (response == null || response.account() == null) {
                 throw upstreamFailure();
             }
-            return new InstallationDetails(response.id(), response.account().login(), response.account().type());
+            return new GitHubInstallationDetails(response.id(), response.account().login(), response.account().type());
         } catch (RestClientException exception) {
             throw upstreamFailure();
         }
     }
 
     @Override
-    public List<RepositoryDetails> listRepositories(long installationId) {
+    public List<GitHubRepositoryDetails> listRepositories(long installationId) {
         requireConfigured();
         String token = installationToken(installationId);
-        List<RepositoryDetails> repositories = new ArrayList<>();
+        List<GitHubRepositoryDetails> repositories = new ArrayList<>();
         int page = 1;
         try {
             while (true) {
@@ -111,7 +111,7 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 if (response == null || response.repositories() == null || response.repositories().isEmpty()) {
                     return repositories;
                 }
-                response.repositories().forEach(repository -> repositories.add(new RepositoryDetails(
+                response.repositories().forEach(repository -> repositories.add(new GitHubRepositoryDetails(
                         repository.id(), repository.owner().login(), repository.name(), repository.defaultBranch(),
                         repository.visibility(), repository.archived())));
                 if (response.repositories().size() < 100) {
