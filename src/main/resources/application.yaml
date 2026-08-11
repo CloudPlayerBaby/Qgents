@@ -37,13 +37,16 @@ spring:
       mail.smtp.timeout: 5000
       mail.smtp.writetimeout: 5000
 
+
+github:
+  app:
+    app-id: ${GITHUB_APP_ID:}
+    slug: ${GITHUB_APP_SLUG:}
+    private-key-path: ${GITHUB_APP_PRIVATE_KEY_PATH:}
+    callback-url: ${GITHUB_APP_CALLBACK_URL:}
+    state-secret: ${GITHUB_APP_STATE_SECRET:}
+
 app:
-  async:
-    workflow:
-      core-pool-size: ${WORKFLOW_ASYNC_CORE_POOL_SIZE:4}
-      max-pool-size: ${WORKFLOW_ASYNC_MAX_POOL_SIZE:8}
-      queue-capacity: ${WORKFLOW_ASYNC_QUEUE_CAPACITY:100}
-      await-termination-seconds: ${WORKFLOW_ASYNC_AWAIT_TERMINATION_SECONDS:30}
   frontend-url: ${FRONTEND_URL:http://localhost:5173}
   cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
   rsa-private-key: ${RSA_PRIVATE_KEY_PATH:file:./src/main/resources/rsa/private_key.pem}
@@ -58,18 +61,6 @@ springdoc:
     path: /swagger-ui.html
 
 mybatis-plus:
-  mapper-locations: classpath*:/mapper/**/*.xml
-  type-aliases-package: qg.qgent.entity
-  type-handlers-package: qg.qgent.handler
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
-
-exchange-rate:
-  api-key: ${EXCHANGERATE_API_KEY:}
-
-  logging:
-    minimum-event-level: error
-    minimum-breadcrumb-level: info
-  logs:
-    enabled: true
