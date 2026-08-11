@@ -11,11 +11,13 @@ import qg.qgent.handler.UuidBinaryTypeHandler;
 import java.util.List;
 import java.util.UUID;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+
 /**
  * 分支质量门禁与强制测试集关系访问。复合主键关联表，使用专用 Mapper 方法。
  */
 @Mapper
-public interface RepositoryBranchConfigTestsetMapper {
+public interface RepositoryBranchConfigTestsetMapper extends BaseMapper<RepositoryBranchConfigTestsetEntity> {
 
     @Select("SELECT branch_config_id, testset_id FROM repository_branch_config_testsets " +
             "WHERE branch_config_id = #{branchConfigId}")
@@ -24,4 +26,5 @@ public interface RepositoryBranchConfigTestsetMapper {
             @Result(column = "testset_id", property = "testsetId", typeHandler = UuidBinaryTypeHandler.class)
     })
     List<RepositoryBranchConfigTestsetEntity> selectByBranchConfigId(@Param("branchConfigId") UUID branchConfigId);
+
 }
