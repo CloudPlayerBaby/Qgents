@@ -1,23 +1,21 @@
 package qg.qgent.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
-import lombok.AllArgsConstructor;
 import lombok.Data;
-import lombok.NoArgsConstructor;
+
+import java.util.UUID;
 
 /**
- * 群成员视图（契约 §7 群成员列表）。
+ * 群成员行：项目成员 join 用户基础信息（群成员即项目成员，无角色）。
  * <p>
- * 群成员取自项目成员，群内成员平等、无角色区分。
+ * 作为 {@code ProjectMemberMapper.selectMembers} 的映射结果，由 Service 转换为 {@link GroupMemberResponse}。
  */
 @Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class GroupMemberResponse {
+public class GroupMemberRow {
 
     /** 成员用户 ID。 */
     @Schema(description = "成员用户 ID")
-    private String id;
+    private UUID userId;
 
     /** 成员昵称。 */
     @Schema(description = "成员昵称")

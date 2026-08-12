@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.Data;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -179,10 +180,10 @@ public class MemoryService {
         memory.setId(UuidV7.next());
         memory.setProjectId(projectId);
         memory.setCreatedBy(actor);
-        memory.setTitle(draft.title());
-        memory.setContent(draft.content());
-        memory.setCategory(draft.category() == null ? "ENGINEERING_DECISION" : draft.category());
-        memory.setTags(draft.tags());
+        memory.setTitle(draft.getTitle());
+        memory.setContent(draft.getContent());
+        memory.setCategory(draft.getCategory() == null ? "ENGINEERING_DECISION" : draft.getCategory());
+        memory.setTags(draft.getTags());
         memory.setStatus("DRAFT");
         memoryMapper.insert(memory);
         for (MemorySourceRef source : sources) {
@@ -318,7 +319,13 @@ public class MemoryService {
         }
     }
 
-    private record AiDraft(String title, String content, String category, List<String> tags) {
+    /** AI 草稿解析结果（LLM 输出 JSON 的目标结构）。 */
+    @Data
+    private static class AiDraft {
+        private String title;
+        private String content;
+        private String category;
+        private List<String> tags;
     }
 
     private MemoryResponse toResponse(MemoryEntity memory) {

@@ -5,6 +5,7 @@ import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.AttachmentCreateRequest;
 import qg.qgent.dto.AttachmentUploadCredentialResponse;
+import qg.qgent.dto.UploadCredential;
 import qg.qgent.entity.AttachmentEntity;
 import qg.qgent.mapper.AttachmentMapper;
 
@@ -52,9 +53,9 @@ public class AttachmentService {
         attachment.setStatus("PENDING");
         attachmentMapper.insert(attachment);
 
-        AttachmentStorageStrategy.UploadCredential credential = storage.createCredential(attachment.getId(),
-                attachment.getFileName(), attachment.getMediaType(), attachment.getSizeBytes());
-        return new AttachmentUploadCredentialResponse(attachment.getId().toString(), credential.uploadUrl(),
-                credential.method(), credential.expiresAt(), credential.headers());
+        UploadCredential credential = storage.createCredential(attachment.getId(), attachment.getFileName(),
+                attachment.getMediaType(), attachment.getSizeBytes());
+        return new AttachmentUploadCredentialResponse(attachment.getId().toString(), credential.getUploadUrl(),
+                credential.getMethod(), credential.getExpiresAt(), credential.getHeaders());
     }
 }
