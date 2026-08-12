@@ -540,4 +540,186 @@ class MergeRequestServiceTest {
         ApiException ex = assertThrows(ApiException.class, () -> service.create(projectId, userId, request));
         assertEquals("GITHUB_INSTALLATION_UNAVAILABLE", ex.code());
     }
+
+    @Test
+    void cqRejectionSuccess() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID authorId = UUID.randomUUID();
+        UUID mergeRequestId = UUID.randomUUID();
+
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(mergeRequestId);
+        mr.setAuthorUserId(authorId);
+        mr.setProjectRepositoryId(UUID.randomUUID());
+        mr.setHeadCommit("sha123");
+        mr.setTargetBranch("main");
+        when(mergeRequestMapper.selectById(mergeRequestId)).thenReturn(mr);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(mr.getProjectRepositoryId());
+        repository.setProjectId(projectId);
+        when(projectRepositoryMapper.selectById(mr.getProjectRepositoryId())).thenReturn(repository);
+
+        MergeRequestSummaryResponse response = service.cqRejection(projectId, mergeRequestId, userId, "Needs changes");
+
+        assertNotNull(response);
+        verify(qualityCheckMapper).insert(any(QualityCheckResultEntity.class));
+        verify(eventService).publish(any(), any(), eq("merge-request.updated"), any(), any());
+    }
+
+    @Test
+    void cqRejectionFailsWhenReasonEmpty() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID authorId = UUID.randomUUID();
+        UUID mergeRequestId = UUID.randomUUID();
+
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(mergeRequestId);
+        mr.setAuthorUserId(authorId);
+        mr.setProjectRepositoryId(UUID.randomUUID());
+        when(mergeRequestMapper.selectById(mergeRequestId)).thenReturn(mr);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(mr.getProjectRepositoryId());
+        repository.setProjectId(projectId);
+        when(projectRepositoryMapper.selectById(mr.getProjectRepositoryId())).thenReturn(repository);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.cqRejection(projectId, mergeRequestId, userId, ""));
+        assertEquals("CQ_REJECTION_REASON_REQUIRED", ex.code());
+    }
+
+    @Test
+    void detailReturnsCorrectGatePassed() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID mergeRequestId = UUID.randomUUID();
+        UUID testsetId = UUID.randomUUID();
+
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(mergeRequestId);
+        mr.setProjectRepositoryId(UUID.randomUUID());
+        mr.setTargetBranch("main");
+        mr.setHeadCommit("sha123");
+        when(mergeRequestMapper.selectById(mergeRequestId)).thenReturn(mr);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(mr.getProjectRepositoryId());
+        repository.setProjectId(projectId);
+        when(projectRepositoryMapper.selectById(mr.getProjectRepositoryId())).thenReturn(repository);
+
+        RepositoryBranchConfigEntity config = new RepositoryBranchConfigEntity();
+        config.setId(UUID.randomUUID());
+        config.setRequiredChecks(java.util.List.of("AI_REVIEW", "TESTSET"));
+        when(branchConfigMapper.selectOne(any())).thenReturn(config);
+
+        RepositoryBranchConfigTestsetEntity ts = new RepositoryBranchConfigTestsetEntity();
+        ts.setTestsetId(testsetId);
+        when(branchConfigTestsetMapper.selectByBranchConfigId(config.getId())).thenReturn(java.util.List.of(ts));
+
+        QualityCheckResultEntity r1 = new QualityCheckResultEntity();
+        r1.setStatus("PASSED");
+        when(qualityCheckMapper.selectOne(any())).thenReturn(r1);
+
+        qg.qgent.dto.MergeRequestDetailResponse response = service.detail(projectId, mergeRequestId, userId);
+
+        assertNotNull(response);
+        assertEquals("PASSED", response.getQualityGate().getStatus());
+    }
+
+    @Test
+    void detailReturnsCorrectGateFailed() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID mergeRequestId = UUID.randomUUID();
+
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(mergeRequestId);
+        mr.setProjectRepositoryId(UUID.randomUUID());
+        mr.setTargetBranch("main");
+        mr.setHeadCommit("sha123");
+        when(mergeRequestMapper.selectById(mergeRequestId)).thenReturn(mr);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(mr.getProjectRepositoryId());
+        repository.setProjectId(projectId);
+        when(projectRepositoryMapper.selectById(mr.getProjectRepositoryId())).thenReturn(repository);
+
+        RepositoryBranchConfigEntity config = new RepositoryBranchConfigEntity();
+        config.setId(UUID.randomUUID());
+        config.setRequiredChecks(java.util.List.of("CQ_PLUS_ONE"));
+        when(branchConfigMapper.selectOne(any())).thenReturn(config);
+
+        QualityCheckResultEntity r1 = new QualityCheckResultEntity();
+        r1.setStatus("FAILED");
+        when(qualityCheckMapper.selectOne(any())).thenReturn(r1);
+
+        qg.qgent.dto.MergeRequestDetailResponse response = service.detail(projectId, mergeRequestId, userId);
+
+        assertNotNull(response);
+        assertEquals("FAILED", response.getQualityGate().getStatus());
+    }
+
+    @Test
+    void listReturnsEmptyWhenNoRepos() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        when(projectRepositoryMapper.selectList(any())).thenReturn(java.util.List.of());
+
+        qg.qgent.dto.ApiPageResponse<MergeRequestSummaryResponse> response = service.list(projectId, userId, null, null, null, null, 10, "req-1");
+        assertTrue(response.getData().isEmpty());
+    }
+
+    @Test
+    void checksSuccess() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID mergeRequestId = UUID.randomUUID();
+        
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(mergeRequestId);
+        mr.setProjectRepositoryId(UUID.randomUUID());
+        when(mergeRequestMapper.selectById(mergeRequestId)).thenReturn(mr);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(mr.getProjectRepositoryId());
+        repository.setProjectId(projectId);
+        when(projectRepositoryMapper.selectById(mr.getProjectRepositoryId())).thenReturn(repository);
+
+        QualityCheckResultEntity c1 = new QualityCheckResultEntity();
+        c1.setId(UUID.randomUUID());
+        c1.setCheckType("AI_REVIEW");
+        when(qualityCheckMapper.selectList(any())).thenReturn(java.util.List.of(c1));
+
+        java.util.List<qg.qgent.dto.MergeRequestCheckResponse> checks = service.checks(projectId, mergeRequestId, userId);
+        assertEquals(1, checks.size());
+        assertEquals("AI_REVIEW", checks.get(0).getType());
+    }
+
+    @Test
+    void reviewsSuccess() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID mergeRequestId = UUID.randomUUID();
+        
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(mergeRequestId);
+        mr.setProjectRepositoryId(UUID.randomUUID());
+        when(mergeRequestMapper.selectById(mergeRequestId)).thenReturn(mr);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(mr.getProjectRepositoryId());
+        repository.setProjectId(projectId);
+        when(projectRepositoryMapper.selectById(mr.getProjectRepositoryId())).thenReturn(repository);
+
+        MergeRequestReviewEntity rev = new MergeRequestReviewEntity();
+        rev.setId(UUID.randomUUID());
+        rev.setDecision("APPROVED");
+        when(reviewMapper.selectList(any())).thenReturn(java.util.List.of(rev));
+
+        java.util.List<qg.qgent.dto.MergeRequestReviewResponse> reviews = service.reviews(projectId, mergeRequestId, userId);
+        assertEquals(1, reviews.size());
+        assertEquals("APPROVED", reviews.get(0).getDecision());
+    }
 }
