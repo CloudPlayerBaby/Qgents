@@ -35,7 +35,8 @@ import java.util.UUID;
  */
 @Service
 public class MessageService {
-    private static final Set<String> PUBLIC_TYPES = Set.of("TEXT", "CODE", "IMAGE", "FILE", "QUOTE");
+    private static final Set<String> PUBLIC_TYPES = Set.of("TEXT", "CODE", "IMAGE", "FILE", "DIFF", "TASK_STATUS",
+            "QUOTE");
     private static final String CURSOR_PREFIX = "cursor_";
 
     private final MessageMapper messageMapper;
@@ -211,6 +212,11 @@ public class MessageService {
                 requireField(content, "code", "代码消息缺少 code 字段");
             }
             case "IMAGE", "FILE" -> requireField(content, "url", type + " 消息缺少 url 字段");
+            case "DIFF" -> requireField(content, "diffId", "Diff 卡片消息缺少 diffId 字段");
+            case "TASK_STATUS" -> {
+                requireField(content, "taskId", "任务状态卡片缺少 taskId 字段");
+                requireField(content, "status", "任务状态卡片缺少 status 字段");
+            }
             default -> throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "MESSAGE_TYPE_INVALID",
                     "不支持的消息类型");
         }
