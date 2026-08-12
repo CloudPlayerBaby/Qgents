@@ -53,13 +53,8 @@ public class RepositoryBranchConfigService {
             ProjectRepositoryMapper projectRepositoryMapper,
             ProjectMapper projectMapper,
             ProjectMemberMapper projectMemberMapper,
-            TeamMemberMapper teamMemberMapper) {
-                                         RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper,
-                                         ProjectRepositoryMapper projectRepositoryMapper,
-                                         ProjectMapper projectMapper,
-                                         ProjectMemberMapper projectMemberMapper,
-                                         TeamMemberMapper teamMemberMapper,
-                                         TestsetMapper testsetMapper) {
+            TeamMemberMapper teamMemberMapper,
+            TestsetMapper testsetMapper) {
         this.branchConfigMapper = branchConfigMapper;
         this.branchConfigTestsetMapper = branchConfigTestsetMapper;
         this.projectRepositoryMapper = projectRepositoryMapper;
