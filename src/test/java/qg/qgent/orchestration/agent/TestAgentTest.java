@@ -11,6 +11,7 @@ import qg.qgent.orchestration.llm.LlmMessage;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
+import qg.qgent.orchestration.tool.DisabledExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
@@ -116,6 +117,31 @@ class TestAgentTest {
         AgentRunOutcome outcome = agent().run(input());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void realDisabledExecutionPortMapsToInfrastructureFailure() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        TestAgent disabledAgent = new TestAgent(llm, codeAccess, new DisabledExecutionPort());
+
+        AgentRunOutcome outcome = disabledAgent.run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void executionPortTimeoutMapsToInfrastructureFailure() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(false, -1, "partial out", "partial err",
+                        "process timed out after PT10M"));
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getMessage()).contains("timed out");
         verify(llm, never()).complete(anyString(), anyList());
     }
 

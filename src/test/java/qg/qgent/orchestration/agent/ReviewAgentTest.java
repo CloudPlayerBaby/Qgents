@@ -12,6 +12,7 @@ import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.result.TestResult;
+import qg.qgent.orchestration.tool.DisabledWorkspaceDiffAccess;
 import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
@@ -185,6 +186,17 @@ class ReviewAgentTest {
         when(diffAccess.diff(any())).thenReturn(GitDiffResult.unavailable());
 
         AgentRunOutcome outcome = agent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void realDisabledDiffAccessMapsToInfrastructureFailure() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        ReviewAgent disabledAgent = new ReviewAgent(llm, codeAccess, new DisabledWorkspaceDiffAccess());
+
+        AgentRunOutcome outcome = disabledAgent.run(input());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
         verify(llm, never()).complete(anyString(), anyList());

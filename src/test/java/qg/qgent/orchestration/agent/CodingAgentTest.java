@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import qg.qgent.entity.WorkspaceEntity;
 import qg.qgent.mapper.WorkspaceMapper;
+import qg.qgent.service.WorkspaceService;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.OrchestrationPhase;
@@ -124,7 +125,7 @@ class CodingAgentTest {
     @Test
     void writeFilePersistsToWorkspaceOnDisk(@TempDir Path baseDir) throws Exception {
         WorkspaceEntity workspace = workspaceWith("ws-1");
-        LocalWorkspaceCodeWriter realWriter = new LocalWorkspaceCodeWriter(workspaceMapper(workspace), baseDir.toString());
+        LocalWorkspaceCodeWriter realWriter = realWriter(workspace, baseDir);
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.complete(anyString(), anyList()))
                 .thenReturn(writeTool("src/main/java/Y.java", "real content"),
@@ -141,7 +142,7 @@ class CodingAgentTest {
     @Test
     void pathTraversalIsRejectedAndNeverPersists(@TempDir Path baseDir) {
         WorkspaceEntity workspace = workspaceWith("ws-1");
-        LocalWorkspaceCodeWriter realWriter = new LocalWorkspaceCodeWriter(workspaceMapper(workspace), baseDir.toString());
+        LocalWorkspaceCodeWriter realWriter = realWriter(workspace, baseDir);
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.complete(anyString(), anyList()))
                 .thenReturn(writeTool("../escape.txt", "evil"), finalResult(true, "done", "../escape.txt"));
@@ -161,7 +162,7 @@ class CodingAgentTest {
     @Test
     void absolutePathOutsideWorkspaceIsRejected(@TempDir Path baseDir) {
         WorkspaceEntity workspace = workspaceWith("ws-1");
-        LocalWorkspaceCodeWriter realWriter = new LocalWorkspaceCodeWriter(workspaceMapper(workspace), baseDir.toString());
+        LocalWorkspaceCodeWriter realWriter = realWriter(workspace, baseDir);
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         String absolute = Path.of(".").toAbsolutePath().resolve("evil.txt").toString();
         when(llm.complete(anyString(), anyList()))
@@ -196,6 +197,62 @@ class CodingAgentTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
         verify(llm, times(2)).complete(anyString(), historyCaptor.capture());
+        assertThat(historyCaptor.getAllValues().get(1)).anySatisfy(msg ->
+                assertThat(msg.content()).contains("\"ok\":false"));
+    }
+
+    @Test
+    void workspaceUnavailableWriteFailsInfrastructure(@TempDir Path baseDir) {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.complete(anyString(), anyList())).thenReturn(writeTool("src/main/java/Y.java", "code"));
+
+        AgentRunOutcome outcome = new CodingAgent(llm, codeAccess, unknownWriter(baseDir)).run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getMessage()).contains("write_file infrastructure failure");
+        // 基础设施失败不进入模型纠正循环：只调一次 LLM，且失败不以 TOOL 结果回灌。
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm, times(1)).complete(anyString(), historyCaptor.capture());
+        assertThat(historyCaptor.getValue()).noneMatch(msg -> msg.role() == LlmMessage.Role.TOOL);
+        assertThat(Files.exists(baseDir.resolve("ws-1").resolve("src/main/java/Y.java"))).isFalse();
+    }
+
+    @Test
+    void infrastructureWriteFailureIsNotConfusedWithToolError() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "code"))
+                .thenReturn(WorkspaceWriteResult.infraFail("src/main/java/Y.java", "workspace root is not available"));
+        when(llm.complete(anyString(), anyList())).thenReturn(writeTool("src/main/java/Y.java", "code"));
+
+        AgentRunOutcome outcome = agent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getMessage()).contains("write_file infrastructure failure");
+        verify(llm, times(1)).complete(anyString(), anyList());
+    }
+
+    @Test
+    void toolLevelWriteFailureIsFedBackForRetryAndNotInfrastructure() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "code"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/Y.java", "path escapes workspace root"),
+                        WorkspaceWriteResult.ok("src/main/java/Y.java"));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn(writeTool("src/main/java/Y.java", "code"),
+                        writeTool("src/main/java/Y.java", "code"),
+                        finalResult(true, "fixed", "src/main/java/Y.java"));
+
+        AgentRunOutcome outcome = agent().run(codingInput());
+
+        // 工具级失败以 TOOL 结果回灌模型后能自我纠正，不判基础设施失败。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        verify(writer, times(2)).writeFile(workspaceId, "src/main/java/Y.java", "code");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm, times(3)).complete(anyString(), historyCaptor.capture());
+        // 第 2 轮历史包含第一次写入失败的 ok=false TOOL 结果，模型据此重试。
         assertThat(historyCaptor.getAllValues().get(1)).anySatisfy(msg ->
                 assertThat(msg.content()).contains("\"ok\":false"));
     }
@@ -275,6 +332,16 @@ class CodingAgentTest {
         WorkspaceMapper mapper = mock(WorkspaceMapper.class);
         when(mapper.selectById(workspaceId)).thenReturn(workspace);
         return mapper;
+    }
+
+    private LocalWorkspaceCodeWriter realWriter(WorkspaceEntity workspace, Path baseDir) {
+        return new LocalWorkspaceCodeWriter(new WorkspaceService(workspaceMapper(workspace), baseDir.toString()));
+    }
+
+    private LocalWorkspaceCodeWriter unknownWriter(Path baseDir) {
+        WorkspaceMapper unknownMapper = mock(WorkspaceMapper.class);
+        when(unknownMapper.selectById(workspaceId)).thenReturn(null);
+        return new LocalWorkspaceCodeWriter(new WorkspaceService(unknownMapper, baseDir.toString()));
     }
 
     private String readTool(String path) {
