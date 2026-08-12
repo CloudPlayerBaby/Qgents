@@ -1,9 +1,7 @@
 package qg.qgent.orchestration.tool;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import qg.qgent.entity.WorkspaceEntity;
-import qg.qgent.mapper.WorkspaceMapper;
+import qg.qgent.service.WorkspaceService;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,11 +13,11 @@ import java.util.UUID;
 import java.util.stream.Stream;
 
 /**
- * WorkspaceCodeAccess 的最小本地实现，供 Plan Agent 在真实 Sandbox 落地前读取代码。
+ * WorkspaceCodeAccess 的最小本地实现，供 Plan/Coding/Review Agent 在真实 Sandbox 落地前读取代码。
  * <p>
- * 约定：本地代码位于 {@code app.workspace.base-dir}/{workspace.storageKey} 目录下。
- * 目录未配置或不存在时如实返回空结果，绝不返回编造的文件内容。真实 Sandbox 接入后由
- * 沙箱内代码访问实现替换本类，接口与安全边界保持不变。
+ * 工作区根目录由 {@link WorkspaceService} 统一解析（app.workspace.base-dir/{storageKey}，
+ * 含存在性与越界校验）；目录未就绪时如实返回空结果，绝不返回编造的文件内容。真实 Sandbox
+ * 接入后由沙箱内代码访问实现替换本类，接口与安全边界保持不变。
  */
 @Component
 public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
@@ -27,13 +25,10 @@ public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
     /** 单文件检索/读取的最大字节数，防止把超大文件塞进 Agent 上下文。 */
     private static final long MAX_READ_BYTES = 64 * 1024;
 
-    private final WorkspaceMapper workspaceMapper;
-    private final String baseDir;
+    private final WorkspaceService workspaceService;
 
-    public LocalWorkspaceCodeAccess(WorkspaceMapper workspaceMapper,
-            @Value("${app.workspace.base-dir:}") String baseDir) {
-        this.workspaceMapper = workspaceMapper;
-        this.baseDir = baseDir == null ? "" : baseDir;
+    public LocalWorkspaceCodeAccess(WorkspaceService workspaceService) {
+        this.workspaceService = workspaceService;
     }
 
     @Override
@@ -46,7 +41,7 @@ public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
             return paths.filter(Files::isRegularFile)
                     .filter(this::isCodeFile)
                     .map(root::relativize)
-                    .map(Path::toString)
+                    .map(LocalWorkspaceCodeAccess::toPortablePath)
                     .sorted()
                     .toList();
         } catch (IOException e) {
@@ -83,7 +78,7 @@ public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
                     .filter(this::isCodeFile)
                     .filter(p -> containsIgnoreCase(p, needle))
                     .map(root::relativize)
-                    .map(Path::toString)
+                    .map(LocalWorkspaceCodeAccess::toPortablePath)
                     .sorted()
                     .toList();
         } catch (IOException e) {
@@ -91,17 +86,15 @@ public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
         }
     }
 
-    /** 解析 Workspace 根目录；目录不存在或未配置时返回 null。 */
+    /** 统一为 forward-slash 相对路径，保证跨平台往返一致（LLM 回传的路径可被任何平台解析）。 */
+    private static String toPortablePath(Path relative) {
+        return relative.toString().replace('\\', '/');
+    }
+
+    /** 解析 Workspace 根目录；workspace 不可解析或目录未就绪时返回 null。 */
     private Path workspaceRoot(UUID workspaceId) {
-        if (workspaceId == null || baseDir.isBlank()) {
-            return null;
-        }
-        WorkspaceEntity workspace = workspaceMapper.selectById(workspaceId);
-        if (workspace == null || workspace.getStorageKey() == null) {
-            return null;
-        }
-        Path root = Path.of(baseDir, workspace.getStorageKey()).normalize();
-        return Files.isDirectory(root) ? root : null;
+        WorkspaceService.WorkspaceResolution resolution = workspaceService.resolve(workspaceId);
+        return resolution.ready() ? resolution.root() : null;
     }
 
     /** 路径归一化并校验仍在根目录内，防止目录穿越。 */

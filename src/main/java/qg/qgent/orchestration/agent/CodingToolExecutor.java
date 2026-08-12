@@ -15,8 +15,9 @@ import java.util.UUID;
  * <p>
  * 只允许 list_files / read_file / search_code（只读，经 {@link WorkspaceCodeAccess}）
  * 与 write_file（写，经 {@link WorkspaceCodeWriter}）。参数缺失、越界、文件不存在或
- * 写入失败时返回 ok=false 的结构化错误而不是抛出异常，让模型能基于错误信息自行纠正；
- * 只有工具名缺失或未知这类协议错误才返回明确错误结果。工具结果字符串不携带 Secret。
+ * 工具级写入失败（路径/参数/大小）时返回 ok=false 的结构化错误而不是抛出异常，让模型能
+ * 基于错误信息自行纠正；基础设施级写入失败（workspace 不可用、文件系统错误）抛出异常，
+ * 由 CodingAgent 映射 FAILED_INFRASTRUCTURE，不进入模型纠正循环。工具结果字符串不携带 Secret。
  */
 public class CodingToolExecutor {
 
@@ -102,6 +103,10 @@ public class CodingToolExecutor {
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("path", result.getPath());
             return ok(name, resultNode);
+        }
+        if (result.isInfrastructureFailure()) {
+            throw new IllegalStateException("write_file infrastructure failure: "
+                    + (result.getError() == null ? "workspace unavailable" : result.getError()));
         }
         return error(name, result.getError() == null ? "write failed" : result.getError());
     }
