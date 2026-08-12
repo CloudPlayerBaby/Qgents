@@ -51,11 +51,11 @@ public class GitTool implements SandboxTool {
         if ("git.push".equals(name)) {
             return executeGitPush(context, arguments);
         }
-        
+
         List<String> command = command(name, arguments);
         CommandExecutionResult result = executor.execute(context.getSandbox(), context.getContainerRepository(), command,
                 context.getTimeout());
-                
+
         if ("git.commit".equals(name)) {
             if (result.getExitCode() == 0) {
                 ToolResult headResult = executeGitHead(context, new ArrayList<>(result.getStandardOutput()), new ArrayList<>(result.getStandardError()));
@@ -67,7 +67,7 @@ public class GitTool implements SandboxTool {
                 }
             }
         }
-        
+
         return new ToolResult(result.getExitCode(), Map.of("lines", result.getStandardOutput()),
                 result.getStandardOutput(), result.getStandardError());
     }
@@ -99,60 +99,69 @@ public class GitTool implements SandboxTool {
         );
         return new ToolResult(0, resultData, stdout, stderr);
     }
-    
+
     private ToolResult executeGitPush(ToolContext context, Map<String, Object> arguments) throws InterruptedException {
         String expectedHeadCommit = ToolArguments.string(arguments, "expectedHeadCommit", 64);
         String remote = ToolArguments.string(arguments, "remote", 64);
         String branch = ToolArguments.string(arguments, "branch", 256);
-        
+
         if (!"origin".equals(remote)) {
             return new ToolResult(1, Map.of("error", "Remote must be origin"), List.of(), List.of("Remote must be origin"));
         }
         if (branch == null || branch.contains(" ") || branch.contains("--") || branch.contains("..") || branch.startsWith("-")) {
             return new ToolResult(1, Map.of("error", "Invalid branch name format"), List.of(), List.of("Invalid branch name format"));
         }
-        
+
         List<String> stdout = new ArrayList<>();
         List<String> stderr = new ArrayList<>();
-        
+
+        CommandExecutionResult branchResult = executor.execute(context.getSandbox(), context.getContainerRepository(),
+                List.of("git", "symbolic-ref", "--short", "HEAD"), context.getTimeout());
+        stdout.addAll(branchResult.getStandardOutput());
+        stderr.addAll(branchResult.getStandardError());
+        if (branchResult.getExitCode() != 0 || branchResult.getStandardOutput().isEmpty()
+                || !branch.equals(branchResult.getStandardOutput().get(0).trim())) {
+            return new ToolResult(1, Map.of("pushed", false, "reason", "BRANCH_MISMATCH", "branch", branch), stdout, stderr);
+        }
+
         CommandExecutionResult shaResult = executor.execute(context.getSandbox(), context.getContainerRepository(), List.of("git", "rev-parse", "HEAD"), context.getTimeout());
         stdout.addAll(shaResult.getStandardOutput());
         stderr.addAll(shaResult.getStandardError());
-        
+
         if (shaResult.getExitCode() != 0) {
             return new ToolResult(shaResult.getExitCode(), Map.of("pushed", false, "reason", "FAILED_TO_RESOLVE_HEAD"), stdout, stderr);
         }
-        
+
         String headCommit = shaResult.getStandardOutput().isEmpty() ? "" : shaResult.getStandardOutput().get(0).trim();
         if (!headCommit.equals(expectedHeadCommit)) {
             return new ToolResult(1, Map.of("pushed", false, "reason", "HEAD_MISMATCH", "headCommit", headCommit, "branch", branch), stdout, stderr);
         }
-        
-        // Execute push
-        CommandExecutionResult pushResult = executor.execute(context.getSandbox(), context.getContainerRepository(), List.of("git", "push", remote, branch), context.getTimeout());
+
+        CommandExecutionResult pushResult = executor.execute(context.getSandbox(), context.getContainerRepository(),
+                List.of("git", "push", remote, "HEAD:refs/heads/" + branch), context.getTimeout());
         stdout.addAll(pushResult.getStandardOutput());
         stderr.addAll(pushResult.getStandardError());
-        
+
         if (pushResult.getExitCode() != 0) {
             return new ToolResult(pushResult.getExitCode(), Map.of("pushed", false, "reason", "PUSH_FAILED", "headCommit", headCommit, "branch", branch), stdout, stderr);
         }
-        
+
         // Verify remote
         CommandExecutionResult lsRemoteResult = executor.execute(context.getSandbox(), context.getContainerRepository(), List.of("git", "ls-remote", remote, "refs/heads/" + branch), context.getTimeout());
         stdout.addAll(lsRemoteResult.getStandardOutput());
         stderr.addAll(lsRemoteResult.getStandardError());
-        
+
         if (lsRemoteResult.getExitCode() != 0 || lsRemoteResult.getStandardOutput().isEmpty()) {
             return new ToolResult(1, Map.of("pushed", false, "reason", "REMOTE_VERIFICATION_FAILED", "headCommit", headCommit, "branch", branch), stdout, stderr);
         }
-        
+
         String remoteLine = lsRemoteResult.getStandardOutput().get(0).trim();
         String remoteSha = remoteLine.split("\\s+")[0];
-        
+
         if (!remoteSha.equals(headCommit)) {
             return new ToolResult(1, Map.of("pushed", false, "reason", "REMOTE_SHA_MISMATCH", "headCommit", headCommit, "branch", branch), stdout, stderr);
         }
-        
+
         return new ToolResult(0, Map.of("pushed", true, "headCommit", headCommit, "branch", branch), stdout, stderr);
     }
 

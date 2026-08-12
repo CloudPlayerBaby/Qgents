@@ -112,8 +112,9 @@ class GitToolTest {
     @Test
     void testGitPushSuccess() throws InterruptedException {
         String sha = "abc123def456";
+        mockCommand(List.of("git", "symbolic-ref", "--short", "HEAD"), 0, List.of("main"));
         mockCommand(List.of("git", "rev-parse", "HEAD"), 0, List.of(sha));
-        mockCommand(List.of("git", "push", "origin", "main"), 0, List.of("Everything up-to-date"));
+        mockCommand(List.of("git", "push", "origin", "HEAD:refs/heads/main"), 0, List.of("Everything up-to-date"));
         mockCommand(List.of("git", "ls-remote", "origin", "refs/heads/main"), 0, List.of(sha + "\trefs/heads/main"));
 
         ToolResult result = gitTool.execute("git.push", context, Map.of(
@@ -128,6 +129,7 @@ class GitToolTest {
 
     @Test
     void testGitPushMismatchedHead() throws InterruptedException {
+        mockCommand(List.of("git", "symbolic-ref", "--short", "HEAD"), 0, List.of("main"));
         mockCommand(List.of("git", "rev-parse", "HEAD"), 0, List.of("different_sha"));
 
         ToolResult result = gitTool.execute("git.push", context, Map.of(
@@ -140,7 +142,7 @@ class GitToolTest {
         assertEquals(false, result.getResult().get("pushed"));
         assertEquals("HEAD_MISMATCH", result.getResult().get("reason"));
         // Push should not be called
-        verify(executor, never()).execute(any(), any(), eq(List.of("git", "push", "origin", "main")), any());
+        verify(executor, never()).execute(any(), any(), eq(List.of("git", "push", "origin", "HEAD:refs/heads/main")), any());
     }
 
     @Test
@@ -170,8 +172,9 @@ class GitToolTest {
     @Test
     void testGitPushCommandFails() throws InterruptedException {
         String sha = "abc123def456";
+        mockCommand(List.of("git", "symbolic-ref", "--short", "HEAD"), 0, List.of("main"));
         mockCommand(List.of("git", "rev-parse", "HEAD"), 0, List.of(sha));
-        mockCommandError(List.of("git", "push", "origin", "main"), 128, List.of("fatal: unable to access"));
+        mockCommandError(List.of("git", "push", "origin", "HEAD:refs/heads/main"), 128, List.of("fatal: unable to access"));
 
         ToolResult result = gitTool.execute("git.push", context, Map.of(
                 "expectedHeadCommit", sha,
@@ -187,8 +190,9 @@ class GitToolTest {
     @Test
     void testGitPushRemoteShaMismatch() throws InterruptedException {
         String sha = "abc123def456";
+        mockCommand(List.of("git", "symbolic-ref", "--short", "HEAD"), 0, List.of("main"));
         mockCommand(List.of("git", "rev-parse", "HEAD"), 0, List.of(sha));
-        mockCommand(List.of("git", "push", "origin", "main"), 0, List.of());
+        mockCommand(List.of("git", "push", "origin", "HEAD:refs/heads/main"), 0, List.of());
         mockCommand(List.of("git", "ls-remote", "origin", "refs/heads/main"), 0, List.of("wrongsha123\trefs/heads/main"));
 
         ToolResult result = gitTool.execute("git.push", context, Map.of(
@@ -200,6 +204,37 @@ class GitToolTest {
         assertEquals(1, result.getExitCode());
         assertEquals(false, result.getResult().get("pushed"));
         assertEquals("REMOTE_SHA_MISMATCH", result.getResult().get("reason"));
+    }
+
+    @Test
+    void testGitPushRejectsDifferentCurrentBranch() throws InterruptedException {
+        mockCommand(List.of("git", "symbolic-ref", "--short", "HEAD"), 0, List.of("other"));
+
+        ToolResult result = gitTool.execute("git.push", context, Map.of(
+                "expectedHeadCommit", "abc123def456",
+                "remote", "origin",
+                "branch", "main"
+        ));
+
+        assertEquals(1, result.getExitCode());
+        assertEquals("BRANCH_MISMATCH", result.getResult().get("reason"));
+        verify(executor, never()).execute(any(), any(), eq(List.of("git", "rev-parse", "HEAD")), any());
+        verify(executor, never()).execute(any(), any(), eq(List.of("git", "push", "origin", "HEAD:refs/heads/main")), any());
+    }
+
+    @Test
+    void testGitPushRejectsDetachedHead() throws InterruptedException {
+        mockCommandError(List.of("git", "symbolic-ref", "--short", "HEAD"), 1, List.of("detached HEAD"));
+
+        ToolResult result = gitTool.execute("git.push", context, Map.of(
+                "expectedHeadCommit", "abc123def456",
+                "remote", "origin",
+                "branch", "main"
+        ));
+
+        assertEquals(1, result.getExitCode());
+        assertEquals("BRANCH_MISMATCH", result.getResult().get("reason"));
+        verify(executor, never()).execute(any(), any(), eq(List.of("git", "push", "origin", "HEAD:refs/heads/main")), any());
     }
 
     @Test

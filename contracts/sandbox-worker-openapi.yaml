@@ -120,7 +120,10 @@ components:
         tool:
           type: string
           enum: [process.exec, file.read, file.list, file.search, file.write, git.status, git.diff, git.log, git.add, git.commit, git.head, git.push]
-        arguments: {type: object, maxProperties: 64}
+        arguments:
+          type: object
+          maxProperties: 64
+          description: For `git.push`, required properties are `expectedHeadCommit` (current HEAD SHA), `remote` (only `origin`) and `branch` (the current checked-out branch). The Worker verifies the remote branch points to that SHA after pushing.
         timeoutSeconds: {type: integer, format: int64, minimum: 1, maximum: 3600}
     ToolExecution:
       type: object
