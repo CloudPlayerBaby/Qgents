@@ -220,7 +220,7 @@ CREATE TABLE IF NOT EXISTS
         requirement_group_id BINARY(16) NOT NULL COMMENT '所属需求群ID',
         sequence_no BIGINT UNSIGNED NOT NULL COMMENT '群内单调递增消息序号',
         author_user_id BINARY(16) NULL COMMENT '用户作者ID；Agent/系统消息时为空',
-        agent_id BINARY(16) NULL COMMENT 'Agent 作者ID；用户/系统消息时为空（agents 表由 Agent 域建立后补充外键）',
+        agent_id BINARY(16) NULL COMMENT 'Agent 作者ID；用户/系统消息时为空',
         client_message_id VARCHAR(128) NULL COMMENT '客户端生成的消息幂等ID',
         message_type VARCHAR(32) NOT NULL DEFAULT 'TEXT' COMMENT '消息类型枚举：TEXT/CODE/IMAGE/FILE/SYSTEM/QUOTE',
         content JSON NOT NULL COMMENT '按消息类型校验的结构化内容JSON',
@@ -737,3 +737,17 @@ SET @mr_alter_sql = IF(@mr_col_exists = 0,
 PREPARE mr_alter_stmt FROM @mr_alter_sql;
 EXECUTE mr_alter_stmt;
 DEALLOCATE PREPARE mr_alter_stmt;
+
+-- 幂等增量迁移：为 messages.agent_id 补充指向 agents 的外键（Agent 消息必须引用真实 Agent）。
+-- agents 建表晚于 messages，FK 不能写进 messages 的 CREATE 语句，因此改在末尾补 ALTER。
+-- 已存在该约束的库自动跳过，脚本整体可重复执行。
+SET @msg_fk_exists = (
+    SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'messages' AND CONSTRAINT_NAME = 'fk_msg_agent'
+);
+SET @msg_fk_sql = IF(@msg_fk_exists = 0,
+    'ALTER TABLE messages ADD CONSTRAINT fk_msg_agent FOREIGN KEY (agent_id) REFERENCES agents (id)',
+    'SELECT 1');
+PREPARE msg_fk_stmt FROM @msg_fk_sql;
+EXECUTE msg_fk_stmt;
+DEALLOCATE PREPARE msg_fk_stmt;
