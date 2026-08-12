@@ -16,6 +16,7 @@ import qg.qgent.dto.PageInfo;
 import qg.qgent.dto.PageSlice;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.entity.RequirementGroupEntity;
+import qg.qgent.mapper.GroupAgentMapper;
 import qg.qgent.mapper.MessageMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 
@@ -39,13 +40,15 @@ public class MessageService {
 
     private final MessageMapper messageMapper;
     private final RequirementGroupMapper groupMapper;
+    private final GroupAgentMapper groupAgentMapper;
     private final ProjectAccessService access;
     private final ObjectMapper mapper;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
-            ProjectAccessService access, ObjectMapper mapper) {
+            GroupAgentMapper groupAgentMapper, ProjectAccessService access, ObjectMapper mapper) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
+        this.groupAgentMapper = groupAgentMapper;
         this.access = access;
         this.mapper = mapper;
     }
@@ -145,6 +148,10 @@ public class MessageService {
         groupMapper.update(null, Wrappers.<RequirementGroupEntity>lambdaUpdate()
                 .set(RequirementGroupEntity::getLastMessageAt, LocalDateTime.now(ZoneOffset.UTC))
                 .eq(RequirementGroupEntity::getId, groupId));
+        // Agent 首次回群后自动成为群参与者（群成员 = 真实用户 + Agent 混合）
+        if (agentId != null) {
+            groupAgentMapper.insertAgent(groupId, agentId);
+        }
         return toResponse(messageMapper.selectById(message.getId()));
     }
 

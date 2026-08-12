@@ -11,12 +11,16 @@ import qg.qgent.dto.GroupCreateRequest;
 import qg.qgent.dto.GroupMemberResponse;
 import qg.qgent.dto.GroupResponse;
 import qg.qgent.dto.GroupUpdateRequest;
+import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.RequirementGroupEntity;
+import qg.qgent.mapper.AgentMapper;
+import qg.qgent.mapper.GroupAgentMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.RequirementGroupRepositoryMapper;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -30,14 +34,18 @@ public class GroupService {
     private final RequirementGroupMapper groupMapper;
     private final RequirementGroupRepositoryMapper groupRepositoryMapper;
     private final ProjectMemberMapper projectMemberMapper;
+    private final GroupAgentMapper groupAgentMapper;
+    private final AgentMapper agentMapper;
     private final ProjectAccessService access;
 
     public GroupService(RequirementGroupMapper groupMapper,
             RequirementGroupRepositoryMapper groupRepositoryMapper, ProjectMemberMapper projectMemberMapper,
-            ProjectAccessService access) {
+            GroupAgentMapper groupAgentMapper, AgentMapper agentMapper, ProjectAccessService access) {
         this.groupMapper = groupMapper;
         this.groupRepositoryMapper = groupRepositoryMapper;
         this.projectMemberMapper = projectMemberMapper;
+        this.groupAgentMapper = groupAgentMapper;
+        this.agentMapper = agentMapper;
         this.access = access;
     }
 
@@ -196,7 +204,7 @@ public class GroupService {
     }
 
     /**
-     * 获取群成员列表（= 项目成员，群内成员平等、无角色）。
+     * 获取群成员列表（= 项目成员 + 参与群聊的 Agent，群内成员平等、无角色）。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -206,9 +214,19 @@ public class GroupService {
     public List<GroupMemberResponse> members(UUID actor, UUID projectId, UUID groupId) {
         access.requireProjectMember(projectId, actor);
         requireGroupInProject(projectId, groupId);
-        return projectMemberMapper.selectMembers(projectId).stream()
-                .map(m -> new GroupMemberResponse(m.getUserId().toString(), m.getDisplayName(), m.getAvatarUrl()))
-                .toList();
+        List<GroupMemberResponse> members = new ArrayList<>();
+        projectMemberMapper.selectMembers(projectId).stream()
+                .map(m -> new GroupMemberResponse(m.getUserId().toString(), m.getDisplayName(), m.getAvatarUrl(),
+                        "USER"))
+                .forEach(members::add);
+        // 群内参与聊天的 Agent 一并作为成员返回（群成员 = 真实用户 + Agent 混合）
+        for (UUID agentId : groupAgentMapper.selectAgentIds(groupId)) {
+            AgentEntity agent = agentMapper.selectById(agentId);
+            if (agent != null) {
+                members.add(new GroupMemberResponse(agent.getId().toString(), agent.getName(), null, "AGENT"));
+            }
+        }
+        return members;
     }
 
     /**
@@ -262,6 +280,6 @@ public class GroupService {
         return new GroupResponse(g.getId().toString(), g.getProjectId().toString(), g.getGroupType(),
                 g.getName(), g.getDescription(), g.getStatus(), g.getLastMessageAt(), g.getCreatedAt(),
                 groupRepositoryMapper.selectRepositoryIds(g.getId()).stream().map(UUID::toString).toList(),
-                projectMemberMapper.countMembers(g.getProjectId()));
+                projectMemberMapper.countMembers(g.getProjectId()) + groupAgentMapper.selectAgentIds(g.getId()).size());
     }
 }

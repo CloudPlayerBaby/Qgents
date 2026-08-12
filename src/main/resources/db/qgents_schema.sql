@@ -479,6 +479,16 @@ CREATE TABLE IF NOT EXISTS agents (
     CONSTRAINT ck_agent_visibility CHECK(visibility IN ('TEAM','PRIVATE'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Team-scoped assignable Agent identities';
 
+CREATE TABLE IF NOT EXISTS group_agents (
+    requirement_group_id BINARY(16) NOT NULL,
+    agent_id BINARY(16) NOT NULL,
+    joined_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (requirement_group_id, agent_id),
+    KEY idx_ga_agent(agent_id),
+    CONSTRAINT fk_ga_group FOREIGN KEY(requirement_group_id) REFERENCES requirement_groups(id) ON DELETE CASCADE,
+    CONSTRAINT fk_ga_agent FOREIGN KEY(agent_id) REFERENCES agents(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='群聊 Agent 参与者（Agent 首次回群时自动加入）';
+
 CREATE TABLE IF NOT EXISTS tasks (
     id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL, requirement_group_id BINARY(16) NOT NULL,
     trigger_message_id BINARY(16) NULL, workspace_id BINARY(16) NOT NULL, continuation_of_task_id BINARY(16) NULL,
