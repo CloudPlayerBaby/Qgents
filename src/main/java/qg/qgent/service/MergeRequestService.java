@@ -17,6 +17,8 @@ import qg.qgent.dto.PageMeta;
 import qg.qgent.dto.QualityGateResponse;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
+import qg.qgent.entity.GitHubInstallationEntity;
+import qg.qgent.entity.GitHubRepositoryEntity;
 import qg.qgent.entity.MergeRequestEntity;
 import qg.qgent.entity.MergeRequestGroupEntity;
 import qg.qgent.entity.MergeRequestReviewEntity;
@@ -26,6 +28,9 @@ import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.entity.RepositoryBranchConfigTestsetEntity;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.mapper.GitHubInstallationMapper;
+import qg.qgent.mapper.GitHubRepositoryMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.MergeRequestGroupMapper;
 import qg.qgent.mapper.MergeRequestMapper;
 import qg.qgent.mapper.MergeRequestReviewMapper;
@@ -33,6 +38,11 @@ import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.QualityCheckResultMapper;
 import qg.qgent.mapper.RepositoryBranchConfigMapper;
 import qg.qgent.mapper.RepositoryBranchConfigTestsetMapper;
+import qg.qgent.github.GitHubAppClient;
+import qg.qgent.github.GitHubPullRequestCreateRequest;
+import qg.qgent.github.GitHubPullRequestDetails;
+import qg.qgent.github.GitHubPullRequestMergeRequest;
+import qg.qgent.github.GitHubPullRequestMergeResult;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -68,6 +78,10 @@ public class MergeRequestService {
     private final ProjectRepositoryMapper projectRepositoryMapper;
     private final RepositoryBranchConfigMapper branchConfigMapper;
     private final RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper;
+    private final GitHubInstallationMapper githubInstallationMapper;
+    private final GitHubRepositoryMapper githubRepositoryMapper;
+    private final ProjectMapper projectMapper;
+    private final GitHubAppClient githubClient;
     private final ProjectAccessService projectAccess;
     private final EventService eventService;
 
@@ -77,7 +91,8 @@ public class MergeRequestService {
             ProjectRepositoryMapper projectRepositoryMapper,
             RepositoryBranchConfigMapper branchConfigMapper,
             RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
-            EventService eventService) {
+            EventService eventService, GitHubInstallationMapper githubInstallationMapper,
+            GitHubRepositoryMapper githubRepositoryMapper, ProjectMapper projectMapper, GitHubAppClient githubClient) {
         this.mergeRequestMapper = mergeRequestMapper;
         this.mergeRequestGroupMapper = mergeRequestGroupMapper;
         this.qualityCheckMapper = qualityCheckMapper;
@@ -87,6 +102,10 @@ public class MergeRequestService {
         this.projectRepositoryMapper = projectRepositoryMapper;
         this.branchConfigMapper = branchConfigMapper;
         this.branchConfigTestsetMapper = branchConfigTestsetMapper;
+        this.githubInstallationMapper = githubInstallationMapper;
+        this.githubRepositoryMapper = githubRepositoryMapper;
+        this.projectMapper = projectMapper;
+        this.githubClient = githubClient;
         this.projectAccess = projectAccess;
         this.eventService = eventService;
     }
@@ -141,11 +160,7 @@ public class MergeRequestService {
         return toDetail(mr, groupIds, qualityGate(mr));
     }
 
-    /**
-     * Creates an MR mirror from a Task Workspace repository branch and committed
-     * head.
-     * 创建为本地镜像（OPEN），真实 GitHub PR 创建由 sync 接缝闭环。
-     */
+    /** Creates a local mirror only after GitHub has created the real Pull Request. */
     @Transactional
     public MergeRequestSummaryResponse create(UUID projectId, UUID userId, MergeRequestCreateRequest request) {
         projectAccess.requireProjectMember(projectId, userId);
@@ -167,7 +182,39 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.CONFLICT, "WORKSPACE_BRANCH_NOT_PUSHED",
                     "The repository branch must have a committed head before MR creation");
         }
-        // TODO 接缝：接入 GitHub 前无法校验源分支是否仍存在；创建后由 sync 以真实 PR 号回写
+        GitHubRepositoryEntity githubRepository = requireGitHubRepository(projectId, request.getRepositoryId());
+        GitHubInstallationEntity installation = githubInstallationMapper.selectById(githubRepository.getInstallationId());
+        if (installation == null || !"ACTIVE".equalsIgnoreCase(installation.getStatus())
+                || installation.getProviderInstallationId() == null) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "GITHUB_INSTALLATION_UNAVAILABLE",
+                    "No active GitHub App installation is available for this repository");
+        }
+
+        MergeRequestEntity existing = mergeRequestMapper.selectOne(Wrappers.<MergeRequestEntity>lambdaQuery()
+                .eq(MergeRequestEntity::getProjectRepositoryId, request.getRepositoryId())
+                .eq(MergeRequestEntity::getSourceBranch, worktree.getSourceBranch())
+                .eq(MergeRequestEntity::getTargetBranch, request.getTargetBranch())
+                .eq(MergeRequestEntity::getStatus, "OPEN")
+                .orderByDesc(MergeRequestEntity::getCreatedAt)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            if (worktree.getHeadCommit().equals(existing.getHeadCommit())) {
+                return toSummary(existing, groupIdsByMr(List.of(existing)).getOrDefault(existing.getId(), List.of()),
+                        qualityGate(existing));
+            }
+            throw new ApiException(HttpStatus.CONFLICT, "OPEN_MR_ALREADY_EXISTS",
+                    "An open Pull Request already exists for this source and target branch");
+        }
+
+        GitHubPullRequestDetails remote = githubClient.createPullRequest(
+                installation.getProviderInstallationId(), githubRepository.getOwnerLogin(), githubRepository.getName(),
+                new GitHubPullRequestCreateRequest(request.getTitle(), null, worktree.getSourceBranch(),
+                        request.getTargetBranch()));
+        if (remote == null || remote.number() <= 0 || !worktree.getSourceBranch().equals(remote.headBranch())
+                || !request.getTargetBranch().equals(remote.baseBranch())) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_PR_RESPONSE_INVALID",
+                    "GitHub returned an invalid Pull Request response");
+        }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         MergeRequestEntity mr = new MergeRequestEntity();
         mr.setId(UuidV7.next());
@@ -175,12 +222,12 @@ public class MergeRequestService {
         mr.setTaskId(task.getId());
         mr.setWorkspaceId(task.getWorkspaceId());
         mr.setProvider("GITHUB");
-        mr.setProviderNumber(nextProviderNumber(request.getRepositoryId()));
-        mr.setSourceBranch(worktree.getSourceBranch());
-        mr.setTargetBranch(request.getTargetBranch());
-        mr.setHeadCommit(worktree.getHeadCommit());
-        mr.setTitle(request.getTitle());
-        mr.setStatus("OPEN");
+        mr.setProviderNumber((long) remote.number());
+        mr.setSourceBranch(remote.headBranch());
+        mr.setTargetBranch(remote.baseBranch());
+        mr.setHeadCommit(remote.headSha());
+        mr.setTitle(remote.title() == null ? request.getTitle() : remote.title());
+        mr.setStatus(toLocalStatus(remote));
         mr.setQualityGateStatus("PENDING");
         mr.setSyncedAt(now);
         mr.setAuthorUserId(userId);
@@ -219,16 +266,26 @@ public class MergeRequestService {
                 .orderByAsc(MergeRequestReviewEntity::getCreatedAt)).stream().map(this::toReview).toList();
     }
 
-    /**
-     * 触发从 GitHub 同步 MR 最新状态（202 接缝，真实拉取由外部集成服务承担）。
-     */
+    /** Refreshes the local mirror from GitHub's current Pull Request state. */
     @Transactional
     public MergeRequestSummaryResponse sync(UUID projectId, UUID mergeRequestId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         MergeRequestEntity mr = requireMr(projectId, mergeRequestId);
-        // TODO 接缝：调用 GitHub 集成服务拉取最新 PR 状态（状态、提交、检查与审查），
-        // 并用真实 PR 号回写 providerNumber；接入前仅刷新本地同步时间并发布事件
-        mr.setSyncedAt(LocalDateTime.now(ZoneOffset.UTC));
+        GitHubRepositoryEntity githubRepository = requireGitHubRepository(projectId, mr.getProjectRepositoryId());
+        GitHubInstallationEntity installation = requireInstallation(githubRepository);
+        GitHubPullRequestDetails remote = githubClient.getPullRequest(installation.getProviderInstallationId(),
+                githubRepository.getOwnerLogin(), githubRepository.getName(), requireProviderNumber(mr));
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        mr.setProviderNumber((long) remote.number());
+        mr.setSourceBranch(remote.headBranch());
+        mr.setTargetBranch(remote.baseBranch());
+        mr.setHeadCommit(remote.headSha());
+        if (remote.title() != null) {
+            mr.setTitle(remote.title());
+        }
+        mr.setStatus(toLocalStatus(remote));
+        mr.setProviderUpdatedAt(now);
+        mr.setSyncedAt(now);
         mergeRequestMapper.updateById(mr);
         refreshQualityGate(mr);
         publishUpdated(mr);
@@ -279,18 +336,33 @@ public class MergeRequestService {
         return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr));
     }
 
-    /**
-     * 通过质量门禁后执行合并（需 Project Admin）。
-     * 门禁未通过时返回 409 QUALITY_GATE_NOT_PASSED；真实 GitHub 合并由接缝服务承担。
-     */
+    /** Requests a real GitHub merge after local quality gates pass. */
     @Transactional
     public MergeRequestSummaryResponse merge(UUID projectId, UUID mergeRequestId, UUID userId) {
         projectAccess.requireProjectAdmin(projectId, userId);
         MergeRequestEntity mr = requireMr(projectId, mergeRequestId);
+        if (!"OPEN".equals(mr.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "MERGE_REQUEST_NOT_OPEN",
+                    "Only an open Pull Request can be merged");
+        }
         if (!"PASSED".equals(qualityGate(mr).getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "QUALITY_GATE_NOT_PASSED", "质量门禁未通过，无法合并");
         }
-        // TODO 接缝：调用 GitHub 集成服务执行真实合并；接入前 MR 保持 OPEN，不做伪合并
+        GitHubRepositoryEntity githubRepository = requireGitHubRepository(projectId, mr.getProjectRepositoryId());
+        GitHubInstallationEntity installation = requireInstallation(githubRepository);
+        GitHubPullRequestMergeResult result = githubClient.mergePullRequest(installation.getProviderInstallationId(),
+                githubRepository.getOwnerLogin(), githubRepository.getName(), requireProviderNumber(mr),
+                new GitHubPullRequestMergeRequest("Merge " + (mr.getTitle() == null ? "Pull Request" : mr.getTitle()),
+                        null, "squash", mr.getHeadCommit()));
+        if (!result.merged()) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_MERGE_NOT_COMPLETED",
+                    result.message() == null ? "GitHub did not merge the Pull Request" : result.message());
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        mr.setStatus("MERGED");
+        mr.setProviderUpdatedAt(now);
+        mr.setSyncedAt(now);
+        mergeRequestMapper.updateById(mr);
         publishUpdated(mr);
         return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr));
     }
@@ -419,13 +491,48 @@ public class MergeRequestService {
         }
     }
 
-    /** 仓库内本地合成编号：无 GitHub 集成前递增占位，sync 接缝将用真实 PR 号回写。 */
-    private long nextProviderNumber(UUID repositoryId) {
-        MergeRequestEntity last = mergeRequestMapper.selectOne(Wrappers.<MergeRequestEntity>lambdaQuery()
-                .eq(MergeRequestEntity::getProjectRepositoryId, repositoryId)
-                .orderByDesc(MergeRequestEntity::getProviderNumber)
-                .last("LIMIT 1"));
-        return (last == null || last.getProviderNumber() == null) ? 1L : last.getProviderNumber() + 1L;
+    private GitHubRepositoryEntity requireGitHubRepository(UUID projectId, UUID projectRepositoryId) {
+        ProjectRepositoryEntity binding = projectRepositoryMapper.selectById(projectRepositoryId);
+        if (binding == null || !projectId.equals(binding.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "REPOSITORY_NOT_FOUND", "Repository does not exist or is not visible");
+        }
+        GitHubRepositoryEntity repository = githubRepositoryMapper.selectById(binding.getRepositoryId());
+        if (repository == null || Boolean.TRUE.equals(repository.getArchived())) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_UNAVAILABLE",
+                    "The bound GitHub repository is unavailable or archived");
+        }
+        var project = projectMapper.selectById(projectId);
+        GitHubInstallationEntity installation = repository.getInstallationId() == null ? null
+                : githubInstallationMapper.selectById(repository.getInstallationId());
+        if (project == null || installation == null || !project.getTeamId().equals(installation.getTeamId())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "GITHUB_REPOSITORY_NOT_AUTHORIZED",
+                    "The GitHub repository installation is not authorized for this project");
+        }
+        return repository;
+    }
+
+    private GitHubInstallationEntity requireInstallation(GitHubRepositoryEntity repository) {
+        GitHubInstallationEntity installation = githubInstallationMapper.selectById(repository.getInstallationId());
+        if (installation == null || !"ACTIVE".equalsIgnoreCase(installation.getStatus())
+                || installation.getProviderInstallationId() == null) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "GITHUB_INSTALLATION_UNAVAILABLE",
+                    "No active GitHub App installation is available for this repository");
+        }
+        return installation;
+    }
+
+    private int requireProviderNumber(MergeRequestEntity mr) {
+        if (mr.getProviderNumber() == null || mr.getProviderNumber() <= 0 || mr.getProviderNumber() > Integer.MAX_VALUE) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_PR_NUMBER_MISSING", "The MR has no valid GitHub Pull Request number");
+        }
+        return mr.getProviderNumber().intValue();
+    }
+
+    private String toLocalStatus(GitHubPullRequestDetails remote) {
+        if (remote.merged()) {
+            return "MERGED";
+        }
+        return "open".equalsIgnoreCase(remote.state()) ? "OPEN" : "CLOSED";
     }
 
     /** 批量取 MR 的需求群ID映射，避免列表 N+1 查询。 */

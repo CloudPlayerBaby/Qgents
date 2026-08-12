@@ -1,7 +1,6 @@
 package qg.qgent.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import lombok.Data;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -9,6 +8,7 @@ import org.apache.ibatis.annotations.Result;
 import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import qg.qgent.dto.GroupMemberRow;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 
@@ -57,14 +57,6 @@ public interface ProjectMemberMapper extends BaseMapper<ProjectMemberEntity> {
     @Select("SELECT COUNT(*) FROM project_members WHERE project_id = #{projectId} AND role = 'PROJECT_ADMIN'")
     int countAdmins(@Param("projectId") UUID projectId);
 
-    /** 群成员行：项目成员 join 用户基础信息（群成员即项目成员）。 */
-    @Data
-    class Member {
-        private UUID userId;
-        private String displayName;
-        private String avatarUrl;
-    }
-
     /** 查询项目成员列表（含昵称、头像），按加入时间排序（群成员即项目成员）。 */
     @Select("SELECT u.id AS user_id, u.display_name, u.avatar_url FROM project_members pm"
             + " JOIN users u ON u.id = pm.user_id WHERE pm.project_id = #{projectId} ORDER BY pm.joined_at")
@@ -73,7 +65,7 @@ public interface ProjectMemberMapper extends BaseMapper<ProjectMemberEntity> {
             @Result(column = "display_name", property = "displayName"),
             @Result(column = "avatar_url", property = "avatarUrl")
     })
-    List<Member> selectMembers(@Param("projectId") UUID projectId);
+    List<GroupMemberRow> selectMembers(@Param("projectId") UUID projectId);
 
     /** 统计项目成员数（用作群详情 memberCount）。 */
     @Select("SELECT COUNT(*) FROM project_members WHERE project_id = #{projectId}")

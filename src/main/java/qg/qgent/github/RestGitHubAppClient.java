@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.LongFunction;
 
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
 import org.bouncycastle.openssl.PEMKeyPair;
@@ -37,11 +38,23 @@ public class RestGitHubAppClient implements GitHubAppClient {
     private final RestClient client;
     private final GitHubAppProperties properties;
     private final Clock clock;
+    private final LongFunction<String> installationTokenProvider;
 
     public RestGitHubAppClient(RestClient client, GitHubAppProperties properties, Clock clock) {
+        this(client, properties, clock, null);
+    }
+
+    /**
+     * Test-visible constructor that permits HTTP contract tests to supply a non-secret installation token.
+     * Production callers must use the three-argument constructor so tokens continue to be minted from the App key.
+     */
+    RestGitHubAppClient(RestClient client, GitHubAppProperties properties, Clock clock,
+            LongFunction<String> installationTokenProvider) {
         this.client = client;
         this.properties = properties;
         this.clock = clock;
+        this.installationTokenProvider = installationTokenProvider == null ? this::installationToken
+                : installationTokenProvider;
     }
 
     @Override
@@ -204,4 +217,120 @@ public class RestGitHubAppClient implements GitHubAppClient {
     private record RepositoryResponse(long id, AccountResponse owner, String name,
                                       @JsonProperty("default_branch") String defaultBranch,
                                       String visibility, boolean archived) { }
+
+    @Override
+    public GitHubPullRequestDetails createPullRequest(long installationId, String owner, String repo, GitHubPullRequestCreateRequest request) {
+        requireConfigured();
+        try {
+            PullRequestResponse response = client.post()
+                    .uri("/repos/{owner}/{repo}/pulls", owner, repo)
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .body(request)
+                    .retrieve()
+                    .body(PullRequestResponse.class);
+            return requirePullRequest(response);
+        } catch (RestClientException exception) {
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
+    public GitHubPullRequestDetails getPullRequest(long installationId, String owner, String repo, int pullNumber) {
+        requireConfigured();
+        try {
+            PullRequestResponse response = client.get()
+                    .uri("/repos/{owner}/{repo}/pulls/{pullNumber}", owner, repo, pullNumber)
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .retrieve()
+                    .body(PullRequestResponse.class);
+            return requirePullRequest(response);
+        } catch (RestClientException exception) {
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
+    public List<GitHubCheckRunDetails> getPullRequestChecks(long installationId, String owner, String repo, String headSha) {
+        requireConfigured();
+        try {
+            CheckRunsResponse response = client.get()
+                    .uri(uriBuilder -> uriBuilder.path("/repos/{owner}/{repo}/commits/{headSha}/check-runs")
+                            .queryParam("per_page", 100).build(owner, repo, headSha))
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .retrieve()
+                    .body(CheckRunsResponse.class);
+            if (response == null || response.checkRuns() == null) {
+                throw upstreamFailure();
+            }
+            return response.checkRuns().stream()
+                    .map(check -> new GitHubCheckRunDetails(check.id(), check.name(), check.status(), check.conclusion()))
+                    .toList();
+        } catch (RestClientException exception) {
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
+    public List<GitHubReviewDetails> getPullRequestReviews(long installationId, String owner, String repo, int pullNumber) {
+        requireConfigured();
+        try {
+            ReviewResponse[] response = client.get()
+                    .uri(uriBuilder -> uriBuilder.path("/repos/{owner}/{repo}/pulls/{pullNumber}/reviews")
+                            .queryParam("per_page", 100).build(owner, repo, pullNumber))
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .retrieve()
+                    .body(ReviewResponse[].class);
+            if (response == null) {
+                throw upstreamFailure();
+            }
+            return java.util.Arrays.stream(response)
+                    .map(review -> new GitHubReviewDetails(review.id(), review.state(), review.authorAssociation(),
+                            review.user() == null ? null : review.user().login()))
+                    .toList();
+        } catch (RestClientException exception) {
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
+    public GitHubPullRequestMergeResult mergePullRequest(long installationId, String owner, String repo, int pullNumber,
+            GitHubPullRequestMergeRequest request) {
+        requireConfigured();
+        try {
+            MergeResponse response = client.put()
+                    .uri("/repos/{owner}/{repo}/pulls/{pullNumber}/merge", owner, repo, pullNumber)
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .body(new MergeRequestBody(request.commitTitle(), request.commitMessage(), request.mergeMethod(),
+                            request.expectedHeadSha()))
+                    .retrieve()
+                    .body(MergeResponse.class);
+            if (response == null) {
+                throw upstreamFailure();
+            }
+            return new GitHubPullRequestMergeResult(response.merged(), response.sha(), response.message());
+        } catch (RestClientException exception) {
+            throw upstreamFailure();
+        }
+    }
+
+    private GitHubPullRequestDetails requirePullRequest(PullRequestResponse response) {
+        if (response == null || response.head() == null || response.base() == null || response.head().sha() == null
+                || response.head().ref() == null || response.base().ref() == null) {
+            throw upstreamFailure();
+        }
+        return new GitHubPullRequestDetails(response.id(), response.number(), response.state(), response.title(),
+                response.head().sha(), response.head().ref(), response.base().ref(), Boolean.TRUE.equals(response.merged()), response.htmlUrl());
+    }
+
+    private record PullRequestResponse(long id, int number, String state, String title,
+            @JsonProperty("html_url") String htmlUrl, PullRequestRef head, PullRequestRef base, Boolean merged) { }
+    private record PullRequestRef(String ref, String sha) { }
+    private record CheckRunsResponse(@JsonProperty("check_runs") List<CheckRunResponse> checkRuns) { }
+    private record CheckRunResponse(long id, String name, String status, String conclusion) { }
+    private record ReviewResponse(long id, String state,
+            @JsonProperty("author_association") String authorAssociation, AccountResponse user) { }
+    private record MergeRequestBody(@JsonProperty("commit_title") String commitTitle,
+            @JsonProperty("commit_message") String commitMessage,
+            @JsonProperty("merge_method") String mergeMethod, String sha) { }
+    private record MergeResponse(boolean merged, String sha, String message) { }
 }

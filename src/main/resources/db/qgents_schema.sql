@@ -219,9 +219,10 @@ CREATE TABLE IF NOT EXISTS
         id BINARY(16) PRIMARY KEY COMMENT '消息UUIDv7',
         requirement_group_id BINARY(16) NOT NULL COMMENT '所属需求群ID',
         sequence_no BIGINT UNSIGNED NOT NULL COMMENT '群内单调递增消息序号',
-        author_user_id BINARY(16) NULL COMMENT '用户作者ID；系统消息时为空',
+        author_user_id BINARY(16) NULL COMMENT '用户作者ID；Agent/系统消息时为空',
+        agent_id BINARY(16) NULL COMMENT 'Agent 作者ID；用户/系统消息时为空',
         client_message_id VARCHAR(128) NULL COMMENT '客户端生成的消息幂等ID',
-        message_type VARCHAR(32) NOT NULL DEFAULT 'TEXT' COMMENT '消息类型枚举：TEXT/CODE/IMAGE/FILE/SYSTEM/QUOTE',
+        message_type VARCHAR(32) NOT NULL DEFAULT 'TEXT' COMMENT '消息类型枚举：TEXT/CODE/IMAGE/FILE/DIFF/TASK_STATUS/SYSTEM/QUOTE',
         content JSON NOT NULL COMMENT '按消息类型校验的结构化内容JSON',
         mentions JSON NULL COMMENT '提及对象JSON数组，元素含type(USER/AGENT)和id',
         reply_to_message_id BINARY(16) NULL COMMENT '回复或引用的原消息ID',
@@ -229,6 +230,7 @@ CREATE TABLE IF NOT EXISTS
         UNIQUE KEY uk_msg_seq (requirement_group_id, sequence_no),
         UNIQUE KEY uk_msg_client (requirement_group_id, client_message_id),
         KEY idx_msg_user (author_user_id),
+        KEY idx_msg_agent (agent_id),
         KEY idx_msg_reply (reply_to_message_id),
         CONSTRAINT fk_msg_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id),
         CONSTRAINT fk_msg_user FOREIGN KEY (author_user_id) REFERENCES users (id),
@@ -237,10 +239,12 @@ CREATE TABLE IF NOT EXISTS
             (
                 message_type = 'SYSTEM'
                 AND author_user_id IS NULL
+                AND agent_id IS NULL
             )
             OR (
                 message_type <> 'SYSTEM'
-                AND author_user_id IS NOT NULL
+                AND (author_user_id IS NOT NULL OR agent_id IS NOT NULL)
+                AND NOT (author_user_id IS NOT NULL AND agent_id IS NOT NULL)
             )
         )
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '需求群有序消息，提及在MVP内以JSON保存';
@@ -468,12 +472,25 @@ CREATE TABLE IF NOT EXISTS
 
 CREATE TABLE IF NOT EXISTS agents (
     id BINARY(16) PRIMARY KEY, team_id BINARY(16) NOT NULL, created_by BINARY(16) NULL,
-    name VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL, visibility VARCHAR(16) NOT NULL DEFAULT 'TEAM',
+    name VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL,
+    avatar TEXT NULL COMMENT 'Agent 头像URL', capabilities JSON NULL COMMENT '能力标签JSON数组',
+    prompt TEXT NULL COMMENT 'Agent 系统提示词',
+    visibility VARCHAR(16) NOT NULL DEFAULT 'TEAM',
     status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
     KEY idx_agent_team(team_id,status), CONSTRAINT fk_agent_team FOREIGN KEY(team_id) REFERENCES teams(id),
     CONSTRAINT fk_agent_creator FOREIGN KEY(created_by) REFERENCES users(id),
     CONSTRAINT ck_agent_visibility CHECK(visibility IN ('TEAM','PRIVATE'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Team-scoped assignable Agent identities';
+
+CREATE TABLE IF NOT EXISTS group_agents (
+    requirement_group_id BINARY(16) NOT NULL,
+    agent_id BINARY(16) NOT NULL,
+    joined_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (requirement_group_id, agent_id),
+    KEY idx_ga_agent(agent_id),
+    CONSTRAINT fk_ga_group FOREIGN KEY(requirement_group_id) REFERENCES requirement_groups(id) ON DELETE CASCADE,
+    CONSTRAINT fk_ga_agent FOREIGN KEY(agent_id) REFERENCES agents(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='群聊 Agent 参与者（Agent 首次回群时自动加入）';
 
 CREATE TABLE IF NOT EXISTS tasks (
     id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL, requirement_group_id BINARY(16) NOT NULL,
@@ -733,3 +750,32 @@ SET @mr_alter_sql = IF(@mr_col_exists = 0,
 PREPARE mr_alter_stmt FROM @mr_alter_sql;
 EXECUTE mr_alter_stmt;
 DEALLOCATE PREPARE mr_alter_stmt;
+
+-- 幂等增量迁移：为 messages.agent_id 补充指向 agents 的外键（Agent 消息必须引用真实 Agent）。
+-- agents 建表晚于 messages，FK 不能写进 messages 的 CREATE 语句，因此改在末尾补 ALTER。
+-- 已存在该约束的库自动跳过，脚本整体可重复执行。
+SET @msg_fk_exists = (
+    SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'messages' AND CONSTRAINT_NAME = 'fk_msg_agent'
+);
+SET @msg_fk_sql = IF(@msg_fk_exists = 0,
+    'ALTER TABLE messages ADD CONSTRAINT fk_msg_agent FOREIGN KEY (agent_id) REFERENCES agents (id)',
+    'SELECT 1');
+PREPARE msg_fk_stmt FROM @msg_fk_sql;
+EXECUTE msg_fk_stmt;
+DEALLOCATE PREPARE msg_fk_stmt;
+
+-- 幂等增量迁移：为 agents 表补充身份卡字段（头像/能力标签/提示词，契约 §11.1、产品需求 §2.3）。
+-- 全新整库初始化时上方 agents 建表已包含这三列，此处仅服务已存在的库。
+SET @agent_col_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'avatar'
+);
+SET @agent_alter_sql = IF(@agent_col_exists = 0,
+    CONCAT('ALTER TABLE agents ADD COLUMN avatar TEXT NULL COMMENT ''Agent 头像URL'' AFTER role, ',
+           'ADD COLUMN capabilities JSON NULL COMMENT ''能力标签JSON数组'' AFTER avatar, ',
+           'ADD COLUMN prompt TEXT NULL COMMENT ''Agent 系统提示词'' AFTER capabilities'),
+    'SELECT 1');
+PREPARE agent_alter_stmt FROM @agent_alter_sql;
+EXECUTE agent_alter_stmt;
+DEALLOCATE PREPARE agent_alter_stmt;
