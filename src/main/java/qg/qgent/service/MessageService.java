@@ -10,11 +10,13 @@ import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.Mention;
-import qg.qgent.dto.MessageListResponse;
 import qg.qgent.dto.MessageResponse;
 import qg.qgent.dto.MessageSendRequest;
+import qg.qgent.dto.PageInfo;
+import qg.qgent.dto.PageSlice;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.entity.RequirementGroupEntity;
+import qg.qgent.mapper.GroupAgentMapper;
 import qg.qgent.mapper.MessageMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 
@@ -38,19 +40,21 @@ public class MessageService {
 
     private final MessageMapper messageMapper;
     private final RequirementGroupMapper groupMapper;
+    private final GroupAgentMapper groupAgentMapper;
     private final ProjectAccessService access;
     private final ObjectMapper mapper;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
-            ProjectAccessService access, ObjectMapper mapper) {
+            GroupAgentMapper groupAgentMapper, ProjectAccessService access, ObjectMapper mapper) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
+        this.groupAgentMapper = groupAgentMapper;
         this.access = access;
         this.mapper = mapper;
     }
 
     /**
-     * 发送消息。
+     * 发送消息（用户路径）。
      * <p>
      * 发送前持有群行锁（FOR UPDATE）以保证 sequence 单调递增；client_message_id 在同一群内唯一，
      * 断线重试或并发撞唯一键时返回原消息（幂等）。
@@ -64,13 +68,40 @@ public class MessageService {
     @Transactional
     public MessageResponse send(UUID actor, UUID projectId, UUID groupId, MessageSendRequest body) {
         access.requireProjectMember(projectId, actor);
-        RequirementGroupEntity group = groupMapper.selectOne(Wrappers.<RequirementGroupEntity>lambdaQuery()
-                .eq(RequirementGroupEntity::getId, groupId)
-                .last("FOR UPDATE"));
+        RequirementGroupEntity group = lockGroup(groupId);
         if (group == null || !group.getProjectId().equals(projectId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
         }
+        return doSend(groupId, actor, null, body);
+    }
 
+    /**
+     * Agent 发送消息（内部方法，供 Agent 编排系统调用，实现用户+Agent 共同参与聊天）。
+     * <p>
+     * Agent 不是登录用户，不执行项目成员校验；群与 Agent 的归属一致性由编排系统保证。
+     * 与用户消息共用 sequence 单调递增与 client_message_id 幂等逻辑，响应 senderType=AGENT。
+     *
+     * @param groupId 需求群 ID
+     * @param agentId Agent ID
+     * @param body    发送请求
+     * @return 消息视图
+     */
+    @Transactional
+    public MessageResponse sendAsAgent(UUID groupId, UUID agentId, MessageSendRequest body) {
+        RequirementGroupEntity group = lockGroup(groupId);
+        if (group == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在");
+        }
+        return doSend(groupId, null, agentId, body);
+    }
+
+    private RequirementGroupEntity lockGroup(UUID groupId) {
+        return groupMapper.selectOne(Wrappers.<RequirementGroupEntity>lambdaQuery()
+                .eq(RequirementGroupEntity::getId, groupId)
+                .last("FOR UPDATE"));
+    }
+
+    private MessageResponse doSend(UUID groupId, UUID authorUserId, UUID agentId, MessageSendRequest body) {
         String type = normalizeType(body.getType());
         validateContent(type, body.getContent());
         List<Mention> mentions = body.getMentions() == null ? List.of() : body.getMentions();
@@ -95,7 +126,8 @@ public class MessageService {
         message.setId(UuidV7.next());
         message.setRequirementGroupId(groupId);
         message.setSequenceNo(messageMapper.nextSequence(groupId));
-        message.setAuthorUserId(actor);
+        message.setAuthorUserId(authorUserId);
+        message.setAgentId(agentId);
         message.setClientMessageId(clientMessageId);
         message.setMessageType(type);
         message.setContent(writeJson(body.getContent()));
@@ -116,6 +148,10 @@ public class MessageService {
         groupMapper.update(null, Wrappers.<RequirementGroupEntity>lambdaUpdate()
                 .set(RequirementGroupEntity::getLastMessageAt, LocalDateTime.now(ZoneOffset.UTC))
                 .eq(RequirementGroupEntity::getId, groupId));
+        // Agent 首次回群后自动成为群参与者（群成员 = 真实用户 + Agent 混合）
+        if (agentId != null) {
+            groupAgentMapper.insertAgent(groupId, agentId);
+        }
         return toResponse(messageMapper.selectById(message.getId()));
     }
 
@@ -129,7 +165,7 @@ public class MessageService {
      * @param limit     每页数量（自动收敛到 1..100）
      * @return 消息分页结果
      */
-    public MessageListResponse list(UUID actor, UUID projectId, UUID groupId, String cursor, int limit) {
+    public PageSlice<MessageResponse> list(UUID actor, UUID projectId, UUID groupId, String cursor, int limit) {
         access.requireProjectMember(projectId, actor);
         RequirementGroupEntity group = groupMapper.selectById(groupId);
         if (group == null || !group.getProjectId().equals(projectId)) {
@@ -147,7 +183,7 @@ public class MessageService {
         String nextCursor = hasMore && !views.isEmpty()
                 ? encodeCursor(views.get(views.size() - 1).getSequence())
                 : null;
-        return new MessageListResponse(views, nextCursor, hasMore);
+        return new PageSlice<>(views, new PageInfo(nextCursor, hasMore));
     }
 
     private MessageEntity findByClientMessageId(UUID groupId, String clientMessageId) {
@@ -194,11 +230,21 @@ public class MessageService {
                 ? List.of()
                 : readJson(m.getMentions(), new TypeReference<List<Mention>>() {
                 });
-        String senderType = m.getAuthorUserId() == null ? "SYSTEM" : "USER";
+        String senderType;
+        String senderId;
+        if (m.getAgentId() != null) {
+            senderType = "AGENT";
+            senderId = m.getAgentId().toString();
+        } else if (m.getAuthorUserId() != null) {
+            senderType = "USER";
+            senderId = m.getAuthorUserId().toString();
+        } else {
+            senderType = "SYSTEM";
+            senderId = null;
+        }
         return new MessageResponse(m.getId().toString(), m.getRequirementGroupId().toString(), m.getSequenceNo(),
-                m.getMessageType(), content, m.getAuthorUserId() == null ? null : m.getAuthorUserId().toString(),
-                senderType, m.getReplyToMessageId() == null ? null : m.getReplyToMessageId().toString(), mentions,
-                m.getCreatedAt());
+                m.getMessageType(), content, senderId, senderType,
+                m.getReplyToMessageId() == null ? null : m.getReplyToMessageId().toString(), mentions, m.getCreatedAt());
     }
 
     private String writeJson(Object value) {
