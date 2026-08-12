@@ -219,7 +219,8 @@ CREATE TABLE IF NOT EXISTS
         id BINARY(16) PRIMARY KEY COMMENT '消息UUIDv7',
         requirement_group_id BINARY(16) NOT NULL COMMENT '所属需求群ID',
         sequence_no BIGINT UNSIGNED NOT NULL COMMENT '群内单调递增消息序号',
-        author_user_id BINARY(16) NULL COMMENT '用户作者ID；系统消息时为空',
+        author_user_id BINARY(16) NULL COMMENT '用户作者ID；Agent/系统消息时为空',
+        agent_id BINARY(16) NULL COMMENT 'Agent 作者ID；用户/系统消息时为空（agents 表由 Agent 域建立后补充外键）',
         client_message_id VARCHAR(128) NULL COMMENT '客户端生成的消息幂等ID',
         message_type VARCHAR(32) NOT NULL DEFAULT 'TEXT' COMMENT '消息类型枚举：TEXT/CODE/IMAGE/FILE/SYSTEM/QUOTE',
         content JSON NOT NULL COMMENT '按消息类型校验的结构化内容JSON',
@@ -229,6 +230,7 @@ CREATE TABLE IF NOT EXISTS
         UNIQUE KEY uk_msg_seq (requirement_group_id, sequence_no),
         UNIQUE KEY uk_msg_client (requirement_group_id, client_message_id),
         KEY idx_msg_user (author_user_id),
+        KEY idx_msg_agent (agent_id),
         KEY idx_msg_reply (reply_to_message_id),
         CONSTRAINT fk_msg_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id),
         CONSTRAINT fk_msg_user FOREIGN KEY (author_user_id) REFERENCES users (id),
@@ -237,10 +239,12 @@ CREATE TABLE IF NOT EXISTS
             (
                 message_type = 'SYSTEM'
                 AND author_user_id IS NULL
+                AND agent_id IS NULL
             )
             OR (
                 message_type <> 'SYSTEM'
-                AND author_user_id IS NOT NULL
+                AND (author_user_id IS NOT NULL OR agent_id IS NOT NULL)
+                AND NOT (author_user_id IS NOT NULL AND agent_id IS NOT NULL)
             )
         )
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '需求群有序消息，提及在MVP内以JSON保存';
