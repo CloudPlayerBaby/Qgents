@@ -39,4 +39,37 @@ public interface GitHubAppClient {
      * @return 已授权仓库列表，不含克隆地址或访问令牌
      */
     List<GitHubRepositoryDetails> listRepositories(long installationId);
+
+    /**
+     * 创建 Pull Request
+     *
+     * @param installationId 安装 ID
+     * @param owner          仓库所有者
+     * @param repo           仓库名称
+     * @param request        创建 PR 请求参数
+     * @return PR 详情
+     */
+    GitHubPullRequestDetails createPullRequest(long installationId, String owner, String repo, GitHubPullRequestCreateRequest request);
+
+    /**
+     * Gets the current Pull Request state and source/target refs from GitHub.
+     */
+    GitHubPullRequestDetails getPullRequest(long installationId, String owner, String repo, int pullNumber);
+
+    /**
+     * Gets check runs for a specific commit SHA. The result is GitHub data, not a Qgents quality-gate decision.
+     */
+    List<GitHubCheckRunDetails> getPullRequestChecks(long installationId, String owner, String repo, String headSha);
+
+    /**
+     * Gets GitHub reviews associated with the Pull Request.
+     */
+    List<GitHubReviewDetails> getPullRequestReviews(long installationId, String owner, String repo, int pullNumber);
+
+    /**
+     * Requests a GitHub merge and returns GitHub's explicit outcome. Callers must not mark a local MR merged when
+     * {@link GitHubPullRequestMergeResult#merged()} is false.
+     */
+    GitHubPullRequestMergeResult mergePullRequest(long installationId, String owner, String repo, int pullNumber,
+            GitHubPullRequestMergeRequest request);
 }

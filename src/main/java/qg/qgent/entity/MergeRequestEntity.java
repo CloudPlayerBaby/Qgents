@@ -24,7 +24,7 @@ public class MergeRequestEntity {
     private UUID workspaceId;
     /** 代码托管提供方枚举：GITHUB。 */
     private String provider;
-    /** GitHub Pull Request 编号；未接入 GitHub 前由服务端以本地合成编号占位。 */
+    /** GitHub Pull Request真实编号。 */
     private Long providerNumber;
     /** 源分支名。 */
     private String sourceBranch;
