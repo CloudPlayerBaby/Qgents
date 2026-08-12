@@ -85,7 +85,9 @@ SANDBOX_NETWORK_POLICY=outbound
 
 - `process.exec`
 - `file.read`、`file.list`、`file.search`、`file.write`
-- `git.status`、`git.diff`、`git.log`、`git.add`、`git.commit`
+- `git.status`、`git.diff`、`git.log`、`git.add`、`git.commit`、`git.head`、`git.push`
+
+`git.head` 返回当前分支、HEAD 提交和工作树是否干净。`git.push` 必须提供预期 HEAD 提交、`origin` 远端和当前检出的目标分支；Worker 会从当前 `HEAD` 推送，并在推送后通过远端引用核验提交 SHA。
 
 创建沙箱时，控制层必须通过 `repositories` 提供仓库编号到 Workspace 相对目录的映射。后续工具请求只提交 `repositoryId`，不能自行指定容器工作目录。
 
