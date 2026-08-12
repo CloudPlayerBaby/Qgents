@@ -1,7 +1,7 @@
 package qg.qgent.service;
 
-import java.time.LocalDateTime;
-import java.util.Map;
+import qg.qgent.dto.UploadCredential;
+
 import java.util.UUID;
 
 /**
@@ -26,15 +26,4 @@ public interface AttachmentStorageStrategy {
      * @return 直传凭证
      */
     UploadCredential createCredential(UUID attachmentId, String fileName, String mediaType, Long sizeBytes);
-
-    /**
-     * 直传凭证。
-     *
-     * @param uploadUrl 上传地址（对象存储预签名地址或本地签名端点）
-     * @param method    上传方法，如 PUT
-     * @param headers   上传时必须携带的请求头（如 Content-Type）
-     * @param expiresAt 凭证过期时间（UTC）
-     */
-    record UploadCredential(String uploadUrl, String method, Map<String, String> headers, LocalDateTime expiresAt) {
-    }
 }

@@ -1,5 +1,6 @@
 package qg.qgent.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -17,32 +18,42 @@ import java.util.Map;
 public class MessageResponse {
 
     /** 消息 ID。 */
+    @Schema(description = "消息 ID")
     private String id;
 
     /** 所属需求群 ID。 */
+    @Schema(description = "所属需求群 ID")
     private String groupId;
 
     /** 群内单调递增序号。 */
+    @Schema(description = "群内单调递增序号")
     private Long sequence;
 
     /** 消息类型：TEXT/CODE/IMAGE/FILE/SYSTEM/QUOTE。 */
+    @Schema(description = "消息类型：TEXT/CODE/IMAGE/FILE/SYSTEM/QUOTE")
     private String type;
 
     /** 结构化内容对象。 */
+    @Schema(description = "结构化内容对象")
     private Map<String, Object> content;
 
     /** 发送者 ID；SYSTEM 消息为空。 */
+    @Schema(description = "发送者 ID；SYSTEM 消息为空")
     private String senderId;
 
     /** 发送者类型：USER / SYSTEM（Agent 后续扩展）。 */
+    @Schema(description = "发送者类型：USER / SYSTEM")
     private String senderType;
 
     /** 回复或引用的原消息 ID；为空表示无回复。 */
+    @Schema(description = "回复或引用的原消息 ID")
     private String replyToId;
 
     /** 提及对象列表。 */
+    @Schema(description = "提及对象列表")
     private List<Mention> mentions;
 
     /** 发送时间（UTC）。 */
+    @Schema(description = "发送时间（UTC）")
     private LocalDateTime createdAt;
 }
