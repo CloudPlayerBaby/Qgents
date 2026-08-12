@@ -9,7 +9,7 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class SandboxCleanupService {
     private final SandboxService sandboxes;
-    private final ExecutionService executions;
+    private final ToolExecutionService executions;
 
     /**
      * 回收达到空闲期限或最大寿命的沙箱

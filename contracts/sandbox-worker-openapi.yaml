@@ -12,7 +12,6 @@ paths:
   /internal/v1/sandboxes:
     post:
       operationId: createSandbox
-      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
         content:
@@ -20,23 +19,54 @@ paths:
             schema: {$ref: '#/components/schemas/CreateSandboxRequest'}
       responses:
         '201':
-          description: 沙箱已创建或返回幂等结果
+          description: Sandbox 已创建
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Sandbox'}
+  /internal/v1/workspaces/{workspaceId}:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    put:
+      operationId: provisionWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkspaceProvisionRequest'}
+      responses:
+        '200':
+          description: Workspace 已准备
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Workspace'}
+    get:
+      operationId: getWorkspace
+      responses:
+        '200':
+          description: Workspace 及各仓库实际 HEAD
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Workspace'}
+    delete:
+      operationId: deleteWorkspace
+      responses:
+        '204': {description: Workspace 已删除或原本不存在}
+        '409': {description: Workspace 仍被 Sandbox 使用}
   /internal/v1/sandboxes/{sandboxId}/tool-executions:
     parameters: [{$ref: '#/components/parameters/SandboxId'}]
     post:
       operationId: executeTool
-      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/ToolExecutionRequest'}
       responses:
-        '200':
-          description: 工具最终执行结果
+        '202':
+          description: 工具执行已持久化并进入后台队列
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ToolExecution'}
@@ -63,13 +93,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ExecutionLogs'}
+  /internal/v1/tool-executions/{executionId}/cancel:
+    parameters: [{$ref: '#/components/parameters/ExecutionId'}]
+    post:
+      operationId: cancelToolExecution
+      responses:
+        '200':
+          description: 工具执行已取消
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolExecution'}
+        '409': {description: 当前执行状态不可取消，或请求未路由到 ownerWorkerId 对应的 Worker}
 components:
   parameters:
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      required: true
-      schema: {type: string, minLength: 1, maxLength: 128}
     SandboxId:
       name: sandboxId
       in: path
@@ -81,6 +117,43 @@ components:
       required: true
       schema: {type: string, format: uuid}
   schemas:
+    WorkspaceRepositoryRequest:
+      type: object
+      required: [repositoryId, baseRef, sourceBranch, workspacePath]
+      properties:
+        repositoryId: {type: string, format: uuid}
+        baseRef: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]*$', maxLength: 256}
+        sourceBranch: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]*$', maxLength: 256}
+        workspacePath: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$', maxLength: 128}
+    WorkspaceProvisionRequest:
+      type: object
+      required: [projectId, repositories]
+      properties:
+        projectId: {type: string, format: uuid}
+        repositories:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items: {$ref: '#/components/schemas/WorkspaceRepositoryRequest'}
+    WorkspaceRepository:
+      allOf:
+        - {$ref: '#/components/schemas/WorkspaceRepositoryRequest'}
+        - type: object
+          properties:
+            headCommit: {type: string}
+    Workspace:
+      type: object
+      required: [id, projectId, storageKey, status, repositories, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        storageKey: {type: string}
+        status: {type: string, enum: [READY]}
+        repositories:
+          type: array
+          items: {$ref: '#/components/schemas/WorkspaceRepository'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
     ResourceLimits:
       type: object
       properties:
@@ -113,19 +186,23 @@ components:
         maxExpiresAt: {type: string, format: date-time}
     ToolExecutionRequest:
       type: object
-      required: [executionId, repositoryId, tool, arguments]
+      required: [executionId, tool, arguments]
       properties:
         executionId: {type: string, format: uuid}
         repositoryId: {type: string, format: uuid}
         tool:
           type: string
-          enum: [process.exec, file.read, file.list, file.search, file.write, git.status, git.diff, git.log, git.add, git.commit]
-        arguments: {type: object, maxProperties: 64}
+          enum: [process.exec, file.read, file.list, file.search, file.write, git.status, git.diff, git.log, git.add, git.commit, git.head, git.push]
+        arguments:
+          type: object
+          maxProperties: 64
+          description: For `git.push`, required properties are `expectedHeadCommit` (current HEAD SHA), `remote` (only `origin`) and `branch` (the current checked-out branch). The Worker verifies the remote branch points to that SHA after pushing.
         timeoutSeconds: {type: integer, format: int64, minimum: 1, maximum: 3600}
     ToolExecution:
       type: object
       properties:
         id: {type: string, format: uuid}
+        ownerWorkerId: {type: string, description: 实际执行该任务的 Worker 编号，取消请求必须路由到该 Worker}
         sandboxId: {type: string, format: uuid}
         repositoryId: {type: string, format: uuid, nullable: true}
         tool: {type: string}

@@ -17,7 +17,7 @@ import java.util.UUID;
 @Data
 public class CreateSandboxRequest {
 
-    /** 由控制层生成的沙箱唯一编号，也是创建操作的资源幂等标识。 */
+    /** 由控制层生成的 Sandbox 唯一编号；重复编号会被拒绝。 */
     @NotNull
     private UUID sandboxId;
 

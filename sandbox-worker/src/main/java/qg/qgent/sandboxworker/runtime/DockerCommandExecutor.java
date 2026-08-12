@@ -15,6 +15,9 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 使用 Docker Exec API 在既有沙箱容器内执行参数数组命令。
@@ -26,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 public class DockerCommandExecutor implements CommandExecutor {
     private final DockerClient docker;
     private final SandboxWorkerProperties properties;
+    private final ConcurrentMap<String, ReentrantLock> sandboxCommandLocks = new ConcurrentHashMap<>();
 
     /**
      * 在沙箱内执行单条命令。超时或线程中断时会重启容器以终止残留进程，Workspace 挂载内容保持不变。
@@ -37,6 +41,22 @@ public class DockerCommandExecutor implements CommandExecutor {
         if (sandbox.getRuntimeHandle() == null) {
             throw new IllegalStateException("沙箱缺少底层容器编号");
         }
+        ReentrantLock lock = sandboxCommandLocks.computeIfAbsent(sandbox.getRuntimeHandle(), ignored ->
+                new ReentrantLock());
+        lock.lockInterruptibly();
+        try {
+            return executeLocked(sandbox, workingDirectory, command, timeout);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 在同一容器命令锁内执行 Docker Exec。
+     * 取消或超时需要重启容器，因此同一 Sandbox 内的容器命令必须串行，避免误杀其他正在运行的命令。
+     */
+    private CommandExecutionResult executeLocked(SandboxAllocation sandbox, String workingDirectory,
+            List<String> command, Duration timeout) throws InterruptedException {
         String execId = docker.execCreateCmd(sandbox.getRuntimeHandle())
                 .withAttachStdout(true)
                 .withAttachStderr(true)
