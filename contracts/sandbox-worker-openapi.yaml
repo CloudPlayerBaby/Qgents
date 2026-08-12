@@ -1,0 +1,150 @@
+openapi: 3.1.0
+info:
+  title: Qgents 沙箱工作节点内部接口
+  version: 0.3.0
+  description: 控制层调用的内部接口。客户端不能提交宿主机路径、Docker 网络、挂载参数或凭证。
+paths:
+  /internal/v1/health:
+    get:
+      operationId: health
+      responses:
+        '200': {description: Worker 进程存活}
+  /internal/v1/sandboxes:
+    post:
+      operationId: createSandbox
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateSandboxRequest'}
+      responses:
+        '201':
+          description: 沙箱已创建或返回幂等结果
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Sandbox'}
+  /internal/v1/sandboxes/{sandboxId}/tool-executions:
+    parameters: [{$ref: '#/components/parameters/SandboxId'}]
+    post:
+      operationId: executeTool
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ToolExecutionRequest'}
+      responses:
+        '200':
+          description: 工具最终执行结果
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolExecution'}
+  /internal/v1/tool-executions/{executionId}:
+    parameters: [{$ref: '#/components/parameters/ExecutionId'}]
+    get:
+      operationId: getToolExecution
+      responses:
+        '200':
+          description: 已持久化的工具执行结果
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolExecution'}
+  /internal/v1/tool-executions/{executionId}/logs:
+    parameters: [{$ref: '#/components/parameters/ExecutionId'}]
+    get:
+      operationId: getToolExecutionLogs
+      parameters:
+        - {name: after, in: query, schema: {type: integer, format: int64, minimum: 0, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 200}}
+      responses:
+        '200':
+          description: 按序号增量返回日志
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ExecutionLogs'}
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 128}
+    SandboxId:
+      name: sandboxId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ExecutionId:
+      name: executionId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  schemas:
+    ResourceLimits:
+      type: object
+      properties:
+        idleTtlSeconds: {type: integer, format: int64, minimum: 1}
+        maxLifetimeSeconds: {type: integer, format: int64, minimum: 1}
+        executionTimeoutSeconds: {type: integer, format: int64, minimum: 1}
+    CreateSandboxRequest:
+      type: object
+      required: [sandboxId, taskRunId, workspaceStorageKey, imageProfile, repositories]
+      properties:
+        sandboxId: {type: string, format: uuid}
+        taskRunId: {type: string, format: uuid}
+        workspaceStorageKey: {type: string, minLength: 1, maxLength: 512}
+        imageProfile: {type: string, minLength: 1, maxLength: 64}
+        repositories:
+          type: object
+          description: 仓库 UUID 到 Workspace 内相对目录的映射
+          additionalProperties: {type: string, pattern: '^[A-Za-z0-9._/-]+$'}
+        limits: {$ref: '#/components/schemas/ResourceLimits'}
+    Sandbox:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        taskRunId: {type: string, format: uuid}
+        status: {type: string}
+        runtimeKind: {type: string}
+        createdAt: {type: string, format: date-time}
+        lastActiveAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        maxExpiresAt: {type: string, format: date-time}
+    ToolExecutionRequest:
+      type: object
+      required: [executionId, repositoryId, tool, arguments]
+      properties:
+        executionId: {type: string, format: uuid}
+        repositoryId: {type: string, format: uuid}
+        tool:
+          type: string
+          enum: [process.exec, file.read, file.list, file.search, file.write, git.status, git.diff, git.log, git.add, git.commit]
+        arguments: {type: object, maxProperties: 64}
+        timeoutSeconds: {type: integer, format: int64, minimum: 1, maximum: 3600}
+    ToolExecution:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        sandboxId: {type: string, format: uuid}
+        repositoryId: {type: string, format: uuid, nullable: true}
+        tool: {type: string}
+        status: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, TIMED_OUT, CANCELLED, INTERRUPTED]}
+        exitCode: {type: integer, nullable: true}
+        result: {type: object}
+        failureReason: {type: string, nullable: true}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: string, format: date-time, nullable: true}
+        finishedAt: {type: string, format: date-time, nullable: true}
+    ExecutionLogEntry:
+      type: object
+      properties:
+        sequence: {type: integer, format: int64}
+        stream: {type: string, enum: [SYSTEM, STDOUT, STDERR]}
+        content: {type: string}
+        timestamp: {type: string, format: date-time}
+    ExecutionLogs:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ExecutionLogEntry'}}
+        nextCursor: {type: integer, format: int64}

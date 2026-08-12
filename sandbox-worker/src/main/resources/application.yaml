@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: qgents-sandbox-worker
+  datasource:
+    url: ${SANDBOX_DB_URL:jdbc:mysql://127.0.0.1:3306/qgents_sandbox_worker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}
+    username: ${SANDBOX_DB_USERNAME:qgents}
+    password: ${SANDBOX_DB_PASSWORD:qgents}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+server:
+  port: ${SANDBOX_WORKER_PORT:8091}
+
+sandbox:
+  # 运行时环境
+  runtime: ${SANDBOX_RUNTIME:fake}
+  persistence: ${SANDBOX_PERSISTENCE:mysql}
+  # 默认空闲存活时间
+  default-idle-ttl: ${SANDBOX_DEFAULT_IDLE_TTL:30m}
+  # 最大空闲存活时间
+  max-idle-ttl: ${SANDBOX_MAX_IDLE_TTL:2h}
+  # 默认最大生命周期
+  default-max-lifetime: ${SANDBOX_DEFAULT_MAX_LIFETIME:4h}
+  # 最大生命周期
+  max-lifetime: ${SANDBOX_MAX_LIFETIME:12h}
+  # 默认执行超时时间
+  default-execution-timeout: ${SANDBOX_DEFAULT_EXECUTION_TIMEOUT:15m}
+  # 最大执行超时时间
+  max-execution-timeout: ${SANDBOX_MAX_EXECUTION_TIMEOUT:1h}
+  # 清理间隔
+  cleanup-interval: ${SANDBOX_CLEANUP_INTERVAL:30s}
+  # 执行线程数
+  execution-threads: ${SANDBOX_EXECUTION_THREADS:4}
+  # 镜像配置
+  image-profiles: ${SANDBOX_IMAGE_PROFILES:java-node}
+  docker-host: ${SANDBOX_DOCKER_HOST:unix:///var/run/docker.sock}
+  worker-id: ${SANDBOX_WORKER_ID:local}
+  workspace-local-root: ${SANDBOX_WORKSPACE_LOCAL_ROOT:/var/lib/qgents/workspaces}
+  workspace-docker-host-root: ${SANDBOX_WORKSPACE_DOCKER_HOST_ROOT:/srv/qgents/workspaces}
+  images:
+    java-node: ${SANDBOX_JAVA_NODE_IMAGE:qgents/sandbox-java-node:0.1.0}
+  memory-bytes: ${SANDBOX_MEMORY_BYTES:4294967296}
+  nano-cpus: ${SANDBOX_NANO_CPUS:2000000000}
+  pids-limit: ${SANDBOX_PIDS_LIMIT:256}
+  network-policy: ${SANDBOX_NETWORK_POLICY:outbound}
+  # stdout 和 stderr 各自允许保留的最大字节数
+  max-output-bytes: ${SANDBOX_MAX_OUTPUT_BYTES:1048576}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
