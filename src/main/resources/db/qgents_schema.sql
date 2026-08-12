@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS
         author_user_id BINARY(16) NULL COMMENT '用户作者ID；Agent/系统消息时为空',
         agent_id BINARY(16) NULL COMMENT 'Agent 作者ID；用户/系统消息时为空',
         client_message_id VARCHAR(128) NULL COMMENT '客户端生成的消息幂等ID',
-        message_type VARCHAR(32) NOT NULL DEFAULT 'TEXT' COMMENT '消息类型枚举：TEXT/CODE/IMAGE/FILE/SYSTEM/QUOTE',
+        message_type VARCHAR(32) NOT NULL DEFAULT 'TEXT' COMMENT '消息类型枚举：TEXT/CODE/IMAGE/FILE/DIFF/TASK_STATUS/SYSTEM/QUOTE',
         content JSON NOT NULL COMMENT '按消息类型校验的结构化内容JSON',
         mentions JSON NULL COMMENT '提及对象JSON数组，元素含type(USER/AGENT)和id',
         reply_to_message_id BINARY(16) NULL COMMENT '回复或引用的原消息ID',
