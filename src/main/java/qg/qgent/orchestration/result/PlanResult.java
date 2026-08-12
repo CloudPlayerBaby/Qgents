@@ -1,0 +1,32 @@
+package qg.qgent.orchestration.result;
+
+import lombok.Data;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Plan Agent 的结构化产出：任务理解、目标、实现步骤、测试计划与风险。
+ * 由 Orchestrator 转换为 TaskStep 后持久化。
+ */
+@Data
+public class PlanResult {
+    /** 任务理解。 */
+    private String taskUnderstanding;
+    /** 修改目标列表。 */
+    private List<String> objectives = new ArrayList<>();
+    /** 实现步骤。 */
+    private List<ImplementationStep> implementationSteps = new ArrayList<>();
+    /** 测试计划。 */
+    private String testPlan;
+    /** 风险列表。 */
+    private List<String> risks = new ArrayList<>();
+
+    /** 单个实现步骤。 */
+    @Data
+    public static class ImplementationStep {
+        private String title;
+        private List<String> files = new ArrayList<>();
+        private String description;
+    }
+}

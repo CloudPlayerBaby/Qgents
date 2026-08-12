@@ -258,6 +258,69 @@ public class TaskRunService {
         return decideInput(run, requestId, "REJECTED", reason);
     }
 
+    /**
+     * 为指定 TaskStep 创建一次新的执行尝试（QUEUED）并发布事件。
+     * 属于受控执行接缝：调用方必须已完成项目归属、角色与写入租约校验，本方法只负责落库与事件。
+     *
+     * @param retryOfTaskRunId 重试来源运行ID：基础设施重试指向同相位失败运行，质量修复循环指向触发修复的 Test/Review 运行，首次执行为 null
+     */
+    @Transactional
+    public TaskRunEntity createForStep(UUID projectId, UUID taskId, UUID taskStepId, String role, UUID agentId,
+            UUID createdBy, UUID retryOfTaskRunId) {
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        TaskRunEntity run = new TaskRunEntity();
+        run.setId(UuidV7.next());
+        run.setProjectId(projectId);
+        run.setTaskId(taskId);
+        run.setTaskStepId(taskStepId);
+        run.setAgentId(agentId);
+        run.setRole(role);
+        run.setStatus("QUEUED");
+        run.setRetryOfTaskRunId(retryOfTaskRunId);
+        run.setCreatedBy(createdBy);
+        run.setCreatedAt(now);
+        run.setUpdatedAt(now);
+        taskRunMapper.insert(run);
+        eventService.publish(projectId, null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
+        return run;
+    }
+
+    /** QUEUED → RUNNING，记录开始时间；仅 QUEUED 状态可开始。 */
+    @Transactional
+    public void markRunning(UUID taskRunId) {
+        TaskRunEntity run = taskRunMapper.selectById(taskRunId);
+        if (run == null || !"QUEUED".equals(run.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_STARTABLE", "仅 QUEUED 运行可开始");
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        run.setStatus("RUNNING");
+        run.setStartedAt(now);
+        run.setUpdatedAt(now);
+        taskRunMapper.updateById(run);
+        eventService.publish(run.getProjectId(), null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
+    }
+
+    /**
+     * RUNNING → 终态（SUCCEEDED/FAILED/CANCELLED），记录结束时间并发布事件。
+     * 属于受控执行接缝：状态由确定性 Orchestrator 依据 Agent 结果映射，本方法不自行判断。
+     */
+    @Transactional
+    public void complete(UUID taskRunId, String terminalStatus) {
+        if (!Set.of("SUCCEEDED", "FAILED", "CANCELLED").contains(terminalStatus)) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RUN_TERMINAL_STATUS", "非法运行终态");
+        }
+        TaskRunEntity run = taskRunMapper.selectById(taskRunId);
+        if (run == null || !"RUNNING".equals(run.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_COMPLETABLE", "仅 RUNNING 运行可完成");
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        run.setStatus(terminalStatus);
+        run.setFinishedAt(now);
+        run.setUpdatedAt(now);
+        taskRunMapper.updateById(run);
+        eventService.publish(run.getProjectId(), null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
+    }
+
     /** 批准/拒绝 WAITING_APPROVAL 请求：批准恢复 RUNNING，拒绝进入 BLOCKED。 */
     private InputRequestResponse decideInput(TaskRunEntity run, UUID requestId, String decision, String reason) {
         InputRequestEntity req = requireInput(run, requestId);

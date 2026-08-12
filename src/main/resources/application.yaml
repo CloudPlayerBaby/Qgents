@@ -50,6 +50,9 @@ github:
     state-secret: ${GITHUB_APP_STATE_SECRET:}
 
 app:
+  # 本地 Workspace 代码根目录（真实 Sandbox 接入前的临时约定，未配置则 Plan Agent 读到空文件树）
+  workspace:
+    base-dir: ${WORKSPACE_BASE_DIR:}
   frontend-url: ${FRONTEND_URL:http://localhost:5173}
   invitation-url: ${INVITATION_URL:http://localhost:5173/team-invitations/accept}
   registration-url: ${REGISTRATION_URL:http://localhost:5173/register}

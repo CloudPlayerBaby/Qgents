@@ -1,0 +1,108 @@
+package qg.qgent.orchestration.agent;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.stereotype.Component;
+import qg.qgent.orchestration.Agent;
+import qg.qgent.orchestration.AgentInput;
+import qg.qgent.orchestration.AgentRunOutcome;
+import qg.qgent.orchestration.RunOutcome;
+import qg.qgent.orchestration.llm.LlmClient;
+import qg.qgent.orchestration.result.PlanResult;
+import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 真实 Plan Agent：理解任务、通过只读工具分析 Workspace 代码并产出结构化 {@link PlanResult}。
+ * <p>
+ * 两轮按需读取：① 依据文件树让 LLM 挑选要读取的文件（JSON readRequests）；
+ * ② 携带文件树与选中文件内容调用 LLM 生成实现计划，经 {@link PlanResultParser}
+ * 校验后返回。绝不修改、创建、删除文件，不执行 Git 操作，不调用其他 Agent——
+ * 上述限制由 {@code WorkspaceCodeAccess} 只读接口在结构上强制保证。
+ * <p>
+ * 任何异常（LLM 调用、响应非法或不完整）统一转为 FAILED_INFRASTRUCTURE，
+ * 由 Orchestrator 状态机决定同相位重试，避免破坏链路推进。
+ */
+@Component
+public class PlanAgent implements Agent {
+
+    private static final int MAX_READ_FILES = 8;
+    private static final int MAX_READ_REQUESTS = 8;
+
+    private final LlmClient llm;
+    private final WorkspaceCodeAccess codeAccess;
+    private final PlanPromptBuilder promptBuilder = new PlanPromptBuilder();
+    private final PlanResultParser parser = new PlanResultParser();
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    public PlanAgent(LlmClient llm, WorkspaceCodeAccess codeAccess) {
+        this.llm = llm;
+        this.codeAccess = codeAccess;
+    }
+
+    @Override
+    public AgentRunOutcome run(AgentInput input) {
+        try {
+            List<String> files = codeAccess.listFiles(input.getWorkspaceId());
+            List<String> toRead = selectFilesToRead(input, files);
+            Map<String, String> contents = readSelectedFiles(input, toRead);
+            String planJson = llm.complete(promptBuilder.buildPlanSystem(),
+                    promptBuilder.buildPlanUser(input, files, contents));
+            PlanResult plan = parser.parse(planJson);
+
+            AgentRunOutcome outcome = new AgentRunOutcome();
+            outcome.setPhase(input.getPhase());
+            outcome.setOutcome(RunOutcome.SUCCEEDED);
+            outcome.setPlanResult(plan);
+            outcome.setMessage("plan ready");
+            return outcome;
+        } catch (RuntimeException e) {
+            AgentRunOutcome failure = new AgentRunOutcome();
+            failure.setPhase(input.getPhase());
+            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setMessage("plan agent failed: " + e.getMessage());
+            return failure;
+        }
+    }
+
+    /** 第一轮：让 LLM 从文件树挑选要读取的文件；解析失败时退回不读取任何文件。 */
+    private List<String> selectFilesToRead(AgentInput input, List<String> files) {
+        try {
+            String raw = llm.complete(promptBuilder.buildSelectFilesSystem(),
+                    promptBuilder.buildSelectFilesUser(input, files));
+            JsonNode node = objectMapper.readTree(raw);
+            JsonNode requests = node.get("readRequests");
+            List<String> selected = new ArrayList<>();
+            if (requests != null && requests.isArray()) {
+                for (JsonNode item : requests) {
+                    if (item.isTextual() && !item.asText().isBlank() && selected.size() < MAX_READ_REQUESTS) {
+                        selected.add(item.asText().trim());
+                    }
+                }
+            }
+            return selected;
+        } catch (Exception e) {
+            // 读取选择解析失败时退回不读取任何文件，不阻塞计划生成。
+            return List.of();
+        }
+    }
+
+    /** 按需读取选中的文件；目录缺失、越界或文件过大时跳过该文件。 */
+    private Map<String, String> readSelectedFiles(AgentInput input, List<String> paths) {
+        Map<String, String> contents = new LinkedHashMap<>();
+        for (String path : paths) {
+            if (contents.size() >= MAX_READ_FILES) {
+                break;
+            }
+            String content = codeAccess.readFile(input.getWorkspaceId(), path);
+            if (content != null) {
+                contents.put(path, content);
+            }
+        }
+        return contents;
+    }
+}
