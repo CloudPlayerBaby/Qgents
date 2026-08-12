@@ -24,6 +24,39 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Sandbox'}
+  /internal/v1/workspaces/{workspaceId}:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    put:
+      operationId: provisionWorkspace
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkspaceProvisionRequest'}
+      responses:
+        '200':
+          description: Workspace 已准备或通过幂等校验
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Workspace'}
+    get:
+      operationId: getWorkspace
+      responses:
+        '200':
+          description: Workspace 及各仓库实际 HEAD
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Workspace'}
+    delete:
+      operationId: deleteWorkspace
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '204': {description: Workspace 已删除或原本不存在}
   /internal/v1/sandboxes/{sandboxId}/tool-executions:
     parameters: [{$ref: '#/components/parameters/SandboxId'}]
     post:
@@ -81,6 +114,43 @@ components:
       required: true
       schema: {type: string, format: uuid}
   schemas:
+    WorkspaceRepositoryRequest:
+      type: object
+      required: [repositoryId, baseRef, sourceBranch, workspacePath]
+      properties:
+        repositoryId: {type: string, format: uuid}
+        baseRef: {type: string, minLength: 1, maxLength: 256}
+        sourceBranch: {type: string, pattern: '^[A-Za-z0-9._/-]+$', maxLength: 256}
+        workspacePath: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$', maxLength: 128}
+    WorkspaceProvisionRequest:
+      type: object
+      required: [projectId, repositories]
+      properties:
+        projectId: {type: string, format: uuid}
+        repositories:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items: {$ref: '#/components/schemas/WorkspaceRepositoryRequest'}
+    WorkspaceRepository:
+      allOf:
+        - {$ref: '#/components/schemas/WorkspaceRepositoryRequest'}
+        - type: object
+          properties:
+            headCommit: {type: string}
+    Workspace:
+      type: object
+      required: [id, projectId, storageKey, status, repositories, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        storageKey: {type: string}
+        status: {type: string, enum: [READY]}
+        repositories:
+          type: array
+          items: {$ref: '#/components/schemas/WorkspaceRepository'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
     ResourceLimits:
       type: object
       properties:

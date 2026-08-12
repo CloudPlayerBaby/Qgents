@@ -2,6 +2,8 @@
 
 该模块是独立的执行面服务，向控制层提供沙箱生命周期和命令执行接口。控制层负责业务编排，Worker 负责容器安全边界、执行超时和兜底回收。
 
+同一服务内还包含 Workspace Manager。它把控制层的 Workspace 描述落实为宿主机上的持久多仓库 worktree；Sandbox 只挂载并使用已经准备完成的 Workspace。
+
 ## 当前能力
 
 - 创建、查询、续租和幂等销毁沙箱。
@@ -90,6 +92,27 @@ SANDBOX_NETWORK_POLICY=outbound
 `file.write` 必须传入最近一次 `file.read` 返回的 `sha256`。文件已经变化时返回 `FILE_HASH_MISMATCH`，Agent 需要重新读取后再决定如何修改。
 
 本地开发默认使用 `outbound`，对应 Docker `bridge` 网络。设置 `SANDBOX_NETWORK_POLICY=none` 可以禁用网络；客户端和 Agent 无权选择 Docker 网络。
+
+## Workspace Manager
+
+Workspace Manager 提供三个内部接口：
+
+```text
+PUT    /internal/v1/workspaces/{workspaceId}
+GET    /internal/v1/workspaces/{workspaceId}
+DELETE /internal/v1/workspaces/{workspaceId}
+```
+
+`PUT` 根据 `workspaceId` 固定创建 `workspaces/{workspaceId}`，并根据每个 `repositoryId` 从 `${SANDBOX_GIT_STORE_ROOT}/{repositoryId}.git` 创建 worktree。调用方只能提交基线引用、功能分支和 Workspace 内一级目录名称，不能提交 Git Store 或宿主机绝对路径。
+
+需要配置：
+
+```text
+SANDBOX_WORKSPACE_METADATA_ROOT=/var/lib/qgents/workspace-metadata
+SANDBOX_GIT_STORE_ROOT=/var/lib/qgents/git-store
+```
+
+共享 Git Store 由 Git 模块同步和维护。Workspace Manager 不持有 GitHub App 私钥，不签发 Token，也不执行 push；删除 Workspace 时只移除 worktree 和自身元数据，不删除共享裸仓库。
 
 ## 安全边界
 

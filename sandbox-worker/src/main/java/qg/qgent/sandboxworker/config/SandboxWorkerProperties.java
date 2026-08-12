@@ -60,6 +60,12 @@ public class SandboxWorkerProperties {
     /** Docker daemon 所在宿主机的 Workspace 根目录，用于创建 bind mount。 */
     private String workspaceDockerHostRoot = "/srv/qgents/workspaces";
 
+    /** Worker 保存 Workspace 清单的目录，不会挂载到 Agent 沙箱。 */
+    private String workspaceMetadataRoot = "/var/lib/qgents/workspace-metadata";
+
+    /** 后端 3 同步完成的共享裸 Git 仓库根目录。 */
+    private String gitStoreRoot = "/var/lib/qgents/git-store";
+
     /** 镜像配置名称到实际镜像引用的映射。 */
     private Map<String, String> images = Map.of("java-node", "qgents/sandbox-java-node:0.1.0");
 
