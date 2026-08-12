@@ -119,7 +119,7 @@ components:
         repositoryId: {type: string, format: uuid}
         tool:
           type: string
-          enum: [process.exec, file.read, file.list, file.search, file.write, git.status, git.diff, git.log, git.add, git.commit]
+          enum: [process.exec, file.read, file.list, file.search, file.write, git.status, git.diff, git.log, git.add, git.commit, git.head, git.push]
         arguments: {type: object, maxProperties: 64}
         timeoutSeconds: {type: integer, format: int64, minimum: 1, maximum: 3600}
     ToolExecution:
