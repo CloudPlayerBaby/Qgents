@@ -17,14 +17,15 @@ import java.util.stream.Collectors;
 
 /**
  * Coordinates user-visible Tasks and Planner-defined TaskSteps.
- * All mutations authorize the authenticated actor and persist metadata only; this service never controls Git,
+ * All mutations authorize the authenticated actor and persist metadata only;
+ * this service never controls Git,
  * Workspace files, Sandbox containers or Agent execution.
  */
 @Service
 public class TaskService {
     private final TaskMapper tasks;
     private final WorkspaceMapper workspaces;
-    private final TaskRepositoryMapper repositories;
+    private final WorkspaceRepositoryMapper repositories;
     private final TaskStepMapper steps;
     private final TaskStepDependencyMapper dependencies;
     private final TaskStepRepositoryMapper scopes;
@@ -35,8 +36,11 @@ public class TaskService {
     private final AgentMapper agents;
     private final ProjectAccessService access;
 
-    /** Creates the task-domain service with all persistence and authorization collaborators. */
-    public TaskService(TaskMapper tasks, WorkspaceMapper workspaces, TaskRepositoryMapper repositories,
+    /**
+     * Creates the task-domain service with all persistence and authorization
+     * collaborators.
+     */
+    public TaskService(TaskMapper tasks, WorkspaceMapper workspaces, WorkspaceRepositoryMapper repositories,
             TaskStepMapper steps, TaskStepDependencyMapper dependencies, TaskStepRepositoryMapper scopes,
             RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories, ProjectMapper projects,
             MessageMapper messages, AgentMapper agents, ProjectAccessService access) {
@@ -55,8 +59,10 @@ public class TaskService {
     }
 
     /**
-     * Creates one Task, one persistent Workspace root and one worktree metadata row per selected repository.
-     * The optional trigger message must belong to the same active REQUIREMENT group.
+     * Creates a Task with a new Workspace, or explicitly continues a prior Task in
+     * its existing Workspace.
+     * The optional trigger message must belong to the same active REQUIREMENT
+     * group.
      */
     @Transactional
     public TaskResponse create(UUID projectId, UUID actor, TaskCreateRequest body) {
@@ -74,7 +80,43 @@ public class TaskService {
                         "触发消息不属于当前需求群");
             }
         }
-        List<UUID> repositoryIds = body.getRepositoryIds().stream().distinct().toList();
+        boolean reuseWorkspace = body.getWorkspaceId() != null || body.getContinuationOfTaskId() != null;
+        if (reuseWorkspace && (body.getWorkspaceId() == null || body.getContinuationOfTaskId() == null)) {
+            throw validation("WORKSPACE_CONTINUATION_INCOMPLETE",
+                    "workspaceId and continuationOfTaskId must be provided together");
+        }
+        if (reuseWorkspace && body.getRepositoryIds() != null && !body.getRepositoryIds().isEmpty()) {
+            throw validation("WORKSPACE_CONTINUATION_REPOSITORIES_FORBIDDEN",
+                    "A continuation Task inherits repositories from its Workspace");
+        }
+        WorkspaceEntity workspace;
+        TaskEntity continuation = null;
+        List<UUID> repositoryIds;
+        if (reuseWorkspace) {
+            continuation = tasks.selectById(body.getContinuationOfTaskId());
+            workspace = workspaces.selectByIdForUpdate(body.getWorkspaceId());
+            if (continuation == null || workspace == null || !projectId.equals(continuation.getProjectId())
+                    || !projectId.equals(workspace.getProjectId())
+                    || !workspace.getId().equals(continuation.getWorkspaceId())) {
+                throw validation("WORKSPACE_CONTINUATION_INVALID",
+                        "The continued Task and Workspace must belong to the current Project");
+            }
+            repositoryIds = repositories.selectByWorkspace(workspace.getId()).stream()
+                    .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
+            if (repositoryIds.isEmpty()) {
+                throw validation("WORKSPACE_HAS_NO_REPOSITORIES", "The reused Workspace has no repository worktrees");
+            }
+        } else {
+            repositoryIds = Optional.ofNullable(body.getRepositoryIds()).orElse(List.of()).stream().distinct().toList();
+            if (repositoryIds.isEmpty()) {
+                throw validation("TASK_REPOSITORY_REQUIRED", "A new Workspace requires at least one repository");
+            }
+            workspace = new WorkspaceEntity();
+            workspace.setId(UuidV7.next());
+            workspace.setProjectId(projectId);
+            workspace.setStorageKey("workspaces/" + workspace.getId());
+            workspace.setStatus("PROVISIONING");
+        }
         for (UUID repositoryId : repositoryIds) {
             ProjectRepositoryEntity repository = projectRepositories.selectById(repositoryId);
             if (repository == null || !projectId.equals(repository.getProjectId())) {
@@ -83,11 +125,18 @@ public class TaskService {
             }
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        if (!reuseWorkspace) {
+            workspace.setCreatedAt(now);
+            workspace.setUpdatedAt(now);
+            workspaces.insert(workspace);
+        }
         TaskEntity task = new TaskEntity();
         task.setId(UuidV7.next());
         task.setProjectId(projectId);
         task.setRequirementGroupId(group.getId());
         task.setTriggerMessageId(body.getTriggerMessageId());
+        task.setWorkspaceId(workspace.getId());
+        task.setContinuationOfTaskId(continuation == null ? null : continuation.getId());
         task.setTitle(body.getTitle().trim());
         task.setRequirement(body.getRequirement().trim());
         task.setStatus("PLANNING");
@@ -96,18 +145,12 @@ public class TaskService {
         task.setUpdatedAt(now);
         tasks.insert(task);
 
-        WorkspaceEntity workspace = new WorkspaceEntity();
-        workspace.setId(UuidV7.next());
-        workspace.setTaskId(task.getId());
-        workspace.setProjectId(projectId);
-        workspace.setStorageKey("tasks/" + task.getId());
-        workspace.setStatus("PROVISIONING");
-        workspace.setCreatedAt(now);
-        workspace.setUpdatedAt(now);
-        workspaces.insert(workspace);
-        int index = 1;
-        for (UUID repositoryId : repositoryIds) {
-            repositories.insertLink(task.getId(), repositoryId, "repo-" + index++, body.getBaseRef());
+        if (!reuseWorkspace) {
+            int index = 1;
+            for (UUID repositoryId : repositoryIds) {
+                repositories.insertLink(workspace.getId(), repositoryId, "repo-" + index++, body.getBaseRef(),
+                        "feat/task-" + task.getId());
+            }
         }
         return response(task, workspace, repositoryIds);
     }
@@ -126,17 +169,19 @@ public class TaskService {
     }
 
     /**
-     * Appends Planner output after validating the dependency DAG and per-repository access scopes.
-     * Only the Task creator or a Project Admin can alter the plan. Existing steps from the same Task may be dependencies.
+     * Appends Planner output after validating the dependency DAG and per-repository
+     * access scopes.
+     * Only the Task creator or a Project Admin can alter the plan. Existing steps
+     * from the same Task may be dependencies.
      */
     @Transactional
     public List<TaskStepResponse> addSteps(UUID projectId, UUID taskId, UUID actor,
             List<TaskStepCreateRequest> requests) {
         TaskEntity task = requireTask(projectId, taskId);
         requireTaskManager(task, actor);
-        workspaces.selectByTaskForUpdate(taskId);
-        Set<UUID> allowedRepositories = repositories.selectByTask(taskId).stream()
-                .map(TaskRepositoryEntity::getProjectRepositoryId).collect(Collectors.toSet());
+        workspaces.selectByIdForUpdate(task.getWorkspaceId());
+        Set<UUID> allowedRepositories = repositories.selectByWorkspace(task.getWorkspaceId()).stream()
+                .map(WorkspaceRepositoryEntity::getProjectRepositoryId).collect(Collectors.toSet());
         Set<UUID> batchIds = requests.stream().map(TaskStepCreateRequest::getId).collect(Collectors.toSet());
         if (batchIds.size() != requests.size()) {
             throw validation("TASK_STEP_ID_DUPLICATE", "步骤 ID 不得重复");
@@ -174,12 +219,15 @@ public class TaskService {
         return result;
     }
 
-    /** Replaces an assigned Agent only while the step is PENDING and returns its persisted repository scopes. */
+    /**
+     * Replaces an assigned Agent only while the step is PENDING and returns its
+     * persisted repository scopes.
+     */
     @Transactional
     public TaskStepResponse replaceAssignedAgent(UUID projectId, UUID taskId, UUID stepId, UUID actor, UUID agentId) {
         TaskEntity task = requireTask(projectId, taskId);
         requireTaskManager(task, actor);
-        workspaces.selectByTaskForUpdate(taskId);
+        workspaces.selectByIdForUpdate(task.getWorkspaceId());
         TaskStepEntity step = steps.selectById(stepId);
         if (step == null || !taskId.equals(step.getTaskId())) {
             throw new ApiException(HttpStatus.NOT_FOUND, "TASK_STEP_NOT_FOUND", "任务步骤不存在");
@@ -253,25 +301,28 @@ public class TaskService {
     }
 
     private void visit(UUID id, Map<UUID, List<UUID>> graph, Set<UUID> visiting, Set<UUID> done) {
-        if (done.contains(id)) return;
-        if (!visiting.add(id)) throw validation("TASK_STEP_DEPENDENCY_CYCLE", "步骤依赖不能形成循环");
-        for (UUID next : graph.getOrDefault(id, List.of())) visit(next, graph, visiting, done);
+        if (done.contains(id))
+            return;
+        if (!visiting.add(id))
+            throw validation("TASK_STEP_DEPENDENCY_CYCLE", "步骤依赖不能形成循环");
+        for (UUID next : graph.getOrDefault(id, List.of()))
+            visit(next, graph, visiting, done);
         visiting.remove(id);
         done.add(id);
     }
 
     private TaskResponse response(TaskEntity task) {
-        WorkspaceEntity workspace = workspaces.selectOne(Wrappers.<WorkspaceEntity>lambdaQuery()
-                .eq(WorkspaceEntity::getTaskId, task.getId()));
-        List<UUID> repositoryIds = repositories.selectByTask(task.getId()).stream()
-                .map(TaskRepositoryEntity::getProjectRepositoryId).toList();
+        WorkspaceEntity workspace = workspaces.selectById(task.getWorkspaceId());
+        List<UUID> repositoryIds = repositories.selectByWorkspace(task.getWorkspaceId()).stream()
+                .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
         return response(task, workspace, repositoryIds);
     }
 
     private TaskResponse response(TaskEntity task, WorkspaceEntity workspace, List<UUID> repositoryIds) {
         return new TaskResponse(id(task.getId()), id(task.getProjectId()), id(task.getRequirementGroupId()),
                 id(task.getTriggerMessageId()), task.getTitle(), task.getRequirement(), task.getStatus(),
-                workspace == null ? null : id(workspace.getId()), repositoryIds.stream().map(UUID::toString).toList(),
+                workspace == null ? null : id(workspace.getId()), id(task.getContinuationOfTaskId()),
+                repositoryIds.stream().map(UUID::toString).toList(),
                 id(task.getCreatedBy()), iso(task.getCreatedAt()), iso(task.getUpdatedAt()));
     }
 
@@ -292,6 +343,11 @@ public class TaskService {
         return new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, code, message);
     }
 
-    private String id(UUID value) { return value == null ? null : value.toString(); }
-    private String iso(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC).toString(); }
+    private String id(UUID value) {
+        return value == null ? null : value.toString();
+    }
+
+    private String iso(LocalDateTime value) {
+        return value == null ? null : value.toInstant(ZoneOffset.UTC).toString();
+    }
 }

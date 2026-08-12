@@ -4,10 +4,10 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
 import qg.qgent.entity.WorkspaceEntity;
 import java.util.UUID;
-/** Data access for single-key task workspaces. */
+/** Data access for persistent project workspaces. */
 @Mapper
 public interface WorkspaceMapper extends BaseMapper<WorkspaceEntity> {
-    /** Locks the task workspace to serialize step sequence allocation and writers. */
-    @Select("select * from workspaces where task_id=#{taskId} for update")
-    WorkspaceEntity selectByTaskForUpdate(UUID taskId);
+    /** Locks a workspace to serialize writers across continuation tasks. */
+    @Select("select * from workspaces where id=#{workspaceId} for update")
+    WorkspaceEntity selectByIdForUpdate(UUID workspaceId);
 }

@@ -12,11 +12,6 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ExecutionContextResponse {
-    private String workspaceId;
-    private String sandboxStatus;
-    private String repositoryId;
-    private String baseRef;
-    private String headRef;
     private String startedAt;
     private String expiresAt;
 }

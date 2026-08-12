@@ -8,7 +8,7 @@ import java.util.UUID;
 
 /**
  * 发起合并前试运行请求。
- * 必须提供 repositoryId、sourceRef 与 targetBranch；taskId 可选。
+ * 必须提供 repositoryId、headCommit 与 targetBranch；taskId 可选。
  */
 @Data
 public class DryRunCreateRequest {
@@ -19,7 +19,7 @@ public class DryRunCreateRequest {
     private UUID taskId;
     /** 源分支或提交引用。 */
     @NotBlank
-    private String sourceRef;
+    private String headCommit;
     /** 目标分支名。 */
     @NotBlank
     private String targetBranch;

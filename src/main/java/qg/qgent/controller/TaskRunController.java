@@ -21,7 +21,6 @@ import qg.qgent.dto.InputReplyRequest;
 import qg.qgent.dto.InputRequestResponse;
 import qg.qgent.dto.LogEntryResponse;
 import qg.qgent.dto.TaskRunDetailResponse;
-import qg.qgent.dto.TaskRunStepResponse;
 import qg.qgent.dto.TaskRunSummaryResponse;
 import qg.qgent.service.TaskRunService;
 
@@ -29,7 +28,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * 子任务受控执行端点（12.2）。
+ * TaskStep execution-attempt endpoints.
  * 查询类接口返回资源详情；POST 写接口均需 Idempotency-Key，retry/cancel 异步受理返回 202，
  * 输入/审批决策同步返回 200。所有接口先校验项目成员资格与资源归属。
  */
@@ -51,7 +50,7 @@ public class TaskRunController {
         return taskRunService.listByTask(projectId, taskId, userId, cursor, limit, requestId(request));
     }
 
-    /** 获取单次运行的状态、关联子任务和产物摘要。 */
+    /** Returns one execution attempt and its Task-level result summary. */
     @GetMapping("/task-runs/{taskRunId}")
     public ApiResponse<?> detail(@PathVariable UUID projectId, @PathVariable UUID taskRunId,
             @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
@@ -78,13 +77,6 @@ public class TaskRunController {
     }
 
     /** 获取工作流节点状态。 */
-    @GetMapping("/task-runs/{taskRunId}/steps")
-    public ApiResponse<?> steps(@PathVariable UUID projectId, @PathVariable UUID taskRunId,
-            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
-        List<TaskRunStepResponse> data = taskRunService.steps(projectId, taskRunId, userId);
-        return ok(data, request);
-    }
-
     /** 游标读取已脱敏的执行日志。 */
     @GetMapping("/task-runs/{taskRunId}/logs")
     public ApiPageResponse<LogEntryResponse> logs(@PathVariable UUID projectId, @PathVariable UUID taskRunId,
@@ -114,7 +106,8 @@ public class TaskRunController {
     public ApiResponse<?> reply(@PathVariable UUID projectId, @PathVariable UUID taskRunId,
             @PathVariable UUID requestId, @AuthenticationPrincipal UUID userId,
             @Valid @RequestBody InputReplyRequest body, HttpServletRequest request) {
-        InputRequestResponse data = taskRunService.replyInput(projectId, taskRunId, requestId, userId, body.getAnswer());
+        InputRequestResponse data = taskRunService.replyInput(projectId, taskRunId, requestId, userId,
+                body.getAnswer());
         return ok(data, request);
     }
 

@@ -1,6 +1,6 @@
 -- Qgents MVP database initialization schema, MySQL 8.0.16+.
 -- 手动执行：mysql -u <user> -p <database> < database/qgents_schema.sql
--- 脚本幂等：可对同一数据库重复执行；已存在的表自动跳过，缺失的列/外键通过条件判断补齐。
+-- This file initializes a fresh database. Existing deployments require a separate versioned migration.
 SET
     NAMES utf8mb4;
 
@@ -355,6 +355,8 @@ CREATE TABLE IF NOT EXISTS
     merge_requests (
         id BINARY(16) PRIMARY KEY COMMENT 'MR镜像UUIDv7',
         project_repository_id BINARY(16) NOT NULL COMMENT '所属项目仓库绑定ID',
+        task_id BINARY(16) NULL COMMENT 'Owning Task',
+        workspace_id BINARY(16) NULL COMMENT 'Source Workspace',
         provider VARCHAR(32) NOT NULL DEFAULT 'GITHUB' COMMENT '代码托管提供方枚举：GITHUB',
         provider_number BIGINT UNSIGNED NOT NULL COMMENT 'GitHub Pull Request编号',
         source_branch VARCHAR(512) NOT NULL COMMENT '源分支名',
@@ -461,10 +463,7 @@ CREATE TABLE IF NOT EXISTS
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '写接口幂等请求与脱敏响应缓存';
 
 -- ============================================================================
--- 接口第 12、13 节：受控执行、交付物、实时事件与 MR/质量状态
--- 说明：orchestration_runs / work_packages / sub_tasks 由第 11 节团队建表；
---       task_runs / deliverables / test_runs / dry_runs 仅以 UUID 列锚定这些 ID，
---       建表后需由第 11 节团队补外键。
+-- Task -> TaskStep -> TaskRun execution, Task-level Diff/MR results and events.
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS agents (
@@ -478,33 +477,41 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE TABLE IF NOT EXISTS tasks (
     id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL, requirement_group_id BINARY(16) NOT NULL,
-    trigger_message_id BINARY(16) NULL, title VARCHAR(255) NOT NULL, requirement TEXT NOT NULL,
+    trigger_message_id BINARY(16) NULL, workspace_id BINARY(16) NOT NULL, continuation_of_task_id BINARY(16) NULL,
+    title VARCHAR(255) NOT NULL, requirement TEXT NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'PLANNING', created_by BINARY(16) NOT NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-    KEY idx_task_project(project_id,status), KEY idx_task_group(requirement_group_id),
+    KEY idx_task_project(project_id,status), KEY idx_task_group(requirement_group_id), KEY idx_task_workspace(workspace_id),
     CONSTRAINT fk_task_project FOREIGN KEY(project_id) REFERENCES projects(id),
     CONSTRAINT fk_task_group FOREIGN KEY(requirement_group_id) REFERENCES requirement_groups(id),
     CONSTRAINT fk_task_message FOREIGN KEY(trigger_message_id) REFERENCES messages(id),
+    CONSTRAINT fk_task_continuation FOREIGN KEY(continuation_of_task_id) REFERENCES tasks(id),
     CONSTRAINT fk_task_creator FOREIGN KEY(created_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='User-visible requirement execution';
 
 CREATE TABLE IF NOT EXISTS workspaces (
-    id BINARY(16) PRIMARY KEY, task_id BINARY(16) NOT NULL, project_id BINARY(16) NOT NULL,
+    id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL,
     storage_key VARCHAR(512) NOT NULL COMMENT 'Opaque storage key, not a host path', status VARCHAR(32) NOT NULL DEFAULT 'PROVISIONING',
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-    UNIQUE KEY uk_workspace_task(task_id), UNIQUE KEY uk_workspace_storage(storage_key),
-    CONSTRAINT fk_workspace_task FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    UNIQUE KEY uk_workspace_storage(storage_key),
     CONSTRAINT fk_workspace_project FOREIGN KEY(project_id) REFERENCES projects(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Persistent task-level workspace root';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Persistent project development workspace';
 
-CREATE TABLE IF NOT EXISTS task_repositories (
-    task_id BINARY(16) NOT NULL, project_repository_id BINARY(16) NOT NULL, workspace_path VARCHAR(255) NOT NULL,
-    base_ref VARCHAR(512) NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    PRIMARY KEY(task_id,project_repository_id), UNIQUE KEY uk_task_workspace_path(task_id,workspace_path),
-    CONSTRAINT fk_task_repo_task FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-    CONSTRAINT fk_task_repo_repository FOREIGN KEY(project_repository_id) REFERENCES project_repositories(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Repositories and worktrees available to one Task';
+ALTER TABLE tasks ADD CONSTRAINT fk_task_workspace FOREIGN KEY(workspace_id) REFERENCES workspaces(id);
+ALTER TABLE merge_requests
+    ADD CONSTRAINT fk_mr_task FOREIGN KEY(task_id) REFERENCES tasks(id),
+    ADD CONSTRAINT fk_mr_workspace FOREIGN KEY(workspace_id) REFERENCES workspaces(id);
+
+CREATE TABLE IF NOT EXISTS workspace_repositories (
+    workspace_id BINARY(16) NOT NULL, project_repository_id BINARY(16) NOT NULL, workspace_path VARCHAR(255) NOT NULL,
+    base_commit VARCHAR(128) NULL, source_branch VARCHAR(512) NOT NULL, head_commit VARCHAR(128) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY(workspace_id,project_repository_id), UNIQUE KEY uk_workspace_repository_path(workspace_id,workspace_path),
+    CONSTRAINT fk_workspace_repo_workspace FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+    CONSTRAINT fk_workspace_repo_repository FOREIGN KEY(project_repository_id) REFERENCES project_repositories(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Persistent repository worktrees in one Workspace';
 
 CREATE TABLE IF NOT EXISTS task_steps (
     id BINARY(16) PRIMARY KEY, task_id BINARY(16) NOT NULL, sequence_no INT UNSIGNED NOT NULL,
@@ -536,61 +543,33 @@ CREATE TABLE IF NOT EXISTS
     task_runs (
         id BINARY(16) PRIMARY KEY COMMENT '任务运行UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID，用于项目隔离',
-        task_id BINARY(16) NULL COMMENT 'Confirmed owning Task',
-        task_step_id BINARY(16) NULL COMMENT 'Confirmed planned TaskStep',
+        task_id BINARY(16) NOT NULL COMMENT 'Confirmed owning Task',
+        task_step_id BINARY(16) NOT NULL COMMENT 'Confirmed planned TaskStep',
         agent_id BINARY(16) NULL COMMENT 'Execution-time Agent identity; FK deferred',
-        orchestration_run_id BINARY(16) NULL COMMENT 'DEPRECATED read-only compatibility anchor',
-        sub_task_id BINARY(16) NULL COMMENT 'DEPRECATED read-only compatibility anchor',
-        project_repository_id BINARY(16) NULL COMMENT '项目仓库绑定ID',
-        requirement_group_id BINARY(16) NULL COMMENT '关联需求群ID',
         role VARCHAR(32) NOT NULL COMMENT '执行角色枚举：ORCHESTRATOR/PLANNER/DEVELOPER/TESTER/REVIEWER/GENERAL',
         status VARCHAR(32) NOT NULL DEFAULT 'QUEUED' COMMENT '运行状态枚举：QUEUED/RUNNING/SUCCEEDED/FAILED/WAITING_INPUT/WAITING_APPROVAL/BLOCKED/CANCELLING/CANCELLED',
         retry_of_task_run_id BINARY(16) NULL COMMENT '重试来源的任务运行ID，为空表示首次运行',
-        workspace_id VARCHAR(255) NULL COMMENT '关联持久Workspace标识，由受控执行服务填充',
-        sandbox_status VARCHAR(32) NULL COMMENT '沙箱状态摘要，由受控执行服务填充',
-        base_ref VARCHAR(512) NULL COMMENT '基线分支或基线提交',
-        head_ref VARCHAR(512) NULL COMMENT '执行使用的工作分支或提交',
         started_at DATETIME (6) NULL COMMENT '开始执行时间（UTC）',
-        expires_at DATETIME (6) NULL COMMENT 'Workspace/Sandbox会话过期时间（UTC）',
         finished_at DATETIME (6) NULL COMMENT '结束时间（UTC）',
         created_by BINARY(16) NOT NULL COMMENT '发起用户ID',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
         KEY idx_task_run_project (project_id, status),
         KEY idx_task_run_task (task_id, task_step_id),
-        KEY idx_task_run_sub_task (sub_task_id),
         KEY idx_task_run_creator (created_by),
         CONSTRAINT fk_task_run_project FOREIGN KEY (project_id) REFERENCES projects (id),
         CONSTRAINT fk_task_run_task FOREIGN KEY (task_id) REFERENCES tasks (id),
         CONSTRAINT fk_task_run_task_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id),
         CONSTRAINT fk_task_run_agent FOREIGN KEY (agent_id) REFERENCES agents (id),
-        CONSTRAINT fk_task_run_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
-        CONSTRAINT fk_task_run_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id),
         CONSTRAINT fk_task_run_creator FOREIGN KEY (created_by) REFERENCES users (id),
         CONSTRAINT fk_task_run_retry FOREIGN KEY (retry_of_task_run_id) REFERENCES task_runs (id)
-    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '子任务受控执行记录，关联既有编排运行、工作包与子任务';
-
-CREATE TABLE IF NOT EXISTS
-    task_run_steps (
-        id BINARY(16) PRIMARY KEY COMMENT '步骤UUIDv7',
-        task_run_id BINARY(16) NOT NULL COMMENT '所属任务运行ID',
-        node VARCHAR(64) NOT NULL COMMENT '工作流节点名，如DEVELOPER/TESTER/REVIEWER',
-        status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '节点状态枚举：PENDING/RUNNING/PASSED/FAILED/SKIPPED/CANCELLED',
-        started_at DATETIME (6) NULL COMMENT '节点开始时间（UTC）',
-        finished_at DATETIME (6) NULL COMMENT '节点结束时间（UTC）',
-        duration_ms BIGINT UNSIGNED NULL COMMENT '节点耗时，单位毫秒',
-        error_code VARCHAR(64) NULL COMMENT '节点失败的错误码',
-        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
-        KEY idx_step_run (task_run_id),
-        CONSTRAINT fk_step_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE
-    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '任务运行内的工作流节点状态';
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'One controlled execution attempt of a TaskStep';
 
 CREATE TABLE IF NOT EXISTS
     execution_logs (
         id BINARY(16) PRIMARY KEY COMMENT '日志UUIDv7',
         task_run_id BINARY(16) NOT NULL COMMENT '所属任务运行ID',
         sequence_no BIGINT UNSIGNED NOT NULL COMMENT '运行内单调递增日志序号',
-        node VARCHAR(64) NULL COMMENT '产生日志的节点名',
         content TEXT NOT NULL COMMENT '已脱敏的日志内容，禁止包含Token/密码/密钥',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '写入时间（UTC）',
         UNIQUE KEY uk_log_seq (task_run_id, sequence_no),
@@ -607,7 +586,7 @@ CREATE TABLE IF NOT EXISTS
         options JSON NULL COMMENT '可选答案选项JSON数组',
         answer JSON NULL COMMENT 'INPUT类型的用户回答JSON',
         reason TEXT NULL COMMENT '审批/拒绝理由或回复备注',
-        created_by BINARY(16) NOT NULL COMMENT '发起请求的用户ID（一般为编排发起人）',
+        created_by BINARY(16) NOT NULL COMMENT '发起请求的用户ID',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         resolved_at DATETIME (6) NULL COMMENT '回答/审批/拒绝处理时间（UTC）',
         KEY idx_input_run (task_run_id, status),
@@ -617,71 +596,29 @@ CREATE TABLE IF NOT EXISTS
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '任务运行期间的人机输入/审批请求';
 
 CREATE TABLE IF NOT EXISTS
-    task_deliveries (
-        id BINARY(16) PRIMARY KEY, task_id BINARY(16) NOT NULL, project_id BINARY(16) NOT NULL,
-        version INT UNSIGNED NOT NULL COMMENT 'Monotonic delivery version within the Task',
-        status VARCHAR(32) NOT NULL DEFAULT 'PENDING_REVIEW', created_by BINARY(16) NOT NULL,
-        reviewed_by BINARY(16) NULL, review_reason TEXT NULL, reviewed_at DATETIME(6) NULL,
-        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-        UNIQUE KEY uk_task_delivery_version(task_id, version),
-        CONSTRAINT fk_task_delivery_task FOREIGN KEY(task_id) REFERENCES tasks(id),
-        CONSTRAINT fk_task_delivery_project FOREIGN KEY(project_id) REFERENCES projects(id),
-        CONSTRAINT fk_task_delivery_creator FOREIGN KEY(created_by) REFERENCES users(id),
-        CONSTRAINT fk_task_delivery_reviewer FOREIGN KEY(reviewed_by) REFERENCES users(id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Overall Task delivery review decision';
-
-CREATE TABLE IF NOT EXISTS
-    deliverables (
-        id BINARY(16) PRIMARY KEY COMMENT '交付物UUIDv7',
-        project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
-        task_id BINARY(16) NULL COMMENT 'Confirmed owning Task',
-        task_step_id BINARY(16) NULL COMMENT 'Producing TaskStep',
-        task_delivery_id BINARY(16) NULL COMMENT 'Overall Task delivery parent',
-        requirement_group_id BINARY(16) NULL COMMENT '关联需求群ID',
-        task_run_id BINARY(16) NULL COMMENT '产出交付物的任务运行ID',
-        project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
-        source_branch VARCHAR(512) NOT NULL COMMENT '交付变更所在源分支',
-        head_commit VARCHAR(128) NOT NULL COMMENT '交付提交SHA',
-        summary JSON NULL COMMENT '交付摘要JSON，如变更统计和检查摘要',
-        status VARCHAR(32) NOT NULL DEFAULT 'PENDING_REVIEW' COMMENT '状态枚举：PENDING_REVIEW/ACCEPTED/REJECTED',
-        created_by BINARY(16) NOT NULL COMMENT '发起用户ID',
-        reviewed_by BINARY(16) NULL COMMENT '最近审查用户ID',
-        review_reason TEXT NULL COMMENT '接受/拒绝原因',
-        reviewed_at DATETIME (6) NULL COMMENT '审查时间（UTC）',
-        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
-        updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
-        KEY idx_deliverable_project (project_id, status),
-        KEY idx_deliverable_task (task_id, task_step_id),
-        KEY idx_deliverable_creator (created_by),
-        CONSTRAINT fk_deliverable_project FOREIGN KEY (project_id) REFERENCES projects (id),
-        CONSTRAINT fk_deliverable_task FOREIGN KEY (task_id) REFERENCES tasks (id),
-        CONSTRAINT fk_deliverable_task_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id),
-        CONSTRAINT fk_deliverable_task_delivery FOREIGN KEY (task_delivery_id) REFERENCES task_deliveries (id),
-        CONSTRAINT fk_deliverable_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id),
-        CONSTRAINT fk_deliverable_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id),
-        CONSTRAINT fk_deliverable_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
-        CONSTRAINT fk_deliverable_creator FOREIGN KEY (created_by) REFERENCES users (id),
-        CONSTRAINT fk_deliverable_reviewer FOREIGN KEY (reviewed_by) REFERENCES users (id)
-    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '受控执行产出的交付物，客户端不得伪造其提交/测试/Diff';
-
-CREATE TABLE IF NOT EXISTS
     diffs (
         id BINARY(16) PRIMARY KEY COMMENT 'Diff UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
-        deliverable_id BINARY(16) NULL COMMENT '关联交付物ID',
+        task_id BINARY(16) NOT NULL COMMENT 'Owning Task',
+        workspace_id BINARY(16) NOT NULL COMMENT 'Reviewed Workspace',
         project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
-        base_ref VARCHAR(512) NOT NULL COMMENT 'Diff基线引用',
-        head_ref VARCHAR(512) NOT NULL COMMENT 'Diff头引用',
-        head_commit VARCHAR(128) NOT NULL COMMENT 'Diff对应的头提交SHA',
+        base_commit VARCHAR(128) NOT NULL COMMENT 'Immutable comparison base',
+        source_branch VARCHAR(512) NOT NULL COMMENT 'Feature branch used after acceptance',
+        working_tree_hash VARCHAR(128) NOT NULL COMMENT 'Digest of the exact reviewed working tree',
+        snapshot_key VARCHAR(512) NULL COMMENT 'Controlled patch snapshot object key',
+        head_commit VARCHAR(128) NULL COMMENT 'Commit created after acceptance',
+        status VARCHAR(32) NOT NULL DEFAULT 'PENDING_REVIEW',
+        reviewed_by BINARY(16) NULL, review_reason TEXT NULL, reviewed_at DATETIME(6) NULL,
         change_stats JSON NULL COMMENT '变更统计JSON，如文件数、增删行数',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
-        KEY idx_diff_project (project_id),
-        KEY idx_diff_deliverable (deliverable_id),
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+        KEY idx_diff_project (project_id), KEY idx_diff_task(task_id,status),
         CONSTRAINT fk_diff_project FOREIGN KEY (project_id) REFERENCES projects (id),
-        CONSTRAINT fk_diff_deliverable FOREIGN KEY (deliverable_id) REFERENCES deliverables (id),
+        CONSTRAINT fk_diff_task FOREIGN KEY(task_id) REFERENCES tasks(id),
+        CONSTRAINT fk_diff_workspace FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+        CONSTRAINT fk_diff_reviewer FOREIGN KEY(reviewed_by) REFERENCES users(id),
         CONSTRAINT fk_diff_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id)
-    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '交付关联的Diff元数据与变更统计';
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Immutable Task working-tree Diff snapshots';
 
 CREATE TABLE IF NOT EXISTS
     diff_files (
@@ -707,7 +644,7 @@ CREATE TABLE IF NOT EXISTS
         side VARCHAR(8) NULL COMMENT '变更侧枚举：LEFT/RIGHT',
         line INT UNSIGNED NULL COMMENT '行号，行级评论必填',
         hunk_id VARCHAR(64) NULL COMMENT 'hunk标识，hunk级评论使用',
-        commit_sha VARCHAR(128) NOT NULL COMMENT '评论绑定的提交SHA，避免Diff更新后错位',
+        commit_sha VARCHAR(128) NULL COMMENT '已提交Diff的SHA；未提交Diff通过diff_id绑定不可变快照',
         body TEXT NOT NULL COMMENT '审查意见正文',
         author_user_id BINARY(16) NOT NULL COMMENT '评论作者用户ID',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
@@ -748,7 +685,7 @@ CREATE TABLE IF NOT EXISTS
         task_id BINARY(16) NULL COMMENT 'Owning Task when workflow-triggered',
         task_step_id BINARY(16) NULL COMMENT 'Requesting TaskStep',
         project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
-        source_ref VARCHAR(512) NOT NULL COMMENT '源分支或提交引用',
+        head_commit VARCHAR(128) NOT NULL COMMENT '试运行针对的确定提交SHA',
         target_branch VARCHAR(512) NOT NULL COMMENT '目标分支名',
         status VARCHAR(32) NOT NULL DEFAULT 'QUEUED' COMMENT '状态枚举：QUEUED/RUNNING/PASSED/FAILED/CANCELLED',
         report JSON NULL COMMENT '试运行报告JSON，含冲突与测试摘要',
@@ -771,7 +708,7 @@ CREATE TABLE IF NOT EXISTS
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
         requirement_group_id BINARY(16) NULL COMMENT '可选关联需求群ID',
         sequence_no BIGINT UNSIGNED NOT NULL COMMENT '项目内单调递增事件序号，作为SSE游标',
-        event_type VARCHAR(64) NOT NULL COMMENT '事件类型，如task-run.updated/deliverable.created',
+        event_type VARCHAR(64) NOT NULL COMMENT '事件类型，如task-run.updated/diff.created/merge-request.updated',
         resource_id VARCHAR(128) NULL COMMENT '关联资源ID字符串，如taskRunId',
         payload JSON NOT NULL COMMENT '脱敏事件载荷JSON，禁止包含凭证',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '产生时间（UTC）',

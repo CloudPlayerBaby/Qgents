@@ -11,10 +11,7 @@ import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * 交付关联的 Diff 元数据与变更统计。
- * 行级内容由 diff_files 按文件摘要承载，完整行级 hunk 由受控服务按需提供。
- */
+/** Immutable Task-level Diff snapshot and its change statistics. */
 @Data
 @TableName(value = "diffs", autoResultMap = true)
 public class DiffEntity {
@@ -22,18 +19,26 @@ public class DiffEntity {
     private UUID id;
     /** 所属项目ID。 */
     private UUID projectId;
-    /** 关联交付物ID，可为空。 */
-    private UUID deliverableId;
+    /** Task that produced this final Diff. */
+    private UUID taskId;
+    private UUID workspaceId;
     /** 项目仓库绑定ID。 */
     private UUID projectRepositoryId;
     /** Diff 基线引用。 */
-    private String baseRef;
+    private String baseCommit;
     /** Diff 头引用。 */
-    private String headRef;
+    private String sourceBranch;
+    private String workingTreeHash;
+    private String snapshotKey;
     /** Diff 对应的头提交SHA。 */
     private String headCommit;
+    private String status;
+    private UUID reviewedBy;
+    private String reviewReason;
+    private LocalDateTime reviewedAt;
     /** 变更统计 JSON，如文件数、增删行数。 */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> changeStats;
     private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
 }

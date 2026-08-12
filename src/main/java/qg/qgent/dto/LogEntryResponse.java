@@ -13,7 +13,6 @@ import lombok.NoArgsConstructor;
 public class LogEntryResponse {
     private String id;
     private Long sequence;
-    private String node;
     private String content;
     private String timestamp;
 }

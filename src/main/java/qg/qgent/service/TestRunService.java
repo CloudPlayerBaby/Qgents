@@ -39,7 +39,7 @@ import java.util.stream.Collectors;
  * 仅管理配置与状态，真实执行由执行服务承担（202 接缝）；testsetIds 必须属于该仓库且为 ENABLED，
  * 受保护分支的必选测试集由分支门禁决定，客户端不能传入较少测试集跳过。
  * 创建为受理接缝：持久化 QUEUED 并返回，真实执行由执行服务（TODO 接缝）推进状态与写入结果；
- * 受保护分支必选测试集暂以仓库默认分支的 branch config 为准；后续由 TaskRepository.baseRef 精确校验。
+ * 受保护分支必选测试集暂以仓库默认分支的 branch config 为准；执行时由 WorkspaceRepository 的源分支与头提交精确校验。
  */
 @Service
 public class TestRunService {
@@ -130,7 +130,7 @@ public class TestRunService {
         run.setProjectId(projectId);
         run.setProjectRepositoryId(request.getRepositoryId());
         run.setTaskId(request.getTaskId());
-        run.setSourceRef(request.getSourceRef());
+        run.setHeadCommit(request.getHeadCommit());
         run.setTargetBranch(request.getTargetBranch());
         run.setStatus("QUEUED");
         run.setCreatedBy(userId);
@@ -220,7 +220,7 @@ public class TestRunService {
         if (run.getTaskId() != null) {
             p.put("taskId", run.getTaskId());
         }
-        p.put("sourceRef", run.getSourceRef());
+        p.put("headCommit", run.getHeadCommit());
         p.put("targetBranch", run.getTargetBranch());
         p.put("status", run.getStatus());
         p.put("sequence", 0);
@@ -236,7 +236,7 @@ public class TestRunService {
 
     private DryRunResponse toDryRun(DryRunEntity run) {
         return new DryRunResponse(id(run.getId()), id(run.getProjectId()), id(run.getProjectRepositoryId()),
-                run.getSourceRef(), run.getTargetBranch(), run.getStatus(),
+                run.getHeadCommit(), run.getTargetBranch(), run.getStatus(),
                 run.getReport(), id(run.getCreatedBy()), iso(run.getCreatedAt()));
     }
 

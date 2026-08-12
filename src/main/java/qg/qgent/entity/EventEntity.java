@@ -27,7 +27,7 @@ public class EventEntity {
     private UUID requirementGroupId;
     /** 项目内单调递增事件序号，作为 SSE 游标。 */
     private Long sequenceNo;
-    /** 事件类型，如 task-run.updated / deliverable.created。 */
+    /** 事件类型，如 task-run.updated / diff.created / merge-request.updated。 */
     private String eventType;
     /** 关联资源ID字符串，如 taskRunId。 */
     private String resourceId;

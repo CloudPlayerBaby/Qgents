@@ -29,7 +29,8 @@ import java.util.UUID;
 /**
  * MR 镜像、审查与质量状态端点（13）。
  * 创建/同步/合并为异步受理返回 202（真实 GitHub 操作为接缝）；CQ 审查为同步决策返回 200。
- * POST 写接口均需 Idempotency-Key；CQ 审查者不得是 MR 作者或交付物创建者。
+ * POST writes require an Idempotency-Key; an MR author cannot approve their own
+ * CQ.
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/merge-requests")
@@ -51,7 +52,7 @@ public class MergeRequestController {
                 requestId(request));
     }
 
-    /** 基于已接受交付物创建 MR。 */
+    /** Creates an MR from the selected repository worktree of a Task Workspace. */
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> create(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
@@ -93,7 +94,7 @@ public class MergeRequestController {
         return ok(data, request);
     }
 
-    /** 提交一次 CQ+1 审查（非作者、非交付物创建者）。 */
+    /** Submits CQ+1 approval by a reviewer other than the MR author. */
     @PostMapping("/{mergeRequestId}/cq-approvals")
     public ApiResponse<?> cqApproval(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
             @AuthenticationPrincipal UUID userId, @RequestBody(required = false) CqDecisionRequest body,
@@ -103,7 +104,7 @@ public class MergeRequestController {
         return ok(data, request);
     }
 
-    /** 拒绝 CQ 并给出修改意见（非作者、非交付物创建者）。 */
+    /** Rejects CQ with a reason by a reviewer other than the MR author. */
     @PostMapping("/{mergeRequestId}/cq-rejections")
     public ApiResponse<?> cqRejection(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
             @AuthenticationPrincipal UUID userId, @Valid @RequestBody CqDecisionRequest body,

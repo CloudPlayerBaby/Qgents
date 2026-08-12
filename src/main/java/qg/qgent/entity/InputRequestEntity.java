@@ -38,7 +38,7 @@ public class InputRequestEntity {
     private Map<String, Object> answer;
     /** 审批/拒绝理由或回复备注。 */
     private String reason;
-    /** 发起请求的用户ID（一般为编排发起人）。 */
+    /** User who initiated the owning Task execution. */
     private UUID createdBy;
     private LocalDateTime createdAt;
     /** 回答/审批/拒绝处理时间（UTC），未处理时为空。 */

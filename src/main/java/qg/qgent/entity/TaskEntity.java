@@ -14,6 +14,8 @@ public class TaskEntity {
     /** Owning project isolation boundary. */ private UUID projectId;
     /** Active REQUIREMENT group providing conversation context. */ private UUID requirementGroupId;
     /** Optional message that triggered this task. */ private UUID triggerMessageId;
+    /** Persistent development workspace used by this task. */ private UUID workspaceId;
+    /** Previous task continued in the same workspace, when explicitly requested. */ private UUID continuationOfTaskId;
     /** Human-readable task title, at most 255 characters. */ private String title;
     /** Immutable requirement text supplied by the requester. */ private String requirement;
     /** Lifecycle state: PLANNING/PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLED. */ private String status;

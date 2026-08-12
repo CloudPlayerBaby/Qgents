@@ -17,7 +17,6 @@ import qg.qgent.dto.BranchPolicyDto;
 import qg.qgent.dto.QualityGateDto;
 import qg.qgent.dto.UpdateBranchPolicyRequest;
 import qg.qgent.dto.UpdateQualityGateRequest;
-import qg.qgent.entity.BranchPolicyJson;
 import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
@@ -75,11 +74,11 @@ public class RepositoryBranchConfigService {
      */
     public BranchPolicyDto getBranchPolicy(UUID actorId, UUID projectId, UUID repositoryId, String branchName) {
         // 权限校验：至少需要是项目成员才能查看分支策略
-        requireProjectMember(actorId, projectId); //如果不是项目成员，则抛出权限不足异常
-        
+        requireProjectMember(actorId, projectId); // 如果不是项目成员，则抛出权限不足异常
+
         // 获取项目与仓库的绑定记录，确保该仓库真的被这个项目绑定了
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
-        
+
         // 懒加载设计：获取该分支现有的配置，如果没有则只在内存里返回默认配置
         RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, false);
 
@@ -106,13 +105,14 @@ public class RepositoryBranchConfigService {
      * @return 更新后的分支保护策略
      */
     @Transactional // 开启事务，保证更新过程中发生异常时数据能够回滚
-    public BranchPolicyDto updateBranchPolicy(UUID actorId, UUID projectId, UUID repositoryId, String branchName, UpdateBranchPolicyRequest request) {
+    public BranchPolicyDto updateBranchPolicy(UUID actorId, UUID projectId, UUID repositoryId, String branchName,
+            UpdateBranchPolicyRequest request) {
         // 权限校验：修改分支策略属于高危操作，必须是项目管理员 (Project Admin) 才能执行
         requireProjectAdmin(actorId, projectId);
-        
+
         // 获取项目与仓库的绑定记录
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
-        
+
         // 获取或初始化该分支的配置实体
         RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, true);
 
@@ -151,19 +151,21 @@ public class RepositoryBranchConfigService {
     public QualityGateDto getQualityGate(UUID actorId, UUID projectId, UUID repositoryId, String branchName) {
         // 只有项目成员才能查看质量门禁配置
         requireProjectMember(actorId, projectId);
-        
+
         // 验证仓库绑定关系
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
-        
+
         // 获取该分支的配置实体（没有则不落库，直接在内存构造）
         RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, false);
 
         QualityGateDto dto = new QualityGateDto();
         dto.setRequiredChecks(config.getRequiredChecks() != null ? config.getRequiredChecks() : List.of());
-        
+
         List<UUID> testsetIds = List.of();
         if (config.getId() != null) {
-            testsetIds = branchConfigTestsetMapper.selectList(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>().eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()))
+            testsetIds = branchConfigTestsetMapper
+                    .selectList(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>()
+                            .eq(RepositoryBranchConfigTestsetEntity::getBranchConfigId, config.getId()))
                     .stream()
                     .map(RepositoryBranchConfigTestsetEntity::getTestsetId)
                     .collect(Collectors.toList());
@@ -178,29 +180,34 @@ public class RepositoryBranchConfigService {
      * 支持全量覆盖现有的必须检查项（Required Checks）和关联的测试集（Testsets）。
      */
     @Transactional
-    public QualityGateDto updateQualityGate(UUID actorId, UUID projectId, UUID repositoryId, String branchName, UpdateQualityGateRequest request) {
+    public QualityGateDto updateQualityGate(UUID actorId, UUID projectId, UUID repositoryId, String branchName,
+            UpdateQualityGateRequest request) {
         // 必须是项目管理员才能修改门禁
         requireProjectAdmin(actorId, projectId);
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
-        
+
         if (request.getRequiredTestsetIds() != null && !request.getRequiredTestsetIds().isEmpty()) {
             List<TestsetEntity> testsets = testsetMapper.selectBatchIds(request.getRequiredTestsetIds());
             if (testsets.size() != request.getRequiredTestsetIds().size()) {
-                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET", "Some required testsets do not exist");
+                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET",
+                        "Some required testsets do not exist");
             }
             for (TestsetEntity testset : testsets) {
                 if (!testset.getProjectId().equals(projectId)) {
-                    throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET", "Testset does not belong to the project");
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET",
+                            "Testset does not belong to the project");
                 }
-                if (testset.getProjectRepositoryId() != null && !testset.getProjectRepositoryId().equals(projectRepo.getId())) {
-                    throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET", "Testset does not belong to the repository");
+                if (testset.getProjectRepositoryId() != null
+                        && !testset.getProjectRepositoryId().equals(projectRepo.getId())) {
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET",
+                            "Testset does not belong to the repository");
                 }
                 if (!"ENABLED".equals(testset.getStatus())) {
                     throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET", "Testset is not enabled");
                 }
             }
         }
-        
+
         RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, true);
 
         // 1. 更新主配置表中的 Required Checks 列表
@@ -236,12 +243,14 @@ public class RepositoryBranchConfigService {
      * @param createIfMissing     如果不存在，是否要写入数据库
      * @return 分支配置实体
      */
-    private RepositoryBranchConfigEntity getConfig(UUID projectRepositoryId, String branchName, boolean createIfMissing) {
+    private RepositoryBranchConfigEntity getConfig(UUID projectRepositoryId, String branchName,
+            boolean createIfMissing) {
         // 尝试从数据库查询该分支配置
-        RepositoryBranchConfigEntity config = branchConfigMapper.selectOne(new LambdaQueryWrapper<RepositoryBranchConfigEntity>()
-                .eq(RepositoryBranchConfigEntity::getProjectRepositoryId, projectRepositoryId)
-                .eq(RepositoryBranchConfigEntity::getBranchName, branchName));
-                
+        RepositoryBranchConfigEntity config = branchConfigMapper
+                .selectOne(new LambdaQueryWrapper<RepositoryBranchConfigEntity>()
+                        .eq(RepositoryBranchConfigEntity::getProjectRepositoryId, projectRepositoryId)
+                        .eq(RepositoryBranchConfigEntity::getBranchName, branchName));
+
         // 如果不存在，则进行初始化
         if (config == null) {
             config = new RepositoryBranchConfigEntity();
@@ -300,8 +309,10 @@ public class RepositoryBranchConfigService {
     private boolean hasProjectAccess(UUID projectId, UUID actorId) {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
-                || projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId)) > 0);
-        //项目是否存在+是团队老大/是普通成员
+                || projectMemberMapper.selectCount(
+                        new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId)
+                                .eq(ProjectMemberEntity::getUserId, actorId)) > 0);
+        // 项目是否存在+是团队老大/是普通成员
     }
 
     private boolean hasProjectAdminAccess(UUID projectId, UUID actorId) {

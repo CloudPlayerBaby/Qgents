@@ -9,6 +9,8 @@ import java.util.*;
  @Schema(description="Optional triggering message identifier") private UUID triggerMessageId;
  @NotBlank @Size(max=255) @Schema(description="Task title",maxLength=255,requiredMode=Schema.RequiredMode.REQUIRED) private String title;
  @NotBlank @Size(max=10000) @Schema(description="Requirement snapshot",maxLength=10000,requiredMode=Schema.RequiredMode.REQUIRED) private String requirement;
- @NotEmpty @Size(max=20) @Schema(description="Project repository bindings available to the task",requiredMode=Schema.RequiredMode.REQUIRED) private List<@NotNull UUID> repositoryIds;
+ @Size(max=20) @Schema(description="Repositories for a new workspace; omit when reusing a workspace") private List<@NotNull UUID> repositoryIds;
+ @Schema(description="Existing workspace to reuse for a continuation task") private UUID workspaceId;
+ @Schema(description="Previous task continued by this task; required with workspaceId") private UUID continuationOfTaskId;
  @Size(max=512) @Schema(description="Optional common base ref") private String baseRef;
 }

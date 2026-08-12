@@ -15,7 +15,8 @@ import qg.qgent.dto.MergeRequestReviewResponse;
 import qg.qgent.dto.MergeRequestSummaryResponse;
 import qg.qgent.dto.PageMeta;
 import qg.qgent.dto.QualityGateResponse;
-import qg.qgent.entity.DeliverableEntity;
+import qg.qgent.entity.TaskEntity;
+import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.entity.MergeRequestEntity;
 import qg.qgent.entity.MergeRequestGroupEntity;
 import qg.qgent.entity.MergeRequestReviewEntity;
@@ -23,7 +24,8 @@ import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.QualityCheckResultEntity;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.entity.RepositoryBranchConfigTestsetEntity;
-import qg.qgent.mapper.DeliverableMapper;
+import qg.qgent.mapper.TaskMapper;
+import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.mapper.MergeRequestGroupMapper;
 import qg.qgent.mapper.MergeRequestMapper;
 import qg.qgent.mapper.MergeRequestReviewMapper;
@@ -44,8 +46,10 @@ import java.util.stream.Collectors;
 
 /**
  * MR 镜像、审查与质量门禁服务。
- * MR 属于仓库，服务端从已接受交付物派生仓库/源分支/提交 SHA 创建，不接受客户端提交的
- * GitHub Token、提交 SHA 或门禁结果；CQ 审查者不得是 MR 作者或交付物创建者。
+ * MR belongs to one repository and is derived from the persisted source branch
+ * and head commit
+ * of a Task Workspace. Client-supplied credentials, commit SHAs and gate
+ * outcomes are not trusted.
  * qualityGate 汇总：从目标分支 branch config 的 required_checks + 必选测试集取必检项，
  * 对照 quality_check_results 在 headCommit 的最新 attempt_no；全部 PASSED → PASSED，
  * 任一 FAILED → FAILED，缺失或运行中 → PENDING。
@@ -59,7 +63,8 @@ public class MergeRequestService {
     private final MergeRequestGroupMapper mergeRequestGroupMapper;
     private final QualityCheckResultMapper qualityCheckMapper;
     private final MergeRequestReviewMapper reviewMapper;
-    private final DeliverableMapper deliverableMapper;
+    private final TaskMapper taskMapper;
+    private final WorkspaceRepositoryMapper workspaceRepositoryMapper;
     private final ProjectRepositoryMapper projectRepositoryMapper;
     private final RepositoryBranchConfigMapper branchConfigMapper;
     private final RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper;
@@ -68,7 +73,8 @@ public class MergeRequestService {
 
     public MergeRequestService(MergeRequestMapper mergeRequestMapper, MergeRequestGroupMapper mergeRequestGroupMapper,
             QualityCheckResultMapper qualityCheckMapper, MergeRequestReviewMapper reviewMapper,
-            DeliverableMapper deliverableMapper, ProjectRepositoryMapper projectRepositoryMapper,
+            TaskMapper taskMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
+            ProjectRepositoryMapper projectRepositoryMapper,
             RepositoryBranchConfigMapper branchConfigMapper,
             RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
             EventService eventService) {
@@ -76,7 +82,8 @@ public class MergeRequestService {
         this.mergeRequestGroupMapper = mergeRequestGroupMapper;
         this.qualityCheckMapper = qualityCheckMapper;
         this.reviewMapper = reviewMapper;
-        this.deliverableMapper = deliverableMapper;
+        this.taskMapper = taskMapper;
+        this.workspaceRepositoryMapper = workspaceRepositoryMapper;
         this.projectRepositoryMapper = projectRepositoryMapper;
         this.branchConfigMapper = branchConfigMapper;
         this.branchConfigTestsetMapper = branchConfigTestsetMapper;
@@ -135,41 +142,54 @@ public class MergeRequestService {
     }
 
     /**
-     * 基于已接受交付物创建 MR。
-     * 服务端从交付物取得仓库、源分支与提交 SHA，校验交付物已 ACCEPTED 且调用方有项目访问权；
+     * Creates an MR mirror from a Task Workspace repository branch and committed
+     * head.
      * 创建为本地镜像（OPEN），真实 GitHub PR 创建由 sync 接缝闭环。
      */
     @Transactional
     public MergeRequestSummaryResponse create(UUID projectId, UUID userId, MergeRequestCreateRequest request) {
         projectAccess.requireProjectMember(projectId, userId);
-        DeliverableEntity deliverable = deliverableMapper.selectById(request.getDeliverableId());
-        if (deliverable == null || !deliverable.getProjectId().equals(projectId)) {
-            throw new ApiException(HttpStatus.NOT_FOUND, "DELIVERABLE_NOT_FOUND", "交付物不存在或不可见");
+        TaskEntity task = taskMapper.selectById(request.getTaskId());
+        if (task == null || !projectId.equals(task.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "Task does not exist or is not visible");
         }
-        if (!"ACCEPTED".equals(deliverable.getStatus())) {
-            throw new ApiException(HttpStatus.CONFLICT, "DELIVERABLE_NOT_ACCEPTED", "仅已接受的交付物可创建 MR");
+        if (!userId.equals(task.getCreatedBy())) {
+            projectAccess.requireProjectAdmin(projectId, userId);
+        }
+        ProjectRepositoryEntity repository = projectRepositoryMapper.selectById(request.getRepositoryId());
+        if (repository == null || !projectId.equals(repository.getProjectId())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REPOSITORY_NOT_IN_PROJECT",
+                    "Repository is not bound to the current Project");
+        }
+        WorkspaceRepositoryEntity worktree = workspaceRepositoryMapper.selectForUpdate(task.getWorkspaceId(),
+                request.getRepositoryId());
+        if (worktree == null || worktree.getHeadCommit() == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "WORKSPACE_BRANCH_NOT_PUSHED",
+                    "The repository branch must have a committed head before MR creation");
         }
         // TODO 接缝：接入 GitHub 前无法校验源分支是否仍存在；创建后由 sync 以真实 PR 号回写
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         MergeRequestEntity mr = new MergeRequestEntity();
         mr.setId(UuidV7.next());
-        mr.setProjectRepositoryId(deliverable.getProjectRepositoryId());
+        mr.setProjectRepositoryId(request.getRepositoryId());
+        mr.setTaskId(task.getId());
+        mr.setWorkspaceId(task.getWorkspaceId());
         mr.setProvider("GITHUB");
-        mr.setProviderNumber(nextProviderNumber(deliverable.getProjectRepositoryId()));
-        mr.setSourceBranch(deliverable.getSourceBranch());
+        mr.setProviderNumber(nextProviderNumber(request.getRepositoryId()));
+        mr.setSourceBranch(worktree.getSourceBranch());
         mr.setTargetBranch(request.getTargetBranch());
-        mr.setHeadCommit(deliverable.getHeadCommit());
+        mr.setHeadCommit(worktree.getHeadCommit());
         mr.setTitle(request.getTitle());
         mr.setStatus("OPEN");
         mr.setQualityGateStatus("PENDING");
         mr.setSyncedAt(now);
-        mr.setAuthorUserId(deliverable.getCreatedBy());
+        mr.setAuthorUserId(userId);
         mr.setCreatedAt(now);
         mergeRequestMapper.insert(mr);
-        if (deliverable.getRequirementGroupId() != null) {
+        if (task.getRequirementGroupId() != null) {
             MergeRequestGroupEntity relation = new MergeRequestGroupEntity();
             relation.setMergeRequestId(mr.getId());
-            relation.setRequirementGroupId(deliverable.getRequirementGroupId());
+            relation.setRequirementGroupId(task.getRequirementGroupId());
             mergeRequestGroupMapper.insert(relation);
         }
         refreshQualityGate(mr);
@@ -217,7 +237,7 @@ public class MergeRequestService {
 
     /**
      * 提交一次 CQ+1 审查。
-     * 审查者不得是 MR 作者、交付物创建者；写入 HUMAN APPROVED 审查与 CQ_PLUS_ONE PASSED 检查结果。
+     * The MR author cannot review their own MR.
      */
     @Transactional
     public MergeRequestSummaryResponse cqApproval(UUID projectId, UUID mergeRequestId, UUID userId, String reason) {
@@ -243,7 +263,7 @@ public class MergeRequestService {
 
     /**
      * 拒绝 CQ 并给出修改意见。
-     * 审查者不得是 MR 作者、交付物创建者；写入 CQ_PLUS_ONE FAILED 检查结果。
+     * The MR author cannot reject their own MR.
      */
     @Transactional
     public MergeRequestSummaryResponse cqRejection(UUID projectId, UUID mergeRequestId, UUID userId, String reason) {
@@ -290,17 +310,10 @@ public class MergeRequestService {
         return mr;
     }
 
-    /** CQ 审查者不得是 MR 作者、交付物创建者或代表其执行的 Agent。 */
+    /** CQ reviewer must differ from the MR author. */
     private void requireCqReviewer(MergeRequestEntity mr, UUID userId) {
         if (userId.equals(mr.getAuthorUserId())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "CQ_REVIEWER_NOT_ALLOWED", "MR 作者不能审查自己的 CQ");
-        }
-        DeliverableEntity deliverable = deliverableMapper.selectOne(Wrappers.<DeliverableEntity>lambdaQuery()
-                .eq(DeliverableEntity::getProjectRepositoryId, mr.getProjectRepositoryId())
-                .eq(DeliverableEntity::getHeadCommit, mr.getHeadCommit())
-                .last("LIMIT 1"));
-        if (deliverable != null && userId.equals(deliverable.getCreatedBy())) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "CQ_REVIEWER_NOT_ALLOWED", "交付物创建者不能审查自己的 CQ");
         }
     }
 
@@ -450,7 +463,8 @@ public class MergeRequestService {
                 mr.getHeadCommit(), gate, mr.getTitle(), iso(mr.getCreatedAt()));
     }
 
-    private MergeRequestDetailResponse toDetail(MergeRequestEntity mr, List<String> groupIds, QualityGateResponse gate) {
+    private MergeRequestDetailResponse toDetail(MergeRequestEntity mr, List<String> groupIds,
+            QualityGateResponse gate) {
         return new MergeRequestDetailResponse(id(mr.getId()), id(mr.getProjectRepositoryId()), groupIds,
                 mr.getProvider(), mr.getProviderNumber(), mr.getSourceBranch(), mr.getTargetBranch(), mr.getStatus(),
                 mr.getHeadCommit(), mr.getTitle(), gate, id(mr.getAuthorUserId()), iso(mr.getSyncedAt()),

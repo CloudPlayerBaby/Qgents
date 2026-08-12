@@ -17,7 +17,7 @@ import static org.mockito.Mockito.*;
 class TaskServiceTest {
     private final TaskMapper tasks = mock(TaskMapper.class);
     private final WorkspaceMapper workspaces = mock(WorkspaceMapper.class);
-    private final TaskRepositoryMapper repositories = mock(TaskRepositoryMapper.class);
+    private final WorkspaceRepositoryMapper repositories = mock(WorkspaceRepositoryMapper.class);
     private final TaskStepMapper steps = mock(TaskStepMapper.class);
     private final TaskStepDependencyMapper dependencies = mock(TaskStepDependencyMapper.class);
     private final TaskStepRepositoryMapper scopes = mock(TaskStepRepositoryMapper.class);
@@ -42,7 +42,7 @@ class TaskServiceTest {
 
         assertEquals(2, result.getRepositoryIds().size());
         verify(workspaces).insert(any(WorkspaceEntity.class));
-        verify(repositories, times(2)).insertLink(any(), any(), any(), any());
+        verify(repositories, times(2)).insertLink(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -111,9 +111,13 @@ class TaskServiceTest {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
         UUID existingId = UUID.randomUUID(), newId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
         when(tasks.selectById(taskId)).thenReturn(task(taskId, projectId, actor));
-        TaskRepositoryEntity taskRepository = new TaskRepositoryEntity(); taskRepository.setTaskId(taskId);
+        UUID workspaceId = UUID.randomUUID();
+        task(taskId, projectId, actor).setWorkspaceId(workspaceId);
+        TaskEntity task = task(taskId, projectId, actor); task.setWorkspaceId(workspaceId);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        WorkspaceRepositoryEntity taskRepository = new WorkspaceRepositoryEntity(); taskRepository.setWorkspaceId(workspaceId);
         taskRepository.setProjectRepositoryId(repositoryId);
-        when(repositories.selectByTask(taskId)).thenReturn(List.of(taskRepository));
+        when(repositories.selectByWorkspace(workspaceId)).thenReturn(List.of(taskRepository));
         TaskStepEntity existing = new TaskStepEntity(); existing.setId(existingId); existing.setTaskId(taskId);
         when(steps.selectList(any())).thenReturn(List.of(existing));
         TaskStepCreateRequest request = step(newId, repositoryId, "WRITE");

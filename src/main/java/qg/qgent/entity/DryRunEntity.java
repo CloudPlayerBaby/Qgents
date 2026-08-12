@@ -29,9 +29,8 @@ public class DryRunEntity {
     private UUID taskStepId;
     /** 项目仓库绑定ID。 */
     private UUID projectRepositoryId;
-    /** @deprecated Legacy read-only compatibility anchor; new writes use taskId. */
     /** 源分支或提交引用。 */
-    private String sourceRef;
+    private String headCommit;
     /** 目标分支名。 */
     private String targetBranch;
     /** 运行状态，取值见类注释。 */

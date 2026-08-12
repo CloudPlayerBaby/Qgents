@@ -36,12 +36,14 @@ import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.entity.RepositoryBranchConfigTestsetEntity;
+import qg.qgent.entity.TestsetEntity;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.RepositoryBranchConfigMapper;
 import qg.qgent.mapper.RepositoryBranchConfigTestsetMapper;
 import qg.qgent.mapper.TeamMemberMapper;
+import qg.qgent.mapper.TestsetMapper;
 
 @ExtendWith(MockitoExtension.class)
 class RepositoryBranchConfigServiceTest {
@@ -57,6 +59,7 @@ class RepositoryBranchConfigServiceTest {
     @Mock private ProjectMapper projectMapper;
     @Mock private ProjectMemberMapper projectMemberMapper;
     @Mock private TeamMemberMapper teamMemberMapper;
+    @Mock private TestsetMapper testsetMapper;
 
     private RepositoryBranchConfigService service;
 
@@ -74,7 +77,7 @@ class RepositoryBranchConfigServiceTest {
     @BeforeEach
     void setUp() {
         service = new RepositoryBranchConfigService(branchConfigMapper, branchConfigTestsetMapper,
-                projectRepositoryMapper, projectMapper, projectMemberMapper, teamMemberMapper);
+                projectRepositoryMapper, projectMapper, projectMemberMapper, teamMemberMapper, testsetMapper);
     }
 
     @Test
@@ -173,6 +176,10 @@ class RepositoryBranchConfigServiceTest {
         request.setRequiredChecks(List.of("TESTSET"));
         UUID testsetId = UUID.randomUUID();
         request.setRequiredTestsetIds(List.of(testsetId));
+        TestsetEntity testset = new TestsetEntity();
+        testset.setId(testsetId); testset.setProjectId(projectId);
+        testset.setProjectRepositoryId(projectRepositoryId); testset.setStatus("ENABLED");
+        when(testsetMapper.selectBatchIds(List.of(testsetId))).thenReturn(List.of(testset));
 
         QualityGateDto result = service.updateQualityGate(actorId, projectId, repositoryId, branchName, request);
 

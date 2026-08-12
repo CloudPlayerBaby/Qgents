@@ -12,18 +12,15 @@ import qg.qgent.dto.InputRequestResponse;
 import qg.qgent.dto.LogEntryResponse;
 import qg.qgent.dto.PageMeta;
 import qg.qgent.dto.TaskRunDetailResponse;
-import qg.qgent.dto.TaskRunStepResponse;
 import qg.qgent.dto.TaskRunSummaryResponse;
-import qg.qgent.entity.DeliverableEntity;
+import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.ExecutionLogEntity;
 import qg.qgent.entity.InputRequestEntity;
 import qg.qgent.entity.TaskRunEntity;
-import qg.qgent.entity.TaskRunStepEntity;
-import qg.qgent.mapper.DeliverableMapper;
+import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.ExecutionLogMapper;
 import qg.qgent.mapper.InputRequestMapper;
 import qg.qgent.mapper.TaskRunMapper;
-import qg.qgent.mapper.TaskRunStepMapper;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -36,11 +33,12 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * 子任务受控执行记录（TaskRun）服务。
+ * Controlled execution-attempt service for TaskSteps.
  * 提供运行记录查询、重试、取消与人机输入/审批处理；所有查询先校验路径 projectId 下资源归属，
  * 写操作按状态机推进并发布项目级事件。
  * 状态机：retry 仅接受 FAILED/CANCELLED/BLOCKED；cancel 对 QUEUED 直接置 CANCELLED，
- * 对 RUNNING/WAITING_INPUT/WAITING_APPROVAL/BLOCKED 置 CANCELLING；reply 后恢复 RUNNING，reject 后进入 BLOCKED。
+ * 对 RUNNING/WAITING_INPUT/WAITING_APPROVAL/BLOCKED 置 CANCELLING；reply 后恢复
+ * RUNNING，reject 后进入 BLOCKED。
  * 真实执行、Sandbox 生命周期与日志/步骤写入由受控执行服务（TODO 接缝）驱动，本服务只做受理与查询。
  */
 @Service
@@ -52,26 +50,26 @@ public class TaskRunService {
     private static final int MAX_LIMIT = 100;
 
     private final TaskRunMapper taskRunMapper;
-    private final TaskRunStepMapper stepMapper;
     private final ExecutionLogMapper logMapper;
     private final InputRequestMapper inputRequestMapper;
-    private final DeliverableMapper deliverableMapper;
+    private final DiffMapper diffMapper;
     private final ProjectAccessService projectAccess;
     private final EventService eventService;
 
-    public TaskRunService(TaskRunMapper taskRunMapper, TaskRunStepMapper stepMapper,
-            ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DeliverableMapper deliverableMapper,
+    public TaskRunService(TaskRunMapper taskRunMapper,
+            ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
             ProjectAccessService projectAccess, EventService eventService) {
         this.taskRunMapper = taskRunMapper;
-        this.stepMapper = stepMapper;
         this.logMapper = logMapper;
         this.inputRequestMapper = inputRequestMapper;
-        this.deliverableMapper = deliverableMapper;
+        this.diffMapper = diffMapper;
         this.projectAccess = projectAccess;
         this.eventService = eventService;
     }
 
-    /** Lists immutable execution attempts belonging to the confirmed top-level task. */
+    /**
+     * Lists immutable execution attempts belonging to the confirmed top-level task.
+     */
     public ApiPageResponse<TaskRunSummaryResponse> listByTask(UUID projectId, UUID taskId, UUID userId,
             String cursor, int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
@@ -82,25 +80,24 @@ public class TaskRunService {
                 .lt(cursorUuid != null, TaskRunEntity::getId, cursorUuid).orderByDesc(TaskRunEntity::getId)
                 .last("LIMIT " + (size + 1)));
         boolean hasMore = rows.size() > size;
-        List<TaskRunSummaryResponse> items = (hasMore ? rows.subList(0, size) : rows).stream().map(this::toSummary).toList();
-        return new ApiPageResponse<>(items, new PageMeta(hasMore ? items.get(items.size()-1).getId() : null, hasMore), requestId);
+        List<TaskRunSummaryResponse> items = (hasMore ? rows.subList(0, size) : rows).stream().map(this::toSummary)
+                .toList();
+        return new ApiPageResponse<>(items, new PageMeta(hasMore ? items.get(items.size() - 1).getId() : null, hasMore),
+                requestId);
     }
 
     /**
-     * 获取单次运行的状态、关联子任务、步骤与产物摘要。
+     * Returns one run with its owning TaskStep and Task-level result summary.
      */
     public TaskRunDetailResponse detail(UUID projectId, UUID taskRunId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
-        List<TaskRunStepResponse> steps = stepMapper
-                .selectList(Wrappers.<TaskRunStepEntity>lambdaQuery()
-                        .eq(TaskRunStepEntity::getTaskRunId, taskRunId).orderByAsc(TaskRunStepEntity::getCreatedAt))
-                .stream().map(this::toStep).toList();
         return new TaskRunDetailResponse(
-                id(run.getId()), id(run.getProjectId()), id(run.getTaskId()), id(run.getTaskStepId()), id(run.getAgentId()), id(run.getOrchestrationRunId()),
-                id(run.getSubTaskId()), id(run.getProjectRepositoryId()), id(run.getRequirementGroupId()),
-                run.getRole(), run.getStatus(), id(run.getRetryOfTaskRunId()), steps,
-                artifactSummary(run.getId()), iso(run.getStartedAt()), iso(run.getFinishedAt()), iso(run.getCreatedAt()),
+                id(run.getId()), id(run.getProjectId()), id(run.getTaskId()), id(run.getTaskStepId()),
+                id(run.getAgentId()),
+                run.getRole(), run.getStatus(), id(run.getRetryOfTaskRunId()),
+                artifactSummary(run.getId()), iso(run.getStartedAt()), iso(run.getFinishedAt()),
+                iso(run.getCreatedAt()),
                 iso(run.getUpdatedAt()));
     }
 
@@ -123,37 +120,22 @@ public class TaskRunService {
         run.setTaskId(source.getTaskId());
         run.setTaskStepId(source.getTaskStepId());
         run.setAgentId(source.getAgentId());
-        run.setOrchestrationRunId(source.getOrchestrationRunId());
-        run.setSubTaskId(source.getSubTaskId());
-        run.setProjectRepositoryId(source.getProjectRepositoryId());
-        run.setRequirementGroupId(source.getRequirementGroupId());
         run.setRole(source.getRole());
         run.setStatus("QUEUED");
         run.setRetryOfTaskRunId(source.getId());
         // 重试复用同一分支上下文，Workspace/Sandbox 由新执行会话重新分配
-        run.setBaseRef(source.getBaseRef());
-        run.setHeadRef(source.getHeadRef());
         run.setCreatedBy(userId);
         run.setCreatedAt(now);
         run.setUpdatedAt(now);
         taskRunMapper.insert(run);
-        for (TaskRunStepEntity s : stepMapper.selectList(Wrappers.<TaskRunStepEntity>lambdaQuery()
-                .eq(TaskRunStepEntity::getTaskRunId, source.getId()))) {
-            TaskRunStepEntity step = new TaskRunStepEntity();
-            step.setId(UuidV7.next());
-            step.setTaskRunId(run.getId());
-            step.setNode(s.getNode());
-            step.setStatus("PENDING");
-            step.setCreatedAt(now);
-            stepMapper.insert(step);
-        }
-        eventService.publish(projectId, run.getRequirementGroupId(), "task-run.updated", run.getId().toString(),
-                eventPayload(run, null, 0));
+        eventService.publish(projectId, null, "task-run.updated", run.getId().toString(),
+                eventPayload(run, 0));
         return toSummary(run);
     }
 
     /**
-     * 取消未完成运行：QUEUED 直接置 CANCELLED；RUNNING/WAITING_INPUT/WAITING_APPROVAL/BLOCKED 置 CANCELLING
+     * 取消未完成运行：QUEUED 直接置 CANCELLED；RUNNING/WAITING_INPUT/WAITING_APPROVAL/BLOCKED 置
+     * CANCELLING
      * （真实终止由执行器接缝完成）；SUCCEEDED/FAILED/CANCELLED/CANCELLING 不可取消。
      */
     @Transactional
@@ -175,22 +157,14 @@ public class TaskRunService {
         } else {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_CANCELLABLE", "当前状态不可取消");
         }
-        eventService.publish(projectId, run.getRequirementGroupId(), "task-run.updated", run.getId().toString(),
-                eventPayload(run, null, 0));
+        eventService.publish(projectId, null, "task-run.updated", run.getId().toString(),
+                eventPayload(run, 0));
         return toSummary(run);
     }
 
     /**
      * 获取工作流节点状态列表。
      */
-    public List<TaskRunStepResponse> steps(UUID projectId, UUID taskRunId, UUID userId) {
-        projectAccess.requireProjectMember(projectId, userId);
-        requireRun(projectId, taskRunId);
-        return stepMapper.selectList(Wrappers.<TaskRunStepEntity>lambdaQuery()
-                .eq(TaskRunStepEntity::getTaskRunId, taskRunId).orderByAsc(TaskRunStepEntity::getCreatedAt))
-                .stream().map(this::toStep).toList();
-    }
-
     /**
      * 游标读取已脱敏的执行日志。
      *
@@ -209,7 +183,8 @@ public class TaskRunService {
                 .last("LIMIT " + (size + 1)));
         boolean hasMore = rows.size() > size;
         List<LogEntryResponse> items = (hasMore ? rows.subList(0, size) : rows).stream().map(this::toLog).toList();
-        PageMeta page = new PageMeta(hasMore ? String.valueOf(items.get(items.size() - 1).getSequence()) : null, hasMore);
+        PageMeta page = new PageMeta(hasMore ? String.valueOf(items.get(items.size() - 1).getSequence()) : null,
+                hasMore);
         return new ApiPageResponse<>(items, page, requestId);
     }
 
@@ -220,9 +195,7 @@ public class TaskRunService {
         projectAccess.requireProjectMember(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
         // 仅返回只读摘要；宿主机路径、容器控制入口与凭据一律不返回
-        return new ExecutionContextResponse(run.getWorkspaceId(), run.getSandboxStatus(),
-                id(run.getProjectRepositoryId()), run.getBaseRef(), run.getHeadRef(), iso(run.getStartedAt()),
-                iso(run.getExpiresAt()));
+        return new ExecutionContextResponse(iso(run.getStartedAt()), null);
     }
 
     /**
@@ -258,8 +231,8 @@ public class TaskRunService {
         run.setStatus("RUNNING");
         run.setUpdatedAt(now);
         taskRunMapper.updateById(run);
-        eventService.publish(projectId, run.getRequirementGroupId(), "task-run.updated", run.getId().toString(),
-                eventPayload(run, null, 0));
+        eventService.publish(projectId, null, "task-run.updated", run.getId().toString(),
+                eventPayload(run, 0));
         return toInput(req);
     }
 
@@ -300,8 +273,8 @@ public class TaskRunService {
         run.setStatus("APPROVED".equals(decision) ? "RUNNING" : "BLOCKED");
         run.setUpdatedAt(now);
         taskRunMapper.updateById(run);
-        eventService.publish(run.getProjectId(), run.getRequirementGroupId(), "task-run.updated",
-                run.getId().toString(), eventPayload(run, null, 0));
+        eventService.publish(run.getProjectId(), null, "task-run.updated",
+                run.getId().toString(), eventPayload(run, 0));
         return toInput(req);
     }
 
@@ -332,47 +305,38 @@ public class TaskRunService {
         return req;
     }
 
-    /** 产物摘要：当前运行产出的交付物数量与状态分布。 */
+    /** Summarizes final Task Diff snapshots by review status. */
     private Map<String, Object> artifactSummary(UUID taskRunId) {
-        List<DeliverableEntity> list = deliverableMapper.selectList(Wrappers.<DeliverableEntity>lambdaQuery()
-                .eq(DeliverableEntity::getTaskRunId, taskRunId));
+        TaskRunEntity run = taskRunMapper.selectById(taskRunId);
+        if (run == null)
+            return Map.of();
+        List<DiffEntity> list = diffMapper
+                .selectList(Wrappers.<DiffEntity>lambdaQuery().eq(DiffEntity::getTaskId, run.getTaskId()));
         Map<String, Long> byStatus = list.stream()
-                .collect(Collectors.groupingBy(DeliverableEntity::getStatus, Collectors.counting()));
-        return Map.of("deliverables", Map.of("count", list.size(), "byStatus", byStatus));
+                .collect(Collectors.groupingBy(DiffEntity::getStatus, Collectors.counting()));
+        return Map.of("diffs", Map.of("count", list.size(), "byStatus", byStatus));
     }
 
     /** 构造符合契约最小字段的项目事件载荷；sequence 为运行内执行序号，状态事件暂无步骤序号填 0。 */
-    private Map<String, Object> eventPayload(TaskRunEntity run, String node, long sequence) {
+    private Map<String, Object> eventPayload(TaskRunEntity run, long sequence) {
         Map<String, Object> p = new HashMap<>();
         p.put("projectId", run.getProjectId());
-        if (run.getRequirementGroupId() != null) {
-            p.put("groupId", run.getRequirementGroupId());
-        }
-        p.put("orchestrationRunId", run.getOrchestrationRunId());
         p.put("taskRunId", run.getId());
         p.put("status", run.getStatus());
-        if (node != null) {
-            p.put("node", node);
-        }
         p.put("sequence", sequence);
         p.put("timestamp", Instant.now().toString());
         return p;
     }
 
     private TaskRunSummaryResponse toSummary(TaskRunEntity run) {
-        return new TaskRunSummaryResponse(id(run.getId()), id(run.getProjectId()), id(run.getTaskId()), id(run.getTaskStepId()), id(run.getAgentId()), id(run.getOrchestrationRunId()),
-                id(run.getSubTaskId()), id(run.getProjectRepositoryId()),
-                id(run.getRequirementGroupId()), run.getRole(), run.getStatus(), id(run.getRetryOfTaskRunId()),
+        return new TaskRunSummaryResponse(id(run.getId()), id(run.getProjectId()), id(run.getTaskId()),
+                id(run.getTaskStepId()), id(run.getAgentId()),
+                run.getRole(), run.getStatus(), id(run.getRetryOfTaskRunId()),
                 iso(run.getCreatedAt()), iso(run.getUpdatedAt()));
     }
 
-    private TaskRunStepResponse toStep(TaskRunStepEntity s) {
-        return new TaskRunStepResponse(s.getNode(), s.getStatus(), iso(s.getStartedAt()), iso(s.getFinishedAt()),
-                s.getDurationMs(), s.getErrorCode());
-    }
-
     private LogEntryResponse toLog(ExecutionLogEntity l) {
-        return new LogEntryResponse(id(l.getId()), l.getSequenceNo(), l.getNode(), l.getContent(),
+        return new LogEntryResponse(id(l.getId()), l.getSequenceNo(), l.getContent(),
                 iso(l.getCreatedAt()));
     }
 

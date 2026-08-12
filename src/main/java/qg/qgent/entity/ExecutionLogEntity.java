@@ -23,7 +23,6 @@ public class ExecutionLogEntity {
     /** 运行内单调递增日志序号，用于游标分页。 */
     private Long sequenceNo;
     /** 产生日志的节点名，可为空。 */
-    private String node;
     /** 已脱敏的日志内容。 */
     private String content;
     private LocalDateTime createdAt;

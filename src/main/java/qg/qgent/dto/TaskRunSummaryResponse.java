@@ -16,10 +16,6 @@ public class TaskRunSummaryResponse {
     private String taskId;
     private String taskStepId;
     private String agentId;
-    private String orchestrationRunId;
-    private String subTaskId;
-    private String repositoryId;
-    private String groupId;
     private String role;
     private String status;
     private String retryOfTaskRunId;

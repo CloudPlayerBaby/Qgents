@@ -7,7 +7,7 @@ import java.util.UUID;
 /** Data access for single-key tasks. */
 @Mapper
 public interface TaskMapper extends BaseMapper<TaskEntity> {
-    /** Locks one Task while allocating a delivery version. */
+    /** Locks one Task while changing execution or continuation state. */
     @Select("select * from tasks where id=#{taskId} for update")
     TaskEntity selectByIdForUpdate(UUID taskId);
 }
