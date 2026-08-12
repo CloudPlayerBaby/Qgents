@@ -223,7 +223,8 @@ public class GroupService {
         for (UUID agentId : groupAgentMapper.selectAgentIds(groupId)) {
             AgentEntity agent = agentMapper.selectById(agentId);
             if (agent != null) {
-                members.add(new GroupMemberResponse(agent.getId().toString(), agent.getName(), null, "AGENT"));
+                members.add(new GroupMemberResponse(agent.getId().toString(), agent.getName(), agent.getAvatar(),
+                        "AGENT"));
             }
         }
         return members;

@@ -472,7 +472,10 @@ CREATE TABLE IF NOT EXISTS
 
 CREATE TABLE IF NOT EXISTS agents (
     id BINARY(16) PRIMARY KEY, team_id BINARY(16) NOT NULL, created_by BINARY(16) NULL,
-    name VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL, visibility VARCHAR(16) NOT NULL DEFAULT 'TEAM',
+    name VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL,
+    avatar TEXT NULL COMMENT 'Agent 头像URL', capabilities JSON NULL COMMENT '能力标签JSON数组',
+    prompt TEXT NULL COMMENT 'Agent 系统提示词',
+    visibility VARCHAR(16) NOT NULL DEFAULT 'TEAM',
     status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
     KEY idx_agent_team(team_id,status), CONSTRAINT fk_agent_team FOREIGN KEY(team_id) REFERENCES teams(id),
     CONSTRAINT fk_agent_creator FOREIGN KEY(created_by) REFERENCES users(id),
@@ -761,3 +764,18 @@ SET @msg_fk_sql = IF(@msg_fk_exists = 0,
 PREPARE msg_fk_stmt FROM @msg_fk_sql;
 EXECUTE msg_fk_stmt;
 DEALLOCATE PREPARE msg_fk_stmt;
+
+-- 幂等增量迁移：为 agents 表补充身份卡字段（头像/能力标签/提示词，契约 §11.1、产品需求 §2.3）。
+-- 全新整库初始化时上方 agents 建表已包含这三列，此处仅服务已存在的库。
+SET @agent_col_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'avatar'
+);
+SET @agent_alter_sql = IF(@agent_col_exists = 0,
+    CONCAT('ALTER TABLE agents ADD COLUMN avatar TEXT NULL COMMENT ''Agent 头像URL'' AFTER role, ',
+           'ADD COLUMN capabilities JSON NULL COMMENT ''能力标签JSON数组'' AFTER avatar, ',
+           'ADD COLUMN prompt TEXT NULL COMMENT ''Agent 系统提示词'' AFTER capabilities'),
+    'SELECT 1');
+PREPARE agent_alter_stmt FROM @agent_alter_sql;
+EXECUTE agent_alter_stmt;
+DEALLOCATE PREPARE agent_alter_stmt;
