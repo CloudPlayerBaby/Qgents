@@ -14,10 +14,10 @@ import java.time.LocalDateTime;
 public class ToolExecutionEntity {
     @TableId
     private String id;
+    private String ownerWorkerId;
     private String sandboxId;
     private String repositoryId;
     private String toolName;
-    private String requestHash;
     private String argumentsJson;
     private String status;
     private Integer exitCode;

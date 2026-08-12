@@ -56,7 +56,7 @@ public class WorkspacePathResolver {
     }
 
     /**
-     * 根据沙箱创建时登记的仓库映射解析本地 worktree，并阻止目录穿越和符号链接逃逸。
+     * 根据 Sandbox 创建时登记的仓库映射解析本地独立仓库，并阻止目录穿越和符号链接逃逸。
      */
     public Path resolveRepositoryLocal(SandboxAllocation allocation, UUID repositoryId) {
         String relativePath = allocation.getRepositoryPaths().get(repositoryId);
@@ -69,7 +69,7 @@ public class WorkspacePathResolver {
         requireInside(repository, workspace);
         try {
             if (!Files.isDirectory(repository, LinkOption.NOFOLLOW_LINKS)) {
-                throw invalid("仓库 worktree 目录不存在");
+                throw invalid("Workspace 仓库目录不存在");
             }
             Path realRepository = repository.toRealPath();
             requireInside(realRepository, workspace);
@@ -77,7 +77,7 @@ public class WorkspacePathResolver {
         } catch (WorkerException exception) {
             throw exception;
         } catch (Exception exception) {
-            throw invalid("无法解析仓库 worktree 目录");
+            throw invalid("无法解析 Workspace 仓库目录");
         }
     }
 

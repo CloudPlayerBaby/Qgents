@@ -16,6 +16,7 @@ import java.util.UUID;
 @AllArgsConstructor
 public class ToolExecutionResponse {
     private UUID id;
+    private String ownerWorkerId;
     private UUID sandboxId;
     private UUID repositoryId;
     private String tool;

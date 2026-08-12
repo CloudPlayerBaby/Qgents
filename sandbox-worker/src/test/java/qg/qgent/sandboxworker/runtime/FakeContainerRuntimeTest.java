@@ -10,20 +10,18 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class FakeContainerRuntimeTest {
     private final FakeContainerRuntime runtime = new FakeContainerRuntime();
 
     @Test
-    void createIsIdempotentForTheSameSandboxAndTaskRun() {
+    void duplicateSandboxIdIsRejected() {
         CreateSandboxRequest request = request();
         SandboxAllocation allocation = allocation(request);
-        SandboxAllocation first = runtime.create(request, allocation);
-        SandboxAllocation replay = runtime.create(request, allocation);
+        runtime.create(request, allocation);
 
-        assertEquals(first.getCreatedAt(), replay.getCreatedAt());
-        assertEquals("READY", replay.getStatus());
-        assertEquals("FAKE", replay.getRuntimeKind());
+        assertThrows(IllegalStateException.class, () -> runtime.create(request, allocation));
     }
 
     @Test

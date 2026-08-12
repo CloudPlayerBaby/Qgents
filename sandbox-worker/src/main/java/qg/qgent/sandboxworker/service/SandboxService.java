@@ -10,6 +10,7 @@ import qg.qgent.sandboxworker.api.WorkerException;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
 import qg.qgent.sandboxworker.runtime.ContainerRuntime;
 import qg.qgent.sandboxworker.runtime.SandboxAllocation;
+import qg.qgent.sandboxworker.workspace.WorkspaceOperationLock;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -29,10 +30,11 @@ public class SandboxService {
     private final ContainerRuntime runtime;
     private final SandboxWorkerProperties properties;
     private final Clock clock;
+    private final WorkspaceOperationLock workspaceLock;
 
     /**
      * 创建沙箱并计算实际租约。
-     * 相同沙箱编号和相同关键参数的重放请求由底层运行时幂等处理。
+     * 相同 Sandbox 编号的重复创建请求会返回冲突。
      */
     public SandboxResponse create(CreateSandboxRequest request) {
         if (!properties.getImageProfiles().contains(request.getImageProfile())) {
@@ -60,7 +62,8 @@ public class SandboxService {
                 Map.copyOf(request.getRepositories()));
 
         try {
-            return response(runtime.create(request, allocation));
+            return workspaceLock.execute(request.getWorkspaceStorageKey(),
+                    () -> response(runtime.create(request, allocation)));
         } catch (IllegalStateException exception) {
             throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT", exception.getMessage());
         }
@@ -69,15 +72,6 @@ public class SandboxService {
     /** 查询沙箱；不存在时返回空结果。 */
     public Optional<SandboxResponse> find(UUID sandboxId) {
         return runtime.find(sandboxId).map(this::response);
-    }
-
-    /** 返回 READY 状态的沙箱，否则拒绝执行兼容版命令。 */
-    public SandboxAllocation requireReady(UUID sandboxId) {
-        SandboxAllocation allocation = require(sandboxId);
-        if (!"READY".equals(allocation.getStatus())) {
-            throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_NOT_READY", "沙箱当前不能执行命令");
-        }
-        return allocation;
     }
 
     /**
@@ -102,26 +96,14 @@ public class SandboxService {
         return response(allocation);
     }
 
-    /** 将兼容版异步命令使用的沙箱标记为忙碌。 */
-    public void markBusy(UUID sandboxId) {
-        SandboxAllocation allocation = requireReady(sandboxId);
-        allocation.setStatus("BUSY");
-        allocation.setLastActiveAt(clock.instant());
-    }
-
-    /** 在兼容版异步命令结束后恢复沙箱状态并刷新空闲租约。 */
-    public void markReady(UUID sandboxId) {
-        runtime.find(sandboxId).ifPresent(allocation -> {
-            Instant now = clock.instant();
-            allocation.setStatus("READY");
-            allocation.setLastActiveAt(now);
-            allocation.setExpiresAt(min(now.plus(properties.getDefaultIdleTtl()), allocation.getMaxExpiresAt()));
-        });
-    }
-
-    /** 幂等销毁沙箱容器，不删除 Workspace。 */
+    /** 销毁 Sandbox 容器，不删除 Workspace。 */
     public void destroy(UUID sandboxId) {
         runtime.destroy(sandboxId);
+    }
+
+    /** 判断指定持久 Workspace 是否仍被任一受管 Sandbox 引用。 */
+    public boolean isWorkspaceInUse(String workspaceStorageKey) {
+        return runtime.isWorkspaceInUse(workspaceStorageKey);
     }
 
     /** 返回已经超过空闲期限或最大生命周期的沙箱编号。 */

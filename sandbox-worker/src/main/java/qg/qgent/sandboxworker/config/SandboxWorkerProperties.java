@@ -18,9 +18,6 @@ public class SandboxWorkerProperties {
     /** 容器运行时实现，可选值为 fake 或 docker。 */
     private String runtime = "fake";
 
-    /** 工具执行记录的持久化方式，当前生产实现为 mysql。 */
-    private String persistence = "mysql";
-
     /** 未发生操作时的默认存活时间。 */
     private Duration defaultIdleTtl = Duration.ofMinutes(30);
 

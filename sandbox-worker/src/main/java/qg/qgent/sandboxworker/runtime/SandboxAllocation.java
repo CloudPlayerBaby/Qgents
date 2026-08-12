@@ -40,6 +40,6 @@ public class SandboxAllocation {
     /** 底层运行时资源句柄；Docker 实现中为容器编号。 */
     private String runtimeHandle;
 
-    /** 项目仓库编号到 Workspace 内相对 worktree 目录的不可变映射。 */
+    /** 项目仓库编号到 Workspace 内相对仓库目录的不可变映射。 */
     private Map<UUID, String> repositoryPaths;
 }

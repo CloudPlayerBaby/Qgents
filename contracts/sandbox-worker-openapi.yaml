@@ -12,7 +12,6 @@ paths:
   /internal/v1/sandboxes:
     post:
       operationId: createSandbox
-      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
         content:
@@ -20,7 +19,7 @@ paths:
             schema: {$ref: '#/components/schemas/CreateSandboxRequest'}
       responses:
         '201':
-          description: 沙箱已创建或返回幂等结果
+          description: Sandbox 已创建
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Sandbox'}
@@ -32,7 +31,6 @@ paths:
         schema: {type: string, format: uuid}
     put:
       operationId: provisionWorkspace
-      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
         content:
@@ -40,7 +38,7 @@ paths:
             schema: {$ref: '#/components/schemas/WorkspaceProvisionRequest'}
       responses:
         '200':
-          description: Workspace 已准备或通过幂等校验
+          description: Workspace 已准备
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Workspace'}
@@ -54,22 +52,21 @@ paths:
               schema: {$ref: '#/components/schemas/Workspace'}
     delete:
       operationId: deleteWorkspace
-      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       responses:
         '204': {description: Workspace 已删除或原本不存在}
+        '409': {description: Workspace 仍被 Sandbox 使用}
   /internal/v1/sandboxes/{sandboxId}/tool-executions:
     parameters: [{$ref: '#/components/parameters/SandboxId'}]
     post:
       operationId: executeTool
-      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/ToolExecutionRequest'}
       responses:
-        '200':
-          description: 工具最终执行结果
+        '202':
+          description: 工具执行已持久化并进入后台队列
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ToolExecution'}
@@ -96,13 +93,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ExecutionLogs'}
+  /internal/v1/tool-executions/{executionId}/cancel:
+    parameters: [{$ref: '#/components/parameters/ExecutionId'}]
+    post:
+      operationId: cancelToolExecution
+      responses:
+        '200':
+          description: 工具执行已取消
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolExecution'}
+        '409': {description: 当前执行状态不可取消，或请求未路由到 ownerWorkerId 对应的 Worker}
 components:
   parameters:
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      required: true
-      schema: {type: string, minLength: 1, maxLength: 128}
     SandboxId:
       name: sandboxId
       in: path
@@ -119,8 +122,8 @@ components:
       required: [repositoryId, baseRef, sourceBranch, workspacePath]
       properties:
         repositoryId: {type: string, format: uuid}
-        baseRef: {type: string, minLength: 1, maxLength: 256}
-        sourceBranch: {type: string, pattern: '^[A-Za-z0-9._/-]+$', maxLength: 256}
+        baseRef: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]*$', maxLength: 256}
+        sourceBranch: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]*$', maxLength: 256}
         workspacePath: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$', maxLength: 128}
     WorkspaceProvisionRequest:
       type: object
@@ -183,7 +186,7 @@ components:
         maxExpiresAt: {type: string, format: date-time}
     ToolExecutionRequest:
       type: object
-      required: [executionId, repositoryId, tool, arguments]
+      required: [executionId, tool, arguments]
       properties:
         executionId: {type: string, format: uuid}
         repositoryId: {type: string, format: uuid}
@@ -196,6 +199,7 @@ components:
       type: object
       properties:
         id: {type: string, format: uuid}
+        ownerWorkerId: {type: string, description: 实际执行该任务的 Worker 编号，取消请求必须路由到该 Worker}
         sandboxId: {type: string, format: uuid}
         repositoryId: {type: string, format: uuid, nullable: true}
         tool: {type: string}

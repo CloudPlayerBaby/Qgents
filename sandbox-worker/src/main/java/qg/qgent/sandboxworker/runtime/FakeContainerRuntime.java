@@ -18,14 +18,11 @@ public class FakeContainerRuntime implements ContainerRuntime {
 
     @Override
     public SandboxAllocation create(CreateSandboxRequest request, SandboxAllocation allocation) {
-        return allocations.compute(request.getSandboxId(), (id, existing) -> {
-            if (existing != null && (!existing.getTaskRunId().equals(request.getTaskRunId())
-                    || !existing.getWorkspaceStorageKey().equals(request.getWorkspaceStorageKey())
-                    || !existing.getImageProfile().equals(request.getImageProfile()))) {
-                throw new IllegalStateException("该沙箱编号已分配给其他请求");
-            }
-            return existing != null ? existing : allocation;
-        });
+        SandboxAllocation existing = allocations.putIfAbsent(request.getSandboxId(), allocation);
+        if (existing != null) {
+            throw new IllegalStateException("沙箱编号已经存在");
+        }
+        return allocation;
     }
 
     @Override
@@ -36,6 +33,12 @@ public class FakeContainerRuntime implements ContainerRuntime {
     @Override
     public List<SandboxAllocation> findAll() {
         return List.copyOf(allocations.values());
+    }
+
+    @Override
+    public boolean isWorkspaceInUse(String workspaceStorageKey) {
+        return allocations.values().stream()
+                .anyMatch(item -> item.getWorkspaceStorageKey().equals(workspaceStorageKey));
     }
 
     @Override

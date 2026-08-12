@@ -4,6 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
+import qg.qgent.sandboxworker.api.CreateSandboxRequest;
+import qg.qgent.sandboxworker.api.WorkerException;
+import qg.qgent.sandboxworker.runtime.FakeContainerRuntime;
+import qg.qgent.sandboxworker.service.SandboxService;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,6 +20,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class WorkspaceManagerServiceTest {
     @TempDir
@@ -27,28 +32,62 @@ class WorkspaceManagerServiceTest {
         UUID workspaceId = UUID.randomUUID();
         SandboxWorkerProperties properties = properties();
         prepareBareRepository(Path.of(properties.getGitStoreRoot()).resolve(repositoryId + ".git"));
-        WorkspaceManagerService service = new WorkspaceManagerService(properties,
-                new GitWorktreeManager(properties), new ObjectMapper().findAndRegisterModules(),
-                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC));
+        WorkspaceManagerService service = service(properties, new FakeContainerRuntime());
         WorkspaceProvisionRequest request = request(repositoryId);
 
         WorkspaceResponse created = service.provision(workspaceId, request);
-        WorkspaceResponse replay = service.provision(workspaceId, request);
         WorkspaceResponse queried = service.get(workspaceId);
 
         assertEquals("READY", created.getStatus());
         assertEquals(created.getRepositories().getFirst().getHeadCommit(),
-                replay.getRepositories().getFirst().getHeadCommit());
-        assertEquals(created.getRepositories().getFirst().getHeadCommit(),
                 queried.getRepositories().getFirst().getHeadCommit());
         assertTrue(Files.isRegularFile(Path.of(properties.getWorkspaceLocalRoot())
                 .resolve(workspaceId.toString()).resolve("backend").resolve("README.md")));
+        assertTrue(Files.isDirectory(Path.of(properties.getWorkspaceLocalRoot())
+                .resolve(workspaceId.toString()).resolve("backend").resolve(".git")));
+        assertEquals("", output(List.of("git", "remote"), Path.of(properties.getWorkspaceLocalRoot())
+                .resolve(workspaceId.toString()).resolve("backend")).trim());
 
         service.delete(workspaceId);
 
         assertFalse(Files.exists(Path.of(properties.getWorkspaceLocalRoot()).resolve(workspaceId.toString())));
         assertFalse(Files.exists(Path.of(properties.getWorkspaceMetadataRoot()).resolve(workspaceId + ".json")));
         assertTrue(Files.isDirectory(Path.of(properties.getGitStoreRoot()).resolve(repositoryId + ".git")));
+    }
+
+    @Test
+    void rejectsDeletionWhileSandboxUsesWorkspace() throws Exception {
+        UUID repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        SandboxWorkerProperties properties = properties();
+        prepareBareRepository(Path.of(properties.getGitStoreRoot()).resolve(repositoryId + ".git"));
+        FakeContainerRuntime runtime = new FakeContainerRuntime();
+        WorkspaceOperationLock lock = new WorkspaceOperationLock(properties);
+        SandboxService sandboxes = new SandboxService(runtime, properties,
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), lock);
+        WorkspaceManagerService service = new WorkspaceManagerService(properties,
+                new GitRepositoryManager(properties), sandboxes, lock, new ObjectMapper().findAndRegisterModules(),
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC));
+        service.provision(workspaceId, request(repositoryId));
+
+        CreateSandboxRequest sandbox = new CreateSandboxRequest();
+        sandbox.setSandboxId(UUID.randomUUID());
+        sandbox.setTaskRunId(UUID.randomUUID());
+        sandbox.setWorkspaceStorageKey("workspaces/" + workspaceId);
+        sandbox.setImageProfile("java-node");
+        sandboxes.create(sandbox);
+
+        WorkerException exception = assertThrows(WorkerException.class, () -> service.delete(workspaceId));
+        assertEquals("WORKSPACE_IN_USE", exception.getCode());
+    }
+
+    private WorkspaceManagerService service(SandboxWorkerProperties properties, FakeContainerRuntime runtime) {
+        WorkspaceOperationLock lock = new WorkspaceOperationLock(properties);
+        SandboxService sandboxes = new SandboxService(runtime, properties,
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), lock);
+        return new WorkspaceManagerService(properties, new GitRepositoryManager(properties), sandboxes, lock,
+                new ObjectMapper().findAndRegisterModules(),
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC));
     }
 
     private SandboxWorkerProperties properties() throws Exception {
@@ -82,10 +121,15 @@ class WorkspaceManagerServiceTest {
     }
 
     private void run(List<String> command, Path directory) throws Exception {
+        output(command, directory);
+    }
+
+    private String output(List<String> command, Path directory) throws Exception {
         Process process = new ProcessBuilder(command).directory(directory.toFile()).redirectErrorStream(true).start();
         String output = new String(process.getInputStream().readAllBytes());
         if (process.waitFor() != 0) {
             throw new AssertionError("Git 测试准备失败：" + output);
         }
+        return output;
     }
 }

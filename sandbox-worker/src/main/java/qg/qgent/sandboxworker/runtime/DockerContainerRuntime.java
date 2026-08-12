@@ -60,14 +60,13 @@ public class DockerContainerRuntime implements ContainerRuntime {
 
     /**
      * 创建一个非特权沙箱容器，并把唯一允许持久写入的 Workspace 挂载到容器内。
-     * 相同沙箱编号的重复请求只有在关键参数完全一致时才按幂等请求处理。
+     * 相同 Sandbox 编号的重复请求会返回冲突。
      */
     @Override
     public synchronized SandboxAllocation create(CreateSandboxRequest request, SandboxAllocation allocation) {
         SandboxAllocation existing = allocations.get(request.getSandboxId());
         if (existing != null) {
-            requireSameRequest(existing, request);
-            return existing;
+            throw new WorkerException(CONFLICT, "SANDBOX_ID_CONFLICT", "沙箱编号已经存在");
         }
 
         paths.resolveLocal(request.getWorkspaceStorageKey());
@@ -118,7 +117,18 @@ public class DockerContainerRuntime implements ContainerRuntime {
     }
 
     /**
-     * 幂等销毁沙箱容器。Workspace 是独立宿主机挂载目录，不会随容器删除。
+     * 从 Docker daemon 全局查询所有 Worker 创建的运行中容器，避免只检查当前 JVM 内存。
+     */
+    @Override
+    public boolean isWorkspaceInUse(String workspaceStorageKey) {
+        return docker.listContainersCmd()
+                .withShowAll(false)
+                .withLabelFilter(Map.of(MANAGED_LABEL, "true", WORKSPACE_LABEL, workspaceStorageKey))
+                .exec().stream().findAny().isPresent();
+    }
+
+    /**
+     * 销毁 Sandbox 容器。Workspace 是独立宿主机挂载目录，不会随容器删除。
      */
     @Override
     public synchronized void destroy(UUID sandboxId) {
@@ -228,15 +238,6 @@ public class DockerContainerRuntime implements ContainerRuntime {
             docker.removeContainerCmd(containerId).withForce(true).withRemoveVolumes(true).exec();
         } catch (RuntimeException exception) {
             log.warn("清理 Docker 容器失败，containerId={}", containerId);
-        }
-    }
-
-    private void requireSameRequest(SandboxAllocation existing, CreateSandboxRequest request) {
-        if (!existing.getTaskRunId().equals(request.getTaskRunId())
-                || !existing.getWorkspaceStorageKey().equals(request.getWorkspaceStorageKey())
-                || !existing.getImageProfile().equals(request.getImageProfile())
-                || !existing.getRepositoryPaths().equals(request.getRepositories())) {
-            throw new WorkerException(CONFLICT, "SANDBOX_ID_CONFLICT", "沙箱编号已用于其他请求");
         }
     }
 

@@ -21,7 +21,7 @@ public class ProcessExecTool implements SandboxTool {
 
     @Override
     public boolean requiresRepository() {
-        return true;
+        return false;
     }
 
     @Override
