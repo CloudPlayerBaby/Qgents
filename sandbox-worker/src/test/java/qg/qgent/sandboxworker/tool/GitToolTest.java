@@ -201,4 +201,46 @@ class GitToolTest {
         assertEquals(false, result.getResult().get("pushed"));
         assertEquals("REMOTE_SHA_MISMATCH", result.getResult().get("reason"));
     }
+
+    @Test
+    void testLegacyCommands() throws InterruptedException {
+        // status
+        mockCommand(List.of("git", "status", "--short", "--branch"), 0, List.of("## main"));
+        ToolResult result = gitTool.execute("git.status", context, Map.of());
+        assertEquals(0, result.getExitCode());
+        assertEquals("## main", ((List<?>) result.getResult().get("lines")).get(0));
+
+        // diff
+        mockCommand(List.of("git", "diff", "--no-ext-diff", "--no-color"), 0, List.of("diff"));
+        result = gitTool.execute("git.diff", context, Map.of());
+        assertEquals(0, result.getExitCode());
+
+        // diff staged
+        mockCommand(List.of("git", "diff", "--no-ext-diff", "--no-color", "--cached"), 0, List.of("diff"));
+        result = gitTool.execute("git.diff", context, Map.of("staged", true));
+        assertEquals(0, result.getExitCode());
+
+        // log
+        mockCommand(List.of("git", "log", "--oneline", "--decorate", "-n", "10"), 0, List.of("log"));
+        result = gitTool.execute("git.log", context, Map.of("limit", 10));
+        assertEquals(0, result.getExitCode());
+
+        // add
+        mockCommand(List.of("git", "add", "--", "file1.txt"), 0, List.of());
+        result = gitTool.execute("git.add", context, Map.of("paths", List.of("file1.txt")));
+        assertEquals(0, result.getExitCode());
+    }
+
+    @Test
+    void testUnsupportedCommands() {
+        assertThrows(UnsupportedOperationException.class, () -> gitTool.execute(context, Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> gitTool.execute("git.unknown", context, Map.of()));
+    }
+
+    @Test
+    void testNames() {
+        assertEquals("git.multi", gitTool.name());
+        assertTrue(gitTool.requiresRepository());
+        assertTrue(gitTool.names().contains("git.head"));
+    }
 }
