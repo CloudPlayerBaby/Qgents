@@ -2,11 +2,17 @@ package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
 import qg.qgent.api.ApiException;
+import qg.qgent.dto.ApiPageResponse;
+import qg.qgent.dto.DiffListItemResponse;
+import qg.qgent.dto.DiffResponse;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.WorkspaceEntity;
 import qg.qgent.mapper.*;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -18,8 +24,9 @@ class DiffServiceTest {
     private final TaskMapper tasks = mock(TaskMapper.class);
     private final WorkspaceMapper workspaces = mock(WorkspaceMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
+    private final EventService events = mock(EventService.class);
     private final DiffService service = new DiffService(diffs, mock(DiffFileMapper.class),
-            mock(DiffCommentMapper.class), tasks, workspaces, access);
+            mock(DiffCommentMapper.class), tasks, workspaces, access, events);
 
     @Test
     void rejectRequiresReasonAndDoesNotCreateACommit() {
@@ -50,6 +57,43 @@ class DiffServiceTest {
         assertEquals("ACCEPTED", diff.getStatus()); assertEquals(actor, diff.getReviewedBy());
         assertNull(diff.getHeadCommit()); verify(workspaces).selectByIdForUpdate(diff.getWorkspaceId());
         verify(diffs).updateById(diff);
+    }
+
+    @Test
+    void listReturnsProjectDiffsWithRequirementGroupDerivedFromTask() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID();
+        DiffEntity diff = diff(projectId, taskId);
+        when(diffs.selectList(any())).thenReturn(List.of(diff));
+        TaskEntity task = new TaskEntity(); task.setId(taskId); task.setRequirementGroupId(groupId);
+        when(tasks.selectBatchIds(Set.of(taskId))).thenReturn(List.of(task));
+
+        ApiPageResponse<DiffListItemResponse> page = service.list(projectId, taskId, actor, null, 20, "req");
+
+        assertEquals(1, page.getData().size());
+        assertEquals(diff.getId().toString(), page.getData().getFirst().getId());
+        assertEquals(groupId.toString(), page.getData().getFirst().getRequirementGroupId());
+        assertEquals(diff.getSourceBranch(), page.getData().getFirst().getSourceBranch());
+        assertFalse(page.getPage().getHasMore());
+    }
+
+    @Test
+    void createSeamPersistsDiffAndPublishesDiffCreated() {
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), runId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID(), repoId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity(); task.setId(taskId); task.setRequirementGroupId(groupId);
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        DiffResponse result = service.create(projectId, taskId, runId, stepId, repoId, workspaceId,
+                "base", "feat/task-x", "tree-hash", Map.of("files", 2));
+
+        assertEquals(runId.toString(), result.getTaskRunId());
+        assertEquals(stepId.toString(), result.getTaskStepId());
+        assertEquals(groupId.toString(), result.getRequirementGroupId());
+        assertEquals("PENDING_REVIEW", result.getStatus());
+        verify(diffs).insert(any(DiffEntity.class));
+        verify(events).publish(eq(projectId), any(), eq("diff.created"), any(), any(Map.class));
     }
 
     private DiffEntity diff(UUID projectId, UUID taskId) {

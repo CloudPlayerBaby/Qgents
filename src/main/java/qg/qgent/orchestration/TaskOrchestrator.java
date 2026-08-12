@@ -15,13 +15,13 @@ import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.service.EventService;
+import qg.qgent.service.TaskEventPayloads;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -132,7 +132,7 @@ public class TaskOrchestrator {
             return new PhaseRun(safeExecute(phase, input), null);
         }
         TaskStepEntity step = stepScheduler.findStepForPhase(task.getId(), phase);
-        markStepRunning(step);
+        markStepRunning(task, step);
         TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
                 phase.role(), null, task.getCreatedBy(), retryOf);
         taskRunService.markRunning(run.getId());
@@ -140,7 +140,7 @@ public class TaskOrchestrator {
                 codingResult, testResult);
         AgentRunOutcome outcome = safeExecute(phase, input);
         taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()));
-        markStepSettled(step, outcome.getOutcome());
+        markStepSettled(task, step, outcome.getOutcome());
         return new PhaseRun(outcome, run.getId());
     }
 
@@ -213,16 +213,23 @@ public class TaskOrchestrator {
         return sb.toString();
     }
 
-    private void markStepRunning(TaskStepEntity step) {
+    private void markStepRunning(TaskEntity task, TaskStepEntity step) {
         step.setStatus("RUNNING");
         step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         stepMapper.updateById(step);
+        publishStepUpdated(task, step);
     }
 
-    private void markStepSettled(TaskStepEntity step, RunOutcome outcome) {
+    private void markStepSettled(TaskEntity task, TaskStepEntity step, RunOutcome outcome) {
         step.setStatus(outcome == RunOutcome.SUCCEEDED ? "SUCCEEDED" : "FAILED");
         step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         stepMapper.updateById(step);
+        publishStepUpdated(task, step);
+    }
+
+    private void publishStepUpdated(TaskEntity task, TaskStepEntity step) {
+        eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task-step.updated",
+                step.getId().toString(), TaskEventPayloads.taskStepUpdated(task.getProjectId(), step));
     }
 
     private void finishTask(TaskEntity task, StateMachineDecision.Action action) {
@@ -238,8 +245,8 @@ public class TaskOrchestrator {
         task.setStatus(status);
         task.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         taskMapper.updateById(task);
-        eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.status",
-                task.getId().toString(), Map.of("taskId", task.getId().toString(), "status", status));
+        eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated",
+                task.getId().toString(), TaskEventPayloads.taskUpdated(task));
     }
 
     private TaskEntity requireTask(UUID projectId, UUID taskId) {
