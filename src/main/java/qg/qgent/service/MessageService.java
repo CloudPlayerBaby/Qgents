@@ -10,9 +10,10 @@ import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.Mention;
-import qg.qgent.dto.MessageListResponse;
 import qg.qgent.dto.MessageResponse;
 import qg.qgent.dto.MessageSendRequest;
+import qg.qgent.dto.PageInfo;
+import qg.qgent.dto.PageSlice;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.mapper.MessageMapper;
@@ -129,7 +130,7 @@ public class MessageService {
      * @param limit     每页数量（自动收敛到 1..100）
      * @return 消息分页结果
      */
-    public MessageListResponse list(UUID actor, UUID projectId, UUID groupId, String cursor, int limit) {
+    public PageSlice<MessageResponse> list(UUID actor, UUID projectId, UUID groupId, String cursor, int limit) {
         access.requireProjectMember(projectId, actor);
         RequirementGroupEntity group = groupMapper.selectById(groupId);
         if (group == null || !group.getProjectId().equals(projectId)) {
@@ -147,7 +148,7 @@ public class MessageService {
         String nextCursor = hasMore && !views.isEmpty()
                 ? encodeCursor(views.get(views.size() - 1).getSequence())
                 : null;
-        return new MessageListResponse(views, nextCursor, hasMore);
+        return new PageSlice<>(views, new PageInfo(nextCursor, hasMore));
     }
 
     private MessageEntity findByClientMessageId(UUID groupId, String clientMessageId) {

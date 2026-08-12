@@ -13,11 +13,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import qg.qgent.api.ApiResponse;
-import qg.qgent.api.Page;
-import qg.qgent.api.PagedResponse;
+import qg.qgent.api.PagedApiResponse;
 import qg.qgent.api.RequestIdFilter;
-import qg.qgent.dto.MessageListResponse;
+import qg.qgent.dto.MessageResponse;
 import qg.qgent.dto.MessageSendRequest;
+import qg.qgent.dto.PageSlice;
 import qg.qgent.service.MessageService;
 
 import java.util.UUID;
@@ -51,12 +51,12 @@ public class MessageController {
      * 游标拉取群消息，新消息在前；limit 默认 30、最大 100。
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}/messages")
-    public PagedResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
+    public PagedApiResponse<MessageResponse> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
             @PathVariable UUID groupId,
             @RequestParam(value = "cursor", required = false) String cursor,
             @RequestParam(value = "limit", defaultValue = "30") int limit, HttpServletRequest request) {
-        MessageListResponse page = messageService.list(userId, projectId, groupId, cursor, limit);
-        return PagedResponse.of(page.getMessages(), new Page(page.getNextCursor(), page.isHasMore()),
+        PageSlice<MessageResponse> slice = messageService.list(userId, projectId, groupId, cursor, limit);
+        return new PagedApiResponse<>(slice.getData(), slice.getPage(),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
 
