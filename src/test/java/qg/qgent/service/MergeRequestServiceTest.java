@@ -10,6 +10,11 @@ import qg.qgent.github.GitHubAppClient;
 import qg.qgent.github.GitHubPullRequestCreateRequest;
 import qg.qgent.github.GitHubPullRequestDetails;
 import qg.qgent.github.GitHubPullRequestMergeRequest;
+import qg.qgent.entity.*;
+import qg.qgent.github.GitHubAppClient;
+import qg.qgent.github.GitHubPullRequestCreateRequest;
+import qg.qgent.github.GitHubPullRequestDetails;
+import qg.qgent.github.GitHubPullRequestMergeRequest;
 import qg.qgent.github.GitHubPullRequestMergeResult;
 import qg.qgent.mapper.*;
 
@@ -179,7 +184,7 @@ class MergeRequestServiceTest {
         installation.setTeamId(project.getTeamId());
         when(githubInstallationMapper.selectById(githubRepository.getInstallationId())).thenReturn(installation);
 
-        when(branchConfigMapper.selectOne(any())).thenReturn(null); // No required checks -> PENDING or PASSED depending on logic
+        when(branchConfigMapper.selectList(any())).thenReturn(java.util.List.of()); // No required checks -> PENDING or PASSED depending on logic
         // If there are no checks, computeGateStatus returns "PASSED".
         
         GitHubPullRequestMergeResult mergeResult = new GitHubPullRequestMergeResult(true, "sha456", "Merged");
@@ -419,7 +424,7 @@ class MergeRequestServiceTest {
         when(githubClient.getPullRequest(eq(12345L), eq("owner"), eq("repo"), eq(100)))
                 .thenReturn(githubPr);
 
-        when(branchConfigMapper.selectOne(any())).thenReturn(null);
+        when(branchConfigMapper.selectList(any())).thenReturn(java.util.List.of());
 
         MergeRequestSummaryResponse response = service.sync(projectId, mergeRequestId, userId);
 
@@ -479,7 +484,7 @@ class MergeRequestServiceTest {
         when(githubClient.getPullRequest(eq(12345L), eq("owner"), eq("repo"), eq(100)))
                 .thenReturn(githubPr);
 
-        when(branchConfigMapper.selectOne(any())).thenReturn(null);
+        when(branchConfigMapper.selectList(any())).thenReturn(java.util.List.of());
 
         MergeRequestSummaryResponse response = service.sync(projectId, mergeRequestId, userId);
 
@@ -611,16 +616,29 @@ class MergeRequestServiceTest {
 
         RepositoryBranchConfigEntity config = new RepositoryBranchConfigEntity();
         config.setId(UUID.randomUUID());
+        config.setProjectRepositoryId(mr.getProjectRepositoryId());
+        config.setBranchName(mr.getTargetBranch());
         config.setRequiredChecks(java.util.List.of("AI_REVIEW", "TESTSET"));
-        when(branchConfigMapper.selectOne(any())).thenReturn(config);
+        when(branchConfigMapper.selectList(any())).thenReturn(java.util.List.of(config));
 
         RepositoryBranchConfigTestsetEntity ts = new RepositoryBranchConfigTestsetEntity();
         ts.setTestsetId(testsetId);
-        when(branchConfigTestsetMapper.selectByBranchConfigId(config.getId())).thenReturn(java.util.List.of(ts));
+        ts.setBranchConfigId(config.getId());
+        when(branchConfigTestsetMapper.selectList(any())).thenReturn(java.util.List.of(ts));
 
         QualityCheckResultEntity r1 = new QualityCheckResultEntity();
+        r1.setMergeRequestId(mr.getId());
+        r1.setCommitSha(mr.getHeadCommit());
+        r1.setCheckType("TESTSET");
+        r1.setTestsetId(testsetId);
         r1.setStatus("PASSED");
-        when(qualityCheckMapper.selectOne(any())).thenReturn(r1);
+        
+        QualityCheckResultEntity r2 = new QualityCheckResultEntity();
+        r2.setMergeRequestId(mr.getId());
+        r2.setCommitSha(mr.getHeadCommit());
+        r2.setCheckType("AI_REVIEW");
+        r2.setStatus("PASSED");
+        when(qualityCheckMapper.selectList(any())).thenReturn(java.util.List.of(r1, r2));
 
         qg.qgent.dto.MergeRequestDetailResponse response = service.detail(projectId, mergeRequestId, userId);
 
@@ -648,12 +666,17 @@ class MergeRequestServiceTest {
 
         RepositoryBranchConfigEntity config = new RepositoryBranchConfigEntity();
         config.setId(UUID.randomUUID());
+        config.setProjectRepositoryId(mr.getProjectRepositoryId());
+        config.setBranchName(mr.getTargetBranch());
         config.setRequiredChecks(java.util.List.of("CQ_PLUS_ONE"));
-        when(branchConfigMapper.selectOne(any())).thenReturn(config);
+        when(branchConfigMapper.selectList(any())).thenReturn(java.util.List.of(config));
 
         QualityCheckResultEntity r1 = new QualityCheckResultEntity();
+        r1.setMergeRequestId(mr.getId());
+        r1.setCommitSha(mr.getHeadCommit());
+        r1.setCheckType("CQ_PLUS_ONE");
         r1.setStatus("FAILED");
-        when(qualityCheckMapper.selectOne(any())).thenReturn(r1);
+        when(qualityCheckMapper.selectList(any())).thenReturn(java.util.List.of(r1));
 
         qg.qgent.dto.MergeRequestDetailResponse response = service.detail(projectId, mergeRequestId, userId);
 
