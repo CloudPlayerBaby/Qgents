@@ -317,4 +317,103 @@ class GitHubRepositoryServiceTest {
         request.setDisplayName(displayName);
         return request;
     }
+
+    @Test
+    void createInstallationUrlReturnsUrl() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        when(gitHubClient.createInstallationUrl(teamId, actorId)).thenReturn("https://github.com/install");
+
+        var response = service.createInstallationUrl(actorId, teamId);
+
+        assertEquals("https://github.com/install", response.getInstallationUrl());
+    }
+
+    @Test
+    void listInstallationsReturnsMappedInstallations() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity entity = new GitHubInstallationEntity();
+        entity.setId(UUID.randomUUID());
+        entity.setProviderInstallationId(12345L);
+        entity.setAccountLogin("test-login");
+        when(installationMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(entity));
+
+        var response = service.listInstallations(actorId, teamId);
+
+        assertEquals(1, response.size());
+        assertEquals("test-login", response.get(0).getAccountLogin());
+    }
+
+    @Test
+    void listTeamRepositoriesReturnsMappedRepositories() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity instEntity = new GitHubInstallationEntity();
+        instEntity.setId(UUID.randomUUID());
+        instEntity.setProviderInstallationId(12345L);
+        when(installationMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(instEntity));
+
+        GitHubRepositoryEntity entity = new GitHubRepositoryEntity();
+        entity.setId(UUID.randomUUID());
+        entity.setProviderRepositoryId(12345L);
+        entity.setOwnerLogin("owner");
+        entity.setName("repo");
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(entity));
+
+        var response = service.listTeamRepositories(actorId, teamId);
+
+        assertEquals(1, response.size());
+        assertEquals("owner/repo", response.get(0).getFullName());
+    }
+
+    @Test
+    void listProjectRepositoriesReturnsMappedRepositories() {
+        UUID projectId = UUID.randomUUID();
+        
+        ProjectEntity project = new ProjectEntity();
+        project.setId(projectId);
+        project.setTeamId(UUID.randomUUID());
+        when(projectMapper.selectById(projectId)).thenReturn(project);
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(projectMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        UUID repoId = UUID.randomUUID();
+
+        ProjectRepositoryEntity entity = new ProjectRepositoryEntity();
+        entity.setId(UUID.randomUUID());
+        entity.setRepositoryId(repoId);
+        when(projectRepositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(entity));
+
+        GitHubRepositoryEntity repoEntity = new GitHubRepositoryEntity();
+        repoEntity.setId(repoId);
+        repoEntity.setProviderRepositoryId(12345L);
+        repoEntity.setOwnerLogin("owner");
+        repoEntity.setName("repo");
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(repoEntity));
+
+        var response = service.listProjectRepositories(actorId, projectId);
+
+        assertEquals(1, response.size());
+        assertEquals("owner/repo", response.get(0).getFullName());
+    }
+
+    @Test
+    void removeInstallationDeletesSuccessfully() {
+        UUID teamId = UUID.randomUUID();
+        UUID installationId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity entity = new GitHubInstallationEntity();
+        entity.setId(installationId);
+        entity.setTeamId(teamId);
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(entity);
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.Collections.emptyList());
+
+        service.removeInstallation(actorId, teamId, installationId);
+
+        verify(installationMapper).deleteById(installationId);
+    }
 }
