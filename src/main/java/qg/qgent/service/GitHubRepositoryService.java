@@ -91,14 +91,17 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 列出团队安装的GitHub仓库
+     * 列出指定团队已安装的 GitHub App 授权记录。
+     * 只有 Team Owner 才能执行此操作。
      * 
-     * @param actorId 操作人ID
-     * @param teamId  团队ID
-     * @return 安装响应体列表
+     * @param actorId 操作人的用户 ID
+     * @param teamId  团队 ID
+     * @return 包含该团队所有有效安装记录的响应列表
      */
     public List<GitHubInstallationResponse> listInstallations(UUID actorId, UUID teamId) {
-        // 需要是团队所有者
+        // 权限校验：必须是团队所有者
+        requireTeamOwner(actorId, teamId);
+        // 查询数据库中属于该团队的安装记录，按更新时间倒序排列
         requireTeamOwner(actorId, teamId);
         // 返回团队的所有安装
         return installationMapper.selectList(new LambdaQueryWrapper<GitHubInstallationEntity>()
@@ -146,27 +149,32 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 列出团队安装Github仓库的记录
+     * 列出团队可访问的所有已同步的 GitHub 仓库。
+     * 调用者需要是 Team Owner 或者该团队下任一项目的 Project Admin。
      * 
-     * @param actorId 操作人ID
-     * @param teamId  团队ID
-     * @return 仓库响应体列表
+     * @param actorId 操作人的用户 ID
+     * @param teamId  团队 ID
+     * @return 该团队下所有处于 ACTIVE 状态的安装记录所关联的仓库列表
      */
     public List<GitHubRepositoryResponse> listTeamRepositories(UUID actorId, UUID teamId) {
+        // 权限校验：验证操作者在团队内的权限等级
         if (!hasTeamRepositoryAccess(teamId, actorId)) {
             throw forbidden("Team owner or project admin access is required");
         }
+        // 获取所有激活状态的仓库，并转换为 DTO 返回
         return findActiveRepositoriesByTeam(teamId).stream().map(this::toRepositoryResponse).toList();
     }
 
     /**
-     * 列出项目绑定的Github仓库记录
+     * 列出某个具体项目所绑定的所有 GitHub 仓库。
+     * 调用者只需具备该项目的 Project Member 权限即可查看。
      * 
-     * @param actorId
-     * @param projectId
-     * @return
+     * @param actorId   操作人的用户 ID
+     * @param projectId 项目 ID
+     * @return 该项目已绑定的仓库详情列表（含绑定记录及底层仓库数据）
      */
     public List<ProjectRepositoryResponse> listProjectRepositories(UUID actorId, UUID projectId) {
+        // 权限校验：必须是项目成员
         requireProjectMember(actorId, projectId);
         List<ProjectRepositoryEntity> bindings = projectRepositoryMapper.selectList(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .eq(ProjectRepositoryEntity::getProjectId, projectId)
@@ -238,26 +246,27 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 更新项目仓库
+     * 更新项目已绑定的 GitHub 仓库配置（如：默认分支、自定义显示名称）。
+     * 只有 Project Admin 才能执行此操作。
      * 
-     * @param actorId             操作人ID
-     * @param projectId           项目ID
-     * @param projectRepositoryId 项目仓库ID
-     * @param request             更新请求
-     * @return
+     * @param actorId             操作人的用户 ID
+     * @param projectId           项目 ID
+     * @param projectRepositoryId Qgents 内部的项目与仓库绑定关系 ID
+     * @param request             包含需要更新的默认分支和显示名称的请求体
+     * @return 更新后的项目绑定仓库详情响应
      */
     @Transactional
     public ProjectRepositoryResponse updateProjectRepository(UUID actorId, UUID projectId, UUID projectRepositoryId,
             UpdateProjectRepositoryRequest request) {
-        // 需要是项目管理员
+        // 权限校验：必须是项目管理员
         requireProjectAdmin(actorId, projectId);
-        // 找到对应的记录
+        // 根据绑定 ID 查找当前的绑定记录
         ProjectRepositoryEntity current = projectRepositoryMapper.selectById(projectRepositoryId);
-        // 不存在或者不合法
+        // 防越权：确保要更新的绑定关系确实属于请求的 projectId
         if (current == null || !projectId.equals(current.getProjectId())) {
             throw notFound("Project repository binding does not exist");
         }
-        // 更新默认分支和显示名称
+        // 更新默认分支和自定义显示名称
         current.setDefaultBranch(request.getDefaultBranch());
         current.setDisplayName(request.getDisplayName());
         projectRepositoryMapper.updateById(current);
@@ -267,18 +276,20 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 解绑项目仓库
+     * 解除项目与某个 GitHub 仓库的绑定关系。
+     * 若该绑定已被应用于流水线分支配置，则拒绝解绑（需先删除分支配置）。
      * 
-     * @param actorId             操作人ID
-     * @param projectId           项目ID
-     * @param projectRepositoryId 项目仓库ID
+     * @param actorId             操作人的用户 ID
+     * @param projectId           项目 ID
+     * @param projectRepositoryId Qgents 内部的项目与仓库绑定关系 ID
      */
     @Transactional
     public void unbindProjectRepository(UUID actorId, UUID projectId, UUID projectRepositoryId) {
-        // 需要是项目管理员
+        // 权限校验：必须是项目管理员
         requireProjectAdmin(actorId, projectId);
-        // 找到对应的记录
+        // 查找对应的绑定记录
         ProjectRepositoryEntity current = projectRepositoryMapper.selectById(projectRepositoryId);
+        // 防越权校验
         if (current == null || !projectId.equals(current.getProjectId())) {
             throw notFound("Project repository binding does not exist");
         }

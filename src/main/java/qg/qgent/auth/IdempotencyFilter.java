@@ -75,11 +75,14 @@ public class IdempotencyFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+        // 获取幂等键（Idempotency-Key）
         String key = request.getHeader(HEADER);
         if (key == null || key.isBlank()) {
             writeError(request, response, 400, "IDEMPOTENCY_KEY_REQUIRED", "缺少 Idempotency-Key");
             return;
         }
+        
+        // 获取当前操作用户的安全上下文
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         UUID userId = auth != null && auth.getPrincipal() instanceof UUID u ? u : null;
         if (userId == null) {
@@ -88,41 +91,53 @@ public class IdempotencyFilter extends OncePerRequestFilter {
             return;
         }
 
+        // 计算用户指纹和请求范围标识
         byte[] fingerprint = fingerprint(userId);
         String scope = scope(request);
 
+        // 尝试查询该用户在相同接口路径和相同幂等键下的缓存记录
         IdempotencyRecordEntity existing = idempotency.find(fingerprint, scope, key);
         if (existing != null) {
+            // 如果存在缓存，需验证请求体哈希，防范同一幂等键被用于不同请求体的恶意/错误行为
             byte[] requestHash = hash(readBody(request));
             if (!MessageDigest.isEqual(existing.getRequestHash(), requestHash)) {
                 writeError(request, response, 409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key 已被使用且请求体不同");
                 return;
             }
+            // 校验通过，直接将先前的响应内容回放并返回，不再执行后续过滤器链
             replay(response, existing);
             return;
         }
 
+        // 包装请求和响应，使其后续可重复读取 Body 进行缓存
         ContentCachingRequestWrapper cachedRequest = new ContentCachingRequestWrapper(request, BODY_CACHE_LIMIT);
         ContentCachingResponseWrapper cachedResponse = new ContentCachingResponseWrapper(response);
         
         try {
+            // 继续执行下游的过滤器和业务控制器逻辑
             chain.doFilter(cachedRequest, cachedResponse);
         } finally {
+            // 业务执行完毕（无论是成功还是抛错），记录请求体的哈希
             byte[] requestHash = hash(cachedRequest.getContentAsByteArray());
             int status = cachedResponse.getStatus();
             byte[] body = cachedResponse.getContentAsByteArray();
+            
+            // 仅当业务处理成功（状态码在 200~299 之间）时，进行响应的持久化缓存
             if (status >= 200 && status < 300) {
                 try {
+                    // 若无响应体（例如 204），保存一个空 Map，以避免 null 造成缓存被识别为待处理中
                     Map<String, Object> redacted = Map.of();
                     if (body.length > 0) {
                         redacted = mapper.readValue(body, new TypeReference<>() {});
                     }
+                    // 保存成功响应记录到数据库，供相同幂等键的下一次请求回放使用
                     idempotency.save(userId, fingerprint, scope, key, requestHash, status, redacted, null);
                 } catch (Exception e) {
-                    // 幂等记录写入失败不阻断响应；重试可能重复创建，交由上层幂等约束兜底
+                    // 幂等记录写入失败不阻断当前正常的业务响应；重试可能重复创建，交由上层幂等约束兜底
                     log.warn("idempotency record save failed: {}", e.getMessage());
                 }
             }
+            // 必须将缓存中的真实响应拷贝写回到原始响应流中
             cachedResponse.copyBodyToResponse();
         }
     }
