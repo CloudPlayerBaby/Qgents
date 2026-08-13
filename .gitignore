@@ -38,10 +38,7 @@ replay_pid*
 .omc/
 
 # ai doc files
-docs/
-!docs/
-docs/*
-!docs/workspace-sandbox-manager.md
+/docs/
 
 # 环境变量文件
 .env
