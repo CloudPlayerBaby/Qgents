@@ -44,6 +44,14 @@ public class GroupResponse {
     @Schema(description = "最近消息时间（UTC），从未发言为空")
     private LocalDateTime lastMessageAt;
 
+    /** 最近活跃时间（UTC），排序依据；从未发言时以创建时间兜底（A 联调约定 §2）。 */
+    @Schema(description = "最近活跃时间（UTC），排序依据；从未发言时以创建时间兜底")
+    private LocalDateTime latestActivityAt;
+
+    /** 最新消息摘要（发送者昵称 + 文本），从未发言为空（A 联调约定 §2）。 */
+    @Schema(description = "最新消息摘要（发送者昵称 + 文本），从未发言为空")
+    private GroupLatestMessage latestMessage;
+
     /** 创建时间（UTC）。 */
     @Schema(description = "创建时间（UTC）")
     private LocalDateTime createdAt;

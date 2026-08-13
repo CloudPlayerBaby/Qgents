@@ -15,6 +15,7 @@ import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.service.EventService;
+import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskEventPayloads;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
@@ -48,11 +49,13 @@ public class TaskOrchestrator {
     private final TaskStepMapper stepMapper;
     private final WorkspaceRepositoryMapper workspaceRepositoryMapper;
     private final EventService eventService;
+    private final NotificationService notificationService;
 
     public TaskOrchestrator(OrchestrationStateMachine stateMachine, StepScheduler stepScheduler,
             AgentRunExecutor agentRunExecutor, AgentContextAssembler contextAssembler, TaskService taskService,
             TaskRunService taskRunService, TaskMapper taskMapper, TaskStepMapper stepMapper,
-            WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService) {
+            WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService,
+            NotificationService notificationService) {
         this.stateMachine = stateMachine;
         this.stepScheduler = stepScheduler;
         this.agentRunExecutor = agentRunExecutor;
@@ -63,6 +66,7 @@ public class TaskOrchestrator {
         this.stepMapper = stepMapper;
         this.workspaceRepositoryMapper = workspaceRepositoryMapper;
         this.eventService = eventService;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -247,6 +251,25 @@ public class TaskOrchestrator {
         taskMapper.updateById(task);
         eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated",
                 task.getId().toString(), TaskEventPayloads.taskUpdated(task));
+        notifyTaskTerminal(task, status);
+    }
+
+    /**
+     * 任务到达终态时向发起人写入通知（A 联调约定 §1）。
+     * 仅 SUCCEEDED/FAILED 有对应 kind；CANCELLED 不在约定映射内，不写入。
+     */
+    private void notifyTaskTerminal(TaskEntity task, String status) {
+        String kind = switch (status) {
+            case "SUCCEEDED" -> "TASK_COMPLETED";
+            case "FAILED" -> "TASK_FAILED";
+            default -> null;
+        };
+        if (kind == null) {
+            return;
+        }
+        notificationService.notify(task.getCreatedBy(), task.getProjectId(), task.getRequirementGroupId(), kind,
+                (kind.equals("TASK_COMPLETED") ? "任务完成：" : "任务失败：") + task.getTitle(), task.getRequirement(),
+                task.getId().toString());
     }
 
     private TaskEntity requireTask(UUID projectId, UUID taskId) {

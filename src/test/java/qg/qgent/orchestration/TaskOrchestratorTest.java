@@ -24,6 +24,7 @@ import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 import qg.qgent.service.EventService;
+import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
 
@@ -62,7 +63,8 @@ class TaskOrchestratorTest {
 
     private TaskOrchestrator orchestrator(AgentRunExecutor executor) {
         return new TaskOrchestrator(new OrchestrationStateMachine(), stepScheduler, executor, contextAssembler,
-                taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService);
+                taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
+                mock(NotificationService.class));
     }
 
     /** Maven 文件树 + Mock LLM：Plan 两轮、Coding 一次 finalResult、Test 一次分析、Review 一次 finalResult，全部成功。 */

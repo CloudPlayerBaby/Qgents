@@ -32,7 +32,8 @@ class TaskRunServiceTest {
     private final DiffMapper diffs = mock(DiffMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final EventService events = mock(EventService.class);
-    private final TaskRunService service = new TaskRunService(runs, logs, inputRequests, diffs, access, events);
+    private final TaskRunService service = new TaskRunService(runs, logs, inputRequests, diffs, access, events,
+            mock(NotificationService.class));
 
     @Test
     void detailDerivesDurationMsFromStartedAndFinished() {

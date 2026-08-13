@@ -37,6 +37,7 @@ class MergeRequestServiceTest {
     private final GitHubAppClient githubClient = mock(GitHubAppClient.class);
     private final ProjectAccessService projectAccess = mock(ProjectAccessService.class);
     private final EventService eventService = mock(EventService.class);
+    private final NotificationService notificationService = mock(NotificationService.class);
 
     private MergeRequestService service;
 
@@ -46,7 +47,7 @@ class MergeRequestServiceTest {
                 mergeRequestMapper, mergeRequestGroupMapper, qualityCheckMapper, reviewMapper,
                 taskMapper, workspaceRepositoryMapper, projectRepositoryMapper, branchConfigMapper,
                 branchConfigTestsetMapper, projectAccess, eventService, githubInstallationMapper,
-                githubRepositoryMapper, projectMapper, githubClient
+                githubRepositoryMapper, projectMapper, githubClient, notificationService
         );
     }
 
