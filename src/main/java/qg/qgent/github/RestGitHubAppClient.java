@@ -137,6 +137,11 @@ public class RestGitHubAppClient implements GitHubAppClient {
         }
     }
 
+    @Override
+    public String createInstallationToken(long installationId) {
+        return installationTokenProvider.apply(installationId);
+    }
+
     private String installationToken(long installationId) {
         try {
             InstallationTokenResponse response = client.post()

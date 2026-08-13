@@ -14,4 +14,9 @@ public class GitPushRequest {
     @NotBlank
     @Pattern(regexp = "[0-9a-fA-F]{40,64}")
     private String expectedHeadCommit;
+
+    /** 后端生成的一次性凭据 ID。 */
+    @Schema(description = "一次性凭据 ID", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank
+    private String credentialGrantId;
 }

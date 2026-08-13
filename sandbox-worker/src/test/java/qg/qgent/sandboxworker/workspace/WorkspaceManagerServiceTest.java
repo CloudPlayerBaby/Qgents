@@ -79,7 +79,7 @@ class WorkspaceManagerServiceTest {
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), lock,
                 new WorkspaceMetadataStore(properties, new ObjectMapper().findAndRegisterModules()));
         WorkspaceManagerService service = new WorkspaceManagerService(properties,
-                new GitRepositoryManager(properties), sandboxes, lock, new ObjectMapper().findAndRegisterModules(),
+                new GitRepositoryManager(properties, org.springframework.web.client.RestClient.builder().build()), sandboxes, lock, new ObjectMapper().findAndRegisterModules(),
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC));
         service.provision(workspaceId, request(repositoryId));
 
@@ -122,7 +122,7 @@ class WorkspaceManagerServiceTest {
         SandboxService sandboxes = new SandboxService(runtime, properties,
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), lock,
                 new WorkspaceMetadataStore(properties, new ObjectMapper().findAndRegisterModules()));
-        return new WorkspaceManagerService(properties, new GitRepositoryManager(properties), sandboxes, lock,
+        return new WorkspaceManagerService(properties, new GitRepositoryManager(properties, org.springframework.web.client.RestClient.builder().build()), sandboxes, lock,
                 new ObjectMapper().findAndRegisterModules(),
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC));
     }

@@ -72,6 +72,10 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
+sandbox:
+  backend-service-token: ${SANDBOX_BACKEND_SERVICE_TOKEN:dev-only-secret-token}
+
+
 mybatis-plus:
   type-handlers-package: qg.qgent.handler
   configuration:

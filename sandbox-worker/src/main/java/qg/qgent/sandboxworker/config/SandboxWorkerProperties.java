@@ -80,4 +80,10 @@ public class SandboxWorkerProperties {
 
     /** stdout 和 stderr 各自在 Worker 内存中允许保留的最大字节数。 */
     private int maxOutputBytes = 1024 * 1024;
+
+    /** 主后端地址，供 Worker 访问内部接口。 */
+    private String backendUrl = "http://qgents-backend:8080";
+
+    /** Worker 与主后端通信的独立内部鉴权 Token。 */
+    private String backendServiceToken = "";
 }
