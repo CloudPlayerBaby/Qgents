@@ -53,6 +53,13 @@ app:
   # 本地 Workspace 代码根目录（真实 Sandbox 接入前的临时约定，未配置则 Plan Agent 读到空文件树）
   workspace:
     base-dir: ${WORKSPACE_BASE_DIR:}
+  # 后端2 Sandbox Worker 客户端配置；enabled=true 时编排链路改走 Worker HTTP API
+  worker:
+    base-url: ${SANDBOX_WORKER_URL:http://localhost:8091}
+    enabled: ${SANDBOX_WORKER_ENABLED:false}
+    image-profile: ${SANDBOX_IMAGE_PROFILE:java-node}
+    poll-interval: ${SANDBOX_POLL_INTERVAL:250ms}
+    poll-timeout: ${SANDBOX_POLL_TIMEOUT:15m}
   frontend-url: ${FRONTEND_URL:http://localhost:5173}
   invitation-url: ${INVITATION_URL:http://localhost:5173/team-invitations/accept}
   registration-url: ${REGISTRATION_URL:http://localhost:5173/register}

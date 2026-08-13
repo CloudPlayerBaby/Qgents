@@ -1,6 +1,7 @@
 package qg.qgent.orchestration.tool;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
@@ -37,6 +38,7 @@ import java.util.UUID;
  */
 @Component
 @Primary
+@ConditionalOnProperty(name = "app.worker.enabled", havingValue = "false", matchIfMissing = true)
 public class LocalGitDiffAccess implements WorkspaceDiffAccess {
 
     /** 单次 git 命令超时。 */

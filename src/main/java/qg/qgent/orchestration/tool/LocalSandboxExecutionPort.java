@@ -1,6 +1,7 @@
 package qg.qgent.orchestration.tool;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 import qg.qgent.service.WorkspaceService;
@@ -27,6 +28,7 @@ import java.util.UUID;
  */
 @Component
 @Primary
+@ConditionalOnProperty(name = "app.worker.enabled", havingValue = "false", matchIfMissing = true)
 public class LocalSandboxExecutionPort implements ExecutionPort {
 
     private final WorkspaceService workspaceService;

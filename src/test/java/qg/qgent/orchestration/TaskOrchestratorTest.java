@@ -6,8 +6,10 @@ import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
+import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepMapper;
+import qg.qgent.mapper.WorkspaceMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.orchestration.agent.CodingAgent;
 import qg.qgent.orchestration.agent.PlanAgent;
@@ -23,6 +25,9 @@ import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
+import qg.qgent.orchestration.worker.SandboxSessionManager;
+import qg.qgent.orchestration.worker.SandboxWorkerClient;
+import qg.qgent.orchestration.worker.SandboxWorkerProperties;
 import qg.qgent.service.EventService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
@@ -59,10 +64,13 @@ class TaskOrchestratorTest {
     private final TaskRunService taskRunService = mock(TaskRunService.class);
     private final EventService eventService = mock(EventService.class);
     private final AgentContextAssembler contextAssembler = new AgentContextAssembler();
+    private final SandboxSessionManager sessionManager = new SandboxSessionManager(
+            mock(SandboxWorkerClient.class), new SandboxWorkerProperties(), mock(WorkspaceMapper.class), repoMapper,
+            mock(ProjectRepositoryMapper.class));
 
     private TaskOrchestrator orchestrator(AgentRunExecutor executor) {
         return new TaskOrchestrator(new OrchestrationStateMachine(), stepScheduler, executor, contextAssembler,
-                taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService);
+                taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService, sessionManager);
     }
 
     /** Maven 文件树 + Mock LLM：Plan 两轮、Coding 一次 finalResult、Test 一次分析、Review 一次 finalResult，全部成功。 */

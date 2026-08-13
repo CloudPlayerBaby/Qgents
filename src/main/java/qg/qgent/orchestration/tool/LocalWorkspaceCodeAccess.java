@@ -1,5 +1,6 @@
 package qg.qgent.orchestration.tool;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import qg.qgent.service.WorkspaceService;
 
@@ -20,6 +21,7 @@ import java.util.stream.Stream;
  * 接入后由沙箱内代码访问实现替换本类，接口与安全边界保持不变。
  */
 @Component
+@ConditionalOnProperty(name = "app.worker.enabled", havingValue = "false", matchIfMissing = true)
 public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
 
     /** 单文件检索/读取的最大字节数，防止把超大文件塞进 Agent 上下文。 */

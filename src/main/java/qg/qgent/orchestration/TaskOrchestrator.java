@@ -14,6 +14,7 @@ import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
+import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.service.EventService;
 import qg.qgent.service.TaskEventPayloads;
 import qg.qgent.service.TaskRunService;
@@ -48,11 +49,13 @@ public class TaskOrchestrator {
     private final TaskStepMapper stepMapper;
     private final WorkspaceRepositoryMapper workspaceRepositoryMapper;
     private final EventService eventService;
+    private final SandboxSessionManager sandboxSessionManager;
 
     public TaskOrchestrator(OrchestrationStateMachine stateMachine, StepScheduler stepScheduler,
             AgentRunExecutor agentRunExecutor, AgentContextAssembler contextAssembler, TaskService taskService,
             TaskRunService taskRunService, TaskMapper taskMapper, TaskStepMapper stepMapper,
-            WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService) {
+            WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService,
+            SandboxSessionManager sandboxSessionManager) {
         this.stateMachine = stateMachine;
         this.stepScheduler = stepScheduler;
         this.agentRunExecutor = agentRunExecutor;
@@ -63,15 +66,29 @@ public class TaskOrchestrator {
         this.stepMapper = stepMapper;
         this.workspaceRepositoryMapper = workspaceRepositoryMapper;
         this.eventService = eventService;
+        this.sandboxSessionManager = sandboxSessionManager;
     }
 
     /**
      * 同步驱动一个 Task 的完整编排链路。Mock Agent 下整条链路同步跑完；
      * 接入真实异步执行后，本方法将退化为"推进单步"并由运行完成事件驱动。
+     * <p>
+     * 入口为整条链路准备一次 Sandbox 会话（Worker 端口启用时），并在终态后释放；
+     * 未启用 Worker 时会话管理器为 no-op，不影响本地端口链路。
      */
     public void orchestrate(UUID projectId, UUID taskId) {
         TaskEntity task = requireTask(projectId, taskId);
         requireStartable(task);
+        try {
+            sandboxSessionManager.acquire(task.getId(), task.getProjectId(), task.getWorkspaceId());
+            runLoop(task);
+        } finally {
+            sandboxSessionManager.release(task.getWorkspaceId());
+        }
+    }
+
+    /** 推进 PLAN→CODING→TESTING→REVIEWING 循环，直到进入终态。 */
+    private void runLoop(TaskEntity task) {
         OrchestrationCounters counters = new OrchestrationCounters();
         OrchestrationPhase phase = OrchestrationPhase.PLAN;
         AgentRunOutcome feedback = null;

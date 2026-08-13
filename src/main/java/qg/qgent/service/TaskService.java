@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +38,7 @@ public class TaskService {
     private final AgentMapper agents;
     private final ProjectAccessService access;
     private final EventService eventService;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * Creates the task-domain service with all persistence and authorization
@@ -45,7 +47,8 @@ public class TaskService {
     public TaskService(TaskMapper tasks, WorkspaceMapper workspaces, WorkspaceRepositoryMapper repositories,
             TaskStepMapper steps, TaskStepDependencyMapper dependencies, TaskStepRepositoryMapper scopes,
             RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories, ProjectMapper projects,
-            MessageMapper messages, AgentMapper agents, ProjectAccessService access, EventService eventService) {
+            MessageMapper messages, AgentMapper agents, ProjectAccessService access, EventService eventService,
+            ApplicationEventPublisher eventPublisher) {
         this.tasks = tasks;
         this.workspaces = workspaces;
         this.repositories = repositories;
@@ -59,6 +62,7 @@ public class TaskService {
         this.agents = agents;
         this.access = access;
         this.eventService = eventService;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -156,6 +160,7 @@ public class TaskService {
                         "feat/task-" + task.getId());
             }
         }
+        eventPublisher.publishEvent(new TaskCreatedEvent(projectId, task.getId()));
         return response(task, workspace);
     }
 

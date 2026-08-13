@@ -1,6 +1,8 @@
 package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.*;
 import qg.qgent.entity.*;
@@ -30,8 +32,9 @@ class TaskServiceTest {
     private final AgentMapper agents = mock(AgentMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final EventService events = mock(EventService.class);
+    private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
     private final TaskService service = new TaskService(tasks, workspaces, repositories, steps, dependencies, scopes,
-            groups, projectRepositories, projects, messages, agents, access, events);
+            groups, projectRepositories, projects, messages, agents, access, events, eventPublisher);
 
     @Test
     void createPersistsOneWorkspaceAndMultipleRepositories() {
@@ -53,6 +56,23 @@ class TaskServiceTest {
         assertEquals("feat/task-x", result.getRepositories().getFirst().getSourceBranch());
         verify(workspaces).insert(any(WorkspaceEntity.class));
         verify(repositories, times(2)).insertLink(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void createPublishesTaskCreatedEvent() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID backend = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
+        when(repositories.selectByWorkspace(any(UUID.class)))
+                .thenReturn(List.of(worktree(backend, "repo-1", "base", "feat/task-x")));
+
+        service.create(projectId, actor, request(groupId, List.of(backend)));
+
+        ArgumentCaptor<TaskCreatedEvent> captor = ArgumentCaptor.forClass(TaskCreatedEvent.class);
+        verify(eventPublisher).publishEvent(captor.capture());
+        assertEquals(projectId, captor.getValue().getProjectId());
+        assertNotNull(captor.getValue().getTaskId());
     }
 
     @Test

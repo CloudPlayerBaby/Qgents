@@ -1,5 +1,6 @@
 package qg.qgent.orchestration.tool;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import qg.qgent.service.WorkspaceService;
 
@@ -24,6 +25,7 @@ import java.util.UUID;
  * 真实 Sandbox 接入后由沙箱内实现替换本类，安全边界保持不变。
  */
 @Component
+@ConditionalOnProperty(name = "app.worker.enabled", havingValue = "false", matchIfMissing = true)
 public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
 
     /** 单次写入内容的最大字节数。 */
