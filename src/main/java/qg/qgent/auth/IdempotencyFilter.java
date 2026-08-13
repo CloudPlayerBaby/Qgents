@@ -58,17 +58,18 @@ public class IdempotencyFilter extends OncePerRequestFilter {
             return true;
         }
         String path = request.getRequestURI();
-        boolean isProjectApi = path.startsWith("/api/v1/projects/");
-        boolean isGitHubInstallApi = path.matches("^/api/v1/teams/[^/]+/integrations/github/installations(?:/[^/]+/sync)?$");
         
-        if (!isProjectApi && !isGitHubInstallApi) {
-            return true;
+        // GitHub Installations: POST, DELETE, POST /sync
+        boolean isGitHubInstallApi = path.matches("^/api/v1/teams/[^/]+/integrations/github/installations(?:/[^/]+(?:/sync)?)?$");
+        
+        // GitHub Project Repositories: POST, PATCH, DELETE
+        boolean isGitHubRepoApi = path.matches("^/api/v1/projects/[^/]+/repositories(?:/[^/]+)?$");
+        
+        if (isGitHubInstallApi || isGitHubRepoApi) {
+            return false;
         }
-        if (isProjectApi) {
-            // ProjectController 已使用事务型 IdempotencyService，避免过滤器再次创建同键记录。
-            return path.matches("^/api/v1/projects/[^/]+/(archive|restore|members)$");
-        }
-        return false;
+        
+        return true;
     }
 
     @Override
@@ -110,10 +111,12 @@ public class IdempotencyFilter extends OncePerRequestFilter {
             byte[] requestHash = hash(cachedRequest.getContentAsByteArray());
             int status = cachedResponse.getStatus();
             byte[] body = cachedResponse.getContentAsByteArray();
-            if (status >= 200 && status < 300 && body.length > 0) {
+            if (status >= 200 && status < 300) {
                 try {
-                    Map<String, Object> redacted = mapper.readValue(body, new TypeReference<>() {
-                    });
+                    Map<String, Object> redacted = null;
+                    if (body.length > 0) {
+                        redacted = mapper.readValue(body, new TypeReference<>() {});
+                    }
                     idempotency.save(userId, fingerprint, scope, key, requestHash, status, redacted, null);
                 } catch (Exception e) {
                     // 幂等记录写入失败不阻断响应；重试可能重复创建，交由上层幂等约束兜底
@@ -138,6 +141,9 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 
     private void replay(HttpServletResponse response, IdempotencyRecordEntity record) throws IOException {
         response.setStatus(record.getResponseStatus());
+        if (record.getResponseBodyRedacted() == null || record.getResponseBodyRedacted().isEmpty()) {
+            return;
+        }
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         mapper.writeValue(response.getWriter(), record.getResponseBodyRedacted());

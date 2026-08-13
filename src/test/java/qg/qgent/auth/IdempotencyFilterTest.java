@@ -26,9 +26,7 @@ class IdempotencyFilterTest {
 
         // DELETE installation requires idempotency (filtered)
         MockHttpServletRequest request4 = new MockHttpServletRequest("DELETE", "/api/v1/teams/team-1/integrations/github/installations/inst-1");
-        // Wait, DELETE matches the regex? Let's check regex: ^/api/v1/teams/[^/]+/integrations/github/installations(?:/[^/]+/sync)?$
-        // The regex doesn't match DELETE because of /inst-1 at the end unless it has /sync!
-        assertTrue(filter.shouldNotFilter(request4)); // So DELETE installation is currently not filtered by our regex!
+        assertFalse(filter.shouldNotFilter(request4)); // DELETE installation IS filtered
     }
 
     @Test
@@ -38,5 +36,13 @@ class IdempotencyFilterTest {
         // POST project repository requires idempotency
         MockHttpServletRequest request1 = new MockHttpServletRequest("POST", "/api/v1/projects/proj-1/repositories");
         assertFalse(filter.shouldNotFilter(request1));
+
+        // PATCH project repository requires idempotency
+        MockHttpServletRequest request2 = new MockHttpServletRequest("PATCH", "/api/v1/projects/proj-1/repositories/repo-1");
+        assertFalse(filter.shouldNotFilter(request2));
+
+        // DELETE project repository requires idempotency
+        MockHttpServletRequest request3 = new MockHttpServletRequest("DELETE", "/api/v1/projects/proj-1/repositories/repo-1");
+        assertFalse(filter.shouldNotFilter(request3));
     }
 }

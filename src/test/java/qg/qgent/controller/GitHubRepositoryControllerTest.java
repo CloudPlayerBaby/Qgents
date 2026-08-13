@@ -172,4 +172,18 @@ class GitHubRepositoryControllerTest {
 
         assertNotNull(response);
     }
+
+    @Test
+    void installationCallbackRedirectsToCorrectUrl() {
+        long installationId = 12345L;
+        String state = "test-state";
+        UUID teamId = UUID.randomUUID();
+        when(service.handleInstallationCallback(installationId, state)).thenReturn(teamId);
+
+        org.springframework.http.ResponseEntity<Void> response = controller.installationCallback(installationId, state);
+
+        assertEquals(302, response.getStatusCode().value());
+        String expectedLocation = "https://frontend.com/app/integrations/github?teamId=" + teamId + "&installed=1";
+        assertEquals(expectedLocation, response.getHeaders().getLocation().toString());
+    }
 }

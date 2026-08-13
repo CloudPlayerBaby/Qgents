@@ -176,8 +176,9 @@ public class GitHubRepositoryController {
                                                       @RequestParam String state) {
         UUID teamId = service.handleInstallationCallback(installationId, state);
         String redirectUrl = org.springframework.web.util.UriComponentsBuilder.fromUriString(frontendUrl)
-                .pathSegment("teams", teamId.toString(), "settings", "integrations")
-                .queryParam("installed", "github")
+                .pathSegment("app", "integrations", "github")
+                .queryParam("teamId", teamId.toString())
+                .queryParam("installed", "1")
                 .build().toUriString();
         return ResponseEntity.status(org.springframework.http.HttpStatus.FOUND)
                 .header(org.springframework.http.HttpHeaders.LOCATION, redirectUrl)
