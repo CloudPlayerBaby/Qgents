@@ -316,7 +316,8 @@ public class GitRepositoryManager {
                 throw new WorkerException(HttpStatus.PAYLOAD_TOO_LARGE, "GIT_DIFF_TOO_LARGE", "Git Diff 超过 10 MiB 上限");
             }
             if (stderrExceeded.get()) {
-                throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_OUTPUT_TOO_LARGE", "Git 错误输出超过 1 MiB 上限");
+                throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_OUTPUT_TOO_LARGE",
+                        "Git 错误输出超过 1 MiB 上限");
             }
             return new CommandResult(process.exitValue(), stdout.toString(StandardCharsets.UTF_8),
                     stderr.toString(StandardCharsets.UTF_8));
@@ -331,7 +332,8 @@ public class GitRepositoryManager {
         } catch (Exception exception) {
             throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_FAILED", "无法执行受控 Git 操作");
         } finally {
-            if (process != null && process.isAlive()) terminateProcessTree(process);
+            if (process != null && process.isAlive())
+                terminateProcessTree(process);
             closeProcessPipes(process);
             joinReadersUninterruptibly(out, err);
         }
@@ -350,17 +352,20 @@ public class GitRepositoryManager {
                 }
                 output.write(buffer, 0, read);
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        }
     }
 
     static void terminateProcessTree(Process process) {
-        if (process == null) return;
+        if (process == null)
+            return;
         List<ProcessHandle> descendants = process.descendants().toList();
         descendants.forEach(ProcessHandle::destroy);
         process.destroy();
         waitForExit(process.toHandle(), descendants, PROCESS_TERMINATION_GRACE);
         descendants.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
-        if (process.isAlive()) process.destroyForcibly();
+        if (process.isAlive())
+            process.destroyForcibly();
         waitForExit(process.toHandle(), descendants, PROCESS_TERMINATION_GRACE);
     }
 
@@ -368,19 +373,27 @@ public class GitRepositoryManager {
         long deadline = System.nanoTime() + timeout.toNanos();
         while ((parent.isAlive() || descendants.stream().anyMatch(ProcessHandle::isAlive))
                 && System.nanoTime() < deadline) {
-            try { Thread.sleep(10); }
-            catch (InterruptedException exception) { Thread.currentThread().interrupt(); return; }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 
     static boolean joinReaders(Thread... readers) throws InterruptedException {
         long deadline = System.nanoTime() + READER_JOIN_TIMEOUT.toNanos();
         for (Thread reader : readers) {
-            if (reader == null) continue;
+            if (reader == null)
+                continue;
             long remaining = deadline - System.nanoTime();
-            if (remaining > 0) reader.join(Duration.ofNanos(remaining));
+            if (remaining > 0)
+                reader.join(Duration.ofNanos(remaining));
         }
-        for (Thread reader : readers) if (reader != null && reader.isAlive()) return false;
+        for (Thread reader : readers)
+            if (reader != null && reader.isAlive())
+                return false;
         return true;
     }
 
@@ -389,29 +402,40 @@ public class GitRepositoryManager {
         long deadline = System.nanoTime() + READER_JOIN_TIMEOUT.toNanos();
         try {
             for (Thread reader : readers) {
-                if (reader == null) continue;
+                if (reader == null)
+                    continue;
                 while (reader.isAlive()) {
                     long remaining = deadline - System.nanoTime();
-                    if (remaining <= 0) return;
-                    try { reader.join(Duration.ofNanos(remaining)); }
-                    catch (InterruptedException exception) { interrupted = true; }
+                    if (remaining <= 0)
+                        return;
+                    try {
+                        reader.join(Duration.ofNanos(remaining));
+                    } catch (InterruptedException exception) {
+                        interrupted = true;
+                    }
                 }
             }
         } finally {
-            if (interrupted) Thread.currentThread().interrupt();
+            if (interrupted)
+                Thread.currentThread().interrupt();
         }
     }
 
     private static void closeProcessPipes(Process process) {
-        if (process == null) return;
+        if (process == null)
+            return;
         closeQuietly(process.getOutputStream());
         closeQuietly(process.getInputStream());
         closeQuietly(process.getErrorStream());
     }
 
     private static void closeQuietly(java.io.Closeable stream) {
-        if (stream == null) return;
-        try { stream.close(); } catch (Exception ignored) { }
+        if (stream == null)
+            return;
+        try {
+            stream.close();
+        } catch (Exception ignored) {
+        }
     }
 
     private String sha256(byte[] value) {
