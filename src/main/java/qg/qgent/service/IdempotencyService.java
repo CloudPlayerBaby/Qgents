@@ -60,7 +60,16 @@ public class IdempotencyService {
         this.required.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
     }
 
-    /** 供项目写请求过滤器查询未过期的已完成记录。 */
+    /** 
+     * 供全局防重放过滤器 (IdempotencyFilter) 专用的查询方法。
+     * 根据请求者的身份指纹、请求接口路径 (scope) 和幂等键 (Idempotency-Key)，
+     * 在数据库中查找是否存在一条尚未过期、且已经成功保存了响应体的幂等记录。
+     * 
+     * @param fingerprint 用户身份的哈希指纹
+     * @param scope 请求的接口范围标识（HTTP Method + URI）
+     * @param key 客户端传来的 Idempotency-Key
+     * @return 若存在匹配且未过期的记录则返回，否则返回 null
+     */
     public IdempotencyRecordEntity find(byte[] fingerprint, String scope, String key) {
         return mapper.selectOne(Wrappers.<IdempotencyRecordEntity>lambdaQuery()
                 .eq(IdempotencyRecordEntity::getActorFingerprint, fingerprint)
@@ -70,7 +79,18 @@ public class IdempotencyService {
                 .gt(IdempotencyRecordEntity::getExpiresAt, now()));
     }
 
-    /** 保存过滤器确认过不含敏感字段的首次成功响应。 */
+    /** 
+     * 保存由幂等过滤器拦截下来的下游业务成功响应结果。
+     * 
+     * @param userId 触发该请求的当前操作用户 ID
+     * @param fingerprint 用户身份的哈希指纹
+     * @param scope 请求的接口范围标识（HTTP Method + URI）
+     * @param key 客户端传来的 Idempotency-Key
+     * @param requestHash 原始请求体的 SHA-256 哈希值（用于比对二次请求体是否被篡改）
+     * @param status 下游业务返回的 HTTP 状态码
+     * @param responseBody 被序列化后去除了潜在敏感字段的 JSON 响应体结构
+     * @param resourceId 可选的关联资源 ID（通常为 null）
+     */
     public void save(UUID userId, byte[] fingerprint, String scope, String key, byte[] requestHash, int status,
             Map<String, Object> responseBody, UUID resourceId) {
         IdempotencyRecordEntity record = new IdempotencyRecordEntity();

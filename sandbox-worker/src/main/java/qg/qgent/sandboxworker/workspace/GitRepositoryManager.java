@@ -32,7 +32,6 @@ import java.util.function.Supplier;
  * 所有命令参数均由服务端构造，接口调用方不能传入远端地址、凭证或任意 Git 参数。
  */
 @Component
-@RequiredArgsConstructor
 public class GitRepositoryManager {
     private static final Duration COMMAND_TIMEOUT = Duration.ofMinutes(5);
     private static final int MAX_DIFF_BYTES = 10 * 1024 * 1024;
@@ -40,7 +39,19 @@ public class GitRepositoryManager {
     private static final Duration PROCESS_TERMINATION_GRACE = Duration.ofSeconds(2);
     private static final Duration READER_JOIN_TIMEOUT = Duration.ofSeconds(5);
     private final SandboxWorkerProperties properties;
+    private org.springframework.web.client.RestClient restClient = org.springframework.web.client.RestClient.create();
     private final ConcurrentMap<UUID, ReentrantLock> localLocks = new ConcurrentHashMap<>();
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public GitRepositoryManager(SandboxWorkerProperties properties) {
+        this.properties = properties;
+    }
+
+    // For testing
+    GitRepositoryManager(SandboxWorkerProperties properties, org.springframework.web.client.RestClient restClient) {
+        this.properties = properties;
+        this.restClient = restClient;
+    }
 
     /** 从共享 bare store 创建 linked worktree，并返回真实基线和 HEAD。 */
     public WorktreeResult create(UUID repositoryId, Path target, String baseRef, String sourceBranch) {
@@ -184,9 +195,28 @@ public class GitRepositoryManager {
             if (origin.exitCode() != 0) {
                 throw invalid("GIT_ORIGIN_NOT_CONFIGURED", "共享 Git Store 未配置受控 origin");
             }
-            requireSuccess(run(List.of("git", "--git-dir", store.toString(), "push", "origin",
-                    "refs/heads/" + sourceBranch + ":refs/heads/" + sourceBranch), Map.of()),
-                    "GIT_PUSH_FAILED", "Git 推送失败");
+            
+            String token = exchangeCredential(request.getCredentialGrantId(), currentHead);
+            Path askpassScript = null;
+            try {
+                askpassScript = createAskpassScript(token);
+                Map<String, String> env = Map.of(
+                        "GIT_ASKPASS", askpassScript.toAbsolutePath().toString(),
+                        "GIT_TERMINAL_PROMPT", "0"
+                );
+
+                requireSuccess(run(List.of("git", "--git-dir", store.toString(), "push", "origin",
+                        "refs/heads/" + sourceBranch + ":refs/heads/" + sourceBranch), env),
+                        "GIT_PUSH_FAILED", "Git 推送失败");
+            } finally {
+                if (askpassScript != null) {
+                    try {
+                        Files.deleteIfExists(askpassScript);
+                    } catch (Exception ignored) {}
+                }
+                token = null;
+            }
+
             CommandResult remote = requireSuccess(run(List.of("git", "--git-dir", store.toString(), "ls-remote",
                     "origin", "refs/heads/" + sourceBranch), Map.of()),
                     "GIT_REMOTE_VERIFY_FAILED", "无法核验远端分支");
@@ -196,6 +226,61 @@ public class GitRepositoryManager {
             }
             return new GitPushResponse(sourceBranch, currentHead, true);
         });
+    }
+
+    private String exchangeCredential(String grantId, String headCommit) {
+        try {
+            Map<String, String> body = Map.of(
+                    "credentialGrantId", grantId,
+                    "expectedHeadCommit", headCommit
+            );
+            
+            String url = properties.getBackendUrl();
+            if (!url.endsWith("/")) url += "/";
+            url += "internal/v1/git-credentials/exchange";
+
+            @SuppressWarnings("unchecked")
+            Map<String, String> response = this.restClient.post()
+                    .uri(url)
+                    .header("Authorization", "Bearer " + properties.getBackendServiceToken())
+                    .body(body)
+                    .retrieve()
+                    .body(Map.class);
+            
+            if (response == null || !response.containsKey("token")) {
+                throw invalid("CREDENTIAL_EXCHANGE_FAILED", "无法兑换凭据");
+            }
+            return response.get("token");
+        } catch (WorkerException e) {
+            throw e;
+        } catch (Exception e) {
+            throw invalid("CREDENTIAL_EXCHANGE_ERROR", "请求凭据兑换失败: " + e.getMessage());
+        }
+    }
+
+    private Path createAskpassScript(String token) {
+        try {
+            Path script = Files.createTempFile("git-askpass-", ".sh");
+            String content = "#!/bin/sh\necho '" + token + "'\n";
+            Files.writeString(script, content, StandardOpenOption.TRUNCATE_EXISTING);
+            
+            // chmod 700
+            java.nio.file.attribute.PosixFilePermission ownerRead = java.nio.file.attribute.PosixFilePermission.OWNER_READ;
+            java.nio.file.attribute.PosixFilePermission ownerWrite = java.nio.file.attribute.PosixFilePermission.OWNER_WRITE;
+            java.nio.file.attribute.PosixFilePermission ownerExecute = java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE;
+            try {
+                Files.setPosixFilePermissions(script, java.util.Set.of(ownerRead, ownerWrite, ownerExecute));
+            } catch (UnsupportedOperationException e) {
+                // Windows fallback
+                script.toFile().setExecutable(true, true);
+                script.toFile().setReadable(true, true);
+                script.toFile().setWritable(true, true);
+            }
+            
+            return script;
+        } catch (Exception e) {
+            throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "ASKPASS_CREATION_FAILED", "无法创建 GIT_ASKPASS 脚本");
+        }
     }
 
     public String head(Path repository) {
@@ -316,7 +401,8 @@ public class GitRepositoryManager {
                 throw new WorkerException(HttpStatus.PAYLOAD_TOO_LARGE, "GIT_DIFF_TOO_LARGE", "Git Diff 超过 10 MiB 上限");
             }
             if (stderrExceeded.get()) {
-                throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_OUTPUT_TOO_LARGE", "Git 错误输出超过 1 MiB 上限");
+                throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_OUTPUT_TOO_LARGE",
+                        "Git 错误输出超过 1 MiB 上限");
             }
             return new CommandResult(process.exitValue(), stdout.toString(StandardCharsets.UTF_8),
                     stderr.toString(StandardCharsets.UTF_8));
@@ -331,7 +417,8 @@ public class GitRepositoryManager {
         } catch (Exception exception) {
             throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_FAILED", "无法执行受控 Git 操作");
         } finally {
-            if (process != null && process.isAlive()) terminateProcessTree(process);
+            if (process != null && process.isAlive())
+                terminateProcessTree(process);
             closeProcessPipes(process);
             joinReadersUninterruptibly(out, err);
         }
@@ -350,17 +437,20 @@ public class GitRepositoryManager {
                 }
                 output.write(buffer, 0, read);
             }
-        } catch (Exception ignored) { }
+        } catch (Exception ignored) {
+        }
     }
 
     static void terminateProcessTree(Process process) {
-        if (process == null) return;
+        if (process == null)
+            return;
         List<ProcessHandle> descendants = process.descendants().toList();
         descendants.forEach(ProcessHandle::destroy);
         process.destroy();
         waitForExit(process.toHandle(), descendants, PROCESS_TERMINATION_GRACE);
         descendants.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
-        if (process.isAlive()) process.destroyForcibly();
+        if (process.isAlive())
+            process.destroyForcibly();
         waitForExit(process.toHandle(), descendants, PROCESS_TERMINATION_GRACE);
     }
 
@@ -368,19 +458,27 @@ public class GitRepositoryManager {
         long deadline = System.nanoTime() + timeout.toNanos();
         while ((parent.isAlive() || descendants.stream().anyMatch(ProcessHandle::isAlive))
                 && System.nanoTime() < deadline) {
-            try { Thread.sleep(10); }
-            catch (InterruptedException exception) { Thread.currentThread().interrupt(); return; }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 
     static boolean joinReaders(Thread... readers) throws InterruptedException {
         long deadline = System.nanoTime() + READER_JOIN_TIMEOUT.toNanos();
         for (Thread reader : readers) {
-            if (reader == null) continue;
+            if (reader == null)
+                continue;
             long remaining = deadline - System.nanoTime();
-            if (remaining > 0) reader.join(Duration.ofNanos(remaining));
+            if (remaining > 0)
+                reader.join(Duration.ofNanos(remaining));
         }
-        for (Thread reader : readers) if (reader != null && reader.isAlive()) return false;
+        for (Thread reader : readers)
+            if (reader != null && reader.isAlive())
+                return false;
         return true;
     }
 
@@ -389,29 +487,40 @@ public class GitRepositoryManager {
         long deadline = System.nanoTime() + READER_JOIN_TIMEOUT.toNanos();
         try {
             for (Thread reader : readers) {
-                if (reader == null) continue;
+                if (reader == null)
+                    continue;
                 while (reader.isAlive()) {
                     long remaining = deadline - System.nanoTime();
-                    if (remaining <= 0) return;
-                    try { reader.join(Duration.ofNanos(remaining)); }
-                    catch (InterruptedException exception) { interrupted = true; }
+                    if (remaining <= 0)
+                        return;
+                    try {
+                        reader.join(Duration.ofNanos(remaining));
+                    } catch (InterruptedException exception) {
+                        interrupted = true;
+                    }
                 }
             }
         } finally {
-            if (interrupted) Thread.currentThread().interrupt();
+            if (interrupted)
+                Thread.currentThread().interrupt();
         }
     }
 
     private static void closeProcessPipes(Process process) {
-        if (process == null) return;
+        if (process == null)
+            return;
         closeQuietly(process.getOutputStream());
         closeQuietly(process.getInputStream());
         closeQuietly(process.getErrorStream());
     }
 
     private static void closeQuietly(java.io.Closeable stream) {
-        if (stream == null) return;
-        try { stream.close(); } catch (Exception ignored) { }
+        if (stream == null)
+            return;
+        try {
+            stream.close();
+        } catch (Exception ignored) {
+        }
     }
 
     private String sha256(byte[] value) {

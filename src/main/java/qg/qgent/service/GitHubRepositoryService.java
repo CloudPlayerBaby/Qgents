@@ -91,14 +91,17 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 列出团队安装的GitHub仓库
+     * 列出指定团队已安装的 GitHub App 授权记录。
+     * 只有 Team Owner 才能执行此操作。
      * 
-     * @param actorId 操作人ID
-     * @param teamId  团队ID
-     * @return 安装响应体列表
+     * @param actorId 操作人的用户 ID
+     * @param teamId  团队 ID
+     * @return 包含该团队所有有效安装记录的响应列表
      */
     public List<GitHubInstallationResponse> listInstallations(UUID actorId, UUID teamId) {
-        // 需要是团队所有者
+        // 权限校验：必须是团队所有者
+        requireTeamOwner(actorId, teamId);
+        // 查询数据库中属于该团队的安装记录，按更新时间倒序排列
         requireTeamOwner(actorId, teamId);
         // 返回团队的所有安装
         return installationMapper.selectList(new LambdaQueryWrapper<GitHubInstallationEntity>()
@@ -146,32 +149,49 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 列出团队安装Github仓库的记录
+     * 列出团队可访问的所有已同步的 GitHub 仓库。
+     * 调用者需要是 Team Owner 或者该团队下任一项目的 Project Admin。
      * 
-     * @param actorId 操作人ID
-     * @param teamId  团队ID
-     * @return 仓库响应体列表
+     * @param actorId 操作人的用户 ID
+     * @param teamId  团队 ID
+     * @return 该团队下所有处于 ACTIVE 状态的安装记录所关联的仓库列表
      */
     public List<GitHubRepositoryResponse> listTeamRepositories(UUID actorId, UUID teamId) {
+        // 权限校验：验证操作者在团队内的权限等级
         if (!hasTeamRepositoryAccess(teamId, actorId)) {
             throw forbidden("Team owner or project admin access is required");
         }
+        // 获取所有激活状态的仓库，并转换为 DTO 返回
         return findActiveRepositoriesByTeam(teamId).stream().map(this::toRepositoryResponse).toList();
     }
 
     /**
-     * 列出项目绑定的Github仓库记录
+     * 列出某个具体项目所绑定的所有 GitHub 仓库。
+     * 调用者只需具备该项目的 Project Member 权限即可查看。
      * 
-     * @param actorId
-     * @param projectId
-     * @return
+     * @param actorId   操作人的用户 ID
+     * @param projectId 项目 ID
+     * @return 该项目已绑定的仓库详情列表（含绑定记录及底层仓库数据）
      */
     public List<ProjectRepositoryResponse> listProjectRepositories(UUID actorId, UUID projectId) {
+        // 权限校验：必须是项目成员
         requireProjectMember(actorId, projectId);
-        return projectRepositoryMapper.selectList(new LambdaQueryWrapper<ProjectRepositoryEntity>()
+        List<ProjectRepositoryEntity> bindings = projectRepositoryMapper.selectList(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .eq(ProjectRepositoryEntity::getProjectId, projectId)
-                .orderByDesc(ProjectRepositoryEntity::getBoundAt))
-                .stream().map(this::toProjectRepositoryResponse).toList();
+                .orderByDesc(ProjectRepositoryEntity::getBoundAt));
+                
+        if (bindings.isEmpty()) {
+            return List.of();
+        }
+        
+        List<UUID> repoIds = bindings.stream().map(ProjectRepositoryEntity::getRepositoryId).toList();
+        java.util.Map<UUID, GitHubRepositoryEntity> repoMap = repositoryMapper.selectList(
+                new LambdaQueryWrapper<GitHubRepositoryEntity>().in(GitHubRepositoryEntity::getId, repoIds))
+                .stream().collect(java.util.stream.Collectors.toMap(GitHubRepositoryEntity::getId, r -> r));
+                
+        return bindings.stream()
+                .map(binding -> toProjectRepositoryResponse(binding, repoMap.get(binding.getRepositoryId())))
+                .toList();
     }
 
     /**
@@ -197,6 +217,11 @@ public class GitHubRepositoryService {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REPOSITORY_NOT_AUTHORIZED_FOR_PROJECT",
                     "Repository is not available through an active installation for this project team");
         }
+
+        if (repository.getDefaultBranch() == null || repository.getDefaultBranch().isBlank()) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_METADATA_INCOMPLETE",
+                    "Repository default branch is missing from metadata");
+        }
         
         // 防止重复绑定：如果该仓库已经被当前项目绑定过，抛出冲突
         if (projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
@@ -211,55 +236,60 @@ public class GitHubRepositoryService {
         binding.setId(UUID.randomUUID());
         binding.setProjectId(projectId);
         binding.setRepositoryId(repository.getId());
-        // 如果请求未指定默认分支，则回退使用 GitHub 上该仓库真实的默认分支
-        binding.setDefaultBranch(blankToDefault(request.getDefaultBranch(), repository.getDefaultBranch()));
+        // 强制以后端 GitHub 的 defaultBranch 为准，忽略前端的覆盖值
+        binding.setDefaultBranch(repository.getDefaultBranch());
         binding.setDisplayName(request.getDisplayName());
         binding.setBoundAt(LocalDateTime.now(clock));
         
         projectRepositoryMapper.insert(binding);
-        return toProjectRepositoryResponse(binding);
+        return toProjectRepositoryResponse(binding, repository);
     }
 
     /**
-     * 更新项目仓库
+     * 更新项目已绑定的 GitHub 仓库配置（如：默认分支、自定义显示名称）。
+     * 只有 Project Admin 才能执行此操作。
      * 
-     * @param actorId             操作人ID
-     * @param projectId           项目ID
-     * @param projectRepositoryId 项目仓库ID
-     * @param request             更新请求
-     * @return
+     * @param actorId             操作人的用户 ID
+     * @param projectId           项目 ID
+     * @param projectRepositoryId Qgents 内部的项目与仓库绑定关系 ID
+     * @param request             包含需要更新的默认分支和显示名称的请求体
+     * @return 更新后的项目绑定仓库详情响应
      */
     @Transactional
     public ProjectRepositoryResponse updateProjectRepository(UUID actorId, UUID projectId, UUID projectRepositoryId,
             UpdateProjectRepositoryRequest request) {
-        // 需要是项目管理员
+        // 权限校验：必须是项目管理员
         requireProjectAdmin(actorId, projectId);
-        // 找到对应的记录
+        // 根据绑定 ID 查找当前的绑定记录
         ProjectRepositoryEntity current = projectRepositoryMapper.selectById(projectRepositoryId);
-        // 不存在或者不合法
+        // 防越权：确保要更新的绑定关系确实属于请求的 projectId
         if (current == null || !projectId.equals(current.getProjectId())) {
             throw notFound("Project repository binding does not exist");
         }
-        // 更新默认分支和显示名称
+        // 更新默认分支和自定义显示名称
         current.setDefaultBranch(request.getDefaultBranch());
         current.setDisplayName(request.getDisplayName());
         projectRepositoryMapper.updateById(current);
-        return toProjectRepositoryResponse(current);
+        
+        GitHubRepositoryEntity repository = repositoryMapper.selectById(current.getRepositoryId());
+        return toProjectRepositoryResponse(current, repository);
     }
 
     /**
-     * 解绑项目仓库
+     * 解除项目与某个 GitHub 仓库的绑定关系。
+     * 若该绑定已被应用于流水线分支配置，则拒绝解绑（需先删除分支配置）。
      * 
-     * @param actorId             操作人ID
-     * @param projectId           项目ID
-     * @param projectRepositoryId 项目仓库ID
+     * @param actorId             操作人的用户 ID
+     * @param projectId           项目 ID
+     * @param projectRepositoryId Qgents 内部的项目与仓库绑定关系 ID
      */
     @Transactional
     public void unbindProjectRepository(UUID actorId, UUID projectId, UUID projectRepositoryId) {
-        // 需要是项目管理员
+        // 权限校验：必须是项目管理员
         requireProjectAdmin(actorId, projectId);
-        // 找到对应的记录
+        // 查找对应的绑定记录
         ProjectRepositoryEntity current = projectRepositoryMapper.selectById(projectRepositoryId);
+        // 防越权校验
         if (current == null || !projectId.equals(current.getProjectId())) {
             throw notFound("Project repository binding does not exist");
         }
@@ -281,29 +311,61 @@ public class GitHubRepositoryService {
      * @param state                  授权时生成的加密状态，内含发起的团队 teamId
      */
     @Transactional
-    public void handleInstallationCallback(long providerInstallationId, String state) {
+    public UUID handleInstallationCallback(long providerInstallationId, String state) {
         log.info("Handling GitHub App installation callback. providerInstallationId: {}", providerInstallationId);
         
         // 1. 验证 state 签名，并从中解析出真正发起授权的团队 ID
         UUID teamId = gitHubClient.verifyInstallationState(state);
         
-        // 2. 调 GitHub API 查询这个安装记录的详细信息
-        GitHubInstallationDetails installation = gitHubClient.getInstallation(providerInstallationId);
+        // 执行核心全量同步逻辑
+        syncInstallation(teamId, providerInstallationId);
         
-        // 3. 在本地库查找这条安装记录（如果用户是点 Configure 更新已有的授权，这里就能查出老记录）
+        return teamId;
+    }
+
+    /**
+     * 手动触发指定授权的全量同步。
+     * 只有 Team Owner 才能执行此操作。
+     */
+    @Transactional
+    public GitHubInstallationResponse manualSyncInstallation(UUID actorId, UUID teamId, UUID installationId) {
+        requireTeamOwner(actorId, teamId);
+        GitHubInstallationEntity installationEntity = installationMapper.selectOne(
+                new LambdaQueryWrapper<GitHubInstallationEntity>()
+                        .eq(GitHubInstallationEntity::getId, installationId)
+                        .eq(GitHubInstallationEntity::getTeamId, teamId));
+        if (installationEntity == null) {
+            throw notFound("GitHub installation does not exist");
+        }
+        return syncInstallation(teamId, installationEntity.getProviderInstallationId());
+    }
+
+    /**
+     * 核心全量同步逻辑，提供给 callback 和手动刷新复用
+     */
+    private GitHubInstallationResponse syncInstallation(UUID teamId, long providerInstallationId) {
+        // 先读取 GitHub Installation 详情和完整 Repository 集合
+        GitHubInstallationDetails installation = gitHubClient.getInstallation(providerInstallationId);
+        List<GitHubRepositoryDetails> providerRepositories = gitHubClient.listRepositories(providerInstallationId);
+        
+        // 在本地库查找这条安装记录
         GitHubInstallationEntity installationEntity = installationMapper.selectOne(
                 new LambdaQueryWrapper<GitHubInstallationEntity>().eq(
-                        GitHubInstallationEntity::getProviderInstallationId,
-                        providerInstallationId));
-        // 如果不存在，创建新记录
+                        GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+                        
         boolean newInstallation = installationEntity == null;
+        
+        if (!newInstallation && !installationEntity.getTeamId().equals(teamId)) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_TEAM_CONFLICT",
+                    "This GitHub installation is already bound to another team");
+        }
         
         if (newInstallation) {
             installationEntity = new GitHubInstallationEntity();
             installationEntity.setId(UUID.randomUUID());
+            installationEntity.setTeamId(teamId);
         }
-        // 更新安装记录的核心信息
-        installationEntity.setTeamId(teamId);
+        
         installationEntity.setProviderInstallationId(installation.getInstallationId());
         installationEntity.setAccountLogin(installation.getAccountLogin());
         installationEntity.setAccountType(normalizeEnum(installation.getAccountType()));
@@ -315,26 +377,36 @@ public class GitHubRepositoryService {
             installationMapper.updateById(installationEntity);
         }
         
-        // 4. 同步该安装授权范围内的所有仓库到本地库
-        for (GitHubRepositoryDetails repository : gitHubClient.listRepositories(providerInstallationId)) {
-            GitHubRepositoryEntity repositoryEntity = repositoryMapper.selectOne(
-                    new LambdaQueryWrapper<GitHubRepositoryEntity>().eq(GitHubRepositoryEntity::getProviderRepositoryId,
-                            repository.getRepositoryId()));
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<Long> returnedProviderRepoIds = providerRepositories.stream()
+                .map(GitHubRepositoryDetails::getRepositoryId).toList();
+                
+        // 批量查询本地已存在的仓库避免 N+1
+        List<GitHubRepositoryEntity> existingRepos = newInstallation ? List.of() :
+                repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+                        .eq(GitHubRepositoryEntity::getInstallationId, installationEntity.getId()));
+                        
+        java.util.Map<Long, GitHubRepositoryEntity> existingRepoMap = existingRepos.stream()
+                .collect(java.util.stream.Collectors.toMap(GitHubRepositoryEntity::getProviderRepositoryId, r -> r));
+                
+        for (GitHubRepositoryDetails repository : providerRepositories) {
+            GitHubRepositoryEntity repositoryEntity = existingRepoMap.get(repository.getRepositoryId());
                             
             boolean newRepository = repositoryEntity == null;
             if (newRepository) {
                 repositoryEntity = new GitHubRepositoryEntity();
                 repositoryEntity.setId(UUID.randomUUID());
+                repositoryEntity.setInstallationId(installationEntity.getId());
             }
-            // 更新仓库的基础信息
-            repositoryEntity.setInstallationId(installationEntity.getId());
+            
             repositoryEntity.setProviderRepositoryId(repository.getRepositoryId());
             repositoryEntity.setOwnerLogin(repository.getOwnerLogin());
             repositoryEntity.setName(repository.getName());
             repositoryEntity.setDefaultBranch(repository.getDefaultBranch());
             repositoryEntity.setVisibility(normalizeEnum(repository.getVisibility()));
             repositoryEntity.setArchived(repository.isArchived());
-            repositoryEntity.setSyncedAt(LocalDateTime.now(clock));
+            repositoryEntity.setAuthorizationStatus("AUTHORIZED");
+            repositoryEntity.setSyncedAt(now);
             
             if (newRepository) {
                 repositoryMapper.insert(repositoryEntity);
@@ -342,6 +414,20 @@ public class GitHubRepositoryService {
                 repositoryMapper.updateById(repositoryEntity);
             }
         }
+        
+        // 把不再返回的仓库标记为撤销授权
+        if (!newInstallation) {
+            for (GitHubRepositoryEntity existingRepo : existingRepos) {
+                if ("AUTHORIZED".equals(existingRepo.getAuthorizationStatus()) && 
+                        !returnedProviderRepoIds.contains(existingRepo.getProviderRepositoryId())) {
+                    existingRepo.setAuthorizationStatus("REVOKED");
+                    existingRepo.setSyncedAt(now);
+                    repositoryMapper.updateById(existingRepo);
+                }
+            }
+        }
+        
+        return toInstallationResponse(installationEntity);
     }
 
     private void requireTeamOwner(UUID actorId, UUID teamId) {
@@ -409,7 +495,8 @@ public class GitHubRepositoryService {
                 : repositoryMapper.selectOne(new LambdaQueryWrapper<GitHubRepositoryEntity>()
                         .eq(GitHubRepositoryEntity::getId, repositoryId)
                         .eq(GitHubRepositoryEntity::getInstallationId, installationId)
-                        .eq(GitHubRepositoryEntity::getArchived, false));
+                        .eq(GitHubRepositoryEntity::getArchived, false)
+                        .eq(GitHubRepositoryEntity::getAuthorizationStatus, "AUTHORIZED"));
     }
 
     private List<GitHubRepositoryEntity> findActiveRepositoriesByTeam(UUID teamId) {
@@ -431,19 +518,30 @@ public class GitHubRepositoryService {
     private GitHubInstallationResponse toInstallationResponse(GitHubInstallationEntity installation) {
         return new GitHubInstallationResponse(installation.getId(), installation.getProviderInstallationId(),
                 installation.getAccountLogin(), installation.getAccountType(), installation.getStatus(),
-                installation.getUpdatedAt());
+                installation.getCreatedAt(), installation.getUpdatedAt());
     }
 
     private GitHubRepositoryResponse toRepositoryResponse(GitHubRepositoryEntity repository) {
-        return new GitHubRepositoryResponse(repository.getId(), repository.getProviderRepositoryId(),
-                repository.getOwnerLogin(), repository.getName(), repository.getDefaultBranch(),
-                repository.getVisibility(),
-                Boolean.TRUE.equals(repository.getArchived()), repository.getSyncedAt());
+        String fullName = repository.getOwnerLogin() + "/" + repository.getName();
+        String githubUrl = org.springframework.web.util.UriComponentsBuilder.newInstance()
+                .scheme("https").host("github.com").pathSegment(repository.getOwnerLogin(), repository.getName())
+                .build().toUriString();
+        return new GitHubRepositoryResponse(repository.getId(), repository.getInstallationId(), 
+                repository.getProviderRepositoryId(), fullName, githubUrl,
+                repository.getDefaultBranch(), repository.getVisibility(),
+                Boolean.TRUE.equals(repository.getArchived()), repository.getAuthorizationStatus(), 
+                repository.getSyncedAt());
     }
 
-    private ProjectRepositoryResponse toProjectRepositoryResponse(ProjectRepositoryEntity binding) {
+    private ProjectRepositoryResponse toProjectRepositoryResponse(ProjectRepositoryEntity binding, GitHubRepositoryEntity repository) {
+        String fullName = repository.getOwnerLogin() + "/" + repository.getName();
+        String githubUrl = org.springframework.web.util.UriComponentsBuilder.newInstance()
+                .scheme("https").host("github.com").pathSegment(repository.getOwnerLogin(), repository.getName())
+                .build().toUriString();
         return new ProjectRepositoryResponse(binding.getId(), binding.getRepositoryId(),
-                binding.getDefaultBranch(), binding.getDisplayName(), binding.getBoundAt());
+                repository.getInstallationId(), repository.getProviderRepositoryId(),
+                fullName, githubUrl, binding.getDefaultBranch(), binding.getDisplayName(),
+                repository.getAuthorizationStatus(), repository.getSyncedAt(), binding.getBoundAt());
     }
 
     private String blankToDefault(String value, String fallback) {
