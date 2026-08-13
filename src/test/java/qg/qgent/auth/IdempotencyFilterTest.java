@@ -5,6 +5,24 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.mock.web.MockHttpServletResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 class IdempotencyFilterTest {
 
@@ -44,5 +62,29 @@ class IdempotencyFilterTest {
         // DELETE project repository requires idempotency
         MockHttpServletRequest request3 = new MockHttpServletRequest("DELETE", "/api/v1/projects/proj-1/repositories/repo-1");
         assertFalse(filter.shouldNotFilter(request3));
+    }
+
+    @Test
+    void cachesEmptyBodyFor204Response() throws ServletException, IOException {
+        qg.qgent.service.IdempotencyService mockService = mock(qg.qgent.service.IdempotencyService.class);
+        ObjectMapper mapper = new ObjectMapper();
+        IdempotencyFilter filter = new IdempotencyFilter(mockService, mapper);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("DELETE", "/api/v1/projects/proj-1/repositories/repo-1");
+        request.addHeader("Idempotency-Key", "key-123");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        UUID userId = UUID.randomUUID();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(userId, null, List.of())
+        );
+
+        FilterChain chain = (req, res) -> {
+            ((jakarta.servlet.http.HttpServletResponse) res).setStatus(204);
+        };
+
+        filter.doFilterInternal(request, response, chain);
+
+        verify(mockService).save(eq(userId), any(), anyString(), eq("key-123"), any(), eq(204), eq(Map.of()), isNull());
     }
 }

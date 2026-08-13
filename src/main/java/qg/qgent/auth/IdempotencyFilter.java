@@ -113,7 +113,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
             byte[] body = cachedResponse.getContentAsByteArray();
             if (status >= 200 && status < 300) {
                 try {
-                    Map<String, Object> redacted = null;
+                    Map<String, Object> redacted = Map.of();
                     if (body.length > 0) {
                         redacted = mapper.readValue(body, new TypeReference<>() {});
                     }
