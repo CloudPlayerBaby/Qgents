@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -77,10 +78,10 @@ class GitRepositoryManagerTest {
         GitPushRequest pushRequest = new GitPushRequest();
         pushRequest.setExpectedHeadCommit(committed.getCommitSha());
         pushRequest.setCredentialGrantId("grant123");
-        GitPushResponse pushed = manager.push(repositoryId, worktree, "feat/test", pushRequest);
-        assertTrue(pushed.isVerified());
-        assertEquals(committed.getCommitSha(), output(List.of("git", "--git-dir", remote.toString(),
-                "rev-parse", "refs/heads/feat/test"), root).trim());
+        qg.qgent.sandboxworker.api.WorkerException exception = org.junit.jupiter.api.Assertions.assertThrows(
+                qg.qgent.sandboxworker.api.WorkerException.class,
+                () -> manager.push(repositoryId, worktree, "feat/test", pushRequest));
+        assertEquals("GIT_ORIGIN_INVALID", exception.getCode());
 
         manager.remove(repositoryId, worktree);
         assertFalse(Files.exists(worktree));
@@ -119,7 +120,7 @@ class GitRepositoryManagerTest {
                 }
             });
 
-        GitRepositoryManager manager = new GitRepositoryManager(properties, builder.build());
+        FailingPushGitRepositoryManager manager = new FailingPushGitRepositoryManager(properties, builder.build());
         Path worktree = root.resolve("workspace2/backend");
         GitRepositoryManager.WorktreeResult created = manager.create(repositoryId, worktree, "main", "feat/fail");
 
@@ -131,7 +132,8 @@ class GitRepositoryManagerTest {
         GitCommitResponse committed = manager.commit(worktree, request);
 
         // Intentionally set origin to a non-existent remote to trigger push failure
-        run(List.of("git", "--git-dir", store.toString(), "remote", "set-url", "origin", root.resolve("nonexistent.git").toString()), root);
+        run(List.of("git", "--git-dir", store.toString(), "remote", "set-url", "origin",
+                "https://github.com/qgents/nonexistent.git"), root);
         
         GitPushRequest pushRequest = new GitPushRequest();
         pushRequest.setExpectedHeadCommit(committed.getCommitSha());
@@ -146,6 +148,7 @@ class GitRepositoryManagerTest {
         org.junit.jupiter.api.Assertions.assertThrows(qg.qgent.sandboxworker.api.WorkerException.class, () -> {
             manager.push(repositoryId, worktree, "feat/fail", pushRequest);
         });
+        assertTrue(manager.pushAttempted, "Expected the controlled Git push command to be attempted");
 
         long afterCount = 0;
         try (java.util.stream.Stream<Path> stream = Files.list(tmpdir)) {
@@ -182,5 +185,26 @@ class GitRepositoryManagerTest {
         }
         if (process.waitFor() != 0) throw new AssertionError(output);
         return output;
+    }
+
+    /** 使用合法 GitHub origin 但在进程启动前模拟受控 push 失败，避免测试访问网络。 */
+    private static final class FailingPushGitRepositoryManager extends GitRepositoryManager {
+        private boolean pushAttempted;
+
+        private FailingPushGitRepositoryManager(SandboxWorkerProperties properties,
+                org.springframework.web.client.RestClient restClient) {
+            super(properties, restClient);
+        }
+
+        @Override
+        CommandResult run(List<String> command, Map<String, String> environment) {
+            if (command.contains("push")) {
+                pushAttempted = true;
+                assertTrue(environment.containsKey("GIT_ASKPASS"));
+                assertTrue(environment.containsKey("QGENTS_GIT_TOKEN"));
+                return new CommandResult(1, "", "simulated push failure");
+            }
+            return super.run(command, environment);
+        }
     }
 }

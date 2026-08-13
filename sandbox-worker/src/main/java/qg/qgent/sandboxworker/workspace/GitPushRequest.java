@@ -2,6 +2,7 @@ package qg.qgent.sandboxworker.workspace;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -18,5 +19,6 @@ public class GitPushRequest {
     /** 后端生成的一次性凭据 ID。 */
     @Schema(description = "一次性凭据 ID", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotBlank
+    @Size(max = 128)
     private String credentialGrantId;
 }

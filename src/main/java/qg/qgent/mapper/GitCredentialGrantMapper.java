@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;
 import qg.qgent.entity.GitCredentialGrant;
+import qg.qgent.entity.GitCredentialPurpose;
 
 import java.time.LocalDateTime;
 
@@ -22,9 +23,15 @@ public interface GitCredentialGrantMapper extends BaseMapper<GitCredentialGrant>
     @Update("UPDATE git_credential_grants SET is_used = 1 " +
             "WHERE grant_id_hash = #{hash} " +
             "AND expected_head_commit = #{expectedHeadCommit} " +
+            "AND repository_full_name = #{repositoryFullName} " +
+            "AND branch_name = #{branchName} " +
+            "AND purpose = #{purpose} " +
             "AND is_used = 0 " +
             "AND expires_at > #{now}")
     int exchangeGrant(@Param("hash") String hash, 
                       @Param("expectedHeadCommit") String expectedHeadCommit, 
+                      @Param("repositoryFullName") String repositoryFullName,
+                      @Param("branchName") String branchName,
+                      @Param("purpose") GitCredentialPurpose purpose,
                       @Param("now") LocalDateTime now);
 }

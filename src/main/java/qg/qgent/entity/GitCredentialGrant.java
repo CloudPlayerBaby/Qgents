@@ -21,6 +21,7 @@ public class GitCredentialGrant {
     private String repositoryFullName;
     private String branchName;
     private String expectedHeadCommit;
+    private GitCredentialPurpose purpose;
     private LocalDateTime expiresAt;
     private Boolean isUsed;
     private LocalDateTime createdAt;

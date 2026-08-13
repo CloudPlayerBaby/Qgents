@@ -8,6 +8,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.service.GitCredentialService;
+import qg.qgent.entity.GitCredentialPurpose;
 
 import java.util.Map;
 
@@ -34,8 +35,12 @@ class InternalGitCredentialControllerTest {
         InternalGitCredentialController.ExchangeRequest req = new InternalGitCredentialController.ExchangeRequest();
         req.setCredentialGrantId("grant123");
         req.setExpectedHeadCommit("head123");
+        req.setRepositoryFullName("owner/repo");
+        req.setBranchName("main");
+        req.setPurpose(GitCredentialPurpose.FETCH);
 
-        when(credentialService.exchangeGrant("grant123", "head123")).thenReturn("ghs_real_token");
+        when(credentialService.exchangeGrant("grant123", "head123", "owner/repo", "main", GitCredentialPurpose.FETCH))
+                .thenReturn("ghs_real_token");
 
         Map<String, String> result = controller.exchange("Bearer secret123", req);
         assertEquals("ghs_real_token", result.get("token"));
@@ -53,5 +58,14 @@ class InternalGitCredentialControllerTest {
         InternalGitCredentialController.ExchangeRequest req = new InternalGitCredentialController.ExchangeRequest();
         ApiException exception = assertThrows(ApiException.class, () -> controller.exchange(null, req));
         assertEquals(HttpStatus.UNAUTHORIZED, exception.status());
+    }
+
+    @Test
+    void testExchangeFailsClosedWhenInternalTokenIsBlank() {
+        InternalGitCredentialController blankTokenController = new InternalGitCredentialController(credentialService, "");
+        InternalGitCredentialController.ExchangeRequest req = new InternalGitCredentialController.ExchangeRequest();
+        ApiException exception = assertThrows(ApiException.class,
+                () -> blankTokenController.exchange("Bearer anything", req));
+        assertEquals(HttpStatus.FORBIDDEN, exception.status());
     }
 }

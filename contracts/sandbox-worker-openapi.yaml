@@ -48,6 +48,18 @@ paths:
       operationId: pushWorkspaceBranch
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GitPushRequest'}}}}
       responses: {'200': {description: 推送并核验成功, content: {application/json: {schema: {$ref: '#/components/schemas/GitPush'}}}}, '422': {description: origin 未配置或推送失败}}
+  /internal/v1/git-stores/{repositoryId}/sync:
+    parameters: [{$ref: '#/components/parameters/RepositoryId'}]
+    post:
+      operationId: syncGitStore
+      description: 仅供主后端根据已绑定仓库元数据调用；不得由前端传入远程地址或凭据。
+      parameters:
+        - {name: Authorization, in: header, required: true, schema: {type: string}, description: 与 Worker 配置一致的内部服务 Bearer Token}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GitStoreSyncRequest'}}}}
+      responses:
+        '200': {description: bare Git Store 已初始化并完成指定分支同步, content: {application/json: {schema: {$ref: '#/components/schemas/GitStoreSync'}}}}
+        '409': {description: 远程 HEAD 与预期 SHA 不一致}
+        '422': {description: GitHub URL、分支或本地 Git Store 不合法}
   /internal/v1/sandboxes:
     post:
       operationId: createSandbox
@@ -135,9 +147,24 @@ components:
     GitCommit: {type: object, properties: {commitSha: {type: string}}}
     GitPushRequest:
       type: object
-      required: [expectedHeadCommit]
-      properties: {expectedHeadCommit: {type: string, minLength: 40, maxLength: 64, pattern: '^[0-9a-fA-F]{40,64}$'}}
+      required: [expectedHeadCommit, credentialGrantId]
+      properties: {expectedHeadCommit: {type: string, minLength: 40, maxLength: 64, pattern: '^[0-9a-fA-F]{40,64}$'}, credentialGrantId: {type: string, minLength: 1, maxLength: 128}}
     GitPush: {type: object, properties: {branch: {type: string}, headCommit: {type: string}, verified: {type: boolean}}}
+    GitStoreSyncRequest:
+      type: object
+      required: [repositoryUrl, remoteBranch, expectedHeadCommit, credentialGrantId]
+      properties:
+        repositoryUrl: {type: string, format: uri, description: 已绑定仓库推导出的 GitHub HTTPS URL；仅允许 github.com 且无 userinfo、query、fragment 或非 443 端口}
+        remoteBranch: {type: string, minLength: 1, maxLength: 256, pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]*$'}
+        expectedHeadCommit: {type: string, minLength: 40, maxLength: 64, pattern: '^[0-9a-fA-F]{40,64}$'}
+        credentialGrantId: {type: string, minLength: 1, maxLength: 128}
+    GitStoreSync:
+      type: object
+      properties:
+        repositoryId: {type: string, format: uuid}
+        remoteBranch: {type: string}
+        headCommit: {type: string}
+        created: {type: boolean}
     ResourceLimits:
       type: object
       properties: {idleTtlSeconds: {type: integer, minimum: 1, maximum: 86400}, maxLifetimeSeconds: {type: integer, minimum: 1, maximum: 86400}, executionTimeoutSeconds: {type: integer, minimum: 1, maximum: 86400}}

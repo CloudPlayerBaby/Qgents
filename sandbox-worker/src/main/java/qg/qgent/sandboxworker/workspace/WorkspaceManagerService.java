@@ -119,14 +119,14 @@ public class WorkspaceManagerService {
     public GitStatusResponse gitStatus(UUID workspaceId, UUID repositoryId) {
         return workspaceLock.execute(storageKey(workspaceId), () -> {
             WorkspaceRepositoryResponse repository = requireRepository(get(workspaceId), repositoryId);
-            return repositories.status(repositoryPath(workspaceId, repository));
+            return repositories.locked(repositoryId, () -> repositories.status(repositoryPath(workspaceId, repository)));
         });
     }
 
     public GitDiffResponse gitDiff(UUID workspaceId, UUID repositoryId) {
         return workspaceLock.execute(storageKey(workspaceId), () -> {
             WorkspaceRepositoryResponse repository = requireRepository(get(workspaceId), repositoryId);
-            return repositories.diff(repositoryPath(workspaceId, repository));
+            return repositories.locked(repositoryId, () -> repositories.diff(repositoryPath(workspaceId, repository)));
         });
     }
 
@@ -136,7 +136,7 @@ public class WorkspaceManagerService {
             if (sandboxes.isWorkspaceInUse(workspace.getStorageKey()))
                 throw conflict("WORKSPACE_IN_USE", "Workspace 仍被 Sandbox 使用，不能创建 Commit");
             WorkspaceRepositoryResponse repository = requireRepository(workspace, repositoryId);
-            return repositories.commit(repositoryPath(workspaceId, repository), request);
+            return repositories.locked(repositoryId, () -> repositories.commit(repositoryPath(workspaceId, repository), request));
         });
     }
 

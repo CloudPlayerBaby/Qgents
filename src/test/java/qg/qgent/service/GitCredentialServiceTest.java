@@ -9,6 +9,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.entity.GitCredentialGrant;
+import qg.qgent.entity.GitCredentialPurpose;
 import qg.qgent.github.GitHubAppClient;
 import qg.qgent.mapper.GitCredentialGrantMapper;
 
@@ -53,6 +54,7 @@ class GitCredentialServiceTest {
         assertEquals(teamId, saved.getTeamId());
         assertEquals(123L, saved.getInstallationId());
         assertEquals("abcdef", saved.getExpectedHeadCommit());
+        assertEquals(GitCredentialPurpose.PUSH, saved.getPurpose());
         assertFalse(saved.getIsUsed());
         assertNotNull(saved.getExpiresAt());
     }
@@ -62,7 +64,8 @@ class GitCredentialServiceTest {
         String grantId = UUID.randomUUID().toString();
         String expectedHead = "abcdef";
         
-        when(mapper.exchangeGrant(anyString(), eq(expectedHead), any(LocalDateTime.class))).thenReturn(1);
+        when(mapper.exchangeGrant(anyString(), eq(expectedHead), eq("owner/repo"), eq("main"),
+                eq(GitCredentialPurpose.FETCH), any(LocalDateTime.class))).thenReturn(1);
         
         GitCredentialGrant grant = new GitCredentialGrant();
         grant.setInstallationId(456L);
@@ -70,7 +73,7 @@ class GitCredentialServiceTest {
         
         when(githubAppClient.createInstallationToken(456L)).thenReturn("ghs_token123");
         
-        String token = service.exchangeGrant(grantId, expectedHead);
+        String token = service.exchangeGrant(grantId, expectedHead, "owner/repo", "main", GitCredentialPurpose.FETCH);
         assertEquals("ghs_token123", token);
     }
 
@@ -78,9 +81,11 @@ class GitCredentialServiceTest {
     void testExchangeGrantFailure_UsedOrExpired() {
         String grantId = UUID.randomUUID().toString();
         
-        when(mapper.exchangeGrant(anyString(), eq("head"), any(LocalDateTime.class))).thenReturn(0);
+        when(mapper.exchangeGrant(anyString(), eq("head"), eq("owner/repo"), eq("main"),
+                eq(GitCredentialPurpose.PUSH), any(LocalDateTime.class))).thenReturn(0);
         
-        ApiException exception = assertThrows(ApiException.class, () -> service.exchangeGrant(grantId, "head"));
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.exchangeGrant(grantId, "head", "owner/repo", "main", GitCredentialPurpose.PUSH));
         assertEquals(HttpStatus.FORBIDDEN, exception.status());
     }
 }

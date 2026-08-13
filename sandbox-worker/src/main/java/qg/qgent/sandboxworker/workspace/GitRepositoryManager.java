@@ -28,8 +28,8 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
- * 管理 Worker 私有共享 bare Git Store 及其 linked worktree。
- * 所有命令参数均由服务端构造，接口调用方不能传入远端地址、凭证或任意 Git 参数。
+ * 绠＄悊 Worker 绉佹湁鍏变韩 bare Git Store 鍙婂叾 linked worktree銆?
+ * 鎵€鏈夊懡浠ゅ弬鏁板潎鐢辨湇鍔＄鏋勯€狅紝鎺ュ彛璋冪敤鏂逛笉鑳戒紶鍏ヨ繙绔湴鍧€銆佸嚟璇佹垨浠绘剰 Git 鍙傛暟銆?
  */
 @Component
 public class GitRepositoryManager {
@@ -53,7 +53,7 @@ public class GitRepositoryManager {
         this.restClient = restClient;
     }
 
-    /** 从共享 bare store 创建 linked worktree，并返回真实基线和 HEAD。 */
+    /** 浠庡叡浜?bare store 鍒涘缓 linked worktree锛屽苟杩斿洖鐪熷疄鍩虹嚎鍜?HEAD銆?*/
     public WorktreeResult create(UUID repositoryId, Path target, String baseRef, String sourceBranch) {
         return locked(repositoryId, () -> createLocked(repositoryId, target, baseRef, sourceBranch));
     }
@@ -62,11 +62,11 @@ public class GitRepositoryManager {
         Path store = gitStore(repositoryId);
         requireStore(store);
         if (Files.exists(target)) {
-            throw conflict("REPOSITORY_PATH_EXISTS", "Workspace 仓库目录已经存在");
+            throw conflict("REPOSITORY_PATH_EXISTS", "Workspace 浠撳簱鐩綍宸茬粡瀛樺湪");
         }
         String baseCommit = resolveCommit(store, baseRef);
         if (baseCommit == null) {
-            throw invalid("GIT_BASE_REF_NOT_FOUND", "无法在共享 Git Store 中解析基线引用");
+            throw invalid("GIT_BASE_REF_NOT_FOUND", "Git base reference not found");
         }
         String branchRef = "refs/heads/" + sourceBranch;
         String branchCommit = resolveCommit(store, branchRef);
@@ -79,9 +79,9 @@ public class GitRepositoryManager {
         CommandResult result = run(command, Map.of());
         if (result.exitCode() != 0) {
             if (result.stderr().contains("already checked out")) {
-                throw conflict("SOURCE_BRANCH_IN_USE", "功能分支已被其他 Workspace 使用");
+                throw conflict("SOURCE_BRANCH_IN_USE", "鍔熻兘鍒嗘敮宸茶鍏朵粬 Workspace 浣跨敤");
             }
-            throw invalid("WORKTREE_CREATE_FAILED", "无法从共享 Git Store 创建 linked worktree");
+            throw invalid("WORKTREE_CREATE_FAILED", "Cannot create linked worktree");
         }
         try {
             configureIdentity(target);
@@ -94,7 +94,7 @@ public class GitRepositoryManager {
         }
     }
 
-    /** 从 bare store 正确注销并清理 linked worktree。 */
+    /** 浠?bare store 姝ｇ‘娉ㄩ攢骞舵竻鐞?linked worktree銆?*/
     public void remove(UUID repositoryId, Path target) {
         locked(repositoryId, () -> {
             Path store = gitStore(repositoryId);
@@ -102,28 +102,28 @@ public class GitRepositoryManager {
             requireSuccess(
                     run(List.of("git", "--git-dir", store.toString(), "worktree", "remove", "--force",
                             target.toString()), Map.of()),
-                    "WORKTREE_REMOVE_FAILED", "无法注销 linked worktree");
+                    "WORKTREE_REMOVE_FAILED", "鏃犳硶娉ㄩ攢 linked worktree");
             requireSuccess(run(List.of("git", "--git-dir", store.toString(), "worktree", "prune"), Map.of()),
-                    "WORKTREE_PRUNE_FAILED", "无法清理 linked worktree 元数据");
+                "WORKTREE_PRUNE_FAILED", "Cannot prune linked worktree metadata");
             return null;
         });
     }
 
-    /** 返回结构化工作树状态。 */
+    /** 杩斿洖缁撴瀯鍖栧伐浣滄爲鐘舵€併€?*/
     public GitStatusResponse status(Path repository) {
         String branch = requireSuccess(
                 run(List.of("git", "-C", repository.toString(), "branch", "--show-current"), Map.of()),
-                "GIT_STATUS_FAILED", "无法读取当前分支").stdout().trim();
+                "GIT_STATUS_FAILED", "Cannot read current branch").stdout().trim();
         String head = head(repository);
         String raw = requireSuccess(
                 run(List.of("git", "-C", repository.toString(), "status", "--porcelain=v1", "-z",
                         "--untracked-files=all"), Map.of()),
-                "GIT_STATUS_FAILED", "无法读取工作树状态").stdout();
+                "GIT_STATUS_FAILED", "Cannot read worktree status").stdout();
         List<GitChangeResponse> changes = parseStatus(raw);
         return new GitStatusResponse(branch, head, changes.isEmpty(), changes);
     }
 
-    /** 生成包含 tracked 与 untracked 文件的完整二进制 patch，并计算 SHA-256。 */
+    /** 鐢熸垚鍖呭惈 tracked 涓?untracked 鏂囦欢鐨勫畬鏁翠簩杩涘埗 patch锛屽苟璁＄畻 SHA-256銆?*/
     public GitDiffResponse diff(Path repository) {
         Path index = null;
         try {
@@ -131,19 +131,19 @@ public class GitRepositoryManager {
             Files.delete(index);
             Map<String, String> environment = Map.of("GIT_INDEX_FILE", index.toString());
             requireSuccess(run(List.of("git", "-C", repository.toString(), "read-tree", "HEAD"), environment),
-                    "GIT_DIFF_FAILED", "无法准备 Git Diff");
+                    "GIT_DIFF_FAILED", "Cannot prepare Git diff");
             requireSuccess(run(List.of("git", "-C", repository.toString(), "add", "-A"), environment),
-                    "GIT_DIFF_FAILED", "无法收集工作树变更");
+                    "GIT_DIFF_FAILED", "Cannot collect worktree changes");
             CommandResult result = requireSuccess(
                     runLimited(List.of("git", "-C", repository.toString(), "diff", "--cached",
                             "--binary", "--no-ext-diff", "--no-color", "HEAD"), environment, MAX_DIFF_BYTES),
-                    "GIT_DIFF_FAILED", "无法生成 Git Diff");
+                    "GIT_DIFF_FAILED", "Cannot generate Git diff");
             byte[] patch = result.stdout().getBytes(StandardCharsets.UTF_8);
             return new GitDiffResponse(head(repository), sha256(patch), result.stdout());
         } catch (WorkerException exception) {
             throw exception;
         } catch (Exception exception) {
-            throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "GIT_DIFF_FAILED", "无法生成 Git Diff");
+            throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "GIT_DIFF_FAILED", "Cannot generate Git diff");
         } finally {
             if (index != null) {
                 try {
@@ -154,60 +154,68 @@ public class GitRepositoryManager {
         }
     }
 
-    /** 校验审查快照后，在内部执行 add -A 与 commit。 */
+    /** 鏍￠獙瀹℃煡蹇収鍚庯紝鍦ㄥ唴閮ㄦ墽琛?add -A 涓?commit銆?*/
     public GitCommitResponse commit(Path repository, GitCommitRequest request) {
         String currentHead = head(repository);
         if (!currentHead.equals(request.getExpectedHeadCommit())) {
-            throw conflict("GIT_HEAD_MISMATCH", "Workspace HEAD 已发生变化");
+            throw conflict("GIT_HEAD_MISMATCH", "Workspace HEAD has changed");
         }
         GitDiffResponse currentDiff = diff(repository);
         if (!currentDiff.getDiffHash().equals(request.getExpectedDiffHash())) {
-            throw conflict("GIT_DIFF_MISMATCH", "Workspace 内容与已审查 Diff 不一致");
+            throw conflict("GIT_DIFF_MISMATCH", "Workspace differs from reviewed diff");
         }
         if (currentDiff.getPatch().isEmpty()) {
-            throw conflict("GIT_NOTHING_TO_COMMIT", "Workspace 没有可提交的变更");
+            throw conflict("GIT_NOTHING_TO_COMMIT", "Workspace has no changes to commit");
         }
         requireSuccess(run(List.of("git", "-C", repository.toString(), "add", "-A"), Map.of()),
-                "GIT_COMMIT_FAILED", "无法暂存 Workspace 变更");
+                "GIT_COMMIT_FAILED", "Cannot stage Workspace changes");
         CommandResult staged = requireSuccess(runLimited(List.of("git", "-C", repository.toString(), "diff", "--cached",
                 "--binary", "--no-ext-diff", "--no-color", "HEAD"), Map.of(), MAX_DIFF_BYTES),
-                "GIT_COMMIT_FAILED", "无法复核暂存区快照");
+                "GIT_COMMIT_FAILED", "Cannot verify staged snapshot");
         String stagedHash = sha256(staged.stdout().getBytes(StandardCharsets.UTF_8));
         if (!stagedHash.equals(request.getExpectedDiffHash())) {
             run(List.of("git", "-C", repository.toString(), "reset", "--mixed", "HEAD"), Map.of());
-            throw conflict("GIT_DIFF_MISMATCH", "git add 后的暂存区与已审查 Diff 不一致");
+            throw conflict("GIT_DIFF_MISMATCH", "Staged diff differs from reviewed diff");
         }
         requireSuccess(run(List.of("git", "-C", repository.toString(), "commit", "-m", request.getMessage()), Map.of()),
-                "GIT_COMMIT_FAILED", "无法创建 Git Commit");
+                "GIT_COMMIT_FAILED", "Cannot create Git commit");
         return new GitCommitResponse(head(repository));
     }
 
-    /** 推送 Workspace 的 sourceBranch，并通过远端引用核验真实 SHA。 */
+    /** 鎺ㄩ€?Workspace 鐨?sourceBranch锛屽苟閫氳繃杩滅寮曠敤鏍搁獙鐪熷疄 SHA銆?*/
     public GitPushResponse push(UUID repositoryId, Path repository, String sourceBranch, GitPushRequest request) {
         return locked(repositoryId, () -> {
             String currentHead = head(repository);
             if (!currentHead.equals(request.getExpectedHeadCommit())) {
-                throw conflict("GIT_HEAD_MISMATCH", "Workspace HEAD 已发生变化");
+                throw conflict("GIT_HEAD_MISMATCH", "Workspace HEAD has changed");
             }
             Path store = gitStore(repositoryId);
             CommandResult origin = run(List.of("git", "--git-dir", store.toString(), "remote", "get-url", "origin"),
                     Map.of());
             if (origin.exitCode() != 0) {
-                throw invalid("GIT_ORIGIN_NOT_CONFIGURED", "共享 Git Store 未配置受控 origin");
+                throw invalid("GIT_ORIGIN_NOT_CONFIGURED", "Controlled Git origin is not configured");
             }
             
-            String token = exchangeCredential(request.getCredentialGrantId(), currentHead);
+            String repositoryFullName = repositoryFullNameFromOrigin(origin.stdout().trim());
+            String token = exchangeCredential(request.getCredentialGrantId(), currentHead, repositoryFullName, sourceBranch, "PUSH");
             Path askpassScript = null;
             try {
-                askpassScript = createAskpassScript(token);
+                askpassScript = createAskpassScript();
                 Map<String, String> env = Map.of(
                         "GIT_ASKPASS", askpassScript.toAbsolutePath().toString(),
-                        "GIT_TERMINAL_PROMPT", "0"
+                        "GIT_TERMINAL_PROMPT", "0",
+                        "QGENTS_GIT_TOKEN", token
                 );
 
                 requireSuccess(run(List.of("git", "--git-dir", store.toString(), "push", "origin",
                         "refs/heads/" + sourceBranch + ":refs/heads/" + sourceBranch), env),
-                        "GIT_PUSH_FAILED", "Git 推送失败");
+                        "GIT_PUSH_FAILED", "Git push failed");
+                CommandResult remote = requireSuccess(run(List.of("git", "--git-dir", store.toString(), "ls-remote",
+                        "origin", "refs/heads/" + sourceBranch), env), "GIT_REMOTE_VERIFY_FAILED", "Remote verify failed");
+                String remoteCommit = remote.stdout().isBlank() ? "" : remote.stdout().trim().split("\\s+")[0];
+                if (!currentHead.equals(remoteCommit)) {
+                    throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_REMOTE_SHA_MISMATCH", "Remote SHA mismatch");
+                }
             } finally {
                 if (askpassScript != null) {
                     try {
@@ -217,22 +225,19 @@ public class GitRepositoryManager {
                 token = null;
             }
 
-            CommandResult remote = requireSuccess(run(List.of("git", "--git-dir", store.toString(), "ls-remote",
-                    "origin", "refs/heads/" + sourceBranch), Map.of()),
-                    "GIT_REMOTE_VERIFY_FAILED", "无法核验远端分支");
-            String remoteCommit = remote.stdout().isBlank() ? "" : remote.stdout().trim().split("\\s+")[0];
-            if (!currentHead.equals(remoteCommit)) {
-                throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_REMOTE_SHA_MISMATCH", "远端分支未指向预期 Commit");
-            }
+            /* Command result is already verified while the short-lived credential is still active. */
             return new GitPushResponse(sourceBranch, currentHead, true);
         });
     }
 
-    private String exchangeCredential(String grantId, String headCommit) {
+    String exchangeCredential(String grantId, String headCommit, String repositoryFullName, String branchName, String purpose) {
         try {
             Map<String, String> body = Map.of(
                     "credentialGrantId", grantId,
-                    "expectedHeadCommit", headCommit
+                    "expectedHeadCommit", headCommit,
+                    "repositoryFullName", repositoryFullName,
+                    "branchName", branchName,
+                    "purpose", purpose
             );
             
             String url = properties.getBackendUrl();
@@ -248,20 +253,44 @@ public class GitRepositoryManager {
                     .body(Map.class);
             
             if (response == null || !response.containsKey("token")) {
-                throw invalid("CREDENTIAL_EXCHANGE_FAILED", "无法兑换凭据");
+                throw invalid("CREDENTIAL_EXCHANGE_FAILED", "Credential exchange did not return a token");
             }
             return response.get("token");
         } catch (WorkerException e) {
             throw e;
         } catch (Exception e) {
-            throw invalid("CREDENTIAL_EXCHANGE_ERROR", "请求凭据兑换失败: " + e.getMessage());
+            throw invalid("CREDENTIAL_EXCHANGE_ERROR", "Credential exchange request failed");
         }
     }
 
-    private Path createAskpassScript(String token) {
+    /**
+     * 浠呭湪鍙楁帶 Git 鍛戒护杩愯鏈熼棿鍚?AskPass 鎻愪緵鐭湡鍑嵁銆?     * Token 涓嶄細鍐欏叆纾佺洏锛岃皟鐢ㄧ粨鏉熷悗涓存椂鍚姩鍣ㄧ珛鍗冲垹闄ゃ€?     */
+    <T> T withCredential(String grantId, String headCommit, String repositoryFullName, String branchName, String purpose,
+            java.util.function.Function<Map<String, String>, T> action) {
+        String token = exchangeCredential(grantId, headCommit, repositoryFullName, branchName, purpose);
+        Path askpassScript = null;
+        try {
+            askpassScript = createAskpassScript();
+            return action.apply(Map.of(
+                    "GIT_ASKPASS", askpassScript.toAbsolutePath().toString(),
+                    "GIT_TERMINAL_PROMPT", "0",
+                    "QGENTS_GIT_TOKEN", token));
+        } finally {
+            if (askpassScript != null) {
+                try {
+                    Files.deleteIfExists(askpassScript);
+                } catch (Exception ignored) {
+                }
+            }
+            token = null;
+        }
+    }
+
+    /** 鍒涘缓涓€娆℃€?AskPass 鍚姩鍣紱鐪熷疄 Token 浠呴€氳繃瀛愯繘绋嬬幆澧冨彉閲忔彁渚涳紝涓嶈兘鍐欏叆涓存椂鏂囦欢銆?*/
+    Path createAskpassScript() {
         try {
             Path script = Files.createTempFile("git-askpass-", ".sh");
-            String content = "#!/bin/sh\necho '" + token + "'\n";
+            String content = "#!/bin/sh\ncase \"$1\" in\n  *Username*) printf '%s\\n' 'x-access-token' ;;\n  *) printf '%s\\n' \"${QGENTS_GIT_TOKEN:-}\" ;;\nesac\n";
             Files.writeString(script, content, StandardOpenOption.TRUNCATE_EXISTING);
             
             // chmod 700
@@ -279,21 +308,21 @@ public class GitRepositoryManager {
             
             return script;
         } catch (Exception e) {
-            throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "ASKPASS_CREATION_FAILED", "无法创建 GIT_ASKPASS 脚本");
+            throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "ASKPASS_CREATION_FAILED", "Cannot create GIT_ASKPASS script");
         }
     }
 
     public String head(Path repository) {
         return requireSuccess(run(List.of("git", "-C", repository.toString(), "rev-parse", "HEAD"), Map.of()),
-                "REPOSITORY_INVALID", "无法读取 Workspace 仓库 HEAD").stdout().trim();
+                "REPOSITORY_INVALID", "Cannot read Workspace repository HEAD").stdout().trim();
     }
 
     private void configureIdentity(Path target) {
         requireSuccess(run(List.of("git", "-C", target.toString(), "config", "user.name", "Qgents Agent"), Map.of()),
-                "REPOSITORY_CONFIG_FAILED", "无法配置 Git 提交身份");
+                "REPOSITORY_CONFIG_FAILED", "Cannot configure Git commit identity");
         requireSuccess(
                 run(List.of("git", "-C", target.toString(), "config", "user.email", "agent@qgents.local"), Map.of()),
-                "REPOSITORY_CONFIG_FAILED", "无法配置 Git 提交身份");
+                "REPOSITORY_CONFIG_FAILED", "Cannot configure Git commit identity");
     }
 
     private List<GitChangeResponse> parseStatus(String raw) {
@@ -321,20 +350,45 @@ public class GitRepositoryManager {
         return result.exitCode() == 0 ? result.stdout().trim() : null;
     }
 
-    private Path gitStore(UUID repositoryId) {
+    private String repositoryFullNameFromOrigin(String originUrl) {
+        try {
+            java.net.URI uri = java.net.URI.create(originUrl);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                    || !"github.com".equalsIgnoreCase(uri.getHost()) || uri.getRawUserInfo() != null
+                    || uri.getRawQuery() != null || uri.getRawFragment() != null
+                    || (uri.getPort() != -1 && uri.getPort() != 443)) {
+                throw invalid("GIT_ORIGIN_INVALID", "Git origin is not a controlled GitHub URL");
+            }
+            String[] segments = uri.getPath().split("/");
+            if (segments.length != 3 || segments[1].isBlank() || segments[2].isBlank()) {
+                throw invalid("GIT_ORIGIN_INVALID", "Git origin repository path is invalid");
+            }
+            String repository = segments[2].endsWith(".git") ? segments[2].substring(0, segments[2].length() - 4) : segments[2];
+            if (!segments[1].matches("[A-Za-z0-9_.-]+") || !repository.matches("[A-Za-z0-9_.-]+")) {
+                throw invalid("GIT_ORIGIN_INVALID", "Git origin repository path is invalid");
+            }
+            return segments[1] + "/" + repository;
+        } catch (WorkerException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw invalid("GIT_ORIGIN_INVALID", "Git origin is invalid");
+        }
+    }
+
+    Path gitStore(UUID repositoryId) {
         Path root = Path.of(properties.getGitStoreRoot()).toAbsolutePath().normalize();
         Path store = root.resolve(repositoryId + ".git").normalize();
         if (!store.startsWith(root))
-            throw invalid("GIT_STORE_PATH_INVALID", "Git Store 路径越界");
+            throw invalid("GIT_STORE_PATH_INVALID", "Git Store path escapes its root");
         return store;
     }
 
-    private void requireStore(Path store) {
+    void requireStore(Path store) {
         if (!Files.isDirectory(store))
-            throw invalid("GIT_STORE_NOT_FOUND", "共享 Git Store 尚未准备完成");
+            throw invalid("GIT_STORE_NOT_FOUND", "Shared Git Store is not ready");
     }
 
-    private <T> T locked(UUID repositoryId, Supplier<T> action) {
+    <T> T locked(UUID repositoryId, Supplier<T> action) {
         ReentrantLock localLock = localLocks.computeIfAbsent(repositoryId, ignored -> new ReentrantLock());
         localLock.lock();
         try {
@@ -347,19 +401,19 @@ public class GitRepositoryManager {
         } catch (WorkerException exception) {
             throw exception;
         } catch (Exception exception) {
-            throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "GIT_REPOSITORY_LOCK_FAILED", "无法锁定共享 Git 仓库");
+            throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "GIT_REPOSITORY_LOCK_FAILED", "Cannot lock shared Git repository");
         } finally {
             localLock.unlock();
         }
     }
 
-    private CommandResult requireSuccess(CommandResult result, String code, String message) {
+    CommandResult requireSuccess(CommandResult result, String code, String message) {
         if (result.exitCode() != 0)
             throw invalid(code, message);
         return result;
     }
 
-    private CommandResult run(List<String> command, Map<String, String> environment) {
+    CommandResult run(List<String> command, Map<String, String> environment) {
         return run(command, environment, Integer.MAX_VALUE);
     }
 
@@ -388,21 +442,21 @@ public class GitRepositoryManager {
                 terminateProcessTree(process);
                 closeProcessPipes(process);
                 joinReaders(out, err);
-                throw new WorkerException(HttpStatus.GATEWAY_TIMEOUT, "GIT_COMMAND_TIMEOUT", "Git 操作执行超时");
+                throw new WorkerException(HttpStatus.GATEWAY_TIMEOUT, "GIT_COMMAND_TIMEOUT", "Git operation timed out");
             }
             closeQuietly(process.getOutputStream());
             if (!joinReaders(out, err)) {
                 terminateProcessTree(process);
                 closeProcessPipes(process);
                 joinReaders(out, err);
-                throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_READER_TIMEOUT", "Git 输出读取线程未能及时结束");
+                throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_READER_TIMEOUT", "Git output reader timed out");
             }
             if (stdoutExceeded.get()) {
-                throw new WorkerException(HttpStatus.PAYLOAD_TOO_LARGE, "GIT_DIFF_TOO_LARGE", "Git Diff 超过 10 MiB 上限");
+                throw new WorkerException(HttpStatus.PAYLOAD_TOO_LARGE, "GIT_DIFF_TOO_LARGE", "Git Diff exceeds 10 MiB");
             }
             if (stderrExceeded.get()) {
                 throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_OUTPUT_TOO_LARGE",
-                        "Git 错误输出超过 1 MiB 上限");
+                        "Git error output exceeds 1 MiB");
             }
             return new CommandResult(process.exitValue(), stdout.toString(StandardCharsets.UTF_8),
                     stderr.toString(StandardCharsets.UTF_8));
@@ -413,9 +467,9 @@ public class GitRepositoryManager {
             closeProcessPipes(process);
             joinReadersUninterruptibly(out, err);
             Thread.currentThread().interrupt();
-            throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_INTERRUPTED", "Git 操作被中断");
+            throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_INTERRUPTED", "Git operation was interrupted");
         } catch (Exception exception) {
-            throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_FAILED", "无法执行受控 Git 操作");
+            throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_COMMAND_FAILED", "Cannot execute controlled Git operation");
         } finally {
             if (process != null && process.isAlive())
                 terminateProcessTree(process);
@@ -531,7 +585,7 @@ public class GitRepositoryManager {
         }
     }
 
-    private WorkerException invalid(String code, String message) {
+    WorkerException invalid(String code, String message) {
         return new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, code, message);
     }
 
@@ -542,6 +596,6 @@ public class GitRepositoryManager {
     public record WorktreeResult(String baseCommit, String headCommit) {
     }
 
-    private record CommandResult(int exitCode, String stdout, String stderr) {
+    record CommandResult(int exitCode, String stdout, String stderr) {
     }
 }

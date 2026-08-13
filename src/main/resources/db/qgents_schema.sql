@@ -759,6 +759,22 @@ CREATE TABLE IF NOT EXISTS
 -- 全新整库初始化时上方 merge_requests 建表不包含该列，由本 ALTER 补齐；
 -- 已存在该列的库自动跳过，脚本整体可重复执行。
 -- 说明：MySQL 不支持 ADD COLUMN IF NOT EXISTS，此处用 information_schema 探测 + PREPARE 动态执行实现幂等。
+CREATE TABLE IF NOT EXISTS git_credential_grants (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    grant_id_hash VARCHAR(64) NOT NULL UNIQUE,
+    team_id BINARY(16) NOT NULL,
+    project_id BINARY(16) NOT NULL,
+    installation_id BIGINT UNSIGNED NOT NULL,
+    repository_full_name VARCHAR(255) NOT NULL,
+    branch_name VARCHAR(255) NOT NULL,
+    expected_head_commit VARCHAR(64) NOT NULL,
+    purpose VARCHAR(16) NOT NULL DEFAULT 'PUSH',
+    expires_at DATETIME(6) NOT NULL,
+    is_used TINYINT(1) NOT NULL DEFAULT 0,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    INDEX idx_grant_hash (grant_id_hash)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Git one-time credential grant';
+
 SET @mr_col_exists = (
     SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'merge_requests' AND COLUMN_NAME = 'author_user_id'

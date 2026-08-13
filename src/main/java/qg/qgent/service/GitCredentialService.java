@@ -5,6 +5,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.entity.GitCredentialGrant;
+import qg.qgent.entity.GitCredentialPurpose;
 import qg.qgent.github.GitHubAppClient;
 import qg.qgent.mapper.GitCredentialGrantMapper;
 
@@ -41,6 +42,16 @@ public class GitCredentialService {
     @Transactional
     public String generateGrant(UUID teamId, UUID projectId, Long installationId,
                                 String repositoryFullName, String branchName, String expectedHeadCommit) {
+        return generateGrant(teamId, projectId, installationId, repositoryFullName, branchName,
+                expectedHeadCommit, GitCredentialPurpose.PUSH);
+    }
+
+    /**
+     * 为一项指定 Git 操作创建一次性授权；用途、仓库、分支和 HEAD 均会在兑换时原子校验。
+     */
+    @Transactional
+    public String generateGrant(UUID teamId, UUID projectId, Long installationId,
+            String repositoryFullName, String branchName, String expectedHeadCommit, GitCredentialPurpose purpose) {
         String grantId = UUID.randomUUID().toString();
         String hash = sha256(grantId);
 
@@ -52,6 +63,7 @@ public class GitCredentialService {
         grant.setRepositoryFullName(repositoryFullName);
         grant.setBranchName(branchName);
         grant.setExpectedHeadCommit(expectedHeadCommit);
+        grant.setPurpose(purpose);
         
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         grant.setCreatedAt(now);
@@ -71,11 +83,13 @@ public class GitCredentialService {
      * @return GitHub Installation Token
      */
     @Transactional
-    public String exchangeGrant(String grantId, String expectedHeadCommit) {
+    public String exchangeGrant(String grantId, String expectedHeadCommit, String repositoryFullName,
+            String branchName, GitCredentialPurpose purpose) {
         String hash = sha256(grantId);
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
 
-        int updated = credentialGrantMapper.exchangeGrant(hash, expectedHeadCommit, now);
+        int updated = credentialGrantMapper.exchangeGrant(hash, expectedHeadCommit, repositoryFullName, branchName,
+                purpose, now);
         if (updated == 0) {
             throw new ApiException(HttpStatus.FORBIDDEN, "INVALID_CREDENTIAL_GRANT",
                     "临时凭据无效、已过期、已被使用，或 HEAD 不匹配");
