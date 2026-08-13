@@ -34,6 +34,8 @@ public class SandboxWorkerClient {
     private static final String TOOL_EXECUTIONS = BASE_PATH + "/sandboxes/{sandboxId}/tool-executions";
     private static final String TOOL_EXECUTION = BASE_PATH + "/tool-executions/{executionId}";
     private static final String TOOL_EXECUTION_LOGS = TOOL_EXECUTION + "/logs";
+    private static final String GIT_STORE_SYNC = BASE_PATH + "/git-stores/{repositoryId}/sync";
+    private static final String GIT_PUSH = WORKSPACES + "/repositories/{repositoryId}/git/push";
 
     private final RestClient client;
     private final ObjectMapper objectMapper;
@@ -76,12 +78,30 @@ public class SandboxWorkerClient {
                 .body(WorkerGitStatus.class));
     }
 
+    /** 同步受控 Git Store */
+    public WorkerGitStoreSyncResponse syncGitStore(UUID repositoryId, WorkerGitStoreSyncRequest request) {
+        return execute(() -> client.post()
+                .uri(GIT_STORE_SYNC, repositoryId)
+                .body(request)
+                .retrieve()
+                .body(WorkerGitStoreSyncResponse.class));
+    }
+
     /** 生成包含未跟踪文件的完整 Diff。 */
     public WorkerGitDiff createWorkspaceGitDiff(UUID workspaceId, UUID repositoryId) {
         return execute(() -> client.post()
                 .uri(GIT_DIFF, workspaceId, repositoryId)
                 .retrieve()
                 .body(WorkerGitDiff.class));
+    }
+
+    /** 校验 expectedHeadCommit 并带凭证发起推送。 */
+    public WorkerGitPushResponse pushWorkspaceBranch(UUID workspaceId, UUID repositoryId, WorkerGitPushRequest request) {
+        return execute(() -> client.post()
+                .uri(GIT_PUSH, workspaceId, repositoryId)
+                .body(request)
+                .retrieve()
+                .body(WorkerGitPushResponse.class));
     }
 
     /** 创建 Sandbox 并应用 Worker 本地资源上限。 */

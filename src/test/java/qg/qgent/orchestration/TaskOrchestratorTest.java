@@ -23,6 +23,7 @@ import qg.qgent.orchestration.tool.ExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionResult;
 import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.github.GitHubAppClient;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 import qg.qgent.orchestration.worker.SandboxSessionManager;
@@ -65,9 +66,11 @@ class TaskOrchestratorTest {
     private final TaskRunService taskRunService = mock(TaskRunService.class);
     private final EventService eventService = mock(EventService.class);
     private final AgentContextAssembler contextAssembler = new AgentContextAssembler();
+    private final GitHubAppClient githubAppClient = mock(GitHubAppClient.class);
     private final SandboxSessionManager sessionManager = new SandboxSessionManager(
             mock(SandboxWorkerClient.class), new SandboxWorkerProperties(), mock(WorkspaceMapper.class), repoMapper,
-            mock(ProjectRepositoryMapper.class));
+            mock(ProjectRepositoryMapper.class), mock(qg.qgent.mapper.GitHubRepositoryMapper.class),
+            mock(qg.qgent.mapper.GitHubInstallationMapper.class), mock(qg.qgent.service.GitCredentialService.class), githubAppClient);
 
     private TaskOrchestrator orchestrator(AgentRunExecutor executor) {
         return new TaskOrchestrator(new OrchestrationStateMachine(), stepScheduler, executor, contextAssembler,
