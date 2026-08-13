@@ -169,7 +169,7 @@ public class GitHubRepositoryController {
      *
      * @param installationId GitHub 提供的安装数字 ID
      * @param state 创建安装跳转地址时生成的签名状态
-     * @return 同步完成时返回 204
+     * @return 成功后通过 302 重定向到前端路径
      */
     @GetMapping("/integrations/github/callback")
     public ResponseEntity<Void> installationCallback(@RequestParam("installation_id") long installationId,
