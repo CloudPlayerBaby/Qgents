@@ -43,6 +43,10 @@ import qg.qgent.github.GitHubPullRequestCreateRequest;
 import qg.qgent.github.GitHubPullRequestDetails;
 import qg.qgent.github.GitHubPullRequestMergeRequest;
 import qg.qgent.github.GitHubPullRequestMergeResult;
+import qg.qgent.orchestration.worker.SandboxWorkerClient;
+import qg.qgent.orchestration.worker.WorkerGitPushRequest;
+import qg.qgent.orchestration.worker.WorkerGitPushResponse;
+import qg.qgent.entity.GitCredentialPurpose;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -85,6 +89,8 @@ public class MergeRequestService {
     private final ProjectAccessService projectAccess;
     private final EventService eventService;
     private final NotificationService notificationService;
+    private final SandboxWorkerClient workerClient;
+    private final GitCredentialService credentialService;
 
     public MergeRequestService(MergeRequestMapper mergeRequestMapper, MergeRequestGroupMapper mergeRequestGroupMapper,
             QualityCheckResultMapper qualityCheckMapper, MergeRequestReviewMapper reviewMapper,
@@ -94,7 +100,8 @@ public class MergeRequestService {
             RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
             EventService eventService, GitHubInstallationMapper githubInstallationMapper,
             GitHubRepositoryMapper githubRepositoryMapper, ProjectMapper projectMapper, GitHubAppClient githubClient,
-            NotificationService notificationService) {
+            NotificationService notificationService, SandboxWorkerClient workerClient,
+            GitCredentialService credentialService) {
         this.mergeRequestMapper = mergeRequestMapper;
         this.mergeRequestGroupMapper = mergeRequestGroupMapper;
         this.qualityCheckMapper = qualityCheckMapper;
@@ -111,6 +118,8 @@ public class MergeRequestService {
         this.projectAccess = projectAccess;
         this.eventService = eventService;
         this.notificationService = notificationService;
+        this.workerClient = workerClient;
+        this.credentialService = credentialService;
     }
 
     /**
@@ -208,6 +217,23 @@ public class MergeRequestService {
             }
             throw new ApiException(HttpStatus.CONFLICT, "OPEN_MR_ALREADY_EXISTS",
                     "An open Pull Request already exists for this source and target branch");
+        }
+
+        String repositoryFullName = githubRepository.getOwnerLogin() + "/" + githubRepository.getName();
+        String grantId = credentialService.generateGrant(installation.getTeamId(), projectId, installation.getProviderInstallationId(),
+                repositoryFullName, worktree.getSourceBranch(), worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
+
+        WorkerGitPushResponse pushResponse;
+        try {
+            pushResponse = workerClient.pushWorkspaceBranch(task.getWorkspaceId(), request.getRepositoryId(),
+                    new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit()).setCredentialGrantId(grantId));
+        } catch (ApiException e) {
+            throw new ApiException(e.status(), "WORKER_PUSH_FAILED", "Failed to push branch via Sandbox Worker: " + e.getMessage());
+        }
+
+        if (!pushResponse.isVerified() || !worktree.getHeadCommit().equals(pushResponse.getHeadCommit())) {
+            throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
+                    "Sandbox Worker push verification failed or HEAD mismatch");
         }
 
         GitHubPullRequestDetails remote = githubClient.createPullRequest(

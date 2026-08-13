@@ -43,6 +43,8 @@ class MergeRequestServiceTest {
     private final ProjectAccessService projectAccess = mock(ProjectAccessService.class);
     private final EventService eventService = mock(EventService.class);
     private final NotificationService notificationService = mock(NotificationService.class);
+    private final qg.qgent.orchestration.worker.SandboxWorkerClient sandboxWorkerClient = mock(qg.qgent.orchestration.worker.SandboxWorkerClient.class);
+    private final GitCredentialService gitCredentialService = mock(GitCredentialService.class);
 
     private MergeRequestService service;
 
@@ -52,7 +54,8 @@ class MergeRequestServiceTest {
                 mergeRequestMapper, mergeRequestGroupMapper, qualityCheckMapper, reviewMapper,
                 taskMapper, workspaceRepositoryMapper, projectRepositoryMapper, branchConfigMapper,
                 branchConfigTestsetMapper, projectAccess, eventService, githubInstallationMapper,
-                githubRepositoryMapper, projectMapper, githubClient, notificationService
+                githubRepositoryMapper, projectMapper, githubClient, notificationService,
+                sandboxWorkerClient, gitCredentialService
         );
     }
 
@@ -113,6 +116,13 @@ class MergeRequestServiceTest {
 
         when(mergeRequestMapper.selectOne(any())).thenReturn(null);
 
+        when(gitCredentialService.generateGrant(any(), any(), any(), any(), any(), any(), any())).thenReturn("mock-grant-id");
+        qg.qgent.orchestration.worker.WorkerGitPushResponse mockPushResponse = new qg.qgent.orchestration.worker.WorkerGitPushResponse()
+                .setBranch("feature/test")
+                .setHeadCommit("sha123")
+                .setVerified(true);
+        when(sandboxWorkerClient.pushWorkspaceBranch(any(), any(), any())).thenReturn(mockPushResponse);
+
         GitHubPullRequestDetails githubPr = new GitHubPullRequestDetails(
                 1L, 100, "open", "Test PR", "sha123", "feature/test", "main", false, "url"
         );
@@ -142,6 +152,73 @@ class MergeRequestServiceTest {
 
         ApiException ex = assertThrows(ApiException.class, () -> service.create(projectId, userId, request));
         assertEquals("TASK_NOT_FOUND", ex.code());
+    }
+
+    @Test
+    void createFailsWhenWorkerPushVerificationFails() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+
+        MergeRequestCreateRequest request = new MergeRequestCreateRequest();
+        request.setTaskId(taskId);
+        request.setRepositoryId(repositoryId);
+        request.setTargetBranch("main");
+        request.setTitle("Test PR");
+
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setCreatedBy(userId);
+        task.setWorkspaceId(workspaceId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setRepositoryId(UUID.randomUUID());
+        when(projectRepositoryMapper.selectById(repositoryId)).thenReturn(repository);
+
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setWorkspaceId(workspaceId);
+        worktree.setProjectRepositoryId(repositoryId);
+        worktree.setSourceBranch("feature/test");
+        worktree.setHeadCommit("sha123");
+        when(workspaceRepositoryMapper.selectForUpdate(workspaceId, repositoryId)).thenReturn(worktree);
+
+        GitHubRepositoryEntity githubRepository = new GitHubRepositoryEntity();
+        githubRepository.setId(repository.getRepositoryId());
+        githubRepository.setInstallationId(UUID.randomUUID());
+        githubRepository.setOwnerLogin("owner");
+        githubRepository.setName("repo");
+        when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
+
+        ProjectEntity project = new ProjectEntity();
+        project.setId(projectId);
+        project.setTeamId(UUID.randomUUID());
+        when(projectMapper.selectById(projectId)).thenReturn(project);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(githubRepository.getInstallationId());
+        installation.setStatus("ACTIVE");
+        installation.setProviderInstallationId(12345L);
+        installation.setTeamId(project.getTeamId());
+        when(githubInstallationMapper.selectById(githubRepository.getInstallationId())).thenReturn(installation);
+
+        when(mergeRequestMapper.selectOne(any())).thenReturn(null);
+        when(gitCredentialService.generateGrant(any(), any(), any(), any(), any(), any(), any())).thenReturn("mock-grant-id");
+        
+        qg.qgent.orchestration.worker.WorkerGitPushResponse mockPushResponse = new qg.qgent.orchestration.worker.WorkerGitPushResponse()
+                .setBranch("feature/test")
+                .setHeadCommit("sha123")
+                .setVerified(false); // verified=false
+        when(sandboxWorkerClient.pushWorkspaceBranch(any(), any(), any())).thenReturn(mockPushResponse);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.create(projectId, userId, request));
+        assertEquals("WORKER_PUSH_VERIFICATION_FAILED", ex.code());
+        verify(githubClient, never()).createPullRequest(anyLong(), any(), any(), any());
     }
 
     @Test
@@ -305,6 +382,13 @@ class MergeRequestServiceTest {
         when(githubInstallationMapper.selectById(githubRepository.getInstallationId())).thenReturn(installation);
 
         when(mergeRequestMapper.selectOne(any())).thenReturn(null);
+
+        when(gitCredentialService.generateGrant(any(), any(), any(), any(), any(), any(), any())).thenReturn("mock-grant-id");
+        qg.qgent.orchestration.worker.WorkerGitPushResponse mockPushResponse = new qg.qgent.orchestration.worker.WorkerGitPushResponse()
+                .setBranch("feature/test")
+                .setHeadCommit("sha123")
+                .setVerified(true);
+        when(sandboxWorkerClient.pushWorkspaceBranch(any(), any(), any())).thenReturn(mockPushResponse);
 
         // GitHub returns invalid PR (number = 0 or null etc.)
         GitHubPullRequestDetails githubPr = new GitHubPullRequestDetails(

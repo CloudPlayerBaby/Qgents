@@ -240,6 +240,24 @@ public class RestGitHubAppClient implements GitHubAppClient {
     }
 
     @Override
+    public GitHubBranchDetails getBranch(long installationId, String owner, String repo, String branch) {
+        requireConfigured();
+        try {
+            BranchResponse response = client.get()
+                    .uri("/repos/{owner}/{repo}/branches/{branch}", owner, repo, branch)
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .retrieve()
+                    .body(BranchResponse.class);
+            if (response == null || response.commit() == null || response.commit().sha() == null) {
+                throw upstreamFailure();
+            }
+            return new GitHubBranchDetails(response.name(), response.commit().sha());
+        } catch (RestClientException exception) {
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
     public GitHubPullRequestDetails getPullRequest(long installationId, String owner, String repo, int pullNumber) {
         requireConfigured();
         try {
@@ -338,4 +356,6 @@ public class RestGitHubAppClient implements GitHubAppClient {
             @JsonProperty("commit_message") String commitMessage,
             @JsonProperty("merge_method") String mergeMethod, String sha) { }
     private record MergeResponse(boolean merged, String sha, String message) { }
+    private record BranchResponse(String name, CommitResponse commit) { }
+    private record CommitResponse(String sha) { }
 }

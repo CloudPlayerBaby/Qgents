@@ -60,6 +60,17 @@ public interface GitHubAppClient {
     GitHubPullRequestDetails createPullRequest(long installationId, String owner, String repo, GitHubPullRequestCreateRequest request);
 
     /**
+     * Gets branch details from GitHub, including the current HEAD SHA.
+     *
+     * @param installationId 安装 ID
+     * @param owner          仓库所有者
+     * @param repo           仓库名称
+     * @param branch         分支名称
+     * @return Branch 详情
+     */
+    GitHubBranchDetails getBranch(long installationId, String owner, String repo, String branch);
+
+    /**
      * Gets the current Pull Request state and source/target refs from GitHub.
      */
     GitHubPullRequestDetails getPullRequest(long installationId, String owner, String repo, int pullNumber);

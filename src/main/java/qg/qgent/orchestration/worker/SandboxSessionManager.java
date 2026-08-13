@@ -8,6 +8,14 @@ import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.WorkspaceMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.mapper.GitHubRepositoryMapper;
+import qg.qgent.mapper.GitHubInstallationMapper;
+import qg.qgent.service.GitCredentialService;
+import qg.qgent.entity.GitHubRepositoryEntity;
+import qg.qgent.entity.GitHubInstallationEntity;
+import qg.qgent.entity.GitCredentialPurpose;
+import qg.qgent.github.GitHubAppClient;
+import qg.qgent.github.GitHubBranchDetails;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -40,16 +48,26 @@ public class SandboxSessionManager {
     private final WorkspaceMapper workspaceMapper;
     private final WorkspaceRepositoryMapper repositoryMapper;
     private final ProjectRepositoryMapper projectRepositoryMapper;
+    private final GitHubRepositoryMapper gitHubRepositoryMapper;
+    private final GitHubInstallationMapper installationMapper;
+    private final GitCredentialService credentialService;
+    private final GitHubAppClient githubAppClient;
     private final Map<UUID, SandboxSession> sessions = new ConcurrentHashMap<>();
 
     public SandboxSessionManager(SandboxWorkerClient client, SandboxWorkerProperties properties,
             WorkspaceMapper workspaceMapper, WorkspaceRepositoryMapper repositoryMapper,
-            ProjectRepositoryMapper projectRepositoryMapper) {
+            ProjectRepositoryMapper projectRepositoryMapper, GitHubRepositoryMapper gitHubRepositoryMapper,
+            GitHubInstallationMapper installationMapper, GitCredentialService credentialService,
+            GitHubAppClient githubAppClient) {
         this.client = client;
         this.properties = properties;
         this.workspaceMapper = workspaceMapper;
         this.repositoryMapper = repositoryMapper;
         this.projectRepositoryMapper = projectRepositoryMapper;
+        this.gitHubRepositoryMapper = gitHubRepositoryMapper;
+        this.installationMapper = installationMapper;
+        this.credentialService = credentialService;
+        this.githubAppClient = githubAppClient;
     }
 
     /**
@@ -100,6 +118,60 @@ public class SandboxSessionManager {
         if (repositories == null || repositories.isEmpty()) {
             throw new IllegalStateException("workspace has no repository worktrees: " + workspaceId);
         }
+
+        // Fetch Grants and Sync bare Git Stores for each repository
+        for (WorkspaceRepositoryEntity repository : repositories) {
+            ProjectRepositoryEntity projectRepo = projectRepositoryMapper.selectById(repository.getProjectRepositoryId());
+            if (projectRepo == null) {
+                throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "PROJECT_REPOSITORY_NOT_BOUND",
+                        "Repository binding not found for workspace repository");
+            }
+            String remoteBranch = projectRepo.getDefaultBranch();
+            if (remoteBranch == null || remoteBranch.isBlank()) {
+                throw new IllegalStateException("project repository has no default branch: " + repository.getProjectRepositoryId());
+            }
+
+            GitHubRepositoryEntity ghRepo = gitHubRepositoryMapper.selectById(projectRepo.getRepositoryId());
+            if (ghRepo == null) {
+                throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.NOT_FOUND, "GITHUB_REPOSITORY_NOT_FOUND",
+                        "GitHub repository mirror not found");
+            }
+            GitHubInstallationEntity installation = installationMapper.selectById(ghRepo.getInstallationId());
+            if (installation == null) {
+                throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.NOT_FOUND, "GITHUB_INSTALLATION_NOT_FOUND",
+                        "GitHub App installation not found for repository");
+            }
+            if (!"ACTIVE".equalsIgnoreCase(installation.getStatus()) || installation.getProviderInstallationId() == null) {
+                throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "GITHUB_INSTALLATION_NOT_ACTIVE",
+                        "GitHub App installation is not active");
+            }
+            if (!"AUTHORIZED".equalsIgnoreCase(ghRepo.getAuthorizationStatus())) {
+                throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.FORBIDDEN, "GITHUB_REPOSITORY_REVOKED",
+                        "GitHub repository authorization has been revoked");
+            }
+            
+            String expectedHeadCommit = repository.getBaseCommit();
+            if (expectedHeadCommit == null || expectedHeadCommit.isBlank()) {
+                GitHubBranchDetails branchDetails = githubAppClient.getBranch(
+                        installation.getProviderInstallationId(), ghRepo.getOwnerLogin(), ghRepo.getName(), remoteBranch);
+                expectedHeadCommit = branchDetails.commitSha();
+            }
+            
+            String fullName = ghRepo.getOwnerLogin() + "/" + ghRepo.getName();
+            String githubUrl = "https://github.com/" + fullName + ".git";
+            
+            String grantId = credentialService.generateGrant(installation.getTeamId(), projectId, installation.getProviderInstallationId(),
+                    fullName, remoteBranch, expectedHeadCommit, GitCredentialPurpose.FETCH);
+            
+            WorkerGitStoreSyncRequest syncReq = new WorkerGitStoreSyncRequest()
+                    .setRepositoryUrl(githubUrl)
+                    .setRemoteBranch(remoteBranch)
+                    .setExpectedHeadCommit(expectedHeadCommit)
+                    .setCredentialGrantId(grantId);
+            
+            client.syncGitStore(projectRepo.getId(), syncReq);
+        }
+
         WorkerWorkspaceProvisionRequest provision = new WorkerWorkspaceProvisionRequest();
         provision.setProjectId(projectId);
         provision.setRepositories(repositories.stream().map(this::toRepositoryRequest).toList());
