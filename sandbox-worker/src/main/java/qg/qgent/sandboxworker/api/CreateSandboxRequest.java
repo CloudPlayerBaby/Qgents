@@ -7,7 +7,7 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
-import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -28,7 +28,7 @@ public class CreateSandboxRequest {
     /** Workspace 的不透明存储键，由 Worker 解析为受控根目录下的实际路径。 */
     @NotBlank
     @Size(max = 512)
-    @Pattern(regexp = "workspaces/[A-Za-z0-9/_-]+")
+    @Pattern(regexp = "workspaces/[0-9a-fA-F-]{36}")
     private String workspaceStorageKey;
 
     /** Worker 白名单中的镜像配置名称，例如 java-node。 */
@@ -47,5 +47,5 @@ public class CreateSandboxRequest {
      */
     @NotNull
     @Size(max = 32)
-    private Map<@NotNull UUID, @NotBlank @Pattern(regexp = "[A-Za-z0-9._/-]+") String> repositories = Map.of();
+    private List<@NotNull UUID> repositoryIds = List.of();
 }

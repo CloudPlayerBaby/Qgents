@@ -11,6 +11,7 @@ import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
 import qg.qgent.sandboxworker.runtime.ContainerRuntime;
 import qg.qgent.sandboxworker.runtime.SandboxAllocation;
 import qg.qgent.sandboxworker.workspace.WorkspaceOperationLock;
+import qg.qgent.sandboxworker.workspace.WorkspaceMetadataStore;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -31,12 +32,17 @@ public class SandboxService {
     private final SandboxWorkerProperties properties;
     private final Clock clock;
     private final WorkspaceOperationLock workspaceLock;
+    private final WorkspaceMetadataStore workspaceMetadataStore;
 
     /**
      * 创建沙箱并计算实际租约。
      * 相同 Sandbox 编号的重复创建请求会返回冲突。
      */
     public SandboxResponse create(CreateSandboxRequest request) {
+        if (request.getRepositoryIds().stream().distinct().count() != request.getRepositoryIds().size()) {
+            throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "SANDBOX_REPOSITORY_DUPLICATE", "Sandbox 不能重复声明同一仓库");
+        }
         if (!properties.getImageProfiles().contains(request.getImageProfile())) {
             throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY,
                     "IMAGE_PROFILE_NOT_ALLOWED", "镜像配置不在 Worker 允许列表中");
@@ -59,7 +65,7 @@ public class SandboxService {
                 now.plus(maxLifetime),
                 executionTimeout,
                 null,
-                Map.copyOf(request.getRepositories()));
+                workspaceMetadataStore.resolveRepositories(request.getWorkspaceStorageKey(), request.getRepositoryIds()));
 
         try {
             return workspaceLock.execute(request.getWorkspaceStorageKey(),

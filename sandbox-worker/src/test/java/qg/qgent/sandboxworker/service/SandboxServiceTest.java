@@ -8,6 +8,7 @@ import qg.qgent.sandboxworker.api.SandboxResponse;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
 import qg.qgent.sandboxworker.runtime.FakeContainerRuntime;
 import qg.qgent.sandboxworker.workspace.WorkspaceOperationLock;
+import qg.qgent.sandboxworker.workspace.WorkspaceMetadataStore;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -18,6 +19,9 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class SandboxServiceTest {
     @TempDir
@@ -53,6 +57,36 @@ class SandboxServiceTest {
         assertTrue(service.expiredSandboxIds().contains(request.getSandboxId()));
     }
 
+    @Test
+    void resolvesAuthorizedRepositoryIdsFromWorkspaceMetadata() {
+        SandboxWorkerProperties properties = properties();
+        WorkspaceMetadataStore metadata = mock(WorkspaceMetadataStore.class);
+        UUID repositoryId = UUID.randomUUID();
+        CreateSandboxRequest request = request();
+        request.setRepositoryIds(java.util.List.of(repositoryId));
+        when(metadata.resolveRepositories(request.getWorkspaceStorageKey(), request.getRepositoryIds()))
+                .thenReturn(java.util.Map.of(repositoryId, "backend"));
+
+        SandboxService service = new SandboxService(runtime, properties, Clock.fixed(now, ZoneOffset.UTC),
+                new WorkspaceOperationLock(properties), metadata);
+        service.create(request);
+
+        assertEquals("backend", runtime.find(request.getSandboxId()).orElseThrow()
+                .getRepositoryPaths().get(repositoryId));
+    }
+
+    @Test
+    void rejectsDuplicateRepositoryIds() {
+        UUID repositoryId = UUID.randomUUID();
+        CreateSandboxRequest request = request();
+        request.setRepositoryIds(java.util.List.of(repositoryId, repositoryId));
+
+        var exception = assertThrows(qg.qgent.sandboxworker.api.WorkerException.class,
+                () -> service().create(request));
+
+        assertEquals("SANDBOX_REPOSITORY_DUPLICATE", exception.getCode());
+    }
+
     private CreateSandboxRequest request() {
         CreateSandboxRequest request = new CreateSandboxRequest();
         request.setSandboxId(UUID.randomUUID());
@@ -72,7 +106,10 @@ class SandboxServiceTest {
 
     private SandboxService service() {
         SandboxWorkerProperties properties = properties();
+        WorkspaceMetadataStore metadata = mock(WorkspaceMetadataStore.class);
+        when(metadata.resolveRepositories(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(java.util.Map.of());
         return new SandboxService(runtime, properties, Clock.fixed(now, ZoneOffset.UTC),
-                new WorkspaceOperationLock(properties));
+                new WorkspaceOperationLock(properties), metadata);
     }
 }

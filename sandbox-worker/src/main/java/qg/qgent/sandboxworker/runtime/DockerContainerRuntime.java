@@ -1,12 +1,9 @@
 package qg.qgent.sandboxworker.runtime;
 
 import com.github.dockerjava.api.DockerClient;
-import com.github.dockerjava.api.model.AccessMode;
-import com.github.dockerjava.api.model.Bind;
 import com.github.dockerjava.api.model.Capability;
 import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.HostConfig;
-import com.github.dockerjava.api.model.Volume;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -16,7 +13,6 @@ import qg.qgent.sandboxworker.api.CreateSandboxRequest;
 import qg.qgent.sandboxworker.api.WorkerException;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
 
-import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
@@ -56,6 +52,7 @@ public class DockerContainerRuntime implements ContainerRuntime {
     private final DockerClient docker;
     private final SandboxWorkerProperties properties;
     private final WorkspacePathResolver paths;
+    private final SandboxBindFactory bindFactory;
     private final ConcurrentMap<UUID, SandboxAllocation> allocations = new ConcurrentHashMap<>();
 
     /**
@@ -72,11 +69,10 @@ public class DockerContainerRuntime implements ContainerRuntime {
         paths.resolveLocal(request.getWorkspaceStorageKey());
         allocation.getRepositoryPaths().keySet()
                 .forEach(repositoryId -> paths.resolveRepositoryLocal(allocation, repositoryId));
-        Path hostWorkspace = paths.resolveDockerHost(request.getWorkspaceStorageKey());
         String image = Optional.ofNullable(properties.getImages().get(request.getImageProfile()))
                 .orElseThrow(() -> new WorkerException(CONFLICT, "IMAGE_PROFILE_NOT_CONFIGURED", "镜像配置尚未映射到镜像"));
         HostConfig hostConfig = HostConfig.newHostConfig()
-                .withBinds(new Bind(hostWorkspace.toString(), new Volume("/workspace"), AccessMode.rw))
+                .withBinds(bindFactory.create(allocation))
                 .withReadonlyRootfs(true)
                 .withNetworkMode(networkMode())
                 .withCapDrop(Capability.ALL)

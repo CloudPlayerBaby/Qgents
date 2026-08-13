@@ -12,51 +12,47 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReentrantLock;
 
-/**
- * 使用共享元数据目录中的文件锁串行化 Workspace 删除与 Sandbox 创建。
- * 多个 Worker 必须挂载同一 metadata root，文件锁才具备跨进程互斥能力。
- */
+/** 使用 JVM keyed lock 与共享文件锁串行化 Workspace 操作。 */
 @Component
 @RequiredArgsConstructor
 public class WorkspaceOperationLock {
     private final SandboxWorkerProperties properties;
+    private final ConcurrentMap<UUID, ReentrantLock> localLocks = new ConcurrentHashMap<>();
 
-    /** 在指定 Workspace 的跨进程互斥锁内执行操作。 */
+    /** 同 JVM 先串行，再获取跨进程文件锁，避免 OverlappingFileLockException。 */
     public <T> T execute(String storageKey, LockedOperation<T> operation) {
         UUID workspaceId = parseWorkspaceId(storageKey);
-        Path lockDirectory = Path.of(properties.getWorkspaceMetadataRoot()).toAbsolutePath().normalize()
-                .resolve("locks");
+        ReentrantLock localLock = localLocks.computeIfAbsent(workspaceId, ignored -> new ReentrantLock());
+        localLock.lock();
         try {
-            Files.createDirectories(lockDirectory);
-            Path lockFile = lockDirectory.resolve(workspaceId + ".lock");
-            try (FileChannel channel = FileChannel.open(lockFile,
-                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-                    FileLock ignored = channel.lock()) {
+            Path directory = Path.of(properties.getWorkspaceMetadataRoot()).toAbsolutePath().normalize().resolve("locks");
+            Files.createDirectories(directory);
+            try (FileChannel channel = FileChannel.open(directory.resolve(workspaceId + ".lock"),
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE); FileLock ignored = channel.lock()) {
                 return operation.run();
             }
         } catch (WorkerException exception) {
             throw exception;
         } catch (Exception exception) {
-            throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR,
-                    "WORKSPACE_LOCK_FAILED", "无法获取 Workspace 操作锁");
+            throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "WORKSPACE_LOCK_FAILED", "无法获取 Workspace 操作锁");
+        } finally {
+            localLock.unlock();
         }
     }
 
     private UUID parseWorkspaceId(String storageKey) {
         try {
-            if (storageKey == null || !storageKey.startsWith("workspaces/")) {
-                throw new IllegalArgumentException();
-            }
+            if (storageKey == null || !storageKey.startsWith("workspaces/")) throw new IllegalArgumentException();
             return UUID.fromString(storageKey.substring("workspaces/".length()));
         } catch (Exception exception) {
-            throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY,
-                    "WORKSPACE_STORAGE_KEY_INVALID", "Workspace 存储标识不合法");
+            throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, "WORKSPACE_STORAGE_KEY_INVALID", "Workspace 存储标识不合法");
         }
     }
 
     @FunctionalInterface
-    public interface LockedOperation<T> {
-        T run();
-    }
+    public interface LockedOperation<T> { T run(); }
 }

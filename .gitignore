@@ -39,6 +39,9 @@ replay_pid*
 
 # ai doc files
 docs/
+!docs/
+docs/*
+!docs/workspace-sandbox-manager.md
 
 # 环境变量文件
 .env

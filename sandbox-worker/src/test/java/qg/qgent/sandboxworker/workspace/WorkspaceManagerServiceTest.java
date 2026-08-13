@@ -2,6 +2,7 @@ package qg.qgent.sandboxworker.workspace;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.io.TempDir;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
 import qg.qgent.sandboxworker.api.CreateSandboxRequest;
@@ -26,6 +27,15 @@ class WorkspaceManagerServiceTest {
     @TempDir
     Path temporaryDirectory;
 
+    @AfterEach
+    void makeGitFilesDeletableOnWindows() throws Exception {
+        try (var paths = Files.walk(temporaryDirectory)) {
+            for (Path path : paths.toList()) {
+                try { Files.setAttribute(path, "dos:readonly", false); } catch (Exception ignored) { }
+            }
+        }
+    }
+
     @Test
     void provisionsQueriesAndDeletesWorkspace() throws Exception {
         UUID repositoryId = UUID.randomUUID();
@@ -43,10 +53,12 @@ class WorkspaceManagerServiceTest {
                 queried.getRepositories().getFirst().getHeadCommit());
         assertTrue(Files.isRegularFile(Path.of(properties.getWorkspaceLocalRoot())
                 .resolve(workspaceId.toString()).resolve("backend").resolve("README.md")));
-        assertTrue(Files.isDirectory(Path.of(properties.getWorkspaceLocalRoot())
+        assertTrue(Files.isRegularFile(Path.of(properties.getWorkspaceLocalRoot())
                 .resolve(workspaceId.toString()).resolve("backend").resolve(".git")));
-        assertEquals("", output(List.of("git", "remote"), Path.of(properties.getWorkspaceLocalRoot())
-                .resolve(workspaceId.toString()).resolve("backend")).trim());
+        assertEquals(0, Files.size(Path.of(properties.getWorkspaceLocalRoot()).resolve(workspaceId.toString())
+                .resolve(qg.qgent.sandboxworker.runtime.WorkspacePathResolver.GIT_MARKER)));
+        assertTrue(output(List.of("git", "--git-dir", Path.of(properties.getGitStoreRoot()).resolve(repositoryId + ".git").toString(),
+                "worktree", "list", "--porcelain"), temporaryDirectory).contains("backend"));
 
         service.delete(workspaceId);
 
@@ -64,7 +76,8 @@ class WorkspaceManagerServiceTest {
         FakeContainerRuntime runtime = new FakeContainerRuntime();
         WorkspaceOperationLock lock = new WorkspaceOperationLock(properties);
         SandboxService sandboxes = new SandboxService(runtime, properties,
-                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), lock);
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), lock,
+                new WorkspaceMetadataStore(properties, new ObjectMapper().findAndRegisterModules()));
         WorkspaceManagerService service = new WorkspaceManagerService(properties,
                 new GitRepositoryManager(properties), sandboxes, lock, new ObjectMapper().findAndRegisterModules(),
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC));
@@ -75,16 +88,40 @@ class WorkspaceManagerServiceTest {
         sandbox.setTaskRunId(UUID.randomUUID());
         sandbox.setWorkspaceStorageKey("workspaces/" + workspaceId);
         sandbox.setImageProfile("java-node");
+        sandbox.setRepositoryIds(List.of(repositoryId));
         sandboxes.create(sandbox);
 
         WorkerException exception = assertThrows(WorkerException.class, () -> service.delete(workspaceId));
         assertEquals("WORKSPACE_IN_USE", exception.getCode());
     }
 
+    @Test
+    void idempotentProvisionUpgradesExistingWorkspaceWithGitMarker() throws Exception {
+        UUID repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        SandboxWorkerProperties properties = properties();
+        prepareBareRepository(Path.of(properties.getGitStoreRoot()).resolve(repositoryId + ".git"));
+        WorkspaceManagerService service = service(properties, new FakeContainerRuntime());
+        WorkspaceProvisionRequest request = request(repositoryId);
+        WorkspaceResponse created = service.provision(workspaceId, request);
+        Path workspace = Path.of(properties.getWorkspaceLocalRoot()).resolve(workspaceId.toString());
+        Path marker = workspace.resolve(qg.qgent.sandboxworker.runtime.WorkspacePathResolver.GIT_MARKER);
+        Files.delete(marker);
+        Files.writeString(workspace.resolve("backend").resolve("local-change.txt"), "preserve me");
+
+        WorkspaceResponse retried = service.provision(workspaceId, request);
+
+        assertEquals(created.getId(), retried.getId());
+        assertTrue(Files.isRegularFile(marker));
+        assertEquals(0, Files.size(marker));
+        assertEquals("preserve me", Files.readString(workspace.resolve("backend").resolve("local-change.txt")));
+    }
+
     private WorkspaceManagerService service(SandboxWorkerProperties properties, FakeContainerRuntime runtime) {
         WorkspaceOperationLock lock = new WorkspaceOperationLock(properties);
         SandboxService sandboxes = new SandboxService(runtime, properties,
-                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), lock);
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), lock,
+                new WorkspaceMetadataStore(properties, new ObjectMapper().findAndRegisterModules()));
         return new WorkspaceManagerService(properties, new GitRepositoryManager(properties), sandboxes, lock,
                 new ObjectMapper().findAndRegisterModules(),
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC));
@@ -126,7 +163,10 @@ class WorkspaceManagerServiceTest {
 
     private String output(List<String> command, Path directory) throws Exception {
         Process process = new ProcessBuilder(command).directory(directory.toFile()).redirectErrorStream(true).start();
-        String output = new String(process.getInputStream().readAllBytes());
+        String output;
+        try (var input = process.getInputStream()) {
+            output = new String(input.readAllBytes());
+        }
         if (process.waitFor() != 0) {
             throw new AssertionError("Git 测试准备失败：" + output);
         }

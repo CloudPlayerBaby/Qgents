@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -45,5 +46,32 @@ public class InternalWorkspaceController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID workspaceId) {
         workspaceManagerService.delete(workspaceId);
+    }
+
+    /** 查询仓库当前分支、HEAD 和结构化变更。 */
+    @GetMapping("/{workspaceId}/repositories/{repositoryId}/git/status")
+    public GitStatusResponse gitStatus(@PathVariable UUID workspaceId, @PathVariable UUID repositoryId) {
+        return workspaceManagerService.gitStatus(workspaceId, repositoryId);
+    }
+
+    /** 生成包含未跟踪文件的完整 Diff。 */
+    @PostMapping("/{workspaceId}/repositories/{repositoryId}/git/diff")
+    public GitDiffResponse gitDiff(@PathVariable UUID workspaceId, @PathVariable UUID repositoryId,
+            @RequestBody(required = false) GitDiffRequest request) {
+        return workspaceManagerService.gitDiff(workspaceId, repositoryId);
+    }
+
+    /** 校验审查快照并在内部执行 add -A 与 commit。 */
+    @PostMapping("/{workspaceId}/repositories/{repositoryId}/git/commit")
+    public GitCommitResponse gitCommit(@PathVariable UUID workspaceId, @PathVariable UUID repositoryId,
+            @Valid @RequestBody GitCommitRequest request) {
+        return workspaceManagerService.gitCommit(workspaceId, repositoryId, request);
+    }
+
+    /** 将受控 sourceBranch 推送到共享 store 已配置的 origin。 */
+    @PostMapping("/{workspaceId}/repositories/{repositoryId}/git/push")
+    public GitPushResponse gitPush(@PathVariable UUID workspaceId, @PathVariable UUID repositoryId,
+            @Valid @RequestBody GitPushRequest request) {
+        return workspaceManagerService.gitPush(workspaceId, repositoryId, request);
     }
 }

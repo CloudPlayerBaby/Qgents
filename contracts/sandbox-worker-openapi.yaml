@@ -1,85 +1,78 @@
 openapi: 3.1.0
 info:
-  title: Qgents 沙箱工作节点内部接口
-  version: 0.3.0
-  description: 控制层调用的内部接口。客户端不能提交宿主机路径、Docker 网络、挂载参数或凭证。
+  title: Qgents Workspace 与 Sandbox Worker 内部接口
+  version: 0.4.0
+  description: 内部控制面接口。调用方不能提交宿主机路径、Git 远端、凭证或任意 Git 参数。
 paths:
   /internal/v1/health:
     get:
       operationId: health
       responses:
-        '200': {description: Worker 进程存活}
+        '200':
+          description: Worker 存活
+          content:
+            application/json:
+              schema: {type: object, properties: {status: {type: string}}}
+  /internal/v1/workspaces/{workspaceId}:
+    parameters: [{$ref: '#/components/parameters/WorkspaceId'}]
+    put:
+      operationId: provisionWorkspace
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/WorkspaceProvisionRequest'}}}}
+      responses: {'200': {description: 已幂等准备 Workspace, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}, '409': {description: 同一编号的规格冲突}}
+    get:
+      operationId: getWorkspace
+      responses: {'200': {description: Workspace 与真实 HEAD, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}}
+    delete:
+      operationId: deleteWorkspace
+      responses: {'204': {description: 已删除或原本不存在}, '409': {description: Workspace 仍被 Sandbox 使用}}
+  /internal/v1/workspaces/{workspaceId}/repositories/{repositoryId}/git/status:
+    parameters: [{$ref: '#/components/parameters/WorkspaceId'}, {$ref: '#/components/parameters/RepositoryId'}]
+    get:
+      operationId: getWorkspaceGitStatus
+      responses: {'200': {description: 结构化状态, content: {application/json: {schema: {$ref: '#/components/schemas/GitStatus'}}}}}
+  /internal/v1/workspaces/{workspaceId}/repositories/{repositoryId}/git/diff:
+    parameters: [{$ref: '#/components/parameters/WorkspaceId'}, {$ref: '#/components/parameters/RepositoryId'}]
+    post:
+      operationId: createWorkspaceGitDiff
+      requestBody: {required: false, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses: {'200': {description: 包含未跟踪文件的完整 patch, content: {application/json: {schema: {$ref: '#/components/schemas/GitDiff'}}}}, '413': {description: Diff 超过上限}}
+  /internal/v1/workspaces/{workspaceId}/repositories/{repositoryId}/git/commit:
+    parameters: [{$ref: '#/components/parameters/WorkspaceId'}, {$ref: '#/components/parameters/RepositoryId'}]
+    post:
+      operationId: commitWorkspaceGitDiff
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GitCommitRequest'}}}}
+      responses: {'200': {description: 真实 Commit, content: {application/json: {schema: {$ref: '#/components/schemas/GitCommit'}}}}, '409': {description: Workspace 在用或审查快照不匹配}}
+  /internal/v1/workspaces/{workspaceId}/repositories/{repositoryId}/git/push:
+    parameters: [{$ref: '#/components/parameters/WorkspaceId'}, {$ref: '#/components/parameters/RepositoryId'}]
+    post:
+      operationId: pushWorkspaceBranch
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GitPushRequest'}}}}
+      responses: {'200': {description: 推送并核验成功, content: {application/json: {schema: {$ref: '#/components/schemas/GitPush'}}}}, '422': {description: origin 未配置或推送失败}}
   /internal/v1/sandboxes:
     post:
       operationId: createSandbox
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/CreateSandboxRequest'}
-      responses:
-        '201':
-          description: Sandbox 已创建
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Sandbox'}
-  /internal/v1/workspaces/{workspaceId}:
-    parameters:
-      - name: workspaceId
-        in: path
-        required: true
-        schema: {type: string, format: uuid}
-    put:
-      operationId: provisionWorkspace
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/WorkspaceProvisionRequest'}
-      responses:
-        '200':
-          description: Workspace 已准备
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Workspace'}
-    get:
-      operationId: getWorkspace
-      responses:
-        '200':
-          description: Workspace 及各仓库实际 HEAD
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Workspace'}
-    delete:
-      operationId: deleteWorkspace
-      responses:
-        '204': {description: Workspace 已删除或原本不存在}
-        '409': {description: Workspace 仍被 Sandbox 使用}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CreateSandboxRequest'}}}}
+      responses: {'201': {description: Sandbox 已创建, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}}
+  /internal/v1/sandboxes/{sandboxId}:
+    parameters: [{$ref: '#/components/parameters/SandboxId'}]
+    get: {operationId: getSandbox, responses: {'200': {description: Sandbox 状态, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}}}
+    delete: {operationId: destroySandbox, responses: {'204': {description: Sandbox 已销毁，Workspace 保留}}}
+  /internal/v1/sandboxes/{sandboxId}/lease/renew:
+    parameters: [{$ref: '#/components/parameters/SandboxId'}]
+    post:
+      operationId: renewSandboxLease
+      parameters:
+        - {name: ttlSeconds, in: query, required: false, schema: {type: integer, format: int64, minimum: 1}}
+      responses: {'200': {description: 租约已续期, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}}
   /internal/v1/sandboxes/{sandboxId}/tool-executions:
     parameters: [{$ref: '#/components/parameters/SandboxId'}]
     post:
       operationId: executeTool
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/ToolExecutionRequest'}
-      responses:
-        '202':
-          description: 工具执行已持久化并进入后台队列
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ToolExecution'}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ToolExecutionRequest'}}}}
+      responses: {'202': {description: 已入队, content: {application/json: {schema: {$ref: '#/components/schemas/ToolExecution'}}}}}
   /internal/v1/tool-executions/{executionId}:
     parameters: [{$ref: '#/components/parameters/ExecutionId'}]
-    get:
-      operationId: getToolExecution
-      responses:
-        '200':
-          description: 已持久化的工具执行结果
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ToolExecution'}
+    get: {operationId: getToolExecution, responses: {'200': {description: 执行结果, content: {application/json: {schema: {$ref: '#/components/schemas/ToolExecution'}}}}}}
   /internal/v1/tool-executions/{executionId}/logs:
     parameters: [{$ref: '#/components/parameters/ExecutionId'}]
     get:
@@ -87,132 +80,104 @@ paths:
       parameters:
         - {name: after, in: query, schema: {type: integer, format: int64, minimum: 0, default: 0}}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 200}}
-      responses:
-        '200':
-          description: 按序号增量返回日志
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ExecutionLogs'}
+      responses: {'200': {description: 有序增量日志, content: {application/json: {schema: {$ref: '#/components/schemas/ExecutionLogs'}}}}}
   /internal/v1/tool-executions/{executionId}/cancel:
     parameters: [{$ref: '#/components/parameters/ExecutionId'}]
-    post:
-      operationId: cancelToolExecution
-      responses:
-        '200':
-          description: 工具执行已取消
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ToolExecution'}
-        '409': {description: 当前执行状态不可取消，或请求未路由到 ownerWorkerId 对应的 Worker}
+    post: {operationId: cancelToolExecution, responses: {'200': {description: 已取消, content: {application/json: {schema: {$ref: '#/components/schemas/ToolExecution'}}}}}}
 components:
   parameters:
-    SandboxId:
-      name: sandboxId
-      in: path
-      required: true
-      schema: {type: string, format: uuid}
-    ExecutionId:
-      name: executionId
-      in: path
-      required: true
-      schema: {type: string, format: uuid}
+    WorkspaceId: {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+    RepositoryId: {name: repositoryId, in: path, required: true, schema: {type: string, format: uuid}}
+    SandboxId: {name: sandboxId, in: path, required: true, schema: {type: string, format: uuid}}
+    ExecutionId: {name: executionId, in: path, required: true, schema: {type: string, format: uuid}}
   schemas:
     WorkspaceRepositoryRequest:
       type: object
       required: [repositoryId, baseRef, sourceBranch, workspacePath]
       properties:
         repositoryId: {type: string, format: uuid}
-        baseRef: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]*$', maxLength: 256}
-        sourceBranch: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]*$', maxLength: 256}
-        workspacePath: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$', maxLength: 128}
+        baseRef: {type: string, minLength: 1, maxLength: 256, pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]*$'}
+        sourceBranch: {type: string, minLength: 1, maxLength: 256, pattern: '^[A-Za-z0-9][A-Za-z0-9._/-]*$'}
+        workspacePath: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'}
     WorkspaceProvisionRequest:
       type: object
       required: [projectId, repositories]
       properties:
         projectId: {type: string, format: uuid}
-        repositories:
-          type: array
-          minItems: 1
-          maxItems: 32
-          items: {$ref: '#/components/schemas/WorkspaceRepositoryRequest'}
+        repositories: {type: array, minItems: 1, maxItems: 32, items: {$ref: '#/components/schemas/WorkspaceRepositoryRequest'}}
     WorkspaceRepository:
       allOf:
         - {$ref: '#/components/schemas/WorkspaceRepositoryRequest'}
-        - type: object
-          properties:
-            headCommit: {type: string}
+        - {type: object, properties: {baseCommit: {type: string}, headCommit: {type: string}}}
     Workspace:
       type: object
-      required: [id, projectId, storageKey, status, repositories, createdAt, updatedAt]
       properties:
         id: {type: string, format: uuid}
         projectId: {type: string, format: uuid}
         storageKey: {type: string}
         status: {type: string, enum: [READY]}
-        repositories:
-          type: array
-          items: {$ref: '#/components/schemas/WorkspaceRepository'}
+        repositories: {type: array, items: {$ref: '#/components/schemas/WorkspaceRepository'}}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+    GitChange:
+      type: object
+      properties: {indexStatus: {type: string}, worktreeStatus: {type: string}, path: {type: string}, originalPath: {type: [string, 'null']}}
+    GitStatus:
+      type: object
+      properties: {branch: {type: string}, headCommit: {type: string}, clean: {type: boolean}, changes: {type: array, items: {$ref: '#/components/schemas/GitChange'}}}
+    GitDiff:
+      type: object
+      properties: {headCommit: {type: string}, diffHash: {type: string}, patch: {type: string}}
+    GitCommitRequest:
+      type: object
+      required: [expectedHeadCommit, expectedDiffHash, message]
+      properties: {expectedHeadCommit: {type: string, minLength: 40, maxLength: 64, pattern: '^[0-9a-fA-F]{40,64}$'}, expectedDiffHash: {type: string, minLength: 71, maxLength: 71, pattern: '^sha256:[0-9a-f]{64}$'}, message: {type: string, minLength: 1, maxLength: 500}}
+    GitCommit: {type: object, properties: {commitSha: {type: string}}}
+    GitPushRequest:
+      type: object
+      required: [expectedHeadCommit]
+      properties: {expectedHeadCommit: {type: string, minLength: 40, maxLength: 64, pattern: '^[0-9a-fA-F]{40,64}$'}}
+    GitPush: {type: object, properties: {branch: {type: string}, headCommit: {type: string}, verified: {type: boolean}}}
     ResourceLimits:
       type: object
-      properties:
-        idleTtlSeconds: {type: integer, format: int64, minimum: 1}
-        maxLifetimeSeconds: {type: integer, format: int64, minimum: 1}
-        executionTimeoutSeconds: {type: integer, format: int64, minimum: 1}
+      properties: {idleTtlSeconds: {type: integer, minimum: 1, maximum: 86400}, maxLifetimeSeconds: {type: integer, minimum: 1, maximum: 86400}, executionTimeoutSeconds: {type: integer, minimum: 1, maximum: 86400}}
     CreateSandboxRequest:
       type: object
-      required: [sandboxId, taskRunId, workspaceStorageKey, imageProfile, repositories]
+      required: [sandboxId, taskRunId, workspaceStorageKey, imageProfile, repositoryIds]
       properties:
         sandboxId: {type: string, format: uuid}
         taskRunId: {type: string, format: uuid}
-        workspaceStorageKey: {type: string, minLength: 1, maxLength: 512}
-        imageProfile: {type: string, minLength: 1, maxLength: 64}
-        repositories:
-          type: object
-          description: 仓库 UUID 到 Workspace 内相对目录的映射
-          additionalProperties: {type: string, pattern: '^[A-Za-z0-9._/-]+$'}
+        workspaceStorageKey: {type: string, minLength: 47, maxLength: 47, pattern: '^workspaces/[0-9a-fA-F-]{36}$'}
+        imageProfile: {type: string, minLength: 1, maxLength: 64, pattern: '^[a-z0-9][a-z0-9-]*$'}
+        repositoryIds: {type: array, maxItems: 32, uniqueItems: true, items: {type: string, format: uuid}}
         limits: {$ref: '#/components/schemas/ResourceLimits'}
     Sandbox:
       type: object
-      properties:
-        id: {type: string, format: uuid}
-        taskRunId: {type: string, format: uuid}
-        status: {type: string}
-        runtimeKind: {type: string}
-        createdAt: {type: string, format: date-time}
-        lastActiveAt: {type: string, format: date-time}
-        expiresAt: {type: string, format: date-time}
-        maxExpiresAt: {type: string, format: date-time}
+      properties: {id: {type: string, format: uuid}, taskRunId: {type: string, format: uuid}, status: {type: string}, runtimeKind: {type: string}, createdAt: {type: string, format: date-time}, lastActiveAt: {type: string, format: date-time}, expiresAt: {type: string, format: date-time}, maxExpiresAt: {type: string, format: date-time}}
     ToolExecutionRequest:
       type: object
       required: [executionId, tool, arguments]
       properties:
         executionId: {type: string, format: uuid}
         repositoryId: {type: string, format: uuid}
-        tool:
-          type: string
-          enum: [process.exec, file.read, file.list, file.search, file.write, git.status, git.diff, git.log, git.add, git.commit, git.head, git.push]
-        arguments:
-          type: object
-          maxProperties: 64
-          description: For `git.push`, required properties are `expectedHeadCommit` (current HEAD SHA), `remote` (only `origin`) and `branch` (the current checked-out branch). The Worker verifies the remote branch points to that SHA after pushing.
-        timeoutSeconds: {type: integer, format: int64, minimum: 1, maximum: 3600}
+        tool: {type: string, enum: [process.exec, file.read, file.list, file.search, file.write]}
+        arguments: {type: object, maxProperties: 64}
+        timeoutSeconds: {type: integer, minimum: 1, maximum: 3600}
     ToolExecution:
       type: object
       properties:
         id: {type: string, format: uuid}
-        ownerWorkerId: {type: string, description: 实际执行该任务的 Worker 编号，取消请求必须路由到该 Worker}
+        ownerWorkerId: {type: string}
         sandboxId: {type: string, format: uuid}
-        repositoryId: {type: string, format: uuid, nullable: true}
+        repositoryId: {type: [string, 'null'], format: uuid}
         tool: {type: string}
         status: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, TIMED_OUT, CANCELLED, INTERRUPTED]}
-        exitCode: {type: integer, nullable: true}
+        exitCode: {type: [integer, 'null']}
         result: {type: object}
-        failureReason: {type: string, nullable: true}
+        failureReason: {type: [string, 'null']}
         createdAt: {type: string, format: date-time}
-        startedAt: {type: string, format: date-time, nullable: true}
-        finishedAt: {type: string, format: date-time, nullable: true}
+        startedAt: {type: [string, 'null'], format: date-time}
+        finishedAt: {type: [string, 'null'], format: date-time}
     ExecutionLogEntry:
       type: object
       properties:

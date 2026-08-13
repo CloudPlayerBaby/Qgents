@@ -15,5 +15,6 @@ public class WorkspaceRepositoryResponse {
     private String workspacePath;
     private String sourceBranch;
     private String baseRef;
+    private String baseCommit;
     private String headCommit;
 }

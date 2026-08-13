@@ -1,9 +1,10 @@
-# Java + Node.js 沙箱镜像
+# Java / Node Agent Sandbox 镜像
 
-该镜像面向 Java 后端与 Web 前端任务，包含 JDK 21、Maven 3.9.11、Node.js 22、npm、Corepack、Git、ripgrep、Python 3 和常用构建工具。
+镜像包含 Java 21、Maven、Node.js、pnpm、Python、ripgrep 等开发工具，刻意不安装 Git 和 OpenSSH 客户端。
+
+全部 Git 操作由 Sandbox 外的 Workspace Manager 执行；容器只接收当前 TaskRun 获得授权的仓库 worktree bind mount。
 
 ```bash
 docker build -t qgents/sandbox-java-node:0.1.0 sandbox-images/java-node
+docker run --rm qgents/sandbox-java-node:0.1.0 sh -lc 'git --version; test $? -eq 127'
 ```
-
-镜像默认使用用户与组编号均为 `10001` 的 `developer` 用户，不包含 Docker 客户端、云平台工具或任何凭证。生产环境应把镜像推送到受控仓库，并在 Worker 配置中使用不可变 digest。
