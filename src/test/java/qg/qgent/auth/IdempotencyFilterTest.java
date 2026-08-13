@@ -12,6 +12,11 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.when;
+import java.security.MessageDigest;
+import java.nio.charset.StandardCharsets;
+
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -86,5 +91,39 @@ class IdempotencyFilterTest {
         filter.doFilterInternal(request, response, chain);
 
         verify(mockService).save(eq(userId), any(), anyString(), eq("key-123"), any(), eq(204), eq(Map.of()), isNull());
+    }
+
+    @Test
+    void replays204WithoutExecutingFilterChain() throws ServletException, IOException, Exception {
+        qg.qgent.service.IdempotencyService mockService = mock(qg.qgent.service.IdempotencyService.class);
+        ObjectMapper mapper = new ObjectMapper();
+        IdempotencyFilter filter = new IdempotencyFilter(mockService, mapper);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("DELETE", "/api/v1/projects/proj-1/repositories/repo-1");
+        request.addHeader("Idempotency-Key", "key-123");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        UUID userId = UUID.randomUUID();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(userId, null, List.of())
+        );
+
+        // Mock existing record
+        qg.qgent.entity.IdempotencyRecordEntity existing = new qg.qgent.entity.IdempotencyRecordEntity();
+        existing.setResponseStatus(204);
+        existing.setResponseBodyRedacted(Map.of());
+        existing.setRequestHash(MessageDigest.getInstance("SHA-256").digest(new byte[0]));
+        
+        when(mockService.find(any(), anyString(), eq("key-123"))).thenReturn(existing);
+
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilterInternal(request, response, chain);
+
+        // verify that the chain was NEVER executed
+        verify(chain, never()).doFilter(any(), any());
+        
+        // verify response status is 204
+        org.junit.jupiter.api.Assertions.assertEquals(204, response.getStatus());
     }
 }
