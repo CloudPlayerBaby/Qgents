@@ -1,0 +1,152 @@
+package qg.qgent.orchestration.worker;
+
+import org.springframework.stereotype.Service;
+import qg.qgent.auth.UuidV7;
+import qg.qgent.entity.ProjectRepositoryEntity;
+import qg.qgent.entity.WorkspaceEntity;
+import qg.qgent.entity.WorkspaceRepositoryEntity;
+import qg.qgent.mapper.ProjectRepositoryMapper;
+import qg.qgent.mapper.WorkspaceMapper;
+import qg.qgent.mapper.WorkspaceRepositoryMapper;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * Sandbox 会话生命周期管理：把 Task 编排需要的"一次执行现场"映射为 Worker 的
+ * 幂等 Workspace provision + 一次 Sandbox 创建/销毁。
+ * <p>
+ * 归属与安全边界：
+ * <ul>
+ *   <li>只通过 {@link WorkspaceMapper}/{@link WorkspaceRepositoryMapper} 读取已在服务端
+ *       落库的 workspace 与 worktree，不自行拼接宿主机路径或 Git 远端；</li>
+ *   <li>provision 请求只携带资源编号与受控 Git 引用（repositoryId/baseRef/sourceBranch/workspacePath），
+ *       不提交凭证；</li>
+ *   <li>{@code app.worker.enabled=false} 时本管理器为 no-op（返回 null），编排链路仍走本地端口；</li>
+ *   <li>销毁只销毁 Sandbox，Workspace 持久保留。</li>
+ * </ul>
+ * 当前编排是同步单线程、单 Workspace 单写者，会话用进程内 Map 按 workspaceId 记录；
+ * 若未来接入并行执行，写入租约必须升级为持久状态/锁（见 AGENTS.md）。
+ */
+@Service
+public class SandboxSessionManager {
+
+    private final SandboxWorkerClient client;
+    private final SandboxWorkerProperties properties;
+    private final WorkspaceMapper workspaceMapper;
+    private final WorkspaceRepositoryMapper repositoryMapper;
+    private final ProjectRepositoryMapper projectRepositoryMapper;
+    private final Map<UUID, SandboxSession> sessions = new ConcurrentHashMap<>();
+
+    public SandboxSessionManager(SandboxWorkerClient client, SandboxWorkerProperties properties,
+            WorkspaceMapper workspaceMapper, WorkspaceRepositoryMapper repositoryMapper,
+            ProjectRepositoryMapper projectRepositoryMapper) {
+        this.client = client;
+        this.properties = properties;
+        this.workspaceMapper = workspaceMapper;
+        this.repositoryMapper = repositoryMapper;
+        this.projectRepositoryMapper = projectRepositoryMapper;
+    }
+
+    /**
+     * 为一次 Task 编排准备 Sandbox 会话；已存在则直接返回。
+     * 未启用 Worker 时返回 null（本地端口不需要会话）。
+     */
+    public SandboxSession acquire(UUID taskId, UUID projectId, UUID workspaceId) {
+        if (!properties.isEnabled()) {
+            return null;
+        }
+        SandboxSession existing = sessions.get(workspaceId);
+        if (existing != null) {
+            return existing;
+        }
+        SandboxSession created = doAcquire(taskId, projectId, workspaceId);
+        sessions.put(workspaceId, created);
+        return created;
+    }
+
+    /** 返回指定 Workspace 的当前会话；不存在时抛错，供 Worker 端口在调用工具前断言。 */
+    public SandboxSession require(UUID workspaceId) {
+        SandboxSession session = sessions.get(workspaceId);
+        if (session == null) {
+            throw new IllegalStateException("no sandbox session for workspace " + workspaceId);
+        }
+        return session;
+    }
+
+    /** 销毁会话对应的 Sandbox 并移除记录；Workspace 保留。销毁失败不吞结果，仅不阻断任务收尾。 */
+    public void release(UUID workspaceId) {
+        SandboxSession session = sessions.remove(workspaceId);
+        if (session == null) {
+            return;
+        }
+        try {
+            client.destroySandbox(session.getSandboxId());
+        } catch (RuntimeException ignored) {
+            // 销毁失败由 Worker 的清理任务兜底，不阻断任务结果返回。
+        }
+    }
+
+    private SandboxSession doAcquire(UUID taskId, UUID projectId, UUID workspaceId) {
+        WorkspaceEntity workspace = workspaceMapper.selectById(workspaceId);
+        if (workspace == null) {
+            throw new IllegalStateException("workspace not found: " + workspaceId);
+        }
+        List<WorkspaceRepositoryEntity> repositories = repositoryMapper.selectByWorkspace(workspaceId);
+        if (repositories == null || repositories.isEmpty()) {
+            throw new IllegalStateException("workspace has no repository worktrees: " + workspaceId);
+        }
+        WorkerWorkspaceProvisionRequest provision = new WorkerWorkspaceProvisionRequest();
+        provision.setProjectId(projectId);
+        provision.setRepositories(repositories.stream().map(this::toRepositoryRequest).toList());
+        WorkerWorkspace provisioned = client.provisionWorkspace(workspaceId, provision);
+        String storageKey = provisioned != null && provisioned.getStorageKey() != null
+                ? provisioned.getStorageKey() : workspace.getStorageKey();
+
+        UUID sandboxId = UuidV7.next();
+        WorkerCreateSandboxRequest create = new WorkerCreateSandboxRequest();
+        create.setSandboxId(sandboxId);
+        create.setTaskRunId(taskId);
+        create.setWorkspaceStorageKey(storageKey);
+        create.setImageProfile(properties.getImageProfile());
+        create.setRepositoryIds(repositories.stream().map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList());
+        client.createSandbox(create);
+
+        Map<String, UUID> repositoryByPath = new LinkedHashMap<>();
+        for (WorkspaceRepositoryEntity repository : repositories) {
+            repositoryByPath.put(repository.getWorkspacePath(), repository.getProjectRepositoryId());
+        }
+        return new SandboxSession(taskId, workspaceId, sandboxId, storageKey,
+                create.getRepositoryIds(), Collections.unmodifiableMap(new LinkedHashMap<>(repositoryByPath)));
+    }
+
+    private WorkerWorkspaceRepositoryRequest toRepositoryRequest(WorkspaceRepositoryEntity repository) {
+        WorkerWorkspaceRepositoryRequest request = new WorkerWorkspaceRepositoryRequest();
+        request.setRepositoryId(repository.getProjectRepositoryId());
+        request.setBaseRef(resolveBaseRef(repository));
+        request.setSourceBranch(repository.getSourceBranch());
+        request.setWorkspacePath(repository.getWorkspacePath());
+        return request;
+    }
+
+    /**
+     * 解析仓库基线引用：worktree 已记录 baseCommit 时使用它；否则回退到项目仓库绑定的
+     * defaultBranch（真实受控引用）。两者都缺失时明确失败，不伪造基线。
+     */
+    private String resolveBaseRef(WorkspaceRepositoryEntity repository) {
+        if (repository.getBaseCommit() != null && !repository.getBaseCommit().isBlank()) {
+            return repository.getBaseCommit();
+        }
+        ProjectRepositoryEntity projectRepository = projectRepositoryMapper.selectById(repository.getProjectRepositoryId());
+        if (projectRepository != null && projectRepository.getDefaultBranch() != null
+                && !projectRepository.getDefaultBranch().isBlank()) {
+            return projectRepository.getDefaultBranch();
+        }
+        throw new IllegalStateException("workspace repository has no base ref: "
+                + repository.getProjectRepositoryId());
+    }
+}

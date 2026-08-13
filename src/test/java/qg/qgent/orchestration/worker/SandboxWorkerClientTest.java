@@ -1,0 +1,203 @@
+package qg.qgent.orchestration.worker;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.springframework.test.web.client.ExpectedCount.once;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.web.client.RestClient;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import qg.qgent.api.ApiException;
+
+/**
+ * {@link SandboxWorkerClient} 的契约测试：用 MockRestServiceServer 对齐
+ * {@code contracts/sandbox-worker-openapi.yaml} 的请求路径与响应 JSON 形状，
+ * 验证 DTO 字段映射与 Worker 错误码透传，不启动真实 Worker。
+ */
+class SandboxWorkerClientTest {
+
+    private static final String BASE = "http://sandbox-worker";
+    private static final UUID WORKSPACE = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    private static final UUID REPO = UUID.fromString("00000000-0000-0000-0000-000000000002");
+    private static final UUID SANDBOX = UUID.fromString("00000000-0000-0000-0000-000000000003");
+    private static final UUID EXECUTION = UUID.fromString("00000000-0000-0000-0000-000000000004");
+
+    private SandboxWorkerClient client;
+    private MockRestServiceServer server;
+
+    @BeforeEach
+    void setUp() {
+        RestClient.Builder builder = RestClient.builder().baseUrl(BASE);
+        server = MockRestServiceServer.bindTo(builder).build();
+        client = new SandboxWorkerClient(builder.build(), new ObjectMapper());
+    }
+
+    @Test
+    void provisionsWorkspaceAndReadsStorageKey() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/workspaces/" + WORKSPACE))
+                .andExpect(method(HttpMethod.PUT))
+                .andRespond(withSuccess("""
+                        {"id":"%s","projectId":"00000000-0000-0000-0000-000000000009","storageKey":"workspaces/%s",
+                         "status":"READY",
+                         "repositories":[{"repositoryId":"%s","baseRef":"main","sourceBranch":"feat/login",
+                         "workspacePath":"app","baseCommit":"abcdef0123456789","headCommit":null}],
+                         "createdAt":"2026-08-13T00:00:00Z","updatedAt":"2026-08-13T00:00:00Z"}
+                        """.formatted(WORKSPACE, WORKSPACE, REPO), MediaType.APPLICATION_JSON));
+
+        WorkerWorkspaceProvisionRequest request = new WorkerWorkspaceProvisionRequest();
+        request.setProjectId(UUID.fromString("00000000-0000-0000-0000-000000000009"));
+        WorkerWorkspaceRepositoryRequest repo = new WorkerWorkspaceRepositoryRequest();
+        repo.setRepositoryId(REPO);
+        repo.setBaseRef("main");
+        repo.setSourceBranch("feat/login");
+        repo.setWorkspacePath("app");
+        request.setRepositories(List.of(repo));
+
+        WorkerWorkspace workspace = client.provisionWorkspace(WORKSPACE, request);
+
+        assertEquals("READY", workspace.getStatus());
+        assertEquals("workspaces/" + WORKSPACE, workspace.getStorageKey());
+        assertEquals(1, workspace.getRepositories().size());
+        assertEquals("app", workspace.getRepositories().get(0).getWorkspacePath());
+        assertNull(workspace.getRepositories().get(0).getHeadCommit());
+        server.verify();
+    }
+
+    @Test
+    void createsSandboxAndReadsStatus() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"id":"%s","taskRunId":"00000000-0000-0000-0000-000000000005","status":"READY",
+                         "runtimeKind":"fake","createdAt":"2026-08-13T00:00:00Z"}
+                        """.formatted(SANDBOX), MediaType.APPLICATION_JSON));
+
+        WorkerCreateSandboxRequest request = new WorkerCreateSandboxRequest();
+        request.setSandboxId(SANDBOX);
+        request.setTaskRunId(UUID.fromString("00000000-0000-0000-0000-000000000005"));
+        request.setWorkspaceStorageKey("workspaces/" + WORKSPACE);
+        request.setImageProfile("java-node");
+        request.setRepositoryIds(List.of(REPO));
+
+        WorkerSandbox sandbox = client.createSandbox(request);
+
+        assertEquals(SANDBOX, sandbox.getId());
+        assertEquals("fake", sandbox.getRuntimeKind());
+        server.verify();
+    }
+
+    @Test
+    void submitsToolExecutionAndReadsQueuedResult() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/tool-executions"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.ACCEPTED).contentType(MediaType.APPLICATION_JSON).body("""
+                        {"id":"%s","ownerWorkerId":"local","sandboxId":"%s","repositoryId":"%s","tool":"file.read",
+                         "status":"QUEUED","exitCode":null,"result":{},"failureReason":null,
+                         "createdAt":"2026-08-13T00:00:00Z"}
+                        """.formatted(EXECUTION, SANDBOX, REPO)));
+
+        WorkerToolExecutionRequest request = new WorkerToolExecutionRequest();
+        request.setExecutionId(EXECUTION);
+        request.setRepositoryId(REPO);
+        request.setTool("file.read");
+        request.setArguments(Map.of("path", "src/App.java"));
+
+        WorkerToolExecution execution = client.submitToolExecution(SANDBOX, request);
+
+        assertEquals("QUEUED", execution.getStatus());
+        assertEquals("file.read", execution.getTool());
+        assertNull(execution.getExitCode());
+        server.verify();
+    }
+
+    @Test
+    void readsTerminalToolExecutionWithResult() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/tool-executions/" + EXECUTION))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        {"id":"%s","ownerWorkerId":"local","sandboxId":"%s","repositoryId":"%s","tool":"file.read",
+                         "status":"SUCCEEDED","exitCode":0,
+                         "result":{"path":"src/App.java","sha256":"abc","startLine":1,"totalLines":3,
+                         "lines":["a","b","c"],"truncated":false},
+                         "failureReason":null,"createdAt":"2026-08-13T00:00:00Z"}
+                        """.formatted(EXECUTION, SANDBOX, REPO), MediaType.APPLICATION_JSON));
+
+        WorkerToolExecution execution = client.getToolExecution(EXECUTION);
+
+        assertEquals("SUCCEEDED", execution.getStatus());
+        assertEquals(0, execution.getExitCode());
+        assertEquals(3, execution.getResult().get("totalLines"));
+        assertEquals(List.of("a", "b", "c"), execution.getResult().get("lines"));
+        server.verify();
+    }
+
+    @Test
+    void readsExecutionLogsWithCursor() {
+        server.expect(once(),
+                requestTo(BASE + "/internal/v1/tool-executions/" + EXECUTION + "/logs?after=0&limit=200"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        {"items":[{"sequence":1,"stream":"STDOUT","content":"Tests run: 1",
+                         "timestamp":"2026-08-13T00:00:01Z"}],"nextCursor":1}
+                        """, MediaType.APPLICATION_JSON));
+
+        WorkerExecutionLogs logs = client.getToolExecutionLogs(EXECUTION, 0, 200);
+
+        assertEquals(1, logs.getNextCursor());
+        assertEquals(1, logs.getItems().size());
+        assertEquals("STDOUT", logs.getItems().get(0).getStream());
+        server.verify();
+    }
+
+    @Test
+    void readsWorkspaceGitDiff() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/workspaces/" + WORKSPACE + "/repositories/" + REPO + "/git/diff"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"headCommit":"abcdef0123456789","diffHash":"sha256:abc","patch":"diff --git a/Foo.java b/Foo.java"}
+                        """, MediaType.APPLICATION_JSON));
+
+        WorkerGitDiff diff = client.createWorkspaceGitDiff(WORKSPACE, REPO);
+
+        assertEquals("abcdef0123456789", diff.getHeadCommit());
+        assertNotNull(diff.getPatch());
+        server.verify();
+    }
+
+    @Test
+    void preservesWorkerErrorCode() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/tool-executions"))
+                .andRespond(withStatus(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"code\":\"EXECUTION_ID_CONFLICT\",\"message\":\"执行编号已经存在\"}"));
+
+        WorkerToolExecutionRequest request = new WorkerToolExecutionRequest();
+        request.setExecutionId(EXECUTION);
+        request.setTool("file.read");
+        request.setArguments(Map.of("path", "a"));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> client.submitToolExecution(SANDBOX, request));
+
+        assertEquals("EXECUTION_ID_CONFLICT", exception.code());
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("执行编号已经存在", exception.getMessage());
+        server.verify();
+    }
+}
