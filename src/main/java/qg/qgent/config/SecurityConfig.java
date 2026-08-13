@@ -1,6 +1,7 @@
 package qg.qgent.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -20,6 +21,7 @@ import qg.qgent.auth.IdempotencyFilter;
 import qg.qgent.auth.JwtAuthenticationFilter;
 import qg.qgent.service.IdempotencyService;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -66,17 +68,17 @@ public class SecurityConfig {
      */
     @Bean
     SecurityFilterChain security(HttpSecurity http, JwtAuthenticationFilter jwt, IdempotencyFilter idempotency,
-            ObjectMapper mapper) throws Exception {
+            ObjectMapper mapper, @Qualifier("cors") CorsConfigurationSource corsConfigurationSource) throws Exception {
         return http
                 // 不启用 CSRF
                 .csrf(c -> c.disable())
                 // 开启 CORS
-                .cors(c -> {
-                })
+                .cors(c -> c.configurationSource(corsConfigurationSource))
                 // 不使用 Session
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 // 配置请求授权
                 .authorizeHttpRequests(a -> a
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/login",
                                 "/api/v1/auth/refresh", "/api/v1/auth/password-reset-requests",
                                 "/api/v1/auth/password-resets")
@@ -111,12 +113,15 @@ public class SecurityConfig {
         // 配置跨域
         CorsConfiguration c = new CorsConfiguration();
         // 允许的来源
-        c.setAllowedOrigins(List.of(origins.split(",")));
+        c.setAllowedOrigins(Arrays.stream(origins.split(","))
+                .map(String::trim)
+                .filter(origin -> !origin.isEmpty())
+                .toList());
         // 允许的请求方法
         c.setAllowedMethods(List.of("GET", "POST", "PATCH", "DELETE", "OPTIONS"));
         // 允许的请求头：Idempotency-Key（写接口幂等）、Last-Event-ID（SSE 续传）
         c.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key",
-                "Last-Event-ID", "Idempotency-Key"));
+                "Last-Event-ID"));
         // 允许携带 Cookie
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         // 注册跨域配置

@@ -63,7 +63,8 @@ app:
   frontend-url: ${FRONTEND_URL:http://localhost:5173}
   invitation-url: ${INVITATION_URL:http://localhost:5173/team-invitations/accept}
   registration-url: ${REGISTRATION_URL:http://localhost:5173/register}
-  cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+  # 浏览器前端来源；生产环境可通过 CORS_ALLOWED_ORIGINS 覆盖并追加自定义域名
+  cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:https://qgents.dpdns.org,http://localhost:5173,http://127.0.0.1:5173}
   rsa-private-key: ${RSA_PRIVATE_KEY_PATH:file:./src/main/resources/rsa/private_key.pem}
   rsa-key-id: ${RSA_KEY_ID:rsa-2026-08}
   jwt-secret: ${JWT_SECRET}
