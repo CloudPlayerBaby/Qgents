@@ -220,27 +220,39 @@ public class MergeRequestService {
         }
 
         String repositoryFullName = githubRepository.getOwnerLogin() + "/" + githubRepository.getName();
-        String grantId = credentialService.generateGrant(installation.getTeamId(), projectId, installation.getProviderInstallationId(),
-                repositoryFullName, worktree.getSourceBranch(), worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
-
-        WorkerGitPushResponse pushResponse;
-        try {
-            pushResponse = workerClient.pushWorkspaceBranch(task.getWorkspaceId(), request.getRepositoryId(),
-                    new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit()).setCredentialGrantId(grantId));
-        } catch (ApiException e) {
-            throw new ApiException(e.status(), "WORKER_PUSH_FAILED", "Failed to push branch via Sandbox Worker: " + e.getMessage());
-        }
-
-        if (!pushResponse.isVerified() || !worktree.getHeadCommit().equals(pushResponse.getHeadCommit())) {
-            throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
-                    "Sandbox Worker push verification failed or HEAD mismatch");
-        }
-
-        GitHubPullRequestDetails remote = githubClient.createPullRequest(
+        // Recover an earlier successful GitHub create when the local transaction
+        // failed after the remote call. This makes retries idempotent across systems.
+        GitHubPullRequestDetails remote = githubClient.findOpenPullRequest(
                 installation.getProviderInstallationId(), githubRepository.getOwnerLogin(), githubRepository.getName(),
-                new GitHubPullRequestCreateRequest(request.getTitle(), null, worktree.getSourceBranch(),
-                        request.getTargetBranch()));
-        if (remote == null || remote.number() <= 0 || !worktree.getSourceBranch().equals(remote.headBranch())
+                worktree.getSourceBranch(), request.getTargetBranch());
+        if (remote == null) {
+            String grantId = credentialService.generateGrant(installation.getTeamId(), projectId,
+                    installation.getProviderInstallationId(), repositoryFullName, worktree.getSourceBranch(),
+                    worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
+
+            WorkerGitPushResponse pushResponse;
+            try {
+                pushResponse = workerClient.pushWorkspaceBranch(task.getWorkspaceId(), request.getRepositoryId(),
+                        new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
+                                .setCredentialGrantId(grantId));
+            } catch (ApiException e) {
+                throw new ApiException(e.status(), "WORKER_PUSH_FAILED",
+                        "Failed to push branch via Sandbox Worker: " + e.getMessage());
+            }
+
+            if (!pushResponse.isVerified() || !worktree.getHeadCommit().equals(pushResponse.getHeadCommit())) {
+                throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
+                        "Sandbox Worker push verification failed or HEAD mismatch");
+            }
+
+            remote = githubClient.createPullRequest(
+                    installation.getProviderInstallationId(), githubRepository.getOwnerLogin(), githubRepository.getName(),
+                    new GitHubPullRequestCreateRequest(request.getTitle(), null, worktree.getSourceBranch(),
+                            request.getTargetBranch()));
+        }
+        if (remote == null || remote.number() <= 0 || remote.headSha() == null
+                || !worktree.getHeadCommit().equalsIgnoreCase(remote.headSha())
+                || !worktree.getSourceBranch().equals(remote.headBranch())
                 || !request.getTargetBranch().equals(remote.baseBranch())) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_PR_RESPONSE_INVALID",
                     "GitHub returned an invalid Pull Request response");

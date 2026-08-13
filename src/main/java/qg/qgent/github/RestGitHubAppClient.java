@@ -240,6 +240,27 @@ public class RestGitHubAppClient implements GitHubAppClient {
     }
 
     @Override
+    public GitHubPullRequestDetails findOpenPullRequest(long installationId, String owner, String repo,
+            String sourceBranch, String targetBranch) {
+        requireConfigured();
+        try {
+            List<PullRequestResponse> responses = client.get()
+                    .uri(uri -> uri.path("/repos/{owner}/{repo}/pulls")
+                            .queryParam("state", "open")
+                            .queryParam("head", owner + ":" + sourceBranch)
+                            .queryParam("base", targetBranch)
+                            .queryParam("per_page", 1)
+                            .build(owner, repo))
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .retrieve()
+                    .body(new org.springframework.core.ParameterizedTypeReference<List<PullRequestResponse>>() { });
+            return responses == null || responses.isEmpty() ? null : requirePullRequest(responses.get(0));
+        } catch (RestClientException exception) {
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
     public GitHubBranchDetails getBranch(long installationId, String owner, String repo, String branch) {
         requireConfigured();
         try {

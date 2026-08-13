@@ -59,6 +59,10 @@ public interface GitHubAppClient {
      */
     GitHubPullRequestDetails createPullRequest(long installationId, String owner, String repo, GitHubPullRequestCreateRequest request);
 
+    /** Finds an existing open Pull Request for the exact source and target branches. */
+    GitHubPullRequestDetails findOpenPullRequest(long installationId, String owner, String repo,
+            String sourceBranch, String targetBranch);
+
     /**
      * Gets branch details from GitHub, including the current HEAD SHA.
      *

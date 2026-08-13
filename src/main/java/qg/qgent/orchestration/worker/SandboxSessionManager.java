@@ -78,13 +78,15 @@ public class SandboxSessionManager {
         if (!properties.isEnabled()) {
             return null;
         }
-        SandboxSession existing = sessions.get(workspaceId);
-        if (existing != null) {
-            return existing;
+        synchronized (sessions) {
+            SandboxSession existing = sessions.get(workspaceId);
+            if (existing != null) {
+                return existing;
+            }
+            SandboxSession created = doAcquire(taskId, projectId, workspaceId);
+            sessions.put(workspaceId, created);
+            return created;
         }
-        SandboxSession created = doAcquire(taskId, projectId, workspaceId);
-        sessions.put(workspaceId, created);
-        return created;
     }
 
     /** 返回指定 Workspace 的当前会话；不存在时抛错，供 Worker 端口在调用工具前断言。 */
