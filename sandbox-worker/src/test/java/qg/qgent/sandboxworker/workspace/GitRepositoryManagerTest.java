@@ -31,7 +31,26 @@ class GitRepositoryManagerTest {
 
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         properties.setGitStoreRoot(store.getParent().toString());
-        GitRepositoryManager manager = new GitRepositoryManager(properties);
+        properties.setBackendUrl("http://localhost:8080");
+        
+        org.springframework.web.client.RestClient.Builder builder = org.springframework.web.client.RestClient.builder()
+            .requestFactory(new org.springframework.http.client.ClientHttpRequestFactory() {
+                @Override
+                public org.springframework.http.client.ClientHttpRequest createRequest(java.net.URI uri, org.springframework.http.HttpMethod httpMethod) {
+                    return new org.springframework.mock.http.client.MockClientHttpRequest(httpMethod, uri) {
+                        @Override
+                        protected org.springframework.http.client.ClientHttpResponse executeInternal() {
+                            String responseBody = "{\"token\":\"fake-token\"}";
+                            org.springframework.mock.http.client.MockClientHttpResponse response = new org.springframework.mock.http.client.MockClientHttpResponse(
+                                responseBody.getBytes(), org.springframework.http.HttpStatus.OK);
+                            response.getHeaders().setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+                            return response;
+                        }
+                    };
+                }
+            });
+
+        GitRepositoryManager manager = new GitRepositoryManager(properties, builder.build());
         Path worktree = root.resolve("workspace/backend");
         GitRepositoryManager.WorktreeResult created = manager.create(repositoryId, worktree, "main", "feat/test");
 
@@ -57,6 +76,7 @@ class GitRepositoryManagerTest {
         run(List.of("git", "--git-dir", store.toString(), "remote", "set-url", "origin", remote.toString()), root);
         GitPushRequest pushRequest = new GitPushRequest();
         pushRequest.setExpectedHeadCommit(committed.getCommitSha());
+        pushRequest.setCredentialGrantId("grant123");
         GitPushResponse pushed = manager.push(repositoryId, worktree, "feat/test", pushRequest);
         assertTrue(pushed.isVerified());
         assertEquals(committed.getCommitSha(), output(List.of("git", "--git-dir", remote.toString(),
@@ -64,6 +84,74 @@ class GitRepositoryManagerTest {
 
         manager.remove(repositoryId, worktree);
         assertFalse(Files.exists(worktree));
+    }
+
+    @Test
+    void cleansUpAskpassScriptOnFailure() throws Exception {
+        UUID repositoryId = UUID.randomUUID();
+        Path store = root.resolve("store2").resolve(repositoryId + ".git");
+        Path source = root.resolve("source2");
+        Files.createDirectories(store.getParent());
+        run(List.of("git", "init", "-b", "main", source.toString()), root);
+        Files.writeString(source.resolve("README.md"), "base\n");
+        run(List.of("git", "-C", source.toString(), "add", "-A"), root);
+        run(List.of("git", "-C", source.toString(), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base"), root);
+        run(List.of("git", "clone", "--bare", source.toString(), store.toString()), root);
+
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+        properties.setGitStoreRoot(store.getParent().toString());
+        properties.setBackendUrl("http://localhost:8080");
+
+        org.springframework.web.client.RestClient.Builder builder = org.springframework.web.client.RestClient.builder()
+            .requestFactory(new org.springframework.http.client.ClientHttpRequestFactory() {
+                @Override
+                public org.springframework.http.client.ClientHttpRequest createRequest(java.net.URI uri, org.springframework.http.HttpMethod httpMethod) {
+                    return new org.springframework.mock.http.client.MockClientHttpRequest(httpMethod, uri) {
+                        @Override
+                        protected org.springframework.http.client.ClientHttpResponse executeInternal() {
+                            String responseBody = "{\"token\":\"fake-token\"}";
+                            org.springframework.mock.http.client.MockClientHttpResponse response = new org.springframework.mock.http.client.MockClientHttpResponse(
+                                responseBody.getBytes(), org.springframework.http.HttpStatus.OK);
+                            response.getHeaders().setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+                            return response;
+                        }
+                    };
+                }
+            });
+
+        GitRepositoryManager manager = new GitRepositoryManager(properties, builder.build());
+        Path worktree = root.resolve("workspace2/backend");
+        GitRepositoryManager.WorktreeResult created = manager.create(repositoryId, worktree, "main", "feat/fail");
+
+        Files.writeString(worktree.resolve("fail.txt"), "fail\n");
+        GitCommitRequest request = new GitCommitRequest();
+        request.setExpectedHeadCommit(created.headCommit());
+        request.setExpectedDiffHash(manager.diff(worktree).getDiffHash());
+        request.setMessage("fail commit");
+        GitCommitResponse committed = manager.commit(worktree, request);
+
+        // Intentionally set origin to a non-existent remote to trigger push failure
+        run(List.of("git", "--git-dir", store.toString(), "remote", "set-url", "origin", root.resolve("nonexistent.git").toString()), root);
+        
+        GitPushRequest pushRequest = new GitPushRequest();
+        pushRequest.setExpectedHeadCommit(committed.getCommitSha());
+        pushRequest.setCredentialGrantId("grant123");
+
+        Path tmpdir = Path.of(System.getProperty("java.io.tmpdir"));
+        long beforeCount = 0;
+        try (java.util.stream.Stream<Path> stream = Files.list(tmpdir)) {
+            beforeCount = stream.filter(p -> p.getFileName().toString().startsWith("git-askpass-")).count();
+        }
+
+        org.junit.jupiter.api.Assertions.assertThrows(qg.qgent.sandboxworker.api.WorkerException.class, () -> {
+            manager.push(repositoryId, worktree, "feat/fail", pushRequest);
+        });
+
+        long afterCount = 0;
+        try (java.util.stream.Stream<Path> stream = Files.list(tmpdir)) {
+            afterCount = stream.filter(p -> p.getFileName().toString().startsWith("git-askpass-")).count();
+        }
+        assertEquals(beforeCount, afterCount, "GIT_ASKPASS script was not cleaned up!");
     }
 
     @Test

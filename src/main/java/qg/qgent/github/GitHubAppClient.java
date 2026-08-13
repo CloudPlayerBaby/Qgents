@@ -33,6 +33,14 @@ public interface GitHubAppClient {
     GitHubInstallationDetails getInstallation(long installationId);
 
     /**
+     * 生成短期有效的 GitHub App Installation Token。
+     * 
+     * @param installationId GitHub 提供的安装数字 ID
+     * @return Installation Token
+     */
+    String createInstallationToken(long installationId);
+
+    /**
      * 查询某个安装授权范围内的仓库元数据。
      *
      * @param installationId GitHub 提供的安装数字 ID
