@@ -8,6 +8,8 @@ import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.GroupCreateRequest;
+import qg.qgent.dto.GroupLatestMessage;
+import qg.qgent.dto.GroupLatestMessageRow;
 import qg.qgent.dto.GroupMemberResponse;
 import qg.qgent.dto.GroupResponse;
 import qg.qgent.dto.GroupUpdateRequest;
@@ -16,13 +18,17 @@ import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.mapper.AgentMapper;
 import qg.qgent.mapper.GroupAgentMapper;
+import qg.qgent.mapper.MessageMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.RequirementGroupRepositoryMapper;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 需求群业务：PROJECT_MAIN 自动创建、REQUIREMENT 群 CRUD 与归档（契约 §7 统一 Group）。
@@ -36,16 +42,19 @@ public class GroupService {
     private final ProjectMemberMapper projectMemberMapper;
     private final GroupAgentMapper groupAgentMapper;
     private final AgentMapper agentMapper;
+    private final MessageMapper messageMapper;
     private final ProjectAccessService access;
 
     public GroupService(RequirementGroupMapper groupMapper,
             RequirementGroupRepositoryMapper groupRepositoryMapper, ProjectMemberMapper projectMemberMapper,
-            GroupAgentMapper groupAgentMapper, AgentMapper agentMapper, ProjectAccessService access) {
+            GroupAgentMapper groupAgentMapper, AgentMapper agentMapper, MessageMapper messageMapper,
+            ProjectAccessService access) {
         this.groupMapper = groupMapper;
         this.groupRepositoryMapper = groupRepositoryMapper;
         this.projectMemberMapper = projectMemberMapper;
         this.groupAgentMapper = groupAgentMapper;
         this.agentMapper = agentMapper;
+        this.messageMapper = messageMapper;
         this.access = access;
     }
 
@@ -122,7 +131,7 @@ public class GroupService {
     }
 
     /**
-     * 项目全部群（含主群与已归档），按最近活跃排序。
+     * 项目全部群（含主群与已归档），按最近活跃排序；附带每群最新消息摘要。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -130,7 +139,11 @@ public class GroupService {
      */
     public List<GroupResponse> list(UUID actor, UUID projectId) {
         access.requireProjectMember(projectId, actor);
-        return groupMapper.listByProject(projectId).stream().map(this::toResponse).toList();
+        Map<UUID, GroupLatestMessageRow> latestByGroup = messageMapper.selectLatestByProject(projectId).stream()
+                .collect(Collectors.toMap(GroupLatestMessageRow::getRequirementGroupId, Function.identity()));
+        return groupMapper.listByProject(projectId).stream()
+                .map(group -> toResponse(group, latestByGroup.get(group.getId())))
+                .toList();
     }
 
     /**
@@ -278,8 +291,16 @@ public class GroupService {
     }
 
     private GroupResponse toResponse(RequirementGroupEntity g) {
+        return toResponse(g, null);
+    }
+
+    private GroupResponse toResponse(RequirementGroupEntity g, GroupLatestMessageRow latest) {
+        GroupLatestMessage latestMessage = latest == null ? null
+                : new GroupLatestMessage(latest.getSenderName(), latest.getText());
         return new GroupResponse(g.getId().toString(), g.getProjectId().toString(), g.getGroupType(),
-                g.getName(), g.getDescription(), g.getStatus(), g.getLastMessageAt(), g.getCreatedAt(),
+                g.getName(), g.getDescription(), g.getStatus(), g.getLastMessageAt(),
+                g.getLastMessageAt() != null ? g.getLastMessageAt() : g.getCreatedAt(), latestMessage,
+                g.getCreatedAt(),
                 groupRepositoryMapper.selectRepositoryIds(g.getId()).stream().map(UUID::toString).toList(),
                 projectMemberMapper.countMembers(g.getProjectId()) + groupAgentMapper.selectAgentIds(g.getId()).size());
     }

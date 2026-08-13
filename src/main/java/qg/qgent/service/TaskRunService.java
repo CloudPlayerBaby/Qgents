@@ -53,16 +53,19 @@ public class TaskRunService {
     private final DiffMapper diffMapper;
     private final ProjectAccessService projectAccess;
     private final EventService eventService;
+    private final NotificationService notificationService;
 
     public TaskRunService(TaskRunMapper taskRunMapper,
             ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
-            ProjectAccessService projectAccess, EventService eventService) {
+            ProjectAccessService projectAccess, EventService eventService,
+            NotificationService notificationService) {
         this.taskRunMapper = taskRunMapper;
         this.logMapper = logMapper;
         this.inputRequestMapper = inputRequestMapper;
         this.diffMapper = diffMapper;
         this.projectAccess = projectAccess;
         this.eventService = eventService;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -316,6 +319,10 @@ public class TaskRunService {
         eventService.publish(projectId, null, eventType, req.getId().toString(),
                 TaskEventPayloads.inputRequest(projectId, taskId, taskStepId, taskRunId, req));
         eventService.publish(projectId, null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
+        // 通知任务发起人需要输入/审批（接收人 = 运行发起用户，语义与任务发起人一致）
+        notificationService.notify(run.getCreatedBy(), projectId, null, "AGENT_INPUT_REQUIRED",
+                "INPUT".equals(kind) ? "需要你输入：" + prompt : "需要你审批：" + prompt, prompt,
+                req.getId().toString());
         return toInput(req);
     }
 

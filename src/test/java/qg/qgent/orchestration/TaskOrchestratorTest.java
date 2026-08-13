@@ -29,6 +29,7 @@ import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.SandboxWorkerProperties;
 import qg.qgent.service.EventService;
+import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
 
@@ -70,7 +71,8 @@ class TaskOrchestratorTest {
 
     private TaskOrchestrator orchestrator(AgentRunExecutor executor) {
         return new TaskOrchestrator(new OrchestrationStateMachine(), stepScheduler, executor, contextAssembler,
-                taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService, sessionManager);
+                taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
+                mock(NotificationService.class), sessionManager);
     }
 
     /** Maven 文件树 + Mock LLM：Plan 两轮、Coding 一次 finalResult、Test 一次分析、Review 一次 finalResult，全部成功。 */

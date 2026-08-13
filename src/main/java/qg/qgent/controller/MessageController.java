@@ -18,7 +18,9 @@ import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.MessageResponse;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.dto.PageSlice;
+import qg.qgent.dto.TaskTriggerRequest;
 import qg.qgent.service.MessageService;
+import qg.qgent.service.TaskTriggerService;
 
 import java.util.UUID;
 
@@ -32,9 +34,11 @@ import java.util.UUID;
 public class MessageController {
 
     private final MessageService messageService;
+    private final TaskTriggerService taskTriggerService;
 
-    public MessageController(MessageService messageService) {
+    public MessageController(MessageService messageService, TaskTriggerService taskTriggerService) {
         this.messageService = messageService;
+        this.taskTriggerService = taskTriggerService;
     }
 
     /**
@@ -58,6 +62,18 @@ public class MessageController {
         PageSlice<MessageResponse> slice = messageService.list(userId, projectId, groupId, cursor, limit);
         return new PagedApiResponse<>(slice.getData(), slice.getPage(),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 从群消息显式触发 Task（点7：聊天消息到 Agent Task 转换，需 Idempotency-Key）。
+     * <p>
+     * 消息必须属于当前需求群；Task 创建后编排由后端1 自动触发。
+     */
+    @PostMapping("/projects/{projectId}/groups/{groupId}/messages/{messageId}/trigger-task")
+    public ApiResponse<?> triggerTask(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
+            @PathVariable UUID groupId, @PathVariable UUID messageId,
+            @Valid @RequestBody TaskTriggerRequest body, HttpServletRequest request) {
+        return ok(taskTriggerService.trigger(userId, projectId, groupId, messageId, body), request);
     }
 
     private ApiResponse<?> ok(Object data, HttpServletRequest request) {

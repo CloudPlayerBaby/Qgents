@@ -3,6 +3,8 @@ package qg.qgent.service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -35,6 +37,7 @@ import java.util.UUID;
  */
 @Service
 public class MessageService {
+    private static final Logger log = LoggerFactory.getLogger(MessageService.class);
     private static final Set<String> PUBLIC_TYPES = Set.of("TEXT", "CODE", "IMAGE", "FILE", "DIFF", "TASK_STATUS",
             "QUOTE");
     private static final String CURSOR_PREFIX = "cursor_";
@@ -43,14 +46,17 @@ public class MessageService {
     private final RequirementGroupMapper groupMapper;
     private final GroupAgentMapper groupAgentMapper;
     private final ProjectAccessService access;
+    private final TaskTriggerService taskTriggerService;
     private final ObjectMapper mapper;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
-            GroupAgentMapper groupAgentMapper, ProjectAccessService access, ObjectMapper mapper) {
+            GroupAgentMapper groupAgentMapper, ProjectAccessService access, TaskTriggerService taskTriggerService,
+            ObjectMapper mapper) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupAgentMapper = groupAgentMapper;
         this.access = access;
+        this.taskTriggerService = taskTriggerService;
         this.mapper = mapper;
     }
 
@@ -73,7 +79,31 @@ public class MessageService {
         if (group == null || !group.getProjectId().equals(projectId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
         }
-        return doSend(groupId, actor, null, body);
+        MessageResponse response = doSend(groupId, actor, null, body);
+        triggerTaskOnAgentMention(actor, projectId, groupId, response.getId() == null ? null : UUID.fromString(response.getId()),
+                body.getMentions());
+        return response;
+    }
+
+    /**
+     * 若消息提及了 Agent（@agent），自动从该消息创建 Task（点7：聊天消息到 Agent Task 转换）。
+     * <p>
+     * 自动触发失败不阻塞消息发送（日志 warn）；幂等由 TaskTriggerService 保证（同消息只建一次）。
+     */
+    private void triggerTaskOnAgentMention(UUID actor, UUID projectId, UUID groupId, UUID messageId,
+            List<Mention> mentions) {
+        if (mentions == null || mentions.stream().noneMatch(m -> "AGENT".equals(m.getType()))) {
+            return;
+        }
+        MessageEntity message = messageMapper.selectById(messageId);
+        if (message == null) {
+            return;
+        }
+        try {
+            taskTriggerService.triggerFromMention(actor, projectId, groupId, message, mentions);
+        } catch (RuntimeException e) {
+            log.warn("task auto-trigger skipped, messageId={}: {}", messageId, e.getMessage());
+        }
     }
 
     /**

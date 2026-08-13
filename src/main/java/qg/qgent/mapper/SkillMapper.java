@@ -33,4 +33,27 @@ public interface SkillMapper extends BaseMapper<SkillEntity> {
             "</script>" })
     List<SkillEntity> listSkills(@Param("projectId") UUID projectId, @Param("actor") UUID actor,
             @Param("status") String status, @Param("tag") String tag);
+
+    /**
+     * 按关键字检索项目内可用的已发布 Skill（点6 上下文检索）。
+     * <p>
+     * 可见性与 listSkills 一致：仅 PROJECT_SHARED 或自己创建；状态固定 PUBLISHED。
+     * 关键字匹配 name 或 content（LIKE），标签用 JSON_CONTAINS 精确匹配。
+     *
+     * @param projectId 项目 ID
+     * @param actor     当前用户 ID（用于可见性过滤）
+     * @param tag       标签过滤，可为空
+     * @param q         关键字，可为空（为空时退化为全部已发布）
+     * @return 匹配的 Skill 实体列表，按更新时间倒序
+     */
+    @Select({ "<script>",
+            "SELECT * FROM skills WHERE project_id = #{projectId}",
+            "AND (visibility = 'PROJECT_SHARED' OR created_by = #{actor})",
+            "AND status = 'PUBLISHED'",
+            "<if test='tag != null'>AND JSON_CONTAINS(tags, JSON_QUOTE(#{tag}))</if>",
+            "<if test='q != null'>AND (name LIKE CONCAT('%', #{q}, '%') OR content LIKE CONCAT('%', #{q}, '%'))</if>",
+            "ORDER BY updated_at DESC",
+            "</script>" })
+    List<SkillEntity> searchByQuery(@Param("projectId") UUID projectId, @Param("actor") UUID actor,
+            @Param("tag") String tag, @Param("q") String q);
 }

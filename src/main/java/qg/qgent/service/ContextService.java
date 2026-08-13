@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.ContextMemory;
 import qg.qgent.dto.ContextMessage;
+import qg.qgent.dto.ContextSearchResponse;
 import qg.qgent.dto.ContextSkill;
 import qg.qgent.dto.GroupContext;
 import qg.qgent.entity.MemoryEntity;
@@ -93,6 +94,38 @@ public class ContextService {
 
         return new GroupContext(group.getId().toString(), projectId.toString(), group.getName(), group.getDescription(),
                 repositoryIds, conversation, skills, memories);
+    }
+
+    /**
+     * 按关键字与标签检索项目上下文（点6：相关性检索，不默认注入全部）。
+     * <p>
+     * 返回匹配的已发布 Skill、已批准 Memory 与可选群消息，专供 Agent 作为 prompt 输入；
+     * 关键字为空时仅按标签/状态过滤，消息检索仅在关键字非空时执行。
+     *
+     * @param actor     当前用户 ID
+     * @param projectId 项目 ID
+     * @param q         关键字，可为空
+     * @param tag       标签过滤，可为空
+     * @param groupId   可选需求群 ID，限定消息检索范围
+     * @param limit     消息条数上限（默认 50，上限 200）
+     * @return 检索结果（Skill + Memory + 消息）
+     */
+    public ContextSearchResponse search(UUID actor, UUID projectId, String q, String tag, UUID groupId,
+            Integer limit) {
+        access.requireProjectMember(projectId, actor);
+        boolean isAdmin = "PROJECT_ADMIN".equals(access.requireProjectMember(projectId, actor));
+        int messageLimit = Math.min(Math.max(limit == null ? DEFAULT_MESSAGE_LIMIT : limit, 1), MAX_MESSAGE_LIMIT);
+
+        List<ContextSkill> skills = skillMapper.searchByQuery(projectId, actor, tag, q).stream()
+                .map(s -> new ContextSkill(s.getName(), s.getContent())).toList();
+        List<ContextMemory> memories = memoryMapper.searchByQuery(projectId, actor, isAdmin, tag, q).stream()
+                .map(m -> new ContextMemory(m.getTitle(), m.getContent(), m.getCategory())).toList();
+        List<ContextMessage> messages = q == null || q.isBlank() ? List.of()
+                : messageMapper.searchByQuery(projectId, groupId, q.trim(), messageLimit).stream()
+                        .map(m -> new ContextMessage(m.getSequenceNo(), m.getMessageType(),
+                                senderType(m), senderId(m), messageText(m.getContent())))
+                        .toList();
+        return new ContextSearchResponse(skills, memories, messages);
     }
 
     private String senderType(MessageEntity m) {

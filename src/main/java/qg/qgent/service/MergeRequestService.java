@@ -84,6 +84,7 @@ public class MergeRequestService {
     private final GitHubAppClient githubClient;
     private final ProjectAccessService projectAccess;
     private final EventService eventService;
+    private final NotificationService notificationService;
 
     public MergeRequestService(MergeRequestMapper mergeRequestMapper, MergeRequestGroupMapper mergeRequestGroupMapper,
             QualityCheckResultMapper qualityCheckMapper, MergeRequestReviewMapper reviewMapper,
@@ -92,7 +93,8 @@ public class MergeRequestService {
             RepositoryBranchConfigMapper branchConfigMapper,
             RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
             EventService eventService, GitHubInstallationMapper githubInstallationMapper,
-            GitHubRepositoryMapper githubRepositoryMapper, ProjectMapper projectMapper, GitHubAppClient githubClient) {
+            GitHubRepositoryMapper githubRepositoryMapper, ProjectMapper projectMapper, GitHubAppClient githubClient,
+            NotificationService notificationService) {
         this.mergeRequestMapper = mergeRequestMapper;
         this.mergeRequestGroupMapper = mergeRequestGroupMapper;
         this.qualityCheckMapper = qualityCheckMapper;
@@ -108,6 +110,7 @@ public class MergeRequestService {
         this.githubClient = githubClient;
         this.projectAccess = projectAccess;
         this.eventService = eventService;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -633,6 +636,24 @@ public class MergeRequestService {
         p.put("timestamp", Instant.now().toString());
         eventService.publish(repo == null ? null : repo.getProjectId(), null, "merge-request.updated",
                 mr.getId().toString(), p);
+        notifyMrPending(mr, repo == null ? null : repo.getProjectId());
+    }
+
+    /**
+     * MR 状态更新后向任务发起人写入通知（A 联调约定 §1）。
+     * MR 未关联任务或发起人缺失时静默跳过，不阻断 MR 同步。
+     */
+    private void notifyMrPending(MergeRequestEntity mr, UUID projectId) {
+        if (mr.getTaskId() == null) {
+            return;
+        }
+        TaskEntity task = taskMapper.selectById(mr.getTaskId());
+        if (task == null) {
+            return;
+        }
+        notificationService.notify(task.getCreatedBy(), projectId, task.getRequirementGroupId(), "MR_PENDING",
+                "MR 状态更新：" + (mr.getTitle() == null || mr.getTitle().isBlank() ? mr.getProviderNumber() : mr.getTitle()),
+                mr.getStatus(), mr.getId().toString());
     }
 
     private MergeRequestSummaryResponse toSummary(MergeRequestEntity mr, List<String> groupIds,

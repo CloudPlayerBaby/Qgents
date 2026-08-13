@@ -31,9 +31,11 @@ public class DiffService {
         private final WorkspaceMapper workspaces;
         private final ProjectAccessService access;
         private final EventService eventService;
+        private final NotificationService notificationService;
 
         public DiffService(DiffMapper diffs, DiffFileMapper files, DiffCommentMapper comments, TaskMapper tasks,
-                        WorkspaceMapper workspaces, ProjectAccessService access, EventService eventService) {
+                        WorkspaceMapper workspaces, ProjectAccessService access, EventService eventService,
+                        NotificationService notificationService) {
                 this.diffs = diffs;
                 this.files = files;
                 this.comments = comments;
@@ -41,6 +43,24 @@ public class DiffService {
                 this.workspaces = workspaces;
                 this.access = access;
                 this.eventService = eventService;
+                this.notificationService = notificationService;
+        }
+
+        /**
+         * Diff 产出后向任务发起人写入"有交付物待处理"通知（A 联调约定 §1）。
+         * 任务不存在或发起人缺失时静默跳过，不阻断 Diff 创建。
+         */
+        private void notifyDeliverablePending(DiffEntity diff) {
+                if (diff.getTaskId() == null) {
+                        return;
+                }
+                TaskEntity task = tasks.selectById(diff.getTaskId());
+                if (task == null) {
+                        return;
+                }
+                notificationService.notify(task.getCreatedBy(), diff.getProjectId(), task.getRequirementGroupId(),
+                                "DELIVERABLE_PENDING", "待审阅 Diff：" + task.getTitle(),
+                                "任务已产出待审阅的代码变更", diff.getId().toString());
         }
 
         /**
@@ -71,6 +91,7 @@ public class DiffService {
                 diffs.insert(diff);
                 eventService.publish(projectId, null, "diff.created", diff.getId().toString(),
                                 TaskEventPayloads.diffCreated(diff));
+                notifyDeliverablePending(diff);
                 return detail(diff);
         }
 
