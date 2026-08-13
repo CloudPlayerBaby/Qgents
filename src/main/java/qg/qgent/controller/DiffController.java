@@ -24,6 +24,14 @@ public class DiffController {
                 this.service = service;
         }
 
+        @GetMapping
+        public ApiPageResponse<DiffListItemResponse> list(@PathVariable UUID projectId,
+                        @RequestParam(required = false) UUID taskId, @AuthenticationPrincipal UUID actor,
+                        @RequestParam(required = false) String cursor,
+                        @RequestParam(defaultValue = "20") int limit, HttpServletRequest request) {
+                return service.list(projectId, taskId, actor, cursor, limit, id(request));
+        }
+
         @GetMapping("/{diffId}")
         public ApiResponse<?> get(@PathVariable UUID projectId, @PathVariable UUID diffId,
                         @AuthenticationPrincipal UUID actor, HttpServletRequest request) {

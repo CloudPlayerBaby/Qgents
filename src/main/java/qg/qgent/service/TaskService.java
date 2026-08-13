@@ -20,6 +20,7 @@ import java.util.stream.Collectors;
  * All mutations authorize the authenticated actor and persist metadata only;
  * this service never controls Git,
  * Workspace files, Sandbox containers or Agent execution.
+ * 状态变更（创建、取消）发布 task.updated 项目级事件供前端刷新。
  */
 @Service
 public class TaskService {
@@ -35,6 +36,7 @@ public class TaskService {
     private final MessageMapper messages;
     private final AgentMapper agents;
     private final ProjectAccessService access;
+    private final EventService eventService;
 
     /**
      * Creates the task-domain service with all persistence and authorization
@@ -43,7 +45,7 @@ public class TaskService {
     public TaskService(TaskMapper tasks, WorkspaceMapper workspaces, WorkspaceRepositoryMapper repositories,
             TaskStepMapper steps, TaskStepDependencyMapper dependencies, TaskStepRepositoryMapper scopes,
             RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories, ProjectMapper projects,
-            MessageMapper messages, AgentMapper agents, ProjectAccessService access) {
+            MessageMapper messages, AgentMapper agents, ProjectAccessService access, EventService eventService) {
         this.tasks = tasks;
         this.workspaces = workspaces;
         this.repositories = repositories;
@@ -56,6 +58,7 @@ public class TaskService {
         this.messages = messages;
         this.agents = agents;
         this.access = access;
+        this.eventService = eventService;
     }
 
     /**
@@ -144,6 +147,7 @@ public class TaskService {
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
         tasks.insert(task);
+        publishTaskUpdated(task);
 
         if (!reuseWorkspace) {
             int index = 1;
@@ -152,7 +156,7 @@ public class TaskService {
                         "feat/task-" + task.getId());
             }
         }
-        return response(task, workspace, repositoryIds);
+        return response(task, workspace);
     }
 
     /** Lists project Tasks visible to the authenticated project member. */
@@ -166,6 +170,34 @@ public class TaskService {
     public TaskResponse get(UUID projectId, UUID taskId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         return response(requireTask(projectId, taskId));
+    }
+
+    /**
+     * 取消任务（异步受理，由 Controller 以 202 返回）。
+     * 状态矩阵：PLANNING/PENDING 同步置 CANCELLED；RUNNING 置 CANCELLING，真实终止由受控
+     * 执行器在安全检查点完成；SUCCEEDED/FAILED/CANCELLED/CANCELLING 返回 409 拒绝。
+     * 仅任务发起人或 Project Admin 可取消。
+     */
+    @Transactional
+    public TaskResponse cancel(UUID projectId, UUID taskId, UUID actor) {
+        TaskEntity task = requireTask(projectId, taskId);
+        requireTaskManager(task, actor);
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        switch (task.getStatus()) {
+            case "PLANNING", "PENDING" -> {
+                task.setStatus("CANCELLED");
+                task.setUpdatedAt(now);
+                tasks.updateById(task);
+            }
+            case "RUNNING" -> {
+                task.setStatus("CANCELLING");
+                task.setUpdatedAt(now);
+                tasks.updateById(task);
+            }
+            default -> throw new ApiException(HttpStatus.CONFLICT, "TASK_NOT_CANCELLABLE", "当前任务状态不可取消");
+        }
+        publishTaskUpdated(task);
+        return response(task);
     }
 
     /**
@@ -208,6 +240,8 @@ public class TaskService {
         for (TaskStepCreateRequest request : requests) {
             TaskStepEntity step = toEntity(taskId, sequence++, request);
             steps.insert(step);
+            eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task-step.updated",
+                    step.getId().toString(), TaskEventPayloads.taskStepUpdated(task.getProjectId(), step));
             for (UUID dependencyId : Optional.ofNullable(request.getDependencyIds()).orElse(List.of())) {
                 dependencies.insertLink(step.getId(), dependencyId);
             }
@@ -313,16 +347,21 @@ public class TaskService {
 
     private TaskResponse response(TaskEntity task) {
         WorkspaceEntity workspace = workspaces.selectById(task.getWorkspaceId());
-        List<UUID> repositoryIds = repositories.selectByWorkspace(task.getWorkspaceId()).stream()
-                .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
-        return response(task, workspace, repositoryIds);
+        return response(task, workspace);
     }
 
-    private TaskResponse response(TaskEntity task, WorkspaceEntity workspace, List<UUID> repositoryIds) {
+    private TaskResponse response(TaskEntity task, WorkspaceEntity workspace) {
+        List<WorkspaceRepositoryEntity> worktrees = workspace == null ? List.of()
+                : repositories.selectByWorkspace(workspace.getId());
+        List<String> repositoryIds = worktrees.stream().map(w -> id(w.getProjectRepositoryId())).toList();
+        List<TaskRepositoryScopeResponse> scopes = worktrees.stream().map(w -> new TaskRepositoryScopeResponse(
+                id(w.getProjectRepositoryId()), w.getWorkspacePath(), w.getBaseCommit(), w.getSourceBranch(),
+                w.getHeadCommit())).toList();
         return new TaskResponse(id(task.getId()), id(task.getProjectId()), id(task.getRequirementGroupId()),
                 id(task.getTriggerMessageId()), task.getTitle(), task.getRequirement(), task.getStatus(),
-                workspace == null ? null : id(workspace.getId()), id(task.getContinuationOfTaskId()),
-                repositoryIds.stream().map(UUID::toString).toList(),
+                workspace == null ? null : id(workspace.getId()),
+                workspace == null ? null : workspace.getStatus(), id(task.getContinuationOfTaskId()),
+                repositoryIds, scopes,
                 id(task.getCreatedBy()), iso(task.getCreatedAt()), iso(task.getUpdatedAt()));
     }
 
@@ -337,6 +376,11 @@ public class TaskService {
         response.setRepositoryId(entity.getProjectRepositoryId());
         response.setAccessMode(entity.getAccessMode());
         return response;
+    }
+
+    private void publishTaskUpdated(TaskEntity task) {
+        eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated",
+                task.getId().toString(), TaskEventPayloads.taskUpdated(task));
     }
 
     private ApiException validation(String code, String message) {

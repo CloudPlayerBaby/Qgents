@@ -21,6 +21,10 @@ public class DiffEntity {
     private UUID projectId;
     /** Task that produced this final Diff. */
     private UUID taskId;
+    /** 产出该 Diff 的任务运行ID；受控执行服务落库，未绑定运行前为空。 */
+    private UUID taskRunId;
+    /** 产出该 Diff 的任务步骤ID；受控执行服务落库，未绑定步骤前为空。 */
+    private UUID taskStepId;
     private UUID workspaceId;
     /** 项目仓库绑定ID。 */
     private UUID projectRepositoryId;

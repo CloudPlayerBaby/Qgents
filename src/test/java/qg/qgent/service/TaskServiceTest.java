@@ -7,10 +7,12 @@ import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /** Security and persistence behavior tests for the confirmed Task workflow model. */
@@ -27,8 +29,9 @@ class TaskServiceTest {
     private final MessageMapper messages = mock(MessageMapper.class);
     private final AgentMapper agents = mock(AgentMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
+    private final EventService events = mock(EventService.class);
     private final TaskService service = new TaskService(tasks, workspaces, repositories, steps, dependencies, scopes,
-            groups, projectRepositories, projects, messages, agents, access);
+            groups, projectRepositories, projects, messages, agents, access, events);
 
     @Test
     void createPersistsOneWorkspaceAndMultipleRepositories() {
@@ -37,10 +40,17 @@ class TaskServiceTest {
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
         when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
         when(projectRepositories.selectById(frontend)).thenReturn(repository(frontend, projectId));
+        when(repositories.selectByWorkspace(any(UUID.class)))
+                .thenReturn(List.of(worktree(backend, "repo-1", "base", "feat/task-x"),
+                        worktree(frontend, "repo-2", "base", "feat/task-x")));
 
         TaskResponse result = service.create(projectId, actor, request(groupId, List.of(backend, frontend)));
 
         assertEquals(2, result.getRepositoryIds().size());
+        assertEquals("PROVISIONING", result.getWorkspaceStatus());
+        assertEquals(2, result.getRepositories().size());
+        assertEquals(backend.toString(), result.getRepositories().getFirst().getRepositoryId());
+        assertEquals("feat/task-x", result.getRepositories().getFirst().getSourceBranch());
         verify(workspaces).insert(any(WorkspaceEntity.class));
         verify(repositories, times(2)).insertLink(any(), any(), any(), any(), any());
     }
@@ -130,6 +140,49 @@ class TaskServiceTest {
         verify(scopes).insertLink(newId, repositoryId, "WRITE");
     }
 
+    @Test
+    void cancelPendingTaskMarksCancelledAndPublishesEvent() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(taskId, projectId, actor);
+        task.setStatus("PENDING"); task.setRequirementGroupId(groupId); task.setWorkspaceId(workspaceId);
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        TaskResponse result = service.cancel(projectId, taskId, actor);
+
+        assertEquals("CANCELLED", result.getStatus());
+        assertEquals("CANCELLED", task.getStatus());
+        verify(tasks).updateById(task);
+        verify(events).publish(any(), any(), eq("task.updated"), eq(taskId.toString()), any(Map.class));
+    }
+
+    @Test
+    void cancelRunningTaskMarksCancelling() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
+        TaskEntity task = task(taskId, projectId, actor);
+        task.setStatus("RUNNING");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        TaskResponse result = service.cancel(projectId, taskId, actor);
+
+        assertEquals("CANCELLING", result.getStatus());
+        assertEquals("CANCELLING", task.getStatus());
+    }
+
+    @Test
+    void cancelSucceededTaskRejected() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
+        TaskEntity task = task(taskId, projectId, actor);
+        task.setStatus("SUCCEEDED");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.cancel(projectId, taskId, actor));
+
+        assertEquals("TASK_NOT_CANCELLABLE", error.code());
+        verify(tasks, never()).updateById(any(TaskEntity.class));
+    }
+
     private TaskCreateRequest request(UUID groupId, List<UUID> repositoryIds) {
         TaskCreateRequest request = new TaskCreateRequest();
         request.setRequirementGroupId(groupId); request.setTitle("login"); request.setRequirement("implement login");
@@ -152,6 +205,13 @@ class TaskServiceTest {
     private ProjectRepositoryEntity repository(UUID id, UUID projectId) {
         ProjectRepositoryEntity repository = new ProjectRepositoryEntity(); repository.setId(id);
         repository.setProjectId(projectId); return repository;
+    }
+
+    private WorkspaceRepositoryEntity worktree(UUID repositoryId, String path, String baseCommit, String sourceBranch) {
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setProjectRepositoryId(repositoryId); worktree.setWorkspacePath(path);
+        worktree.setBaseCommit(baseCommit); worktree.setSourceBranch(sourceBranch); worktree.setHeadCommit(null);
+        return worktree;
     }
 
     private TaskEntity task(UUID id, UUID projectId, UUID creator) {

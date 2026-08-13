@@ -13,7 +13,10 @@ import qg.qgent.mapper.*;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Reads and reviews immutable working-tree Diff snapshots produced by
@@ -27,20 +30,73 @@ public class DiffService {
         private final TaskMapper tasks;
         private final WorkspaceMapper workspaces;
         private final ProjectAccessService access;
+        private final EventService eventService;
 
         public DiffService(DiffMapper diffs, DiffFileMapper files, DiffCommentMapper comments, TaskMapper tasks,
-                        WorkspaceMapper workspaces, ProjectAccessService access) {
+                        WorkspaceMapper workspaces, ProjectAccessService access, EventService eventService) {
                 this.diffs = diffs;
                 this.files = files;
                 this.comments = comments;
                 this.tasks = tasks;
                 this.workspaces = workspaces;
                 this.access = access;
+                this.eventService = eventService;
+        }
+
+        /**
+         * 受控执行接缝：持久化不可变工作树 Diff 快照并发布 diff.created 事件。
+         * 调用方（受控执行服务）必须已完成项目归属与工作树校验，baseCommit/sourceBranch
+         * 必须来自真实 Git，禁止伪造。taskRunId/taskStepId 记录产出该 Diff 的运行与步骤。
+         */
+        @Transactional
+        public DiffResponse create(UUID projectId, UUID taskId, UUID taskRunId, UUID taskStepId, UUID repositoryId,
+                        UUID workspaceId, String baseCommit, String sourceBranch, String workingTreeHash,
+                        Map<String, Object> changeStats) {
+                LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+                DiffEntity diff = new DiffEntity();
+                diff.setId(UuidV7.next());
+                diff.setProjectId(projectId);
+                diff.setTaskId(taskId);
+                diff.setTaskRunId(taskRunId);
+                diff.setTaskStepId(taskStepId);
+                diff.setWorkspaceId(workspaceId);
+                diff.setProjectRepositoryId(repositoryId);
+                diff.setBaseCommit(baseCommit);
+                diff.setSourceBranch(sourceBranch);
+                diff.setWorkingTreeHash(workingTreeHash);
+                diff.setStatus("PENDING_REVIEW");
+                diff.setChangeStats(changeStats);
+                diff.setCreatedAt(now);
+                diff.setUpdatedAt(now);
+                diffs.insert(diff);
+                eventService.publish(projectId, null, "diff.created", diff.getId().toString(),
+                                TaskEventPayloads.diffCreated(diff));
+                return detail(diff);
         }
 
         public DiffResponse get(UUID projectId, UUID diffId, UUID actor) {
                 access.requireProjectMember(projectId, actor);
-                return response(requireDiff(projectId, diffId));
+                return detail(requireDiff(projectId, diffId));
+        }
+
+        /** Lists project Diffs, optionally scoped to one task, ordered newest first. */
+        public ApiPageResponse<DiffListItemResponse> list(UUID projectId, UUID taskId, UUID actor, String cursor,
+                        int limit, String requestId) {
+                access.requireProjectMember(projectId, actor);
+                int size = Math.min(limit <= 0 ? 20 : limit, 100);
+                UUID cursorId = parseCursor(cursor);
+                List<DiffEntity> rows = diffs.selectList(Wrappers.<DiffEntity>lambdaQuery()
+                                .eq(DiffEntity::getProjectId, projectId)
+                                .eq(taskId != null, DiffEntity::getTaskId, taskId)
+                                .lt(cursorId != null, DiffEntity::getId, cursorId)
+                                .orderByDesc(DiffEntity::getId).last("LIMIT " + (size + 1)));
+                boolean more = rows.size() > size;
+                List<DiffEntity> pageRows = more ? rows.subList(0, size) : rows;
+                Map<UUID, String> groupByTask = requirementGroups(pageRows);
+                List<DiffListItemResponse> items = pageRows.stream().map(d -> listItem(d,
+                                groupByTask.get(d.getTaskId()))).toList();
+                return new ApiPageResponse<>(items,
+                                new PageMeta(more ? items.getLast().getId() : null, more), requestId);
         }
 
         public ApiPageResponse<DiffFileResponse> files(UUID projectId, UUID diffId, UUID actor, String cursor,
@@ -117,7 +173,7 @@ public class DiffService {
                 diff.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
                 diff.setUpdatedAt(diff.getReviewedAt());
                 diffs.updateById(diff);
-                return response(diff);
+                return detail(diff);
         }
 
         private DiffEntity requireDiff(UUID projectId, UUID id) {
@@ -128,15 +184,43 @@ public class DiffService {
                 return value;
         }
 
-        private DiffResponse response(DiffEntity d) {
-                return new DiffResponse(id(d.getId()), id(d.getProjectId()),
-                                id(d.getTaskId()), id(d.getWorkspaceId()), id(d.getProjectRepositoryId()),
-                                d.getBaseCommit(),
-                                d.getSourceBranch(), d.getWorkingTreeHash(), d.getSnapshotKey(), d.getHeadCommit(),
-                                d.getStatus(),
+        private DiffResponse detail(DiffEntity d) {
+                TaskEntity task = tasks.selectById(d.getTaskId());
+                String groupId = task == null ? null : id(task.getRequirementGroupId());
+                return new DiffResponse(id(d.getId()), id(d.getProjectId()), id(d.getTaskId()), id(d.getTaskRunId()),
+                                id(d.getTaskStepId()), groupId, id(d.getWorkspaceId()),
+                                id(d.getProjectRepositoryId()), d.getBaseCommit(), d.getSourceBranch(),
+                                d.getWorkingTreeHash(), d.getSnapshotKey(), d.getHeadCommit(), d.getStatus(),
                                 id(d.getReviewedBy()), d.getReviewReason(), iso(d.getReviewedAt()), d.getChangeStats(),
-                                iso(d.getCreatedAt()),
-                                iso(d.getUpdatedAt()));
+                                iso(d.getCreatedAt()), iso(d.getUpdatedAt()));
+        }
+
+        private DiffListItemResponse listItem(DiffEntity d, String groupId) {
+                return new DiffListItemResponse(id(d.getId()), id(d.getProjectId()), id(d.getTaskId()),
+                                id(d.getTaskRunId()), id(d.getTaskStepId()), groupId, id(d.getWorkspaceId()),
+                                id(d.getProjectRepositoryId()), d.getBaseCommit(), d.getSourceBranch(),
+                                d.getHeadCommit(), d.getStatus(), d.getChangeStats(), iso(d.getCreatedAt()));
+        }
+
+        /** 批量加载 Diff 所属任务的需求群ID，避免列表逐行查询。 */
+        private Map<UUID, String> requirementGroups(List<DiffEntity> rows) {
+                Set<UUID> taskIds = rows.stream().map(DiffEntity::getTaskId).collect(Collectors.toSet());
+                if (taskIds.isEmpty()) {
+                        return Map.of();
+                }
+                return tasks.selectBatchIds(taskIds).stream()
+                                .collect(Collectors.toMap(TaskEntity::getId, t -> id(t.getRequirementGroupId())));
+        }
+
+        private UUID parseCursor(String cursor) {
+                if (cursor == null || cursor.isBlank()) {
+                        return null;
+                }
+                try {
+                        return UUID.fromString(cursor);
+                } catch (IllegalArgumentException e) {
+                        throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", "游标格式不合法");
+                }
         }
 
         private DiffFileResponse response(DiffFileEntity f) {

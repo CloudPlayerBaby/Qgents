@@ -22,10 +22,8 @@ import qg.qgent.mapper.ExecutionLogMapper;
 import qg.qgent.mapper.InputRequestMapper;
 import qg.qgent.mapper.TaskRunMapper;
 
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -97,7 +95,7 @@ public class TaskRunService {
                 id(run.getAgentId()),
                 run.getRole(), run.getStatus(), id(run.getRetryOfTaskRunId()),
                 artifactSummary(run.getId()), iso(run.getStartedAt()), iso(run.getFinishedAt()),
-                iso(run.getCreatedAt()),
+                durationMs(run.getStartedAt(), run.getFinishedAt()), iso(run.getCreatedAt()),
                 iso(run.getUpdatedAt()));
     }
 
@@ -285,6 +283,42 @@ public class TaskRunService {
         return run;
     }
 
+    /**
+     * 受控执行接缝：为运行创建人机输入/审批请求，并将运行置为 WAITING_INPUT/WAITING_APPROVAL。
+     * 发布 input-required / approval-required 与 task-run.updated 事件；调用方必须已完成
+     * 项目归属、角色与写入租约校验。回复/审批入口见 replyInput/approveInput/rejectInput。
+     */
+    @Transactional
+    public InputRequestResponse createInputRequest(UUID projectId, UUID taskId, UUID taskStepId, UUID taskRunId,
+            String kind, String prompt, List<Object> options, UUID createdBy) {
+        TaskRunEntity run = requireRun(projectId, taskRunId);
+        if (!"INPUT".equals(kind) && !"APPROVAL".equals(kind)) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_INPUT_KIND", "非法输入请求类型");
+        }
+        if (!"RUNNING".equals(run.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_WAITABLE", "仅 RUNNING 运行可发起输入请求");
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        InputRequestEntity req = new InputRequestEntity();
+        req.setId(UuidV7.next());
+        req.setTaskRunId(taskRunId);
+        req.setKind(kind);
+        req.setStatus("PENDING");
+        req.setPrompt(prompt);
+        req.setOptions(options);
+        req.setCreatedBy(createdBy);
+        req.setCreatedAt(now);
+        inputRequestMapper.insert(req);
+        run.setStatus("INPUT".equals(kind) ? "WAITING_INPUT" : "WAITING_APPROVAL");
+        run.setUpdatedAt(now);
+        taskRunMapper.updateById(run);
+        String eventType = "INPUT".equals(kind) ? "input-required" : "approval-required";
+        eventService.publish(projectId, null, eventType, req.getId().toString(),
+                TaskEventPayloads.inputRequest(projectId, taskId, taskStepId, taskRunId, req));
+        eventService.publish(projectId, null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
+        return toInput(req);
+    }
+
     /** QUEUED → RUNNING，记录开始时间；仅 QUEUED 状态可开始。 */
     @Transactional
     public void markRunning(UUID taskRunId) {
@@ -380,15 +414,17 @@ public class TaskRunService {
         return Map.of("diffs", Map.of("count", list.size(), "byStatus", byStatus));
     }
 
-    /** 构造符合契约最小字段的项目事件载荷；sequence 为运行内执行序号，状态事件暂无步骤序号填 0。 */
+    /** 计算执行耗时（毫秒）；任一端时间为空或结束早于开始时返回 null，避免负值误导前端。 */
+    private Long durationMs(LocalDateTime startedAt, LocalDateTime finishedAt) {
+        if (startedAt == null || finishedAt == null || finishedAt.isBefore(startedAt)) {
+            return null;
+        }
+        return java.time.Duration.between(startedAt, finishedAt).toMillis();
+    }
+
+    /** 构造 task-run.updated 事件载荷；sequence 为运行内执行序号，状态事件暂无步骤序号填 0。 */
     private Map<String, Object> eventPayload(TaskRunEntity run, long sequence) {
-        Map<String, Object> p = new HashMap<>();
-        p.put("projectId", run.getProjectId());
-        p.put("taskRunId", run.getId());
-        p.put("status", run.getStatus());
-        p.put("sequence", sequence);
-        p.put("timestamp", Instant.now().toString());
-        return p;
+        return TaskEventPayloads.taskRunUpdated(run, sequence);
     }
 
     private TaskRunSummaryResponse toSummary(TaskRunEntity run) {
@@ -399,7 +435,7 @@ public class TaskRunService {
     }
 
     private LogEntryResponse toLog(ExecutionLogEntity l) {
-        return new LogEntryResponse(id(l.getId()), l.getSequenceNo(), l.getContent(),
+        return new LogEntryResponse(id(l.getId()), l.getSequenceNo(), l.getNode(), l.getContent(),
                 iso(l.getCreatedAt()));
     }
 

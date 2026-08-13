@@ -18,7 +18,7 @@ public class TaskEntity {
     /** Previous task continued in the same workspace, when explicitly requested. */ private UUID continuationOfTaskId;
     /** Human-readable task title, at most 255 characters. */ private String title;
     /** Immutable requirement text supplied by the requester. */ private String requirement;
-    /** Lifecycle state: PLANNING/PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLED. */ private String status;
+    /** Lifecycle state: PLANNING/PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLING/CANCELLED. */ private String status;
     /** Authenticated user who requested the task. */ private UUID createdBy;
     /** UTC creation time. */ private LocalDateTime createdAt;
     /** UTC last-update time. */ private LocalDateTime updatedAt;

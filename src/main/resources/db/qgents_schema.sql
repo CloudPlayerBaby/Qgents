@@ -492,11 +492,25 @@ CREATE TABLE IF NOT EXISTS group_agents (
     CONSTRAINT fk_ga_agent FOREIGN KEY(agent_id) REFERENCES agents(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='群聊 Agent 参与者（Agent 首次回群时自动加入）';
 
+CREATE TABLE IF NOT EXISTS
+    agent_skill_bindings (
+        project_id BINARY(16) NOT NULL COMMENT '所属项目ID（隔离同一 Agent 在不同项目的技能集）',
+        agent_id BINARY(16) NOT NULL COMMENT 'Team 级 Agent ID',
+        skill_id BINARY(16) NOT NULL COMMENT '项目内 Skill ID',
+        created_by BINARY(16) NOT NULL COMMENT '绑定发起用户ID',
+        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '绑定时间（UTC）',
+        PRIMARY KEY (project_id, agent_id, skill_id),
+        KEY idx_asb_agent (agent_id),
+        KEY idx_asb_skill (skill_id),
+        CONSTRAINT fk_asb_agent FOREIGN KEY (agent_id) REFERENCES agents (id) ON DELETE CASCADE,
+        CONSTRAINT fk_asb_skill FOREIGN KEY (skill_id) REFERENCES skills (id) ON DELETE CASCADE
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Agent-Skill 绑定关系（按项目隔离，复合主键）';
+
 CREATE TABLE IF NOT EXISTS tasks (
     id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL, requirement_group_id BINARY(16) NOT NULL,
     trigger_message_id BINARY(16) NULL, workspace_id BINARY(16) NOT NULL, continuation_of_task_id BINARY(16) NULL,
     title VARCHAR(255) NOT NULL, requirement TEXT NOT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'PLANNING', created_by BINARY(16) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PLANNING' COMMENT 'PLANNING/PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLING/CANCELLED', created_by BINARY(16) NOT NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     KEY idx_task_project(project_id,status), KEY idx_task_group(requirement_group_id), KEY idx_task_workspace(workspace_id),
@@ -587,6 +601,7 @@ CREATE TABLE IF NOT EXISTS
         id BINARY(16) PRIMARY KEY COMMENT '日志UUIDv7',
         task_run_id BINARY(16) NOT NULL COMMENT '所属任务运行ID',
         sequence_no BIGINT UNSIGNED NOT NULL COMMENT '运行内单调递增日志序号',
+        node VARCHAR(64) NULL COMMENT '产生日志的节点名；单节点运行为空',
         content TEXT NOT NULL COMMENT '已脱敏的日志内容，禁止包含Token/密码/密钥',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '写入时间（UTC）',
         UNIQUE KEY uk_log_seq (task_run_id, sequence_no),
@@ -617,6 +632,8 @@ CREATE TABLE IF NOT EXISTS
         id BINARY(16) PRIMARY KEY COMMENT 'Diff UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
         task_id BINARY(16) NOT NULL COMMENT 'Owning Task',
+        task_run_id BINARY(16) NULL COMMENT '产出该 Diff 的任务运行ID；未绑定运行前为空',
+        task_step_id BINARY(16) NULL COMMENT '产出该 Diff 的任务步骤ID；未绑定步骤前为空',
         workspace_id BINARY(16) NOT NULL COMMENT 'Reviewed Workspace',
         project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
         base_commit VARCHAR(128) NOT NULL COMMENT 'Immutable comparison base',
@@ -629,9 +646,11 @@ CREATE TABLE IF NOT EXISTS
         change_stats JSON NULL COMMENT '变更统计JSON，如文件数、增删行数',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-        KEY idx_diff_project (project_id), KEY idx_diff_task(task_id,status),
+        KEY idx_diff_project (project_id), KEY idx_diff_task(task_id,status), KEY idx_diff_task_run(task_run_id),
         CONSTRAINT fk_diff_project FOREIGN KEY (project_id) REFERENCES projects (id),
         CONSTRAINT fk_diff_task FOREIGN KEY(task_id) REFERENCES tasks(id),
+        CONSTRAINT fk_diff_task_run FOREIGN KEY(task_run_id) REFERENCES task_runs(id),
+        CONSTRAINT fk_diff_task_step FOREIGN KEY(task_step_id) REFERENCES task_steps(id),
         CONSTRAINT fk_diff_workspace FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
         CONSTRAINT fk_diff_reviewer FOREIGN KEY(reviewed_by) REFERENCES users(id),
         CONSTRAINT fk_diff_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id)

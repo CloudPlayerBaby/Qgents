@@ -55,6 +55,19 @@ public class TaskController {
         return ok(service.get(projectId, taskId, actor), request);
     }
 
+    /**
+     * Cancels an unfinished task. PLANNING/PENDING transitions to CANCELLED directly;
+     * RUNNING transitions to CANCELLING and is terminated by the controlled executor at a
+     * safe checkpoint. Accepted asynchronously with 202.
+     */
+    @Operation(summary = "Cancel a task")
+    @PostMapping("/{taskId}/cancel")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ApiResponse<?> cancel(@PathVariable UUID projectId, @PathVariable UUID taskId,
+            @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
+        return ok(service.cancel(projectId, taskId, actor), request);
+    }
+
     /** Persists Planner output as ordered dependency-aware steps. */
     @Operation(summary = "Add planned task steps")
     @PostMapping("/{taskId}/steps")
