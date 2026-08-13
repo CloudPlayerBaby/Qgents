@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS
         default_branch VARCHAR(512) NOT NULL COMMENT 'GitHub默认分支名',
         visibility VARCHAR(32) NOT NULL COMMENT '仓库可见性枚举：PUBLIC/PRIVATE/INTERNAL',
         archived TINYINT (1) NOT NULL DEFAULT 0 COMMENT '是否已在GitHub归档：0否1是',
+        authorization_status VARCHAR(32) NOT NULL DEFAULT 'AUTHORIZED' COMMENT '授权状态枚举：AUTHORIZED/REVOKED',
         synced_at DATETIME (6) NOT NULL COMMENT '最近同步时间（UTC）',
         UNIQUE KEY uk_ghr_provider (provider_repository_id),
         KEY idx_ghr_install (installation_id),

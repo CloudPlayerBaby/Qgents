@@ -57,12 +57,18 @@ public class IdempotencyFilter extends OncePerRequestFilter {
                 || "PATCH".equalsIgnoreCase(method) || "DELETE".equalsIgnoreCase(method))) {
             return true;
         }
-        if (!request.getRequestURI().startsWith("/api/v1/projects/")) {
+        String path = request.getRequestURI();
+        boolean isProjectApi = path.startsWith("/api/v1/projects/");
+        boolean isGitHubInstallApi = path.matches("^/api/v1/teams/[^/]+/integrations/github/installations(?:/[^/]+/sync)?$");
+        
+        if (!isProjectApi && !isGitHubInstallApi) {
             return true;
         }
-        // ProjectController 已使用事务型 IdempotencyService，避免过滤器再次创建同键记录。
-        String path = request.getRequestURI();
-        return path.matches("^/api/v1/projects/[^/]+/(archive|restore|members)$");
+        if (isProjectApi) {
+            // ProjectController 已使用事务型 IdempotencyService，避免过滤器再次创建同键记录。
+            return path.matches("^/api/v1/projects/[^/]+/(archive|restore|members)$");
+        }
+        return false;
     }
 
     @Override

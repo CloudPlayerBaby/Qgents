@@ -37,6 +37,7 @@ import qg.qgent.service.GitHubRepositoryService;
 public class GitHubRepositoryController {
     private final GitHubRepositoryService service;
     private final CurrentActorProvider currentActor;
+    private final String frontendUrl;
 
     /**
      * 创建 GitHub 接口控制器。
@@ -44,9 +45,11 @@ public class GitHubRepositoryController {
      * @param service GitHub 授权和仓库绑定业务服务
      * @param currentActor 当前认证用户提供者
      */
-    public GitHubRepositoryController(GitHubRepositoryService service, CurrentActorProvider currentActor) {
+    public GitHubRepositoryController(GitHubRepositoryService service, CurrentActorProvider currentActor,
+            @org.springframework.beans.factory.annotation.Value("${app.frontend-url}") String frontendUrl) {
         this.service = service;
         this.currentActor = currentActor;
+        this.frontendUrl = frontendUrl;
     }
 
     /**
@@ -171,8 +174,29 @@ public class GitHubRepositoryController {
     @GetMapping("/integrations/github/callback")
     public ResponseEntity<Void> installationCallback(@RequestParam("installation_id") long installationId,
                                                       @RequestParam String state) {
-        service.handleInstallationCallback(installationId, state);
-        return ResponseEntity.noContent().build();
+        UUID teamId = service.handleInstallationCallback(installationId, state);
+        String redirectUrl = org.springframework.web.util.UriComponentsBuilder.fromUriString(frontendUrl)
+                .pathSegment("teams", teamId.toString(), "settings", "integrations")
+                .queryParam("installed", "github")
+                .build().toUriString();
+        return ResponseEntity.status(org.springframework.http.HttpStatus.FOUND)
+                .header(org.springframework.http.HttpHeaders.LOCATION, redirectUrl)
+                .build();
+    }
+
+    /**
+     * 手动触发指定授权的全量同步。
+     * 只有 Team Owner 才能执行此操作。
+     *
+     * @param teamId 团队 ID
+     * @param installationId Qgents 安装记录 ID
+     * @param request 当前 HTTP 请求
+     * @return 同步完成的安装记录响应
+     */
+    @PostMapping("/teams/{teamId}/integrations/github/installations/{installationId}/sync")
+    public ApiResponse<GitHubInstallationResponse> manualSyncInstallation(@PathVariable UUID teamId,
+            @PathVariable UUID installationId, HttpServletRequest request) {
+        return ok(service.manualSyncInstallation(currentActor.currentUserId(), teamId, installationId), request);
     }
 
     private <T> ApiResponse<T> ok(T data, HttpServletRequest request) {

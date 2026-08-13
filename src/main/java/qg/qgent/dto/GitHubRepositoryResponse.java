@@ -14,27 +14,33 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class GitHubRepositoryResponse {
-    /** Qgents 浠撳簱闀滃儚 ID銆?*/
+    /** Qgents 仓库镜像 ID。 */
     private UUID id;
 
-    /** GitHub 鎻愪緵鐨勪粨搴撴暟瀛?ID銆?*/
+    /** 所属的 Qgents 安装记录 ID。 */
+    private UUID installationId;
+
+    /** GitHub 提供的仓库数字 ID。 */
     private long providerRepositoryId;
 
-    /** GitHub 浠撳簱鎵€鏈夎€呯櫥褰曞悕銆?*/
-    private String ownerLogin;
+    /** 仓库全名 (owner/name)。 */
+    private String fullName;
 
-    /** GitHub 浠撳簱鍚嶇О銆?*/
-    private String name;
+    /** GitHub 仓库主页 URL。 */
+    private String githubUrl;
 
-    /** GitHub 浠撳簱榛樿鍒嗘敮銆?*/
+    /** GitHub 仓库默认分支。 */
     private String defaultBranch;
 
-    /** GitHub 浠撳簱鍙鎬с€?*/
+    /** GitHub 仓库可见性。 */
     private String visibility;
 
-    /** GitHub 鏄惁宸插綊妗ｃ€?*/
+    /** GitHub 是否已归档。 */
     private boolean archived;
 
-    /** 浠撳簱鍏冩暟鎹渶杩戝悓姝ユ椂闂达紝UTC銆?*/
-    private LocalDateTime syncedAt;
+    /** 授权状态 (AUTHORIZED/REVOKED)。 */
+    private String authorizationStatus;
+
+    /** 仓库元数据最近同步时间，UTC。 */
+    private LocalDateTime metadataSyncedAt;
 }

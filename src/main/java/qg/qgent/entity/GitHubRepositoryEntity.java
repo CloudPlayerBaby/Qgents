@@ -30,5 +30,6 @@ public class GitHubRepositoryEntity {
     private String defaultBranch;
     private String visibility;
     private Boolean archived;
+    private String authorizationStatus;
     private LocalDateTime syncedAt;
 }

@@ -3,6 +3,8 @@ package qg.qgent.auth;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.crypto.Cipher;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +19,8 @@ import java.util.Base64;
  */
 @Component
 public class RsaPasswordDecryptor {
+    private static final Logger log = LoggerFactory.getLogger(RsaPasswordDecryptor.class);
+
     private final PrivateKey privateKey;
     private final String keyId;
 
@@ -38,6 +42,8 @@ public class RsaPasswordDecryptor {
     // 解密方法，使用RSA私钥解密客户端发送的加密密码
     public String decrypt(String requestedKeyId, String encrypted) {
         if (!keyId.equals(requestedKeyId)) {
+            log.warn("Rejected encrypted password: requestedKeyId={}, expectedKeyId={}, passwordPresent={}, passwordLength={}",
+                    requestedKeyId, keyId, encrypted != null, encrypted == null ? 0 : encrypted.length());
             throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
                     "INVALID_ENCRYPTED_PASSWORD", "密码密文或密钥版本不合法");
         }
@@ -46,6 +52,9 @@ public class RsaPasswordDecryptor {
             cipher.init(Cipher.DECRYPT_MODE, privateKey);
             return new String(cipher.doFinal(Base64.getDecoder().decode(encrypted)), StandardCharsets.UTF_8);
         } catch (Exception e) {
+            log.warn("Failed to decrypt encrypted password: keyId={}, passwordPresent={}, passwordLength={}, failure={}",
+                    requestedKeyId, encrypted != null, encrypted == null ? 0 : encrypted.length(),
+                    e.getClass().getSimpleName());
             throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
                     "INVALID_ENCRYPTED_PASSWORD", "密码密文或密钥版本不合法");
         }
