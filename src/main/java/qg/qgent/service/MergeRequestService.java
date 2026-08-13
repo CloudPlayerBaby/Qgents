@@ -143,8 +143,9 @@ public class MergeRequestService {
         boolean hasMore = rows.size() > size;
         List<MergeRequestEntity> page = hasMore ? rows.subList(0, size) : rows;
         Map<UUID, List<String>> groupIdsByMr = groupIdsByMr(page);
+        Map<UUID, QualityGateResponse> gatesByMr = qualityGates(page);
         List<MergeRequestSummaryResponse> items = page.stream()
-                .map(mr -> toSummary(mr, groupIdsByMr.getOrDefault(mr.getId(), List.of()), qualityGate(mr)))
+                .map(mr -> toSummary(mr, groupIdsByMr.getOrDefault(mr.getId(), List.of()), gatesByMr.get(mr.getId())))
                 .toList();
         PageMeta meta = new PageMeta(hasMore ? items.get(items.size() - 1).getId() : null, hasMore);
         return new ApiPageResponse<>(items, meta, requestId);
@@ -409,23 +410,7 @@ public class MergeRequestService {
 
     /** 汇总目标分支质量门禁：必检项全部 PASSED → PASSED；任一 FAILED → FAILED；缺失/运行中 → PENDING。 */
     private QualityGateResponse qualityGate(MergeRequestEntity mr) {
-        RepositoryBranchConfigEntity config = branchConfigMapper.selectOne(
-                Wrappers.<RepositoryBranchConfigEntity>lambdaQuery()
-                        .eq(RepositoryBranchConfigEntity::getProjectRepositoryId, mr.getProjectRepositoryId())
-                        .eq(RepositoryBranchConfigEntity::getBranchName, mr.getTargetBranch()));
-        List<String> required = new ArrayList<>();
-        if (config != null && config.getRequiredChecks() != null) {
-            required.addAll(config.getRequiredChecks());
-        }
-        List<UUID> requiredTestsets = config == null ? List.of()
-                : branchConfigTestsetMapper.selectByBranchConfigId(config.getId()).stream()
-                        .map(RepositoryBranchConfigTestsetEntity::getTestsetId).toList();
-        if (!requiredTestsets.isEmpty() && !required.contains("TESTSET")) {
-            required.add("TESTSET");
-        }
-        List<String> checks = required.stream().distinct().toList();
-        String status = computeGateStatus(mr, checks, requiredTestsets);
-        return new QualityGateResponse(status, checks);
+        return qualityGates(List.of(mr)).get(mr.getId());
     }
 
     private String computeGateStatus(MergeRequestEntity mr, List<String> checks, List<UUID> requiredTestsets) {
@@ -463,6 +448,93 @@ public class MergeRequestService {
         if (anyFailed) {
             return "FAILED";
         }
+        return satisfied >= total ? "PASSED" : "PENDING";
+    }
+
+    /** 批量汇总多个 MR 的目标分支质量门禁状态，消除 N+1 查询 */
+    private Map<UUID, QualityGateResponse> qualityGates(List<MergeRequestEntity> mrs) {
+        if (mrs.isEmpty()) {
+            return Map.of();
+        }
+        
+        List<UUID> repoIds = mrs.stream().map(MergeRequestEntity::getProjectRepositoryId).distinct().toList();
+        List<RepositoryBranchConfigEntity> allConfigs = branchConfigMapper.selectList(
+                Wrappers.<RepositoryBranchConfigEntity>query()
+                        .in("project_repository_id", repoIds));
+                        
+        Map<UUID, RepositoryBranchConfigEntity> mrConfigMap = new HashMap<>();
+        for (MergeRequestEntity mr : mrs) {
+            allConfigs.stream()
+                    .filter(c -> java.util.Objects.equals(c.getProjectRepositoryId(), mr.getProjectRepositoryId()) && java.util.Objects.equals(c.getBranchName(), mr.getTargetBranch()))
+                    .findFirst()
+                    .ifPresent(c -> mrConfigMap.put(mr.getId(), c));
+        }
+
+        List<UUID> configIds = mrConfigMap.values().stream().map(RepositoryBranchConfigEntity::getId).distinct().toList();
+        List<RepositoryBranchConfigTestsetEntity> allTestsets = configIds.isEmpty() ? List.of() :
+                branchConfigTestsetMapper.selectList(Wrappers.<RepositoryBranchConfigTestsetEntity>query()
+                        .in("branch_config_id", configIds));
+                        
+        Map<UUID, List<UUID>> configTestsetsMap = allTestsets.stream()
+                .collect(Collectors.groupingBy(RepositoryBranchConfigTestsetEntity::getBranchConfigId,
+                        Collectors.mapping(RepositoryBranchConfigTestsetEntity::getTestsetId, Collectors.toList())));
+
+        List<UUID> mrIds = mrs.stream().map(MergeRequestEntity::getId).toList();
+        List<QualityCheckResultEntity> allChecks = qualityCheckMapper.selectList(
+                Wrappers.<QualityCheckResultEntity>query()
+                        .in("merge_request_id", mrIds)
+                        .orderByDesc("attempt_no"));
+                        
+        Map<UUID, QualityGateResponse> resultMap = new HashMap<>();
+        for (MergeRequestEntity mr : mrs) {
+            RepositoryBranchConfigEntity config = mrConfigMap.get(mr.getId());
+            List<String> required = new ArrayList<>();
+            if (config != null && config.getRequiredChecks() != null) {
+                required.addAll(config.getRequiredChecks());
+            }
+            List<UUID> requiredTestsets = config == null ? List.of() :
+                    configTestsetsMap.getOrDefault(config.getId(), List.of());
+                    
+            if (!requiredTestsets.isEmpty() && !required.contains("TESTSET")) {
+                required.add("TESTSET");
+            }
+            List<String> checks = required.stream().distinct().toList();
+            
+            List<QualityCheckResultEntity> mrChecks = allChecks.stream()
+                    .filter(c -> java.util.Objects.equals(c.getMergeRequestId(), mr.getId()) && java.util.Objects.equals(c.getCommitSha(), mr.getHeadCommit()))
+                    .toList();
+                    
+            String status = computeGateStatusFromList(mrChecks, checks, requiredTestsets);
+            resultMap.put(mr.getId(), new QualityGateResponse(status, checks));
+        }
+        return resultMap;
+    }
+
+    private String computeGateStatusFromList(List<QualityCheckResultEntity> mrChecks, List<String> checks, List<UUID> requiredTestsets) {
+        boolean anyFailed = false;
+        int satisfied = 0;
+        int total = requiredTestsets.size() + (int) checks.stream().filter(c -> !"TESTSET".equals(c)).count();
+        if (total == 0) {
+            return "PASSED";
+        }
+        for (UUID testsetId : requiredTestsets) {
+            QualityCheckResultEntity r = mrChecks.stream()
+                    .filter(c -> "TESTSET".equals(c.getCheckType()) && testsetId.equals(c.getTestsetId()))
+                    .findFirst().orElse(null);
+            if (r == null) continue;
+            if ("FAILED".equals(r.getStatus())) anyFailed = true;
+            else if ("PASSED".equals(r.getStatus())) satisfied++;
+        }
+        for (String check : checks) {
+            if ("TESTSET".equals(check)) continue;
+            QualityCheckResultEntity r = mrChecks.stream()
+                    .filter(c -> check.equals(c.getCheckType()) && c.getTestsetId() == null)
+                    .findFirst().orElse(null);
+            if (r == null) continue;
+            if ("FAILED".equals(r.getStatus())) anyFailed = true;
+            else if ("PASSED".equals(r.getStatus())) satisfied++;
+        }
+        if (anyFailed) return "FAILED";
         return satisfied >= total ? "PASSED" : "PENDING";
     }
 

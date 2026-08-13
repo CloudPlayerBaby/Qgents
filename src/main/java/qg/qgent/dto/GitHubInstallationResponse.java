@@ -8,27 +8,30 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * 鍥㈤槦宸叉巿鏉冪殑 GitHub App 瀹夎璁板綍銆?
+ * 团队已授权的 GitHub App 安装记录。
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class GitHubInstallationResponse {
-    /** Qgents 瀹夎璁板綍 ID銆?*/
+    /** Qgents 安装记录 ID。 */
     private UUID id;
 
-    /** GitHub 鎻愪緵鐨勫畨瑁呮暟瀛?ID銆?*/
+    /** GitHub 提供的安装数字 ID。 */
     private long providerInstallationId;
 
-    /** GitHub 鎺堟潈璐﹀彿鐧诲綍鍚嶃€?*/
+    /** GitHub 授权账号登录名。 */
     private String accountLogin;
 
-    /** GitHub 鎺堟潈璐﹀彿绫诲瀷銆?*/
+    /** GitHub 授权账号类型。 */
     private String accountType;
 
-    /** 瀹夎鐘舵€併€?*/
+    /** 安装状态。 */
     private String status;
 
-    /** 瀹夎璁板綍鏈€杩戝悓姝ユ椂闂达紝UTC銆?*/
-    private LocalDateTime updatedAt;
+    /** 安装创建时间，UTC。 */
+    private LocalDateTime installedAt;
+
+    /** 安装记录最近同步时间，UTC。 */
+    private LocalDateTime metadataSyncedAt;
 }

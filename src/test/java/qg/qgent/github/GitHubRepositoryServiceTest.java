@@ -165,6 +165,120 @@ class GitHubRepositoryServiceTest {
         verify(projectRepositoryMapper, never()).deleteById(projectRepositoryId);
     }
 
+    @Test
+    void rejectsRepositoryWithMissingDefaultBranch() {
+        GitHubRepositoryEntity repository = repository(null);
+        authorizeProjectAdmin();
+        when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(repository);
+
+        ApiException exception = assertThrows(ApiException.class, () -> service.bindProjectRepository(actorId, projectId,
+                bindRequest(installationId, repositoryId, "main", null)));
+
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("GITHUB_REPOSITORY_METADATA_INCOMPLETE", exception.code());
+    }
+
+    @Test
+    void rejectsRevokedRepository() {
+        authorizeProjectAdmin();
+        when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+
+        ApiException exception = assertThrows(ApiException.class, () -> service.bindProjectRepository(actorId, projectId,
+                bindRequest(installationId, repositoryId, null, null)));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, exception.status());
+        assertEquals("REPOSITORY_NOT_AUTHORIZED_FOR_PROJECT", exception.code());
+    }
+
+    @Test
+    void rejectsSyncWhenInstallationBelongsToAnotherTeam() {
+        long providerInstallationId = 12345L;
+        UUID myTeamId = UUID.randomUUID();
+        UUID otherTeamId = UUID.randomUUID();
+        
+        when(gitHubClient.verifyInstallationState("mock_state")).thenReturn(myTeamId);
+        when(gitHubClient.getInstallation(providerInstallationId)).thenReturn(new qg.qgent.github.GitHubInstallationDetails(providerInstallationId, "qgents", "Organization"));
+        when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of());
+        
+        GitHubInstallationEntity existingInstallation = new GitHubInstallationEntity();
+        existingInstallation.setId(UUID.randomUUID());
+        existingInstallation.setTeamId(otherTeamId);
+        existingInstallation.setProviderInstallationId(providerInstallationId);
+        
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(existingInstallation);
+        
+        ApiException exception = assertThrows(ApiException.class, 
+                () -> service.handleInstallationCallback(providerInstallationId, "mock_state"));
+                
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("GITHUB_INSTALLATION_TEAM_CONFLICT", exception.code());
+    }
+
+    @Test
+    void syncInstallationRevokesMissingRepositories() {
+        long providerInstallationId = 12345L;
+        UUID myTeamId = UUID.randomUUID();
+        
+        when(gitHubClient.verifyInstallationState("mock_state")).thenReturn(myTeamId);
+        when(gitHubClient.getInstallation(providerInstallationId)).thenReturn(new qg.qgent.github.GitHubInstallationDetails(providerInstallationId, "qgents", "Organization"));
+        
+        // Return 1 repository from GitHub
+        when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
+            new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "repo1", "main", "PRIVATE", false)
+        ));
+        
+        GitHubInstallationEntity existingInstallation = new GitHubInstallationEntity();
+        existingInstallation.setId(installationId);
+        existingInstallation.setTeamId(myTeamId);
+        existingInstallation.setProviderInstallationId(providerInstallationId);
+        
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(existingInstallation);
+        
+        // Return 2 repositories from Database
+        GitHubRepositoryEntity repo1 = new GitHubRepositoryEntity();
+        repo1.setId(UUID.randomUUID());
+        repo1.setProviderRepositoryId(100L);
+        repo1.setAuthorizationStatus("AUTHORIZED");
+        
+        GitHubRepositoryEntity repo2 = new GitHubRepositoryEntity();
+        repo2.setId(UUID.randomUUID());
+        repo2.setProviderRepositoryId(200L); // Missing from GitHub
+        repo2.setAuthorizationStatus("AUTHORIZED");
+        
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(repo1, repo2));
+        
+        service.handleInstallationCallback(providerInstallationId, "mock_state");
+        
+        // Verify repo2 is revoked
+        ArgumentCaptor<GitHubRepositoryEntity> captor = ArgumentCaptor.forClass(GitHubRepositoryEntity.class);
+        verify(repositoryMapper, org.mockito.Mockito.times(2)).updateById(captor.capture());
+        
+        GitHubRepositoryEntity revokedRepo = captor.getAllValues().stream()
+                .filter(r -> "REVOKED".equals(r.getAuthorizationStatus()))
+                .findFirst().orElseThrow();
+        assertEquals(repo2.getId(), revokedRepo.getId());
+    }
+
+    @Test
+    void handleInstallationCallbackPerformsSyncAndReturnsTeamId() {
+        long providerInstallationId = 12345L;
+        UUID myTeamId = UUID.randomUUID();
+        
+        when(gitHubClient.verifyInstallationState("mock_state")).thenReturn(myTeamId);
+        when(gitHubClient.getInstallation(providerInstallationId)).thenReturn(new qg.qgent.github.GitHubInstallationDetails(providerInstallationId, "qgents", "Organization"));
+        when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
+            new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "repo1", "main", "PRIVATE", false)
+        ));
+        
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        
+        UUID returnedTeamId = service.handleInstallationCallback(providerInstallationId, "mock_state");
+        
+        assertEquals(myTeamId, returnedTeamId);
+        verify(installationMapper).insert(any(GitHubInstallationEntity.class));
+        verify(repositoryMapper).insert(any(GitHubRepositoryEntity.class));
+    }
+
     private GitHubRepositoryEntity repository(String branch) {
         GitHubRepositoryEntity repository = new GitHubRepositoryEntity();
         repository.setId(repositoryId);
@@ -175,6 +289,7 @@ class GitHubRepositoryServiceTest {
         repository.setDefaultBranch(branch);
         repository.setVisibility("PRIVATE");
         repository.setArchived(false);
+        repository.setAuthorizationStatus("AUTHORIZED");
         repository.setSyncedAt(LocalDateTime.now());
         return repository;
     }
@@ -201,5 +316,104 @@ class GitHubRepositoryServiceTest {
         request.setDefaultBranch(defaultBranch);
         request.setDisplayName(displayName);
         return request;
+    }
+
+    @Test
+    void createInstallationUrlReturnsUrl() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        when(gitHubClient.createInstallationUrl(teamId, actorId)).thenReturn("https://github.com/install");
+
+        var response = service.createInstallationUrl(actorId, teamId);
+
+        assertEquals("https://github.com/install", response.getInstallationUrl());
+    }
+
+    @Test
+    void listInstallationsReturnsMappedInstallations() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity entity = new GitHubInstallationEntity();
+        entity.setId(UUID.randomUUID());
+        entity.setProviderInstallationId(12345L);
+        entity.setAccountLogin("test-login");
+        when(installationMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(entity));
+
+        var response = service.listInstallations(actorId, teamId);
+
+        assertEquals(1, response.size());
+        assertEquals("test-login", response.get(0).getAccountLogin());
+    }
+
+    @Test
+    void listTeamRepositoriesReturnsMappedRepositories() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity instEntity = new GitHubInstallationEntity();
+        instEntity.setId(UUID.randomUUID());
+        instEntity.setProviderInstallationId(12345L);
+        when(installationMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(instEntity));
+
+        GitHubRepositoryEntity entity = new GitHubRepositoryEntity();
+        entity.setId(UUID.randomUUID());
+        entity.setProviderRepositoryId(12345L);
+        entity.setOwnerLogin("owner");
+        entity.setName("repo");
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(entity));
+
+        var response = service.listTeamRepositories(actorId, teamId);
+
+        assertEquals(1, response.size());
+        assertEquals("owner/repo", response.get(0).getFullName());
+    }
+
+    @Test
+    void listProjectRepositoriesReturnsMappedRepositories() {
+        UUID projectId = UUID.randomUUID();
+        
+        ProjectEntity project = new ProjectEntity();
+        project.setId(projectId);
+        project.setTeamId(UUID.randomUUID());
+        when(projectMapper.selectById(projectId)).thenReturn(project);
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(projectMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        UUID repoId = UUID.randomUUID();
+
+        ProjectRepositoryEntity entity = new ProjectRepositoryEntity();
+        entity.setId(UUID.randomUUID());
+        entity.setRepositoryId(repoId);
+        when(projectRepositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(entity));
+
+        GitHubRepositoryEntity repoEntity = new GitHubRepositoryEntity();
+        repoEntity.setId(repoId);
+        repoEntity.setProviderRepositoryId(12345L);
+        repoEntity.setOwnerLogin("owner");
+        repoEntity.setName("repo");
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(repoEntity));
+
+        var response = service.listProjectRepositories(actorId, projectId);
+
+        assertEquals(1, response.size());
+        assertEquals("owner/repo", response.get(0).getFullName());
+    }
+
+    @Test
+    void removeInstallationDeletesSuccessfully() {
+        UUID teamId = UUID.randomUUID();
+        UUID installationId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity entity = new GitHubInstallationEntity();
+        entity.setId(installationId);
+        entity.setTeamId(teamId);
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(entity);
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.Collections.emptyList());
+
+        service.removeInstallation(actorId, teamId, installationId);
+
+        verify(installationMapper).deleteById(installationId);
     }
 }
