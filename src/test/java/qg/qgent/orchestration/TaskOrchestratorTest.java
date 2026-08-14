@@ -33,8 +33,6 @@ import qg.qgent.service.EventService;
 import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
-import qg.qgent.service.TaskExecutionArtifactService;
-import qg.qgent.service.FinalDiffBundleService;
 
 import java.util.List;
 import java.util.UUID;
@@ -67,8 +65,6 @@ class TaskOrchestratorTest {
     private final TaskService taskService = mock(TaskService.class);
     private final TaskRunService taskRunService = mock(TaskRunService.class);
     private final EventService eventService = mock(EventService.class);
-    private final TaskExecutionArtifactService artifactService = mock(TaskExecutionArtifactService.class);
-    private final FinalDiffBundleService finalDiffBundles = mock(FinalDiffBundleService.class);
     private final AgentContextAssembler contextAssembler = new AgentContextAssembler();
     private final GitHubAppClient githubAppClient = mock(GitHubAppClient.class);
     private final SandboxSessionManager sessionManager = new SandboxSessionManager(
@@ -77,10 +73,9 @@ class TaskOrchestratorTest {
             mock(qg.qgent.mapper.GitHubInstallationMapper.class), mock(qg.qgent.service.GitCredentialService.class), githubAppClient);
 
     private TaskOrchestrator orchestrator(AgentRunExecutor executor) {
-        when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenReturn(UUID.randomUUID());
         return new TaskOrchestrator(new OrchestrationStateMachine(), stepScheduler, executor, contextAssembler,
                 taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
-                mock(NotificationService.class), sessionManager, artifactService, finalDiffBundles);
+                mock(NotificationService.class), sessionManager);
     }
 
     /** Maven 文件树 + Mock LLM：Plan 两轮、Coding 一次 finalResult、Test 一次分析、Review 一次 finalResult，全部成功。 */

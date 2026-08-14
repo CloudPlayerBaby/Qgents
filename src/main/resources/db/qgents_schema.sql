@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS
         id BINARY(16) PRIMARY KEY COMMENT '团队UUIDv7',
         owner_user_id BINARY(16) NOT NULL COMMENT '团队所有者用户ID',
         name VARCHAR(255) NOT NULL COMMENT '团队名称',
+        description TEXT NULL COMMENT '团队简介',
         status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '团队状态枚举：ACTIVE/ARCHIVED',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
@@ -513,11 +514,13 @@ CREATE TABLE IF NOT EXISTS
 CREATE TABLE IF NOT EXISTS tasks (
     id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL, requirement_group_id BINARY(16) NOT NULL,
     trigger_message_id BINARY(16) NULL, workspace_id BINARY(16) NOT NULL, continuation_of_task_id BINARY(16) NULL,
-    title VARCHAR(255) NOT NULL, requirement TEXT NOT NULL,
+    title VARCHAR(255) NOT NULL, display_code VARCHAR(32) NOT NULL COMMENT '项目内唯一展示编号，如 T-1024，创建后不可变',
+    requirement TEXT NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'PLANNING' COMMENT 'PLANNING/PENDING/RUNNING/WAITING_DIFF_CONFIRMATION/DELIVERING/SUCCEEDED/DELIVERY_FAILED/FAILED/CANCELLING/CANCELLED', created_by BINARY(16) NOT NULL,
     delivery_mode VARCHAR(32) NOT NULL DEFAULT 'DIFF_FIRST' COMMENT '交付模式：DIFF_FIRST/MR_FIRST',
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uk_task_display_code(project_id,display_code),
     KEY idx_task_project(project_id,status), KEY idx_task_group(requirement_group_id), KEY idx_task_workspace(workspace_id),
     CONSTRAINT fk_task_project FOREIGN KEY(project_id) REFERENCES projects(id),
     CONSTRAINT fk_task_group FOREIGN KEY(requirement_group_id) REFERENCES requirement_groups(id),
@@ -538,6 +541,20 @@ ALTER TABLE tasks ADD CONSTRAINT fk_task_workspace FOREIGN KEY(workspace_id) REF
 ALTER TABLE merge_requests
     ADD CONSTRAINT fk_mr_task FOREIGN KEY(task_id) REFERENCES tasks(id),
     ADD CONSTRAINT fk_mr_workspace FOREIGN KEY(workspace_id) REFERENCES workspaces(id);
+
+CREATE TABLE IF NOT EXISTS task_acceptance_criteria (
+    id BINARY(16) PRIMARY KEY COMMENT '验收标准UUIDv7',
+    task_id BINARY(16) NOT NULL COMMENT '所属任务ID',
+    sequence_no INT UNSIGNED NOT NULL COMMENT '任务内验收标准序号，从1开始',
+    title VARCHAR(255) NOT NULL COMMENT '验收标准标题',
+    description TEXT NULL COMMENT '验收标准补充说明',
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '验收状态：PENDING/SATISFIED/UNSATISFIED/NOT_APPLICABLE',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间(UTC)',
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间(UTC)',
+    UNIQUE KEY uk_acceptance_task_sequence (task_id, sequence_no),
+    CONSTRAINT fk_acceptance_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    CONSTRAINT chk_acceptance_status CHECK (status IN ('PENDING','SATISFIED','UNSATISFIED','NOT_APPLICABLE'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Task 级验收标准，由 Planner/编排写入，前端只读展示';
 
 CREATE TABLE IF NOT EXISTS workspace_repositories (
     workspace_id BINARY(16) NOT NULL, project_repository_id BINARY(16) NOT NULL, workspace_path VARCHAR(255) NOT NULL,

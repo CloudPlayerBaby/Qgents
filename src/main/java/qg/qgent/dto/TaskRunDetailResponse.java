@@ -24,6 +24,8 @@ public class TaskRunDetailResponse {
     private String role;
     private String status;
     private String retryOfTaskRunId;
+    /** 等待/阻塞/失败原因摘要；无等待或失败时 null。 */
+    private TaskStatusReason statusReason;
     /** 产物摘要，由受控执行服务写入；未产出时为空。 */
     private Map<String, Object> artifactSummary;
     private String startedAt;

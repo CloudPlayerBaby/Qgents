@@ -21,6 +21,7 @@ public class TaskResponse {
     private String requirementGroupId;
     private String triggerMessageId;
     private String title;
+    private String displayCode;
     private String requirement;
     private String status;
     private String deliveryMode;

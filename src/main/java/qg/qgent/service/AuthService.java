@@ -285,8 +285,18 @@ public class AuthService {
                     String role = team.getOwnerUserId().equals(userId) && "TEAM_OWNER".equals(member.getRole())
                             ? "TEAM_OWNER"
                             : "TEAM_MEMBER";
-                    return new TeamResponse(team.getId().toString(), team.getName(), role);
+                    TeamResponse response = new TeamResponse(team.getId().toString(), team.getName(), role);
+                    response.setDescription(team.getDescription());
+                    response.setCreatedAt(team.getCreatedAt());
+                    response.setMemberCount(memberCount(team.getId()));
+                    return response;
                 }).toList();
+    }
+
+    private int memberCount(UUID teamId) {
+        Long count = teamMemberMapper.selectCount(Wrappers.<TeamMemberEntity>lambdaQuery()
+                .eq(TeamMemberEntity::getTeamId, teamId));
+        return count == null ? 0 : count.intValue();
     }
 
     private List<ProjectResponse> projects(UUID userId) {

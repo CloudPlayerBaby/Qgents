@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
+import qg.qgent.dto.ArtifactResource;
 import qg.qgent.dto.TaskExecutionArtifactResponse;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskExecutionArtifactEntity;
@@ -16,11 +17,11 @@ import qg.qgent.mapper.TaskMapper;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.Collection;
 
 /** Persists user-visible, non-delivery timeline summaries for a Task. */
 @Service
@@ -173,9 +174,48 @@ public class TaskExecutionArtifactService {
     }
 
     private TaskExecutionArtifactResponse response(TaskExecutionArtifactEntity value) {
+        Map<String, Object> summary = value.getSummary() == null ? Map.of() : value.getSummary();
         return new TaskExecutionArtifactResponse(value.getId().toString(), value.getTaskId().toString(),
                 value.getTaskRunId() == null ? null : value.getTaskRunId().toString(),
                 value.getTaskStepId() == null ? null : value.getTaskStepId().toString(), value.getSequenceNo(),
-                value.getArtifactType(), value.getSummary(), value.getCreatedAt().toInstant(ZoneOffset.UTC).toString());
+                value.getArtifactType(), displayTitle(value.getArtifactType()), displayStatus(summary),
+                displayDescription(summary), summary, List.of(),
+                value.getCreatedAt().toInstant(ZoneOffset.UTC).toString());
+    }
+
+    /** 由产物类型派生稳定展示标题，不虚构业务标题。 */
+    private String displayTitle(String artifactType) {
+        if (artifactType == null) {
+            return null;
+        }
+        return switch (artifactType) {
+            case "PLAN" -> "计划";
+            case "CODING" -> "代码编写";
+            case "TESTING" -> "测试";
+            case "REVIEWING" -> "代码审查";
+            default -> artifactType;
+        };
+    }
+
+    /** 由执行结果 outcome 派生状态：SUCCEEDED → SUCCEEDED，其余终态 → FAILED，无 outcome 时 null。 */
+    private String displayStatus(Map<String, Object> summary) {
+        Object outcome = summary.get("outcome");
+        if (outcome == null) {
+            return null;
+        }
+        return "SUCCEEDED".equals(outcome.toString()) ? "SUCCEEDED" : "FAILED";
+    }
+
+    /** 提取产物摘要中的脱敏说明（优先 coding 的 summary，其次 plan 的任务理解），截断到 200 字符。 */
+    private String displayDescription(Map<String, Object> summary) {
+        Object value = summary.get("summary");
+        if (!(value instanceof String s) || s.isBlank()) {
+            value = summary.get("taskUnderstanding");
+        }
+        if (!(value instanceof String text) || text.isBlank()) {
+            return null;
+        }
+        String stripped = text.strip();
+        return stripped.length() <= 200 ? stripped : stripped.substring(0, 200) + "...";
     }
 }
