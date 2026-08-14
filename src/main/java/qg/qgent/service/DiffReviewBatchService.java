@@ -8,14 +8,20 @@ import qg.qgent.api.ApiException;
 import qg.qgent.dto.DiffListItemResponse;
 import qg.qgent.dto.DiffReviewBatchResponse;
 import qg.qgent.dto.DiffReviewPatchResponse;
+import qg.qgent.dto.MergeRequestBrief;
 import qg.qgent.dto.MergeRequestCreateRequest;
+import qg.qgent.dto.RepositoryDelivery;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.DiffReviewBatchEntity;
+import qg.qgent.entity.GitHubRepositoryEntity;
+import qg.qgent.entity.MergeRequestEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.DiffReviewBatchMapper;
+import qg.qgent.mapper.GitHubRepositoryMapper;
+import qg.qgent.mapper.MergeRequestMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
@@ -28,7 +34,10 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /** Applies one Task-level review decision, then delivers each repository independently. */
 @Service
@@ -38,6 +47,8 @@ public class DiffReviewBatchService {
     private final TaskMapper tasks;
     private final WorkspaceRepositoryMapper worktrees;
     private final ProjectRepositoryMapper repositories;
+    private final GitHubRepositoryMapper githubRepositories;
+    private final MergeRequestMapper mergeRequestMapper;
     private final SandboxWorkerClient worker;
     private final MergeRequestService mergeRequests;
     private final ProjectAccessService access;
@@ -46,7 +57,8 @@ public class DiffReviewBatchService {
     private final DiffSnapshotStorage snapshots;
 
     public DiffReviewBatchService(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
-            WorkspaceRepositoryMapper worktrees, ProjectRepositoryMapper repositories, SandboxWorkerClient worker,
+            WorkspaceRepositoryMapper worktrees, ProjectRepositoryMapper repositories,
+            GitHubRepositoryMapper githubRepositories, MergeRequestMapper mergeRequestMapper, SandboxWorkerClient worker,
             MergeRequestService mergeRequests, ProjectAccessService access, EventService events,
             TransactionTemplate transactions, DiffSnapshotStorage snapshots) {
         this.batches = batches;
@@ -54,6 +66,8 @@ public class DiffReviewBatchService {
         this.tasks = tasks;
         this.worktrees = worktrees;
         this.repositories = repositories;
+        this.githubRepositories = githubRepositories;
+        this.mergeRequestMapper = mergeRequestMapper;
         this.worker = worker;
         this.mergeRequests = mergeRequests;
         this.access = access;
@@ -357,7 +371,62 @@ public class DiffReviewBatchService {
                 value.getSourceBranch(), value.getHeadCommit(), value.getStatus(), value.getChangeStats(),
                 value.getCreatedAt().toInstant(ZoneOffset.UTC).toString())).toList();
         return new DiffReviewBatchResponse(batch.getId().toString(), batch.getTaskId().toString(), batch.getReviewStatus(),
-                batch.getDeliveryStatus(), batch.getAggregateHash(), batch.getReviewReason(), items);
+                batch.getDeliveryStatus(), batch.getAggregateHash(), batch.getReviewReason(), items,
+                repositoryDeliveries(batch.getTaskId(), values));
+    }
+
+    /** 组装逐仓库交付详情（成功/失败原因/MR 摘要），仓库与 MR 批量加载，避免逐 Diff N+1。 */
+    private List<RepositoryDelivery> repositoryDeliveries(UUID taskId, List<DiffEntity> values) {
+        if (values.isEmpty()) {
+            return List.of();
+        }
+        List<UUID> bindingIds = values.stream().map(DiffEntity::getProjectRepositoryId).distinct().toList();
+        Map<UUID, ProjectRepositoryEntity> bindingById = repositories
+                .selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery().in(ProjectRepositoryEntity::getId, bindingIds))
+                .stream().collect(Collectors.toMap(ProjectRepositoryEntity::getId, Function.identity()));
+        List<UUID> githubIds = bindingById.values().stream().map(ProjectRepositoryEntity::getRepositoryId).distinct()
+                .toList();
+        Map<UUID, GitHubRepositoryEntity> githubById = githubIds.isEmpty() ? Map.of()
+                : githubRepositories
+                        .selectList(Wrappers.<GitHubRepositoryEntity>lambdaQuery().in(GitHubRepositoryEntity::getId, githubIds))
+                        .stream().collect(Collectors.toMap(GitHubRepositoryEntity::getId, Function.identity()));
+        Map<UUID, MergeRequestEntity> latestMrByRepo = mergeRequestMapper
+                .selectList(Wrappers.<MergeRequestEntity>lambdaQuery().eq(MergeRequestEntity::getTaskId, taskId)
+                        .in(MergeRequestEntity::getProjectRepositoryId, bindingIds)
+                        .orderByDesc(MergeRequestEntity::getCreatedAt))
+                .stream().collect(Collectors.toMap(MergeRequestEntity::getProjectRepositoryId, Function.identity(),
+                        (first, second) -> first));
+        return values.stream().map(diff -> repositoryDelivery(diff, bindingById.get(diff.getProjectRepositoryId()),
+                githubById.get(bindingRepositoryId(bindingById, diff.getProjectRepositoryId())),
+                latestMrByRepo.get(diff.getProjectRepositoryId()))).toList();
+    }
+
+    private RepositoryDelivery repositoryDelivery(DiffEntity diff, ProjectRepositoryEntity binding,
+            GitHubRepositoryEntity github, MergeRequestEntity mr) {
+        String name = binding != null && binding.getDisplayName() != null && !binding.getDisplayName().isBlank()
+                ? binding.getDisplayName()
+                : (github == null ? null : github.getName());
+        MergeRequestBrief brief = null;
+        if ("MR_CREATED".equals(diff.getDeliveryStatus()) && mr != null) {
+            brief = new MergeRequestBrief(mr.getId().toString(), mr.getProviderNumber(), mr.getTitle(),
+                    mr.getStatus(), webUrl(github, mr.getProviderNumber()));
+        }
+        return new RepositoryDelivery(diff.getProjectRepositoryId().toString(), name, diff.getId().toString(),
+                diff.getDeliveryStatus(), null, diff.getDeliveryFailureReason(), brief,
+                diff.getUpdatedAt() == null ? null : diff.getUpdatedAt().toInstant(ZoneOffset.UTC).toString());
+    }
+
+    /** 由 GitHub 仓库镜像与真实 PR 编号构造 MR 外部链接；不可可靠构造时返回 null。 */
+    private String webUrl(GitHubRepositoryEntity github, Long providerNumber) {
+        if (github == null || providerNumber == null) {
+            return null;
+        }
+        return "https://github.com/" + github.getOwnerLogin() + "/" + github.getName() + "/pull/" + providerNumber;
+    }
+
+    private UUID bindingRepositoryId(Map<UUID, ProjectRepositoryEntity> bindingById, UUID bindingId) {
+        ProjectRepositoryEntity binding = bindingById.get(bindingId);
+        return binding == null ? null : binding.getRepositoryId();
     }
 
     private String commitMessage(TaskEntity task) {

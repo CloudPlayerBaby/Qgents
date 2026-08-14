@@ -17,6 +17,7 @@ public class TaskEntity {
     /** Persistent development workspace used by this task. */ private UUID workspaceId;
     /** Previous task continued in the same workspace, when explicitly requested. */ private UUID continuationOfTaskId;
     /** Human-readable task title, at most 255 characters. */ private String title;
+    /** 项目内唯一、创建后不可变的展示编号，如 T-1024；不替代 UUID，所有 API 关联仍使用 id。 */ private String displayCode;
     /** Immutable requirement text supplied by the requester. */ private String requirement;
     /** Lifecycle state: PLANNING/PENDING/RUNNING/WAITING_DIFF_CONFIRMATION/DELIVERING/SUCCEEDED/DELIVERY_FAILED/FAILED/CANCELLING/CANCELLED. */ private String status;
     /** 代码交付路径：DIFF_FIRST 或 MR_FIRST。 */ private String deliveryMode;

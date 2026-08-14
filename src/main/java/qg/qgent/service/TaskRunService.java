@@ -6,28 +6,42 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
+import qg.qgent.dto.AgentSummary;
 import qg.qgent.dto.ApiPageResponse;
 import qg.qgent.dto.ExecutionContextResponse;
 import qg.qgent.dto.InputRequestResponse;
 import qg.qgent.dto.LogEntryResponse;
 import qg.qgent.dto.PageMeta;
 import qg.qgent.dto.TaskRunDetailResponse;
+import qg.qgent.dto.TaskRunListItemResponse;
 import qg.qgent.dto.TaskRunSummaryResponse;
+import qg.qgent.dto.TaskStatusReason;
+import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.ExecutionLogEntity;
 import qg.qgent.entity.InputRequestEntity;
+import qg.qgent.entity.TaskExecutionArtifactEntity;
 import qg.qgent.entity.TaskRunEntity;
+import qg.qgent.entity.TaskStepEntity;
+import qg.qgent.mapper.AgentMapper;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.ExecutionLogMapper;
 import qg.qgent.mapper.InputRequestMapper;
+import qg.qgent.mapper.TaskExecutionArtifactMapper;
 import qg.qgent.mapper.TaskRunMapper;
+import qg.qgent.mapper.TaskStepMapper;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -51,18 +65,25 @@ public class TaskRunService {
     private final ExecutionLogMapper logMapper;
     private final InputRequestMapper inputRequestMapper;
     private final DiffMapper diffMapper;
+    private final TaskStepMapper taskStepMapper;
+    private final AgentMapper agentMapper;
+    private final TaskExecutionArtifactMapper artifactMapper;
     private final ProjectAccessService projectAccess;
     private final EventService eventService;
     private final NotificationService notificationService;
 
     public TaskRunService(TaskRunMapper taskRunMapper,
             ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
+            TaskStepMapper taskStepMapper, AgentMapper agentMapper, TaskExecutionArtifactMapper artifactMapper,
             ProjectAccessService projectAccess, EventService eventService,
             NotificationService notificationService) {
         this.taskRunMapper = taskRunMapper;
         this.logMapper = logMapper;
         this.inputRequestMapper = inputRequestMapper;
         this.diffMapper = diffMapper;
+        this.taskStepMapper = taskStepMapper;
+        this.agentMapper = agentMapper;
+        this.artifactMapper = artifactMapper;
         this.projectAccess = projectAccess;
         this.eventService = eventService;
         this.notificationService = notificationService;
@@ -70,8 +91,10 @@ public class TaskRunService {
 
     /**
      * Lists immutable execution attempts belonging to the confirmed top-level task.
+     * 列表项补充可读摘要（步骤标题、Agent、状态摘要、等待/失败原因与执行时间），
+     * 步骤与 Agent 一次性批量加载，避免逐条运行查询。
      */
-    public ApiPageResponse<TaskRunSummaryResponse> listByTask(UUID projectId, UUID taskId, UUID userId,
+    public ApiPageResponse<TaskRunListItemResponse> listByTask(UUID projectId, UUID taskId, UUID userId,
             String cursor, int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
         int size = clampLimit(limit);
@@ -81,22 +104,26 @@ public class TaskRunService {
                 .lt(cursorUuid != null, TaskRunEntity::getId, cursorUuid).orderByDesc(TaskRunEntity::getId)
                 .last("LIMIT " + (size + 1)));
         boolean hasMore = rows.size() > size;
-        List<TaskRunSummaryResponse> items = (hasMore ? rows.subList(0, size) : rows).stream().map(this::toSummary)
-                .toList();
-        return new ApiPageResponse<>(items, new PageMeta(hasMore ? items.get(items.size() - 1).getId() : null, hasMore),
-                requestId);
+        List<TaskRunEntity> page = hasMore ? rows.subList(0, size) : rows;
+        List<TaskRunListItemResponse> items = page.isEmpty() ? List.of() : buildListItems(page);
+        String next = hasMore ? items.get(items.size() - 1).getId() : null;
+        return new ApiPageResponse<>(items, new PageMeta(next, hasMore), requestId);
     }
 
     /**
      * Returns one run with its owning TaskStep and Task-level result summary.
+     * 详情额外返回等待/阻塞/失败原因 statusReason。
      */
     public TaskRunDetailResponse detail(UUID projectId, UUID taskRunId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
+        List<InputRequestEntity> requests = inputRequestMapper.selectList(
+                Wrappers.<InputRequestEntity>lambdaQuery().eq(InputRequestEntity::getTaskRunId, run.getId()));
         return new TaskRunDetailResponse(
                 id(run.getId()), id(run.getProjectId()), id(run.getTaskId()), id(run.getTaskStepId()),
                 id(run.getAgentId()),
                 run.getRole(), run.getStatus(), id(run.getRetryOfTaskRunId()),
+                statusReason(run, requests),
                 artifactSummary(run.getId()), iso(run.getStartedAt()), iso(run.getFinishedAt()),
                 durationMs(run.getStartedAt(), run.getFinishedAt()), iso(run.getCreatedAt()),
                 iso(run.getUpdatedAt()));
@@ -409,16 +436,132 @@ public class TaskRunService {
         return req;
     }
 
-    /** Summarizes final Task Diff snapshots by review status. */
+    /** 该运行自身产出的产物与 Diff 数量摘要（total=执行产物数，diffCount=总 Diff 数）。 */
     private Map<String, Object> artifactSummary(UUID taskRunId) {
-        TaskRunEntity run = taskRunMapper.selectById(taskRunId);
-        if (run == null)
-            return Map.of();
-        List<DiffEntity> list = diffMapper
-                .selectList(Wrappers.<DiffEntity>lambdaQuery().eq(DiffEntity::getTaskId, run.getTaskId()));
-        Map<String, Long> byStatus = list.stream()
-                .collect(Collectors.groupingBy(DiffEntity::getStatus, Collectors.counting()));
-        return Map.of("diffs", Map.of("count", list.size(), "byStatus", byStatus));
+        long total = artifactMapper.selectCount(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
+                .eq(TaskExecutionArtifactEntity::getTaskRunId, taskRunId));
+        long diffCount = diffMapper.selectCount(Wrappers.<DiffEntity>lambdaQuery()
+                .eq(DiffEntity::getTaskRunId, taskRunId));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("total", total);
+        result.put("diffCount", diffCount);
+        return result;
+    }
+
+    /** 批量构造任务运行列表项；步骤、Agent、输入请求、产物与 Diff 一次性加载，避免逐条运行 N+1。 */
+    private List<TaskRunListItemResponse> buildListItems(List<TaskRunEntity> page) {
+        List<UUID> runIds = page.stream().map(TaskRunEntity::getId).toList();
+        Set<UUID> stepIds = page.stream().map(TaskRunEntity::getTaskStepId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Set<UUID> agentIds = page.stream().map(TaskRunEntity::getAgentId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        // 空 Map 用 emptyMap 保证 null 键查找返回 null（TaskRun.agentId 可为 null，Map.of() 的 get(null) 会抛 NPE）
+        Map<UUID, TaskStepEntity> stepById = stepIds.isEmpty() ? Collections.emptyMap()
+                : taskStepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery().in(TaskStepEntity::getId, stepIds))
+                        .stream().collect(Collectors.toMap(TaskStepEntity::getId, Function.identity()));
+        Map<UUID, AgentEntity> agentById = agentIds.isEmpty() ? Collections.emptyMap()
+                : agentMapper.selectList(Wrappers.<AgentEntity>lambdaQuery().in(AgentEntity::getId, agentIds)).stream()
+                        .collect(Collectors.toMap(AgentEntity::getId, Function.identity()));
+        Map<UUID, List<InputRequestEntity>> inputByRun = runIds.isEmpty() ? Collections.emptyMap()
+                : inputRequestMapper
+                        .selectList(Wrappers.<InputRequestEntity>lambdaQuery()
+                                .in(InputRequestEntity::getTaskRunId, runIds))
+                        .stream().collect(Collectors.groupingBy(InputRequestEntity::getTaskRunId));
+        Map<UUID, Long> artifactCountByRun = runIds.isEmpty() ? Collections.emptyMap()
+                : artifactMapper
+                        .selectList(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
+                                .in(TaskExecutionArtifactEntity::getTaskRunId, runIds))
+                        .stream().collect(Collectors.groupingBy(TaskExecutionArtifactEntity::getTaskRunId,
+                                Collectors.counting()));
+        Map<UUID, Long> diffCountByRun = runIds.isEmpty() ? Collections.emptyMap()
+                : diffMapper.selectList(Wrappers.<DiffEntity>lambdaQuery().in(DiffEntity::getTaskRunId, runIds))
+                        .stream().collect(Collectors.groupingBy(DiffEntity::getTaskRunId, Collectors.counting()));
+        return page.stream().map(run -> toListItem(run, stepById.get(run.getTaskStepId()),
+                agentById.get(run.getAgentId()), inputByRun.getOrDefault(run.getId(), List.of()),
+                artifactCountByRun.getOrDefault(run.getId(), 0L), diffCountByRun.getOrDefault(run.getId(), 0L)))
+                .toList();
+    }
+
+    private TaskRunListItemResponse toListItem(TaskRunEntity run, TaskStepEntity step, AgentEntity agent,
+            List<InputRequestEntity> requests, long artifactTotal, long diffCount) {
+        Map<String, Object> artifactSummary = new LinkedHashMap<>();
+        artifactSummary.put("total", artifactTotal);
+        artifactSummary.put("diffCount", diffCount);
+        return new TaskRunListItemResponse(id(run.getId()), id(run.getTaskId()), id(run.getTaskStepId()),
+                step == null ? null : step.getTitle(), run.getRole(), agentSummary(agent), run.getStatus(),
+                statusSummary(run.getStatus()), statusReason(run, requests), id(run.getRetryOfTaskRunId()),
+                iso(run.getStartedAt()), iso(run.getFinishedAt()),
+                durationMs(run.getStartedAt(), run.getFinishedAt()), artifactSummary, iso(run.getCreatedAt()),
+                iso(run.getUpdatedAt()));
+    }
+
+    /** 等待/阻塞/失败原因摘要，仅返回脱敏用户可见文本；无等待或失败时返回 null。 */
+    private TaskStatusReason statusReason(TaskRunEntity run, List<InputRequestEntity> requests) {
+        return switch (run.getStatus()) {
+            case "WAITING_INPUT" -> {
+                InputRequestEntity req = latestPending(requests, "INPUT");
+                yield new TaskStatusReason("INPUT_REQUIRED", "等待用户输入",
+                        req == null ? "等待用户补充输入" : req.getPrompt(), false,
+                        iso(req == null ? run.getUpdatedAt() : req.getCreatedAt()));
+            }
+            case "WAITING_APPROVAL" -> {
+                InputRequestEntity req = latestPending(requests, "APPROVAL");
+                yield new TaskStatusReason("APPROVAL_REQUIRED", "等待审批",
+                        req == null ? "等待审批确认" : req.getPrompt(), false,
+                        iso(req == null ? run.getUpdatedAt() : req.getCreatedAt()));
+            }
+            case "BLOCKED" -> {
+                InputRequestEntity req = latestRequest(requests, "APPROVAL");
+                String reason = req == null ? null : req.getReason();
+                yield new TaskStatusReason("BLOCKED", "执行被阻塞",
+                        reason == null || reason.isBlank() ? "执行流程被阻塞，等待处理" : reason, true,
+                        iso(run.getUpdatedAt()));
+            }
+            case "FAILED" -> new TaskStatusReason("EXECUTION_FAILED", "执行失败", "任务运行执行失败，可查看执行记录",
+                    true, iso(run.getUpdatedAt()));
+            case "CANCELLING", "CANCELLED" -> new TaskStatusReason("CANCELLED", "已取消", "任务运行已取消", false,
+                    iso(run.getUpdatedAt()));
+            default -> null;
+        };
+    }
+
+    /** 脱敏状态摘要：不返回日志原文、Prompt、Token 或环境变量。 */
+    private String statusSummary(String status) {
+        return switch (status) {
+            case "QUEUED" -> "等待执行";
+            case "RUNNING" -> "执行中";
+            case "SUCCEEDED" -> "执行成功";
+            case "FAILED" -> "执行失败";
+            case "WAITING_INPUT" -> "等待用户补充输入";
+            case "WAITING_APPROVAL" -> "等待审批确认";
+            case "BLOCKED" -> "执行被阻塞";
+            case "CANCELLING" -> "正在取消";
+            case "CANCELLED" -> "已取消";
+            default -> null;
+        };
+    }
+
+    private InputRequestEntity latestPending(List<InputRequestEntity> requests, String kind) {
+        return requests.stream()
+                .filter(r -> "PENDING".equals(r.getStatus()) && kind.equals(r.getKind()))
+                .max(Comparator.comparing(InputRequestEntity::getCreatedAt,
+                        Comparator.nullsFirst(Comparator.naturalOrder())))
+                .orElse(null);
+    }
+
+    private InputRequestEntity latestRequest(List<InputRequestEntity> requests, String kind) {
+        return requests.stream().filter(r -> kind.equals(r.getKind()))
+                .max(Comparator.comparing(InputRequestEntity::getCreatedAt,
+                        Comparator.nullsFirst(Comparator.naturalOrder())))
+                .orElse(null);
+    }
+
+    private AgentSummary agentSummary(AgentEntity agent) {
+        if (agent == null) {
+            return null;
+        }
+        return new AgentSummary(id(agent.getId()), agent.getName(), agent.getRole(), agent.getAvatar(),
+                agent.getStatus());
     }
 
     /** 计算执行耗时（毫秒）；任一端时间为空或结束早于开始时返回 null，避免负值误导前端。 */

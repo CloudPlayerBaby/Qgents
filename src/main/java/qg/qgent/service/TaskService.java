@@ -74,6 +74,8 @@ public class TaskService {
     @Transactional
     public TaskResponse create(UUID projectId, UUID actor, TaskCreateRequest body) {
         access.requireProjectMember(projectId, actor);
+        // 锁定项目行串行化同项目内的 Task 创建，保证 display_code 序号在项目内单调且不重复（沿用消息序号的持行锁模式）。
+        projects.selectByIdForUpdate(projectId);
         RequirementGroupEntity group = groups.selectById(body.getRequirementGroupId());
         if (group == null || !projectId.equals(group.getProjectId()) || !"REQUIREMENT".equals(group.getGroupType())
                 || !"ACTIVE".equals(group.getStatus())) {
@@ -145,6 +147,7 @@ public class TaskService {
         task.setWorkspaceId(workspace.getId());
         task.setContinuationOfTaskId(continuation == null ? null : continuation.getId());
         task.setTitle(body.getTitle().trim());
+        task.setDisplayCode(nextDisplayCode(projectId));
         task.setRequirement(body.getRequirement().trim());
         task.setStatus("PLANNING");
         task.setDeliveryMode("DIFF_FIRST");
@@ -163,19 +166,6 @@ public class TaskService {
         }
         eventPublisher.publishEvent(new TaskCreatedEvent(projectId, task.getId()));
         return response(task, workspace);
-    }
-
-    /** Lists project Tasks visible to the authenticated project member. */
-    public List<TaskResponse> list(UUID projectId, UUID actor) {
-        access.requireProjectMember(projectId, actor);
-        return tasks.selectList(Wrappers.<TaskEntity>lambdaQuery().eq(TaskEntity::getProjectId, projectId)
-                .orderByDesc(TaskEntity::getCreatedAt)).stream().map(this::response).toList();
-    }
-
-    /** Returns one project-scoped Task without exposing host storage paths. */
-    public TaskResponse get(UUID projectId, UUID taskId, UUID actor) {
-        access.requireProjectMember(projectId, actor);
-        return response(requireTask(projectId, taskId));
     }
 
     /**
@@ -364,8 +354,8 @@ public class TaskService {
                 id(w.getProjectRepositoryId()), w.getWorkspacePath(), w.getBaseCommit(), w.getSourceBranch(),
                 w.getHeadCommit())).toList();
         return new TaskResponse(id(task.getId()), id(task.getProjectId()), id(task.getRequirementGroupId()),
-                id(task.getTriggerMessageId()), task.getTitle(), task.getRequirement(), task.getStatus(),
-                task.getDeliveryMode(),
+                id(task.getTriggerMessageId()), task.getTitle(), task.getDisplayCode(), task.getRequirement(),
+                task.getStatus(), task.getDeliveryMode(),
                 workspace == null ? null : id(workspace.getId()),
                 workspace == null ? null : workspace.getStatus(), id(task.getContinuationOfTaskId()),
                 repositoryIds, scopes,
@@ -383,6 +373,12 @@ public class TaskService {
         response.setRepositoryId(entity.getProjectRepositoryId());
         response.setAccessMode(entity.getAccessMode());
         return response;
+    }
+
+    /** 在持有项目级行锁的事务内生成项目内唯一、创建后不可变的展示编号，如 T-1、T-2。 */
+    private String nextDisplayCode(UUID projectId) {
+        Long max = tasks.selectMaxDisplayCodeSeq(projectId);
+        return "T-" + (max == null ? 1 : max + 1);
     }
 
     private void publishTaskUpdated(TaskEntity task) {
