@@ -1,5 +1,6 @@
 package qg.qgent.orchestration.worker;
 
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.entity.ProjectRepositoryEntity;
@@ -109,6 +110,27 @@ public class SandboxSessionManager {
         } catch (RuntimeException ignored) {
             // 销毁失败由 Worker 的清理任务兜底，不阻断任务结果返回。
         }
+    }
+
+    /**
+     * 在整个 Task 会话存活期间维持 Sandbox 租约，覆盖 LLM 推理和阶段切换等没有工具调用的空档。
+     * 单个 Sandbox 的续租失败不影响其他会话；实际工具调用会继续得到 Worker 的明确错误。
+     */
+    @Scheduled(fixedDelayString = "${app.worker.lease-renew-interval:10s}")
+    void renewActiveLeases() {
+        if (!properties.isEnabled()) {
+            return;
+        }
+        sessions.forEach((workspaceId, session) -> {
+            if (sessions.get(workspaceId) != session) {
+                return;
+            }
+            try {
+                client.renewSandbox(session.getSandboxId());
+            } catch (RuntimeException ignored) {
+                // 当前工具调用会传播 Worker 错误；心跳不应阻塞其他活跃 Sandbox 的续租。
+            }
+        });
     }
 
     private SandboxSession doAcquire(UUID taskId, UUID projectId, UUID workspaceId) {

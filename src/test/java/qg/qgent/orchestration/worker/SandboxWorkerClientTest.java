@@ -292,4 +292,63 @@ class SandboxWorkerClientTest {
         assertEquals(true, response.isVerified());
         server.verify();
     }
+
+    @Test
+    void renewsSandboxLeaseWithoutTtl() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/lease/renew"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"id":"%s","taskRunId":"00000000-0000-0000-0000-000000000005","status":"READY",
+                         "runtimeKind":"fake","createdAt":"2026-08-13T00:00:00Z"}
+                        """.formatted(SANDBOX), MediaType.APPLICATION_JSON));
+
+        WorkerSandbox sandbox = client.renewSandbox(SANDBOX);
+
+        assertEquals(SANDBOX, sandbox.getId());
+        assertEquals("READY", sandbox.getStatus());
+        server.verify();
+    }
+
+    @Test
+    void renewsSandboxLeaseWithTtlSeconds() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/lease/renew?ttlSeconds=60"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"id":"%s","taskRunId":"00000000-0000-0000-0000-000000000005","status":"READY",
+                         "runtimeKind":"fake","createdAt":"2026-08-13T00:00:00Z"}
+                        """.formatted(SANDBOX), MediaType.APPLICATION_JSON));
+
+        WorkerSandbox sandbox = client.renewSandbox(SANDBOX, 60L);
+
+        assertEquals(SANDBOX, sandbox.getId());
+        assertEquals("READY", sandbox.getStatus());
+        server.verify();
+    }
+
+    @Test
+    void renewsSandboxPreserves404() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/lease/renew"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"code\":\"SANDBOX_NOT_FOUND\",\"message\":\"sandbox is missing\"}"));
+
+        ApiException exception = assertThrows(ApiException.class, () -> client.renewSandbox(SANDBOX));
+
+        assertEquals("SANDBOX_NOT_FOUND", exception.code());
+        assertEquals(HttpStatus.NOT_FOUND, exception.status());
+        assertEquals("sandbox is missing", exception.getMessage());
+        server.verify();
+    }
+
+    @Test
+    void renewsSandboxMapsNetworkErrorToUnavailable() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/lease/renew"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+
+        ApiException exception = assertThrows(ApiException.class, () -> client.renewSandbox(SANDBOX));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, exception.status());
+        server.verify();
+    }
 }

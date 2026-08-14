@@ -278,4 +278,33 @@ class SandboxSessionManagerTest {
         assertThatThrownBy(() -> manager.require(WORKSPACE))
                 .isInstanceOf(IllegalStateException.class);
     }
+
+    @Test
+    void renewsActiveSessionEvenWhenNoToolIsRunning() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+        SandboxSessionManager manager = enabledManager();
+        SandboxSession session = manager.acquire(TASK, PROJECT, WORKSPACE);
+
+        manager.renewActiveLeases();
+
+        verify(client).renewSandbox(session.getSandboxId());
+    }
+
+    @Test
+    void doesNotRenewReleasedSession() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+        SandboxSessionManager manager = enabledManager();
+        SandboxSession session = manager.acquire(TASK, PROJECT, WORKSPACE);
+        manager.release(WORKSPACE);
+
+        manager.renewActiveLeases();
+
+        verify(client, never()).renewSandbox(session.getSandboxId());
+    }
 }

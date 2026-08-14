@@ -18,11 +18,19 @@ abstract class AbstractWorkerToolPort {
     protected final SandboxSessionManager sessions;
     protected final SandboxWorkerProperties properties;
 
+    private final java.util.function.Supplier<Long> nanoTimeSupplier;
+
     AbstractWorkerToolPort(SandboxWorkerClient client, SandboxSessionManager sessions,
             SandboxWorkerProperties properties) {
+        this(client, sessions, properties, System::nanoTime);
+    }
+
+    AbstractWorkerToolPort(SandboxWorkerClient client, SandboxSessionManager sessions,
+            SandboxWorkerProperties properties, java.util.function.Supplier<Long> nanoTimeSupplier) {
         this.client = client;
         this.sessions = sessions;
         this.properties = properties;
+        this.nanoTimeSupplier = nanoTimeSupplier == null ? System::nanoTime : nanoTimeSupplier;
     }
 
     /** 解析当前 Workspace 的会话；未启用或未创建时抛错。 */
@@ -34,18 +42,24 @@ abstract class AbstractWorkerToolPort {
     protected WorkerToolExecution executeTool(UUID workspaceId, UUID repositoryId, String tool,
             Map<String, Object> arguments, Duration timeout) {
         SandboxSession session = session(workspaceId);
+        UUID sandboxId = session.getSandboxId();
+        client.renewSandbox(sandboxId);
+
         WorkerToolExecutionRequest request = new WorkerToolExecutionRequest();
         request.setExecutionId(UuidV7.next());
         request.setRepositoryId(repositoryId);
         request.setTool(tool);
         request.setArguments(arguments);
         request.setTimeoutSeconds(timeout == null ? null : Math.max(1, timeout.toSeconds()));
-        WorkerToolExecution submitted = client.submitToolExecution(session.getSandboxId(), request);
-        return pollUntilTerminal(submitted.getId());
+        WorkerToolExecution submitted = client.submitToolExecution(sandboxId, request);
+        return pollUntilTerminal(sandboxId, submitted.getId());
     }
 
-    private WorkerToolExecution pollUntilTerminal(UUID executionId) {
-        long deadline = System.nanoTime() + properties.getPollTimeout().toNanos();
+    private WorkerToolExecution pollUntilTerminal(UUID sandboxId, UUID executionId) {
+        long deadline = nanoTimeSupplier.get() + properties.getPollTimeout().toNanos();
+        long renewIntervalNanos = properties.leaseRenewInterval().toNanos();
+        long nextRenewAt = nanoTimeSupplier.get() + renewIntervalNanos;
+
         while (true) {
             WorkerToolExecution execution = client.getToolExecution(executionId);
             if (execution == null) {
@@ -54,8 +68,13 @@ abstract class AbstractWorkerToolPort {
             if (isTerminal(execution.getStatus())) {
                 return execution;
             }
-            if (System.nanoTime() >= deadline) {
+            long now = nanoTimeSupplier.get();
+            if (now >= deadline) {
                 throw new IllegalStateException("tool execution did not finish within poll timeout: " + executionId);
+            }
+            if (now >= nextRenewAt) {
+                client.renewSandbox(sandboxId);
+                nextRenewAt = now + renewIntervalNanos;
             }
             sleep(properties.getPollInterval());
         }
