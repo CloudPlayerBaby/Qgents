@@ -10,7 +10,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-/** 仅保存内存状态的安全开发实现，不执行任何宿主机命令。 */
+/**
+ * 内存中模拟实现 docker 沙箱，生产环境需要换成 docker 实现
+ */
 @Component
 @ConditionalOnProperty(name = "sandbox.runtime", havingValue = "fake", matchIfMissing = true)
 public class FakeContainerRuntime implements ContainerRuntime {

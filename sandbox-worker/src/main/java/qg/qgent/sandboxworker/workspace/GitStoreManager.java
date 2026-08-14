@@ -34,7 +34,8 @@ public class GitStoreManager {
         String repositoryUrl = validateRepositoryUrl(request.getRepositoryUrl());
         validateBranch(request.getRemoteBranch());
         String repositoryFullName = repositoryFullName(repositoryUrl);
-        return repositories.locked(repositoryId, () -> syncLocked(repositoryId, request, repositoryUrl, repositoryFullName));
+        return repositories.locked(repositoryId,
+                () -> syncLocked(repositoryId, request, repositoryUrl, repositoryFullName));
     }
 
     private GitStoreSyncResponse syncLocked(UUID repositoryId, GitStoreSyncRequest request, String repositoryUrl,
@@ -44,14 +45,14 @@ public class GitStoreManager {
 
         repositories.withCredential(request.getCredentialGrantId(), request.getExpectedHeadCommit(), repositoryFullName,
                 request.getRemoteBranch(), "FETCH", environment -> {
-            repositories.requireSuccess(repositories.run(List.of("git", "--git-dir", store.toString(), "fetch",
-                    "--no-tags", repositoryUrl,
-                    "+refs/heads/" + request.getRemoteBranch() + ":refs/heads/"
-                            + request.getRemoteBranch()),
-                    environment),
-                    "GIT_STORE_FETCH_FAILED", "无法同步远程 Git Store");
-            return null;
-        });
+                    repositories.requireSuccess(repositories.run(List.of("git", "--git-dir", store.toString(), "fetch",
+                            "--no-tags", repositoryUrl,
+                            "+refs/heads/" + request.getRemoteBranch() + ":refs/heads/"
+                                    + request.getRemoteBranch()),
+                            environment),
+                            "GIT_STORE_FETCH_FAILED", "无法同步远程 Git Store");
+                    return null;
+                });
 
         // WorkspaceManager 以 baseRef/sourceBranch 在 bare Store 中创建
         // worktree，因此同步为本地受控分支引用。
@@ -137,7 +138,8 @@ public class GitStoreManager {
     private String repositoryFullName(String repositoryUrl) {
         URI uri = URI.create(repositoryUrl);
         String[] segments = uri.getPath().split("/");
-        String repository = segments[2].endsWith(".git") ? segments[2].substring(0, segments[2].length() - 4) : segments[2];
+        String repository = segments[2].endsWith(".git") ? segments[2].substring(0, segments[2].length() - 4)
+                : segments[2];
         return segments[1] + "/" + repository;
     }
 

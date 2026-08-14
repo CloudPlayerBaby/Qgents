@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.ApiPageResponse;
@@ -28,12 +29,12 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * TaskStep execution-attempt endpoints.
- * 查询类接口返回资源详情；POST 写接口均需 Idempotency-Key，retry/cancel 异步受理返回 202，
- * 输入/审批决策同步返回 200。所有接口先校验项目成员资格与资源归属。
+ * TaskRun 与人工输入/审批接口（§12.2）。
+ * retry/cancel 异步受理返回 202；输入/审批决策同步返回 200。
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}")
+@Tag(name = "12.2 任务运行与执行上下文", description = "查询 TaskRun、执行日志和人工输入/审批请求")
 public class TaskRunController {
     private final TaskRunService taskRunService;
 
@@ -41,7 +42,7 @@ public class TaskRunController {
         this.taskRunService = taskRunService;
     }
 
-    /** Lists execution attempts for the confirmed task model. */
+    /** 查询 Task 的执行记录。 */
     @GetMapping("/tasks/{taskId}/task-runs")
     public ApiPageResponse<TaskRunSummaryResponse> listByTask(@PathVariable UUID projectId,
             @PathVariable UUID taskId, @AuthenticationPrincipal UUID userId,
@@ -50,7 +51,7 @@ public class TaskRunController {
         return taskRunService.listByTask(projectId, taskId, userId, cursor, limit, requestId(request));
     }
 
-    /** Returns one execution attempt and its Task-level result summary. */
+    /** 获取单次运行的详情与产物摘要。 */
     @GetMapping("/task-runs/{taskRunId}")
     public ApiResponse<?> detail(@PathVariable UUID projectId, @PathVariable UUID taskRunId,
             @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
@@ -76,7 +77,6 @@ public class TaskRunController {
         return ok(data, request);
     }
 
-    /** 获取工作流节点状态。 */
     /** 游标读取已脱敏的执行日志。 */
     @GetMapping("/task-runs/{taskRunId}/logs")
     public ApiPageResponse<LogEntryResponse> logs(@PathVariable UUID projectId, @PathVariable UUID taskRunId,

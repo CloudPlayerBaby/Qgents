@@ -23,8 +23,7 @@ import qg.qgent.service.TestRunService;
 import java.util.UUID;
 
 /**
- * 受控 Test Run 与 Dry Run 端点（12.4）。
- * 创建为异步受理返回 202，真实执行由执行服务承担；POST 均需 Idempotency-Key。
+ * 受控 Test Run 与 Dry Run 接口（§12.4）。
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}")

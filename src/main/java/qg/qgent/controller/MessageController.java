@@ -25,9 +25,7 @@ import qg.qgent.service.TaskTriggerService;
 import java.util.UUID;
 
 /**
- * 群消息接口（契约 §7 消息收发）。
- * <p>
- * 发送（POST）的 Idempotency-Key 由 {@code IdempotencyFilter} 统一强制与回放。
+ * 群消息接口（§7）。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -42,7 +40,7 @@ public class MessageController {
     }
 
     /**
-     * 发送文本、代码块、图片、文件或引用消息（需 Idempotency-Key）。
+     * 发送文本、代码块、图片、文件或引用消息。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/messages")
     @ResponseStatus(HttpStatus.CREATED)
@@ -52,7 +50,7 @@ public class MessageController {
     }
 
     /**
-     * 游标拉取群消息，新消息在前；limit 默认 30、最大 100。
+     * 游标分页拉取群消息（新消息在前）。
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}/messages")
     public PagedApiResponse<MessageResponse> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -65,9 +63,7 @@ public class MessageController {
     }
 
     /**
-     * 从群消息显式触发 Task（点7：聊天消息到 Agent Task 转换，需 Idempotency-Key）。
-     * <p>
-     * 消息必须属于当前需求群；Task 创建后编排由后端1 自动触发。
+     * 从群消息显式触发 Task。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/messages/{messageId}/trigger-task")
     public ApiResponse<?> triggerTask(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,

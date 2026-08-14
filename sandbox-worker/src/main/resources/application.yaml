@@ -2,7 +2,7 @@ spring:
   application:
     name: qgents-sandbox-worker
   datasource:
-    url: ${SANDBOX_DB_URL:jdbc:mysql://127.0.0.1:3306/qgents_sandbox_worker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}
+    url: ${SANDBOX_DB_URL:jdbc:mysql://47.113.224.195:3306/qgents_sandbox_worker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}
     username: ${SANDBOX_DB_USERNAME:qgents}
     password: ${SANDBOX_DB_PASSWORD:qgents}
     driver-class-name: com.mysql.cj.jdbc.Driver

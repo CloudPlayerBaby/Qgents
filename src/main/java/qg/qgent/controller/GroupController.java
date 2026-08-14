@@ -22,9 +22,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 需求群接口（契约 §7 统一 Group）。
- * <p>
- * 写操作（POST）的 Idempotency-Key 由 {@code IdempotencyFilter} 统一强制与回放，控制器不再自行处理。
+ * 项目群组接口（§7）。
+ * POST 写操作的 Idempotency-Key 由 {@code IdempotencyFilter} 统一强制与回放。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -37,7 +36,7 @@ public class GroupController {
     }
 
     /**
-     * 项目总群与需求群列表，按最近活跃排序。
+     * 项目总群与需求群列表（按最近活跃排序）。
      */
     @GetMapping("/projects/{projectId}/groups")
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -46,7 +45,7 @@ public class GroupController {
     }
 
     /**
-     * 创建 REQUIREMENT 需求群（需 Idempotency-Key）。
+     * 创建 REQUIREMENT 需求群。
      */
     @PostMapping("/projects/{projectId}/groups")
     @ResponseStatus(HttpStatus.CREATED)
@@ -56,7 +55,7 @@ public class GroupController {
     }
 
     /**
-     * 获取群详情（含成员数）。
+     * 获取群详情（含 memberCount）。
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}")
     public ApiResponse<?> get(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -65,7 +64,7 @@ public class GroupController {
     }
 
     /**
-     * 修改需求群标题、描述和关联仓库（PATCH 语义）。
+     * 修改需求群标题、描述和关联仓库。
      */
     @PatchMapping("/projects/{projectId}/groups/{groupId}")
     public ApiResponse<?> update(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -74,7 +73,7 @@ public class GroupController {
     }
 
     /**
-     * 归档需求群（仅 REQUIREMENT，需 Idempotency-Key）。
+     * 归档需求群（仅 REQUIREMENT）。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/archive")
     public ApiResponse<?> archive(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -83,7 +82,7 @@ public class GroupController {
     }
 
     /**
-     * 获取群成员列表（群成员即项目成员，无角色）。
+     * 获取群成员列表（含参与群聊的 Agent，无角色）。
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}/members")
     public ApiResponse<?> members(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -92,7 +91,7 @@ public class GroupController {
     }
 
     /**
-     * 当前用户退出群聊（即移出本项目成员，需 Idempotency-Key）。
+     * 当前用户退出群聊（即移出本项目成员）。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/leave")
     public ApiResponse<?> leave(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,

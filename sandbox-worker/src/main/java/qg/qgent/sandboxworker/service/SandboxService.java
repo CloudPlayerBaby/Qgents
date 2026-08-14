@@ -39,19 +39,24 @@ public class SandboxService {
      * 相同 Sandbox 编号的重复创建请求会返回冲突。
      */
     public SandboxResponse create(CreateSandboxRequest request) {
+        // 如果里面说的仓库有重复的
         if (request.getRepositoryIds().stream().distinct().count() != request.getRepositoryIds().size()) {
             throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY,
                     "SANDBOX_REPOSITORY_DUPLICATE", "Sandbox 不能重复声明同一仓库");
         }
+        // 如果镜像不在列表中
         if (!properties.getImageProfiles().contains(request.getImageProfile())) {
             throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY,
                     "IMAGE_PROFILE_NOT_ALLOWED", "镜像配置不在 Worker 允许列表中");
         }
 
         Instant now = clock.instant();
+        // 计算出实际租约
         Duration idleTtl = requestedIdleTtl(request.getLimits());
         Duration maxLifetime = requestedMaxLifetime(request.getLimits());
         Duration executionTimeout = requestedExecutionTimeout(request.getLimits());
+
+        // 创建沙箱分配
         SandboxAllocation allocation = new SandboxAllocation(
                 request.getSandboxId(),
                 request.getTaskRunId(),
@@ -65,9 +70,11 @@ public class SandboxService {
                 now.plus(maxLifetime),
                 executionTimeout,
                 null,
-                workspaceMetadataStore.resolveRepositories(request.getWorkspaceStorageKey(), request.getRepositoryIds()));
+                workspaceMetadataStore.resolveRepositories(request.getWorkspaceStorageKey(),
+                        request.getRepositoryIds()));
 
         try {
+            // 上锁 -> 创建沙箱 -> 返回响应
             return workspaceLock.execute(request.getWorkspaceStorageKey(),
                     () -> response(runtime.create(request, allocation)));
         } catch (IllegalStateException exception) {
@@ -75,7 +82,9 @@ public class SandboxService {
         }
     }
 
-    /** 查询沙箱；不存在时返回空结果。 */
+    /**
+     * 查询沙箱；不存在时返回空结果。
+     */
     public Optional<SandboxResponse> find(UUID sandboxId) {
         return runtime.find(sandboxId).map(this::response);
     }
@@ -88,7 +97,9 @@ public class SandboxService {
         return require(sandboxId);
     }
 
-    /** 延长空闲租约，但绝不突破最大生命周期。 */
+    /**
+     * 延长空闲租约，但绝不突破最大生命周期。
+     */
     public SandboxResponse renew(UUID sandboxId, Long requestedSeconds) {
         SandboxAllocation allocation = require(sandboxId);
         Duration requested = requestedSeconds == null
@@ -112,7 +123,9 @@ public class SandboxService {
         return runtime.isWorkspaceInUse(workspaceStorageKey);
     }
 
-    /** 返回已经超过空闲期限或最大生命周期的沙箱编号。 */
+    /**
+     * 返回已经超过空闲期限或最大生命周期的沙箱编号。
+     */
     public List<UUID> expiredSandboxIds() {
         Instant now = clock.instant();
         return runtime.findAll().stream()

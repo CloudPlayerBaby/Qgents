@@ -17,9 +17,8 @@ import qg.qgent.service.AgentSkillBindingService;
 import java.util.UUID;
 
 /**
- * Agent-Skill 绑定接口（PUT 全量替换，幂等，无需 Idempotency-Key）。
- * 授权与状态码规则见 {@link AgentSkillBindingService}：403 越权、404 资源缺失、
- * 409 请求 Skill ID 重复、422 Agent/Skill 状态或归属不满足。
+ * Agent-Skill 绑定接口（§11.1.1）。
+ * PUT 全量替换且幂等，无需 Idempotency-Key。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -31,7 +30,7 @@ public class AgentSkillBindingController {
         this.bindingService = bindingService;
     }
 
-    /** 读取指定 Agent 在当前项目的 Skill 绑定集（项目成员可读）。 */
+    /** 读取指定 Agent 在当前项目的 Skill 绑定集。 */
     @GetMapping("/projects/{projectId}/agent-skill-bindings/{agentId}")
     public ApiResponse<?> get(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
             @PathVariable UUID agentId, HttpServletRequest request) {
@@ -39,8 +38,7 @@ public class AgentSkillBindingController {
     }
 
     /**
-     * 全量替换指定 Agent 在当前项目的 Skill 绑定；空数组清空全部绑定。
-     * 幂等 PUT：重复提交同一请求体返回一致结果。
+     * 全量替换 Skill 绑定集（空数组清空，幂等）。
      */
     @PutMapping("/projects/{projectId}/agent-skill-bindings/{agentId}")
     public ApiResponse<?> replace(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,

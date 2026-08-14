@@ -27,10 +27,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * MR 镜像、审查与质量状态端点（13）。
- * 创建/同步/合并为异步受理返回 202（真实 GitHub 操作为接缝）；CQ 审查为同步决策返回 200。
- * POST writes require an Idempotency-Key; an MR author cannot approve their own
- * CQ.
+ * MR、审查与质量状态接口（§13）。
+ * 创建/同步/合并为异步受理返回 202；CQ 审查为同步决策返回 200。
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/merge-requests")
@@ -52,7 +50,7 @@ public class MergeRequestController {
                 requestId(request));
     }
 
-    /** Creates an MR from the selected repository worktree of a Task Workspace. */
+    /** 基于已接受并推送的 Diff 创建 MR。 */
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> create(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
@@ -61,7 +59,7 @@ public class MergeRequestController {
         return ok(data, request);
     }
 
-    /** 查询 MR、关联需求群、检查与审查摘要及质量门禁汇总。 */
+    /** 查询 MR 详情、检查与审查摘要。 */
     @GetMapping("/{mergeRequestId}")
     public ApiResponse<?> detail(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
             @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
@@ -94,7 +92,7 @@ public class MergeRequestController {
         return ok(data, request);
     }
 
-    /** Submits CQ+1 approval by a reviewer other than the MR author. */
+    /** 提交 CQ+1 审查（审查者须非 MR 作者）。 */
     @PostMapping("/{mergeRequestId}/cq-approvals")
     public ApiResponse<?> cqApproval(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
             @AuthenticationPrincipal UUID userId, @RequestBody(required = false) CqDecisionRequest body,
@@ -104,7 +102,7 @@ public class MergeRequestController {
         return ok(data, request);
     }
 
-    /** Rejects CQ with a reason by a reviewer other than the MR author. */
+    /** 拒绝 CQ 并给出修改意见（审查者须非 MR 作者）。 */
     @PostMapping("/{mergeRequestId}/cq-rejections")
     public ApiResponse<?> cqRejection(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
             @AuthenticationPrincipal UUID userId, @Valid @RequestBody CqDecisionRequest body,
@@ -114,7 +112,7 @@ public class MergeRequestController {
         return ok(data, request);
     }
 
-    /** 通过质量门禁后执行合并（需 Project Admin）。 */
+    /** 通过质量门禁后执行合并（Project Admin）。 */
     @PostMapping("/{mergeRequestId}/merge")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> merge(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,

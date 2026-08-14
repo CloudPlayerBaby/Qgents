@@ -33,9 +33,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 团队与团队邀请端点（5.1）。
- * 团队创建、资料修改、成员管理与角色调整、成员邀请与邀请撤销；
- * 除列表/详情外均需 Team Owner 权限，canonical Owner 不可通过成员角色接口降级或移除。
+ * 团队与团队邀请接口（§5.1）。
+ * 列表/详情为团队成员可见，其余写操作需 Team Owner 权限。
  */
 @RestController
 @RequestMapping("/api/v1/teams")
@@ -49,7 +48,7 @@ public class TeamController {
     }
 
     /**
-     * 由当前用户创建团队，并同时写入 canonical Owner 的 TEAM_OWNER 成员行。
+     * 创建团队，创建者成为 TEAM_OWNER。
      */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -62,7 +61,7 @@ public class TeamController {
     }
 
     /**
-     * 分页列出当前用户加入的团队，canonical Owner 返回 TEAM_OWNER 角色。
+     * 分页获取我加入的团队。
      */
     @GetMapping
     public PagedApiResponse<TeamResponse> list(@AuthenticationPrincipal UUID actor,
@@ -72,7 +71,7 @@ public class TeamController {
     }
 
     /**
-     * 获取团队详情与当前用户在团队中的生效角色。
+     * 获取团队资料与当前用户生效角色。
      */
     @GetMapping("/{teamId}")
     public ApiResponse<TeamResponse> get(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
@@ -117,7 +116,7 @@ public class TeamController {
     }
 
     /**
-     * Team Owner 邀请成员加入团队，受邀邮箱未注册时发送注册链接与邀请令牌。
+     * Team Owner 按邮箱创建团队邀请。
      */
     @PostMapping("/{teamId}/invitations")
     @ResponseStatus(HttpStatus.CREATED)
@@ -131,7 +130,7 @@ public class TeamController {
     }
 
     /**
-     * 分页获取团队待处理邀请，仅 Team Owner 可见。
+     * 分页查询团队邀请状态（Team Owner）。
      */
     @GetMapping("/{teamId}/invitations")
     public PagedApiResponse<TeamInvitationResponse> invitations(@AuthenticationPrincipal UUID actor,
@@ -141,7 +140,7 @@ public class TeamController {
     }
 
     /**
-     * 撤销一条待处理团队邀请；已过期或非 PENDING 状态返回 409。
+     * 撤销未接受的团队邀请。
      */
     @DeleteMapping("/{teamId}/invitations/{invitationId}")
     public ApiResponse<TeamInvitationResponse> revoke(@AuthenticationPrincipal UUID actor,
@@ -155,7 +154,7 @@ public class TeamController {
     }
 
     /**
-     * 将成员角色调整为 TEAM_MEMBER，不能创建、转移或降级 canonical Owner。
+     * 调整团队成员角色（保护 canonical Owner）。
      */
     @PatchMapping("/{teamId}/members/{userId}")
     public ApiResponse<TeamMemberResponse> updateMember(@AuthenticationPrincipal UUID actor,
@@ -169,7 +168,7 @@ public class TeamController {
     }
 
     /**
-     * 移除团队成员并同步清理其项目成员关系，保护最后一名 Project Admin。
+     * 移除团队成员。
      */
     @DeleteMapping("/{teamId}/members/{userId}")
     public ApiResponse<TeamMemberResponse> removeMember(@AuthenticationPrincipal UUID actor,

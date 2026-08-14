@@ -1,6 +1,7 @@
 package qg.qgent.github;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -327,6 +328,8 @@ class GitHubRepositoryServiceTest {
         var response = service.createInstallationUrl(actorId, teamId);
 
         assertEquals("https://github.com/install", response.getInstallationUrl());
+        assertNotNull(response.getExpiresAt());
+        assertEquals(java.time.ZoneOffset.UTC, response.getExpiresAt().getOffset());
     }
 
     @Test

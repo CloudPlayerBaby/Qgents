@@ -67,12 +67,15 @@ public class ToolExecutionService {
      * executionId 是执行资源编号，重复使用时返回冲突，不提供请求重放语义。
      */
     public ToolExecutionResponse submit(UUID sandboxId, ToolExecutionRequest request) {
+        // executionID 不能重复
         if (executionMapper.selectById(request.getExecutionId().toString()) != null) {
             throw new WorkerException(HttpStatus.CONFLICT,
                     "EXECUTION_ID_CONFLICT", "执行编号已经存在");
         }
 
+        // 沙箱需要存在
         SandboxAllocation sandbox = sandboxes.findAllocation(sandboxId);
+        // 需要仓库的工具必须要给仓库
         validateRepository(request);
         String argumentsJson = json(request.getArguments());
         ToolExecutionEntity entity = createEntity(sandboxId, request, argumentsJson);
@@ -86,6 +89,7 @@ public class ToolExecutionService {
             throw exception;
         }
         append(entity.getId(), "SYSTEM", "工具执行已进入队列：" + request.getTool());
+        // 投给后台开始跑
         try {
             sandboxExecutionPool.execute(() -> run(entity.getId(), sandbox, request));
         } catch (RejectedExecutionException exception) {
@@ -254,7 +258,8 @@ public class ToolExecutionService {
         Duration requested = seconds == null ? sandboxLimit : Duration.ofSeconds(seconds);
         Duration effective = requested.compareTo(sandboxLimit) <= 0 ? requested : sandboxLimit;
         return effective.compareTo(properties.getMaxExecutionTimeout()) <= 0
-                ? effective : properties.getMaxExecutionTimeout();
+                ? effective
+                : properties.getMaxExecutionTimeout();
     }
 
     private String json(Object value) {
@@ -279,7 +284,8 @@ public class ToolExecutionService {
 
     private String safeMessage(RuntimeException exception) {
         return exception instanceof WorkerException && exception.getMessage() != null
-                ? exception.getMessage() : "工具执行失败";
+                ? exception.getMessage()
+                : "工具执行失败";
     }
 
     private ToolExecutionResponse response(ToolExecutionEntity entity) {

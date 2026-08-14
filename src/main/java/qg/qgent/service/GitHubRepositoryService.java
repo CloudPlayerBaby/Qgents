@@ -3,9 +3,12 @@ package qg.qgent.service;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -30,7 +33,9 @@ import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.github.GitHubAppClient;
+import qg.qgent.github.GitHubClient;
 import qg.qgent.github.GitHubInstallationDetails;
+import qg.qgent.github.GitHubInstallationState;
 import qg.qgent.github.GitHubRepositoryDetails;
 import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
@@ -47,6 +52,7 @@ import qg.qgent.mapper.TeamMemberMapper;
 @Service
 @Slf4j
 public class GitHubRepositoryService {
+    private static final ConcurrentMap<Long, Object> INSTALLATION_CALLBACK_LOCKS = new ConcurrentHashMap<>();
     private final GitHubInstallationMapper installationMapper;
     private final GitHubRepositoryMapper repositoryMapper;
     private final ProjectRepositoryMapper projectRepositoryMapper;
@@ -83,11 +89,18 @@ public class GitHubRepositoryService {
      */
     public GitHubInstallationUrlResponse createInstallationUrl(UUID actorId, UUID teamId) {
         log.info("Generating GitHub installation URL for teamId: {}, requested by actorId: {}", teamId, actorId);
+        requireTeamOwner(actorId, teamId);
+        return new GitHubInstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId),
+                OffsetDateTime.now(clock).plusSeconds(600));
+    }
+
+    public GitHubInstallationUrlResponse createInstallationUrl(UUID actorId, UUID teamId, GitHubClient client) {
+        log.info("Generating GitHub installation URL for teamId: {}, requested by actorId: {}", teamId, actorId);
         // 需要是团队所有者
         requireTeamOwner(actorId, teamId);
         // 调用底层 GitHub SDK 生成包含状态（加密的 teamId）的安装链接，时效为 10 分钟
-        return new GitHubInstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId),
-                LocalDateTime.now(clock).plusSeconds(600));
+        return new GitHubInstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId, client),
+                OffsetDateTime.now(clock).plusSeconds(600));
     }
 
     /**
@@ -313,14 +326,38 @@ public class GitHubRepositoryService {
     @Transactional
     public UUID handleInstallationCallback(long providerInstallationId, String state) {
         log.info("Handling GitHub App installation callback. providerInstallationId: {}", providerInstallationId);
+        Object callbackLock = INSTALLATION_CALLBACK_LOCKS.computeIfAbsent(providerInstallationId, ignored -> new Object());
+        synchronized (callbackLock) {
+            try {
+                UUID teamId = gitHubClient.verifyInstallationState(state);
+                syncInstallation(teamId, providerInstallationId);
+                return teamId;
+            } finally {
+                INSTALLATION_CALLBACK_LOCKS.remove(providerInstallationId, callbackLock);
+            }
+        }
+    }
+
+    /** Verifies state, synchronizes the installation, and preserves the initiating client for redirect routing. */
+    @Transactional
+    public GitHubInstallationState handleInstallationCallbackDetails(long providerInstallationId, String state) {
+        log.info("Handling GitHub App installation callback. providerInstallationId: {}", providerInstallationId);
         
         // 1. 验证 state 签名，并从中解析出真正发起授权的团队 ID
-        UUID teamId = gitHubClient.verifyInstallationState(state);
+        Object callbackLock = INSTALLATION_CALLBACK_LOCKS.computeIfAbsent(providerInstallationId, ignored -> new Object());
+        synchronized (callbackLock) {
+            try {
+                GitHubInstallationState callbackState = gitHubClient.verifyInstallationStateDetails(state);
+                UUID teamId = callbackState.teamId();
         
-        // 执行核心全量同步逻辑
-        syncInstallation(teamId, providerInstallationId);
+                // Execute the core metadata synchronization while holding the per-installation lock.
+                syncInstallation(teamId, providerInstallationId);
         
-        return teamId;
+                return callbackState;
+            } finally {
+                INSTALLATION_CALLBACK_LOCKS.remove(providerInstallationId, callbackLock);
+            }
+        }
     }
 
     /**
