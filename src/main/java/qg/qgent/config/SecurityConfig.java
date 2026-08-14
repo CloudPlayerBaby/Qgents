@@ -118,7 +118,7 @@ public class SecurityConfig {
                 .filter(origin -> !origin.isEmpty())
                 .toList());
         // 允许的请求方法
-        c.setAllowedMethods(List.of("GET", "POST", "PATCH", "DELETE", "OPTIONS"));
+        c.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         // 允许的请求头：Idempotency-Key（写接口幂等）、Last-Event-ID（SSE 续传）
         c.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key",
                 "Last-Event-ID"));

@@ -47,7 +47,9 @@ public class InternalSandboxController {
         return sandboxService.create(request);
     }
 
-    /** 延长 Sandbox 空闲租约，但不突破最大空闲时间和最大生命周期。 */
+    /**
+     * 延长 Sandbox 空闲租约，但不突破最大空闲时间和最大生命周期。
+     */
     @PostMapping("/sandboxes/{sandboxId}/lease/renew")
     public SandboxResponse renewSandbox(
             @PathVariable UUID sandboxId,
@@ -67,19 +69,25 @@ public class InternalSandboxController {
         return toolExecutionService.submit(sandboxId, request);
     }
 
-    /** 查询持久化工具执行记录。 */
+    /**
+     * 查询持久化工具执行记录。
+     */
     @GetMapping("/tool-executions/{executionId}")
     public ToolExecutionResponse getToolExecution(@PathVariable UUID executionId) {
         return toolExecutionService.find(executionId);
     }
 
-    /** 取消仍处于排队或运行状态的工具执行。 */
+    /**
+     * 取消仍处于排队或运行状态的工具执行。
+     */
     @PostMapping("/tool-executions/{executionId}/cancel")
     public ToolExecutionResponse cancelToolExecution(@PathVariable UUID executionId) {
         return toolExecutionService.cancel(executionId);
     }
 
-    /** 按递增游标查询工具执行日志。 */
+    /**
+     * 按递增游标查询工具执行日志。
+     */
     @GetMapping("/tool-executions/{executionId}/logs")
     public ExecutionLogsResponse getToolExecutionLogs(
             @PathVariable UUID executionId,
@@ -88,7 +96,9 @@ public class InternalSandboxController {
         return toolExecutionService.logs(executionId, after, limit);
     }
 
-    /** 查询 Sandbox 当前状态和租约期限。 */
+    /**
+     * 查询 Sandbox 当前状态和租约期限。
+     */
     @GetMapping("/sandboxes/{sandboxId}")
     public ResponseEntity<SandboxResponse> getSandbox(@PathVariable UUID sandboxId) {
         return sandboxService.find(sandboxId)

@@ -23,9 +23,7 @@ import qg.qgent.service.SkillService;
 import java.util.UUID;
 
 /**
- * 共享 Skill 接口（契约 §8）。
- * <p>
- * 写操作（POST）的 Idempotency-Key 由 {@code IdempotencyFilter} 统一强制与回放。
+ * 共享 Skill 接口（§8）。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -38,7 +36,7 @@ public class SkillController {
     }
 
     /**
-     * 查询 Skill，支持状态、标签过滤（仅 PROJECT_SHARED 或本人创建）。
+     * 查询 Skill（支持状态、标签过滤）。
      */
     @GetMapping("/projects/{projectId}/skills")
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -48,7 +46,7 @@ public class SkillController {
     }
 
     /**
-     * 创建草稿 Skill（需 Idempotency-Key）。
+     * 创建草稿 Skill。
      */
     @PostMapping("/projects/{projectId}/skills")
     @ResponseStatus(HttpStatus.CREATED)
@@ -67,7 +65,7 @@ public class SkillController {
     }
 
     /**
-     * 编辑草稿或审核中内容（PATCH 语义）。
+     * 编辑草稿或审核中内容。
      */
     @PatchMapping("/projects/{projectId}/skills/{skillId}")
     public ApiResponse<?> update(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -76,7 +74,7 @@ public class SkillController {
     }
 
     /**
-     * 提交审核（需 Idempotency-Key）。
+     * 提交 Skill 审核。
      */
     @PostMapping("/projects/{projectId}/skills/{skillId}/submit-review")
     public ApiResponse<?> submitReview(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -85,7 +83,7 @@ public class SkillController {
     }
 
     /**
-     * 发布 Skill（Project Admin，需 Idempotency-Key）。
+     * 发布 Skill（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/skills/{skillId}/approve")
     public ApiResponse<?> approve(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -94,7 +92,7 @@ public class SkillController {
     }
 
     /**
-     * 拒绝 Skill 并给出原因（Project Admin，需 Idempotency-Key）。
+     * 拒绝 Skill 并给出原因（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/skills/{skillId}/reject")
     public ApiResponse<?> reject(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -103,7 +101,7 @@ public class SkillController {
     }
 
     /**
-     * 下线已发布 Skill（Project Admin，需 Idempotency-Key）。
+     * 下线已发布 Skill（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/skills/{skillId}/archive")
     public ApiResponse<?> archive(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,

@@ -15,10 +15,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 通知中心接口（A 联调约定 §1）。
- * <p>
- * 仅限登录用户访问；按用户维度持久化已读状态。接口路径不在 {@code /api/v1/projects/**}
- * 下，不经过 IdempotencyFilter，无需 Idempotency-Key。
+ * 通知中心接口（§7.1）。
+ * 按用户维度持久化已读状态与历史列表；不经过 IdempotencyFilter，无需 Idempotency-Key。
  */
 @RestController
 @RequestMapping("/api/v1/notifications")
@@ -31,7 +29,7 @@ public class NotificationController {
     }
 
     /**
-     * 返回当前用户的通知列表，按 createdAt 倒序（一次性返回全量）。
+     * 返回当前用户通知列表（含 isRead，按时间倒序）。
      */
     @GetMapping
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId,
@@ -50,7 +48,7 @@ public class NotificationController {
     }
 
     /**
-     * 当前用户全部通知已读（幂等）。
+     * 全部通知已读（幂等）。
      */
     @PostMapping("/read-all")
     public ApiResponse<?> markAllRead(@AuthenticationPrincipal UUID userId, HttpServletRequest request) {

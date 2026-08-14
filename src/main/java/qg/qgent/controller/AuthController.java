@@ -25,10 +25,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 认证与账户端点（4）。
- * 注册、登录、Token 刷新、登出与密码重置，以及当前用户信息查询/修改；
- * 除登出与 /me 外均无需已认证 Token。注册、登录、密码重置中的 password 必须是
- * 平台 RSA 公钥加密后的 Base64 密文（见契约 4.1）。
+ * 认证与账户接口（§4）。
+ * 注册/登录/刷新/重置密码无需已认证 Token；password 字段为平台 RSA 公钥加密的 Base64 密文（见契约 §4.1）。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -40,7 +38,7 @@ public class AuthController {
     }
 
     /**
-     * 注册新用户并直接签发 accessToken / refreshToken；密码须为平台 RSA 公钥加密后的 Base64 密文，邮箱重复返回 409。
+     * 注册新用户并签发登录 Token。
      */
     @PostMapping("/auth/register")
     @ResponseStatus(HttpStatus.CREATED)
@@ -49,7 +47,7 @@ public class AuthController {
     }
 
     /**
-     * 校验邮箱与 RSA 加密密码后签发新的 accessToken / refreshToken；连续失败会触发限流（429）。
+     * 邮箱密码登录并签发新 Token。
      */
     @PostMapping("/auth/login")
     public ApiResponse<?> login(@Valid @RequestBody LoginRequest body, HttpServletRequest request) {
@@ -57,7 +55,7 @@ public class AuthController {
     }
 
     /**
-     * 用未过期的 refreshToken 换取一组新 Token，旧 refreshToken 随即失效。
+     * 用 refreshToken 轮换一组新 Token。
      */
     @PostMapping("/auth/refresh")
     public ApiResponse<?> refresh(@Valid @RequestBody RefreshTokenRequest body, HttpServletRequest request) {
@@ -65,7 +63,7 @@ public class AuthController {
     }
 
     /**
-     * 注销当前登录态，使请求中的 refreshToken 失效。
+     * 注销当前登录态。
      */
     @PostMapping("/auth/logout")
     public ApiResponse<?> logout(@AuthenticationPrincipal UUID userId,
@@ -75,7 +73,7 @@ public class AuthController {
     }
 
     /**
-     * 请求密码重置；邮箱已注册时发送重置邮件，未注册时同样返回成功以规避邮箱枚举。
+     * 发起找回密码邮件（未注册邮箱同样返回成功，规避枚举）。
      */
     @PostMapping("/auth/password-reset-requests")
     @ResponseStatus(HttpStatus.ACCEPTED)
@@ -86,7 +84,7 @@ public class AuthController {
     }
 
     /**
-     * 使用重置令牌与新密码（RSA 密文）重置密码，并撤销该用户全部 refreshToken。
+     * 用重置令牌设置新密码并撤销全部 refreshToken。
      */
     @PostMapping("/auth/password-resets")
     public ApiResponse<?> reset(@Valid @RequestBody ResetPasswordRequest body, HttpServletRequest request) {
@@ -95,7 +93,7 @@ public class AuthController {
     }
 
     /**
-     * 获取当前用户的资料、所属团队与可见项目。
+     * 获取当前账户、团队与项目角色摘要。
      */
     @GetMapping("/me")
     public ApiResponse<?> me(@AuthenticationPrincipal UUID userId, HttpServletRequest request) {
@@ -103,7 +101,7 @@ public class AuthController {
     }
 
     /**
-     * 更新当前用户昵称或头像地址，至少提供一个修改字段。
+     * 修改昵称或头像。
      */
     @PatchMapping("/me")
     public ApiResponse<?> updateMe(@AuthenticationPrincipal UUID userId, @Valid @RequestBody UpdateMeRequest body,

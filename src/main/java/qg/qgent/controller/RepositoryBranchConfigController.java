@@ -22,7 +22,7 @@ import qg.qgent.security.CurrentActorProvider;
 import qg.qgent.service.RepositoryBranchConfigService;
 
 /**
- * Controller for branch policies and quality gates configuration.
+ * 分支策略与质量门禁接口（§6.1）。
  */
 @RestController
 @RequestMapping("/api/v1")
