@@ -33,6 +33,8 @@ import qg.qgent.service.EventService;
 import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
+import qg.qgent.service.TaskExecutionArtifactService;
+import qg.qgent.service.FinalDiffBundleService;
 
 import java.util.List;
 import java.util.UUID;
@@ -65,6 +67,8 @@ class TaskOrchestratorTest {
     private final TaskService taskService = mock(TaskService.class);
     private final TaskRunService taskRunService = mock(TaskRunService.class);
     private final EventService eventService = mock(EventService.class);
+    private final TaskExecutionArtifactService artifactService = mock(TaskExecutionArtifactService.class);
+    private final FinalDiffBundleService finalDiffBundles = mock(FinalDiffBundleService.class);
     private final AgentContextAssembler contextAssembler = new AgentContextAssembler();
     private final GitHubAppClient githubAppClient = mock(GitHubAppClient.class);
     private final SandboxSessionManager sessionManager = new SandboxSessionManager(
@@ -73,9 +77,10 @@ class TaskOrchestratorTest {
             mock(qg.qgent.mapper.GitHubInstallationMapper.class), mock(qg.qgent.service.GitCredentialService.class), githubAppClient);
 
     private TaskOrchestrator orchestrator(AgentRunExecutor executor) {
+        when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenReturn(UUID.randomUUID());
         return new TaskOrchestrator(new OrchestrationStateMachine(), stepScheduler, executor, contextAssembler,
                 taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
-                mock(NotificationService.class), sessionManager);
+                mock(NotificationService.class), sessionManager, artifactService, finalDiffBundles);
     }
 
     /** Maven 文件树 + Mock LLM：Plan 两轮、Coding 一次 finalResult、Test 一次分析、Review 一次 finalResult，全部成功。 */
@@ -199,7 +204,7 @@ class TaskOrchestratorTest {
 
         realAgentOrchestrator().orchestrate(projectId, taskId);
 
-        assertTerminalStatus("SUCCEEDED");
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
         verify(taskService).addSteps(eq(projectId), eq(taskId), eq(task.getCreatedBy()),
                 argThat(requests -> requests.size() == 3));
 
@@ -227,7 +232,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("SUCCEEDED");
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
         verify(taskRunService, times(5)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(), any());
         verify(taskRunService, times(5)).complete(any(), anyString());
         verify(executor, times(6)).execute(any(), any());
@@ -288,7 +293,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("SUCCEEDED");
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
 
         ArgumentCaptor<AgentInput> inputCaptor = ArgumentCaptor.forClass(AgentInput.class);
         verify(executor, times(6)).execute(any(), inputCaptor.capture());
@@ -322,7 +327,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("SUCCEEDED");
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
         verify(taskRunService, times(6)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(), any());
         verify(taskRunService, times(6)).complete(any(), anyString());
         verify(executor, times(7)).execute(any(), any());
@@ -350,7 +355,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("SUCCEEDED");
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
 
         ArgumentCaptor<AgentInput> inputCaptor = ArgumentCaptor.forClass(AgentInput.class);
         verify(executor, times(7)).execute(any(), inputCaptor.capture());
@@ -417,7 +422,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("SUCCEEDED");
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
 
         ArgumentCaptor<UUID> retryCaptor = ArgumentCaptor.forClass(UUID.class);
         verify(taskRunService, times(4)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(),

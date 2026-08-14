@@ -23,6 +23,7 @@ public class TaskResponse {
     private String title;
     private String requirement;
     private String status;
+    private String deliveryMode;
     private String workspaceId;
     private String workspaceStatus;
     private String continuationOfTaskId;

@@ -126,7 +126,10 @@ public class WorkspaceManagerService {
     public GitDiffResponse gitDiff(UUID workspaceId, UUID repositoryId) {
         return workspaceLock.execute(storageKey(workspaceId), () -> {
             WorkspaceRepositoryResponse repository = requireRepository(get(workspaceId), repositoryId);
-            return repositories.locked(repositoryId, () -> repositories.diff(repositoryPath(workspaceId, repository)));
+            GitDiffResponse diff = repositories.locked(repositoryId,
+                    () -> repositories.diff(repositoryPath(workspaceId, repository)));
+            diff.setBaseCommit(repository.getBaseCommit());
+            return diff;
         });
     }
 

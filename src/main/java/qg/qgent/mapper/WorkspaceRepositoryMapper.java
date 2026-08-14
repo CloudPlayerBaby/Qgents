@@ -29,4 +29,10 @@ public interface WorkspaceRepositoryMapper {
             + "from workspace_repositories where workspace_id=#{workspaceId} and project_repository_id=#{repositoryId} for update")
     WorkspaceRepositoryEntity selectForUpdate(@Param("workspaceId") UUID workspaceId,
             @Param("repositoryId") UUID repositoryId);
+
+    /** Writes the real commit created by the controlled Worker. */
+    @org.apache.ibatis.annotations.Update("update workspace_repositories set head_commit=#{headCommit} "
+            + "where workspace_id=#{workspaceId} and project_repository_id=#{repositoryId}")
+    int updateHeadCommit(@Param("workspaceId") UUID workspaceId, @Param("repositoryId") UUID repositoryId,
+            @Param("headCommit") String headCommit);
 }

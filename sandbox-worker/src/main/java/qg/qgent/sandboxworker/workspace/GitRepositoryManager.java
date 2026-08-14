@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -139,7 +140,8 @@ public class GitRepositoryManager {
                             "--binary", "--no-ext-diff", "--no-color", "HEAD"), environment, MAX_DIFF_BYTES),
                     "GIT_DIFF_FAILED", "Cannot generate Git diff");
             byte[] patch = result.stdout().getBytes(StandardCharsets.UTF_8);
-            return new GitDiffResponse(head(repository), sha256(patch), result.stdout());
+            return new GitDiffResponse(null, head(repository), sha256(patch), result.stdout(),
+                    diffFiles(repository, environment));
         } catch (WorkerException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -152,6 +154,88 @@ public class GitRepositoryManager {
                 }
             }
         }
+    }
+
+    /** Read file statistics from Git's machine-readable numstat output, never from patch text. */
+    private List<GitDiffFileResponse> diffFiles(Path repository, Map<String, String> environment) {
+        CommandResult names = requireSuccess(run(List.of("git", "-C", repository.toString(), "diff", "--cached",
+                "--name-status", "-z", "--find-renames", "--no-ext-diff", "HEAD"), environment),
+                "GIT_DIFF_FAILED", "Cannot read Git diff file names");
+        Map<String, FileNameStatus> statusByPath = parseNameStatus(names.stdout());
+        CommandResult numstat = requireSuccess(run(List.of("git", "-C", repository.toString(), "diff", "--cached",
+                "--numstat", "-z", "--no-ext-diff", "HEAD"), environment), "GIT_DIFF_FAILED",
+                "Cannot read Git diff file statistics");
+        List<GitDiffFileResponse> files = new ArrayList<>();
+        String[] entries = numstat.stdout().split("\u0000", -1);
+        for (int index = 0; index < entries.length; index++) {
+            String entry = entries[index];
+            if (entry.isEmpty()) {
+                continue;
+            }
+            String[] parts = entry.split("\\t", 3);
+            if (parts.length != 3) {
+                throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "GIT_DIFF_FAILED",
+                        "Unexpected git numstat output");
+            }
+            boolean binary = "-".equals(parts[0]) || "-".equals(parts[1]);
+            int additions = binary ? 0 : Integer.parseInt(parts[0]);
+            int deletions = binary ? 0 : Integer.parseInt(parts[1]);
+            String path = parts[2];
+            String previousPath = null;
+            if (path.isEmpty()) {
+                if (index + 2 >= entries.length) {
+                    throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "GIT_DIFF_FAILED",
+                            "Unexpected git rename numstat output");
+                }
+                previousPath = entries[++index];
+                path = entries[++index];
+            }
+            FileNameStatus nameStatus = statusByPath.get(path);
+            files.add(new GitDiffFileResponse(path, nameStatus == null ? previousPath : nameStatus.previousPath(),
+                    nameStatus == null ? "MODIFIED" : nameStatus.changeType(), additions, deletions, binary, List.of()));
+        }
+        return files;
+    }
+
+    /** Parses Git's NUL-delimited name-status format, including two-path rename records. */
+    private Map<String, FileNameStatus> parseNameStatus(String raw) {
+        Map<String, FileNameStatus> result = new LinkedHashMap<>();
+        String[] entries = raw.split("\u0000", -1);
+        for (int index = 0; index < entries.length; index++) {
+            String status = entries[index];
+            if (status.isEmpty()) {
+                continue;
+            }
+            if (index + 1 >= entries.length) {
+                throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "GIT_DIFF_FAILED",
+                        "Unexpected git name-status output");
+            }
+            String path = entries[++index];
+            String previousPath = null;
+            if (status.startsWith("R") || status.startsWith("C")) {
+                previousPath = path;
+                if (index + 1 >= entries.length) {
+                    throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "GIT_DIFF_FAILED",
+                            "Unexpected git rename name-status output");
+                }
+                path = entries[++index];
+            }
+            result.put(path, new FileNameStatus(changeType(status), previousPath));
+        }
+        return result;
+    }
+
+    private String changeType(String status) {
+        return switch (status.charAt(0)) {
+            case 'A' -> "ADDED";
+            case 'D' -> "DELETED";
+            case 'R' -> "RENAMED";
+            case 'C' -> "COPIED";
+            default -> "MODIFIED";
+        };
+    }
+
+    private record FileNameStatus(String changeType, String previousPath) {
     }
 
     /** 鏍￠獙瀹℃煡蹇収鍚庯紝鍦ㄥ唴閮ㄦ墽琛?add -A 涓?commit銆?*/
