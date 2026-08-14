@@ -17,6 +17,7 @@ import qg.qgent.dto.PageInfo;
 import qg.qgent.dto.PageSlice;
 import qg.qgent.dto.TeamInvitationResponse;
 import qg.qgent.dto.TeamMemberResponse;
+import qg.qgent.dto.TeamMemberView;
 import qg.qgent.dto.TeamMembershipView;
 import qg.qgent.dto.TeamResponse;
 import qg.qgent.dto.UpdateTeamMemberRequest;
@@ -55,10 +56,12 @@ public class TeamService {
     private final UserMapper userMapper;
     private final TokenService tokens;
     private final TeamInvitationMailer invitationMailer;
+    private final TeamDisbandService teamDisbandService;
 
     public TeamService(TeamMapper teamMapper, TeamMemberMapper memberMapper,
             TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, ProjectMapper projectMapper,
-            UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer) {
+            UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer,
+            TeamDisbandService teamDisbandService) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
         this.invitationMapper = invitationMapper;
@@ -67,6 +70,7 @@ public class TeamService {
         this.userMapper = userMapper;
         this.tokens = tokens;
         this.invitationMailer = invitationMailer;
+        this.teamDisbandService = teamDisbandService;
     }
 
     /**
@@ -83,6 +87,7 @@ public class TeamService {
         team.setId(UuidV7.next());
         team.setOwnerUserId(actor);
         team.setName(request.getName().trim());
+        team.setDescription(request.getDescription());
         team.setStatus("ACTIVE");
         teamMapper.insert(team);
         // 给这个团队的owner设置成创建这个的用户
@@ -91,7 +96,8 @@ public class TeamService {
         member.setUserId(actor);
         member.setRole("TEAM_OWNER");
         memberMapper.insert(member);
-        return team(team, "TEAM_OWNER");
+        // 重查一次以带回数据库生成的 created_at
+        return team(teamMapper.selectById(team.getId()), "TEAM_OWNER");
     }
 
     /**
@@ -108,10 +114,16 @@ public class TeamService {
         UUID anchor = decodeCursor(cursor, scope);
         // 通过自定义sql查询团队成员列表
         List<TeamMembershipView> rows = teamMapper.selectMembershipPage(actor, anchor, pageSize + 1);
-        // 转成指定的分页响应
+        // 转成指定的分页响应，memberCount/description/createdAt 来自列表聚合查询
         return keysetPage(rows, pageSize, scope, TeamMembershipView::getId,
-                row -> new TeamResponse(row.getId().toString(), row.getName(),
-                        effectiveRole(row.getOwnerUserId(), actor, row.getRole())));
+                row -> {
+                    TeamResponse response = new TeamResponse(row.getId().toString(), row.getName(),
+                            effectiveRole(row.getOwnerUserId(), actor, row.getRole()));
+                    response.setMemberCount(row.getMemberCount());
+                    response.setDescription(row.getDescription());
+                    response.setCreatedAt(row.getCreatedAt());
+                    return response;
+                });
     }
 
     /**
@@ -142,8 +154,11 @@ public class TeamService {
         TeamEntity team = requireTeamForUpdate(teamId);
         // 检查用户是否是团队的owner
         requireOwner(team, actor);
-        // 设置并写入数据库
+        // 设置并写入数据库；description 传 null 表示保留原值，传空串表示清空
         team.setName(request.getName().trim());
+        if (request.getDescription() != null) {
+            team.setDescription(request.getDescription());
+        }
         teamMapper.updateById(team);
         return team(team, "TEAM_OWNER");
     }
@@ -164,10 +179,15 @@ public class TeamService {
         int pageSize = pageSize(limit);
         String scope = "team-members:" + teamId;
         UUID anchor = decodeCursor(cursor, scope);
-        List<TeamMemberEntity> rows = memberMapper.selectMemberPage(teamId, anchor, pageSize + 1);
-        return keysetPage(rows, pageSize, scope, TeamMemberEntity::getUserId,
-                member -> new TeamMemberResponse(member.getUserId().toString(),
-                        effectiveRole(team.getOwnerUserId(), member.getUserId(), member.getRole())));
+        List<TeamMemberView> rows = memberMapper.selectMemberPage(teamId, anchor, pageSize + 1);
+        return keysetPage(rows, pageSize, scope, TeamMemberView::getUserId,
+                member -> {
+                    TeamMemberResponse response = new TeamMemberResponse(member.getUserId().toString(),
+                            effectiveRole(team.getOwnerUserId(), member.getUserId(), member.getRole()));
+                    response.setDisplayName(member.getDisplayName());
+                    response.setEmail(member.getEmail());
+                    return response;
+                });
     }
 
     /**
@@ -275,8 +295,7 @@ public class TeamService {
             TeamMemberEntity existing = memberMapper.selectByTeamAndUser(invitation.getTeamId(), actor);
             if (existing != null) {
                 TeamEntity team = requireTeam(invitation.getTeamId());
-                return new TeamMemberResponse(actor.toString(),
-                        effectiveRole(team.getOwnerUserId(), actor, existing.getRole()));
+                return memberResponse(actor, team, existing.getRole(), user);
             }
         }
         // 判断邀请是否是待处理状态
@@ -304,8 +323,7 @@ public class TeamService {
         invitation.setAcceptedAt(now());
         invitationMapper.updateById(invitation);
         TeamEntity team = requireTeam(invitation.getTeamId());
-        return new TeamMemberResponse(actor.toString(),
-                effectiveRole(team.getOwnerUserId(), actor, member.getRole()));
+        return memberResponse(actor, team, member.getRole(), user);
     }
 
     /**
@@ -370,8 +388,7 @@ public class TeamService {
         // 更新团队成员角色
         target.setRole(request.getRole());
         memberMapper.updateRole(teamId, userId, request.getRole());
-        return new TeamMemberResponse(userId.toString(),
-                effectiveRole(team.getOwnerUserId(), userId, target.getRole()));
+        return memberResponse(userId, team, target.getRole(), userMapper.selectById(userId));
     }
 
     /**
@@ -405,8 +422,26 @@ public class TeamService {
         projectMemberMapper.deleteByTeamAndUser(teamId, userId);
         // 移除团队成员在团队成员列表
         memberMapper.deleteByTeamAndUser(teamId, userId);
-        return new TeamMemberResponse(userId.toString(),
-                effectiveRole(team.getOwnerUserId(), userId, target.getRole()));
+        return memberResponse(userId, team, target.getRole(), userMapper.selectById(userId));
+    }
+
+    /**
+     * 解散团队：仅 Team Owner 可调用，级联删除团队下所有项目、需求群、消息、成员关系
+     * 等数据（不可恢复）。与成员管理接口不同，本操作是团队生命周期终态，允许把
+     * canonical Owner 所在的整个团队一并移除；删除在单事务内完成，失败整体回滚。
+     *
+     * @param actor  当前操作用户 ID
+     * @param teamId 要解散的团队 ID
+     * @return 解散前团队的摘要信息（id/name/role/memberCount/description/createdAt）
+     */
+    @Transactional
+    public TeamResponse disband(UUID actor, UUID teamId) {
+        TeamEntity team = requireTeamForUpdate(teamId);
+        requireOwner(team, actor);
+        // 解散前取一次摘要，避免删除后无法查询
+        TeamResponse summary = team(team, "TEAM_OWNER");
+        teamDisbandService.deleteTeam(teamId);
+        return summary;
     }
 
     // 查询到团队和成员信息并检查是否存在
@@ -496,7 +531,25 @@ public class TeamService {
     }
 
     private TeamResponse team(TeamEntity team, String role) {
-        return new TeamResponse(team.getId().toString(), team.getName(), role);
+        TeamResponse response = new TeamResponse(team.getId().toString(), team.getName(), role);
+        response.setMemberCount(memberCount(team.getId()));
+        response.setDescription(team.getDescription());
+        response.setCreatedAt(team.getCreatedAt());
+        return response;
+    }
+
+    private int memberCount(UUID teamId) {
+        Long count = memberMapper.selectCount(Wrappers.<TeamMemberEntity>lambdaQuery()
+                .eq(TeamMemberEntity::getTeamId, teamId));
+        return count == null ? 0 : count.intValue();
+    }
+
+    private TeamMemberResponse memberResponse(UUID userId, TeamEntity team, String storedRole, UserEntity user) {
+        TeamMemberResponse response = new TeamMemberResponse(userId.toString(),
+                effectiveRole(team.getOwnerUserId(), userId, storedRole));
+        response.setDisplayName(user == null ? null : user.getDisplayName());
+        response.setEmail(user == null ? null : user.getEmail());
+        return response;
     }
 
     private TeamInvitationResponse invitation(TeamInvitationEntity value) {

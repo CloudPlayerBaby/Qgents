@@ -1,5 +1,9 @@
 package qg.qgent.service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import qg.qgent.api.ApiException;
 import qg.qgent.api.PersistedApiException;
@@ -10,6 +14,7 @@ import qg.qgent.dto.TeamResponse;
 import qg.qgent.dto.UpdateTeamMemberRequest;
 import qg.qgent.dto.InviteTeamMemberRequest;
 import qg.qgent.dto.TeamMembershipView;
+import qg.qgent.dto.TeamMemberView;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.entity.TeamInvitationEntity;
@@ -36,15 +41,30 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.argThat;
 
 class TeamServiceTest {
+
+    /**
+     * 纯单元测试未启动 MyBatis/Spring，lambda 包装器依赖实体 TableInfo；显式注册
+     * 涉及到的实体，避免裸 JVM 下懒初始化列缓存的行为差异导致测试偶发失败。
+     */
+    @BeforeAll
+    static void initTableInfo() {
+        MybatisConfiguration configuration = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "");
+        TableInfoHelper.initTableInfo(assistant, TeamEntity.class);
+        TableInfoHelper.initTableInfo(assistant, TeamMemberEntity.class);
+        TableInfoHelper.initTableInfo(assistant, TeamInvitationEntity.class);
+    }
+
     private final TeamMapper teamMapper = mock(TeamMapper.class);
     private final TeamMemberMapper memberMapper = mock(TeamMemberMapper.class);
     private final TeamInvitationMapper invitationMapper = mock(TeamInvitationMapper.class);
     private final ProjectMemberMapper projectMemberMapper = mock(ProjectMemberMapper.class);
     private final ProjectMapper projectMapper = mock(ProjectMapper.class);
     private final UserMapper userMapper = mock(UserMapper.class);
+    private final TeamDisbandService teamDisbandService = mock(TeamDisbandService.class);
     private final TeamService service = new TeamService(teamMapper, memberMapper, invitationMapper,
             projectMemberMapper, projectMapper, userMapper, mock(TokenService.class),
-            mock(TeamInvitationMailer.class));
+            mock(TeamInvitationMailer.class), teamDisbandService);
 
     @Test
     void createAddsCreatorAsOwner() {
@@ -52,10 +72,20 @@ class TeamServiceTest {
         CreateTeamRequest request = new CreateTeamRequest();
         request.setName(" 研发团队 ");
 
+        // create() 插入后重查团队以带回数据库生成的 created_at，这里返回刚插入的实体
+        java.util.concurrent.atomic.AtomicReference<TeamEntity> inserted =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        org.mockito.Mockito.doAnswer(inv -> {
+            inserted.set(inv.getArgument(0));
+            return 1;
+        }).when(teamMapper).insert(any(TeamEntity.class));
+        when(teamMapper.selectById(any(UUID.class))).thenAnswer(inv -> inserted.get());
+
         TeamResponse response = service.create(actor, request);
 
         assertEquals("研发团队", response.getName());
         assertEquals("TEAM_OWNER", response.getRole());
+        assertEquals(0, response.getMemberCount());
         verify(teamMapper).insert(any(TeamEntity.class));
         verify(memberMapper).insert(any(TeamMemberEntity.class));
     }
@@ -212,8 +242,11 @@ class TeamServiceTest {
         UUID extraOwner = UUID.randomUUID();
         when(memberMapper.selectByTeamAndUser(teamId, actor)).thenReturn(member(teamId, actor, "TEAM_MEMBER"));
         when(teamMapper.selectById(teamId)).thenReturn(team(teamId, canonicalOwner));
-        when(memberMapper.selectMemberPage(teamId, null, 31))
-                .thenReturn(java.util.List.of(member(teamId, extraOwner, "TEAM_OWNER")));
+        TeamMemberView memberView = new TeamMemberView();
+        memberView.setTeamId(teamId);
+        memberView.setUserId(extraOwner);
+        memberView.setRole("TEAM_OWNER");
+        when(memberMapper.selectMemberPage(teamId, null, 31)).thenReturn(java.util.List.of(memberView));
 
         var response = service.members(actor, teamId, null, null);
 
@@ -234,7 +267,7 @@ class TeamServiceTest {
         invitation.setExpiresAt(LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1));
         TokenService tokens = mock(TokenService.class);
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
-                projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class));
+                projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class), mock(TeamDisbandService.class));
         when(userMapper.selectById(actor)).thenReturn(user);
         when(tokens.hash("raw-token")).thenReturn(new byte[] { 1 });
         when(invitationMapper.selectOne(any())).thenReturn(invitation);
@@ -280,7 +313,7 @@ class TeamServiceTest {
         when(tokens.opaque()).thenReturn("raw-token");
         when(tokens.hash("raw-token")).thenReturn(new byte[] { 1 });
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
-                projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class));
+                projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class), mock(TeamDisbandService.class));
         InviteTeamMemberRequest request = new InviteTeamMemberRequest();
         request.setEmail("new@example.com");
         request.setRole("TEAM_MEMBER");
@@ -350,6 +383,45 @@ class TeamServiceTest {
                 () -> service.members(actor, teamId, teamListCursor, 1));
 
         assertEquals("INVALID_CURSOR", error.code());
+    }
+
+    @Test
+    void onlyOwnerCanDisbandTeam() {
+        UUID teamId = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        UUID memberId = UUID.randomUUID();
+        when(teamMapper.selectByIdForUpdate(teamId)).thenReturn(team(teamId, owner));
+        when(memberMapper.selectByTeamAndUser(teamId, memberId)).thenReturn(member(teamId, memberId, "TEAM_MEMBER"));
+
+        ApiException error = assertThrows(ApiException.class, () -> service.disband(memberId, teamId));
+
+        assertEquals("TEAM_OWNER_REQUIRED", error.code());
+        verify(teamDisbandService, org.mockito.Mockito.never()).deleteTeam(any());
+    }
+
+    @Test
+    void ownerDisbandDelegatesToDisbandService() {
+        UUID teamId = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        when(teamMapper.selectByIdForUpdate(teamId)).thenReturn(team(teamId, owner));
+        when(memberMapper.selectByTeamAndUser(teamId, owner)).thenReturn(member(teamId, owner, "TEAM_OWNER"));
+
+        TeamResponse response = service.disband(owner, teamId);
+
+        assertEquals("TEAM_OWNER", response.getRole());
+        assertEquals(teamId.toString(), response.getId());
+        verify(teamDisbandService).deleteTeam(teamId);
+    }
+
+    @Test
+    void disbandUnknownTeamReturnsNotFound() {
+        UUID actor = UUID.randomUUID();
+        when(teamMapper.selectByIdForUpdate(any())).thenReturn(null);
+
+        ApiException error = assertThrows(ApiException.class, () -> service.disband(actor, UUID.randomUUID()));
+
+        assertEquals("TEAM_RESOURCE_NOT_FOUND", error.code());
+        verify(teamDisbandService, org.mockito.Mockito.never()).deleteTeam(any());
     }
 
     private TeamMemberEntity member(UUID teamId, UUID userId, String role) {
