@@ -3,6 +3,7 @@ package qg.qgent.service;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -90,7 +91,7 @@ public class GitHubRepositoryService {
         log.info("Generating GitHub installation URL for teamId: {}, requested by actorId: {}", teamId, actorId);
         requireTeamOwner(actorId, teamId);
         return new GitHubInstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId),
-                LocalDateTime.now(clock).plusSeconds(600));
+                OffsetDateTime.now(clock).plusSeconds(600));
     }
 
     public GitHubInstallationUrlResponse createInstallationUrl(UUID actorId, UUID teamId, GitHubClient client) {
@@ -99,7 +100,7 @@ public class GitHubRepositoryService {
         requireTeamOwner(actorId, teamId);
         // 调用底层 GitHub SDK 生成包含状态（加密的 teamId）的安装链接，时效为 10 分钟
         return new GitHubInstallationUrlResponse(gitHubClient.createInstallationUrl(teamId, actorId, client),
-                LocalDateTime.now(clock).plusSeconds(600));
+                OffsetDateTime.now(clock).plusSeconds(600));
     }
 
     /**
