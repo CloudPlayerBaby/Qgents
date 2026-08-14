@@ -34,6 +34,7 @@ public class SandboxWorkerClient {
             + "/repositories/{repositoryId}/test-snapshots/{snapshotWorkspaceId}";
     private static final String SANDBOXES = BASE_PATH + "/sandboxes";
     private static final String SANDBOX = BASE_PATH + "/sandboxes/{sandboxId}";
+    private static final String SANDBOX_LEASE_RENEW = SANDBOX + "/lease/renew";
     private static final String TOOL_EXECUTIONS = BASE_PATH + "/sandboxes/{sandboxId}/tool-executions";
     private static final String TOOL_EXECUTION = BASE_PATH + "/tool-executions/{executionId}";
     private static final String TOOL_EXECUTION_LOGS = TOOL_EXECUTION + "/logs";
@@ -135,6 +136,25 @@ public class SandboxWorkerClient {
                 .uri(SANDBOX, sandboxId)
                 .retrieve()
                 .body(WorkerSandbox.class));
+    }
+
+    /** 延长 Sandbox 空闲租约；ttlSeconds 为空时使用 Worker 本地默认配置。 */
+    public WorkerSandbox renewSandbox(UUID sandboxId, Long ttlSeconds) {
+        return execute(() -> client.post()
+                .uri(uriBuilder -> {
+                    var builder = uriBuilder.path(SANDBOX_LEASE_RENEW);
+                    if (ttlSeconds != null) {
+                        builder.queryParam("ttlSeconds", ttlSeconds);
+                    }
+                    return builder.build(sandboxId);
+                })
+                .retrieve()
+                .body(WorkerSandbox.class));
+    }
+
+    /** 延长 Sandbox 空闲租约，使用 Worker 本地默认配置。 */
+    public WorkerSandbox renewSandbox(UUID sandboxId) {
+        return renewSandbox(sandboxId, null);
     }
 
     /** 取消活跃工具执行并销毁临时容器；持久 Workspace 不随 Sandbox 删除。 */

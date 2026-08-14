@@ -199,7 +199,7 @@ class TaskOrchestratorTest {
 
         realAgentOrchestrator().orchestrate(projectId, taskId);
 
-        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        assertTerminalStatus("SUCCEEDED");
         verify(taskService).addSteps(eq(projectId), eq(taskId), eq(task.getCreatedBy()),
                 argThat(requests -> requests.size() == 3));
 
@@ -227,7 +227,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        assertTerminalStatus("SUCCEEDED");
         verify(taskRunService, times(5)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(), any());
         verify(taskRunService, times(5)).complete(any(), anyString());
         verify(executor, times(6)).execute(any(), any());
@@ -288,7 +288,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        assertTerminalStatus("SUCCEEDED");
 
         ArgumentCaptor<AgentInput> inputCaptor = ArgumentCaptor.forClass(AgentInput.class);
         verify(executor, times(6)).execute(any(), inputCaptor.capture());
@@ -322,7 +322,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        assertTerminalStatus("SUCCEEDED");
         verify(taskRunService, times(6)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(), any());
         verify(taskRunService, times(6)).complete(any(), anyString());
         verify(executor, times(7)).execute(any(), any());
@@ -350,7 +350,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        assertTerminalStatus("SUCCEEDED");
 
         ArgumentCaptor<AgentInput> inputCaptor = ArgumentCaptor.forClass(AgentInput.class);
         verify(executor, times(7)).execute(any(), inputCaptor.capture());
@@ -417,7 +417,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
-        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        assertTerminalStatus("SUCCEEDED");
 
         ArgumentCaptor<UUID> retryCaptor = ArgumentCaptor.forClass(UUID.class);
         verify(taskRunService, times(4)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(),
