@@ -2,6 +2,9 @@ package qg.qgent.orchestration;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpStatus;
+
+import qg.qgent.api.ApiException;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.ProjectEntity;
@@ -511,5 +514,102 @@ class TaskOrchestratorTest {
         assertThatThrownBy(() -> realAgentOrchestrator().orchestrate(projectId, taskId))
                 .isInstanceOf(IllegalStateException.class);
         verify(taskRunService, never()).createForStep(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    private List<AgentRunOutcome> fullSuccessSequence() {
+        return List.of(
+                planSuccess(),
+                outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
+                outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
+                outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED));
+    }
+
+    private AgentRunExecutor sequenceExecutor(List<AgentRunOutcome> sequence) {
+        AgentRunExecutor executor = mock(AgentRunExecutor.class);
+        AtomicInteger idx = new AtomicInteger();
+        when(executor.execute(any(), any())).thenAnswer(inv -> sequence.get(idx.getAndIncrement()));
+        return executor;
+    }
+
+    /** 后端3 决策：无未提交改动（FINAL_DIFF_EMPTY）视为成功降级 SUCCEEDED，且发布 diff-review.skipped 事件作为依据。 */
+    @Test void finalDiffEmptyDegradesToSucceededWithSkippedEvent() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubStepScheduler(taskId);
+        stubRunCreation(projectId, taskId);
+        stubPlanPersistence(task);
+
+        TaskOrchestrator orchestrator = orchestrator(sequenceExecutor(fullSuccessSequence()));
+        when(finalDiffBundles.createPendingBatch(any(), any(), any()))
+                .thenThrow(new ApiException(HttpStatus.CONFLICT, "FINAL_DIFF_EMPTY", "No uncommitted changes"));
+
+        orchestrator.orchestrate(projectId, taskId);
+
+        assertTerminalStatus("SUCCEEDED");
+        verify(eventService).publish(eq(task.getProjectId()), eq(task.getRequirementGroupId()),
+                eq("diff-review.skipped"), eq(task.getId().toString()),
+                argThat(payload -> "FINAL_DIFF_EMPTY".equals(payload.get("reason"))));
+    }
+
+    /** 后端3 决策：Worker 不可用等临时故障不得伪装成成功，任务落 FAILED。 */
+    @Test void workerUnavailableFailsTaskNotSucceeded() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubStepScheduler(taskId);
+        stubRunCreation(projectId, taskId);
+        stubPlanPersistence(task);
+
+        TaskOrchestrator orchestrator = orchestrator(sequenceExecutor(fullSuccessSequence()));
+        when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenThrow(
+                new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "Sandbox worker is unavailable"));
+
+        orchestrator.orchestrate(projectId, taskId);
+
+        assertTerminalStatus("FAILED");
+        verify(eventService, never()).publish(any(), any(), eq("diff-review.skipped"), any(), any());
+    }
+
+    /** 内部一致性错误（FINAL_CODING_RUN_INVALID）同样不得降级成功。 */
+    @Test void internalConsistencyErrorFailsTask() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubStepScheduler(taskId);
+        stubRunCreation(projectId, taskId);
+        stubPlanPersistence(task);
+
+        TaskOrchestrator orchestrator = orchestrator(sequenceExecutor(fullSuccessSequence()));
+        when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenThrow(
+                new ApiException(HttpStatus.CONFLICT, "FINAL_CODING_RUN_INVALID",
+                        "A successful final coding run is required"));
+
+        orchestrator.orchestrate(projectId, taskId);
+
+        assertTerminalStatus("FAILED");
+    }
+
+    /** 非 ApiException 的运行时异常（意外错误）不伪装成功，任务落 FAILED。 */
+    @Test void unexpectedDiffCreationFailureFailsTask() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubStepScheduler(taskId);
+        stubRunCreation(projectId, taskId);
+        stubPlanPersistence(task);
+
+        TaskOrchestrator orchestrator = orchestrator(sequenceExecutor(fullSuccessSequence()));
+        when(finalDiffBundles.createPendingBatch(any(), any(), any()))
+                .thenThrow(new IllegalStateException("unexpected failure"));
+
+        orchestrator.orchestrate(projectId, taskId);
+
+        assertTerminalStatus("FAILED");
+        verify(eventService, never()).publish(any(), any(), eq("diff-review.skipped"), any(), any());
     }
 }

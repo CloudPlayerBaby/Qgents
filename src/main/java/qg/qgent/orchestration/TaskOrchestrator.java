@@ -12,6 +12,7 @@ import org.bsc.langgraph4j.state.AgentState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.dto.TaskRepositoryScopeRequest;
@@ -417,16 +418,39 @@ public class TaskOrchestrator {
         sendAgentCard(task, ctx.lastCodingAgentId, "task-" + task.getId(), status, null, taskResultMessage(status));
     }
 
-    /** 成功终态：生成待用户确认的 Diff 批次；Worker 不可用或无未提交改动时降级为 SUCCEEDED（等同旧行为）。 */
+    /**
+     * 成功终态：生成待用户确认的 Diff 批次。无未提交改动（FINAL_DIFF_EMPTY）视为业务上的成功
+     * 降级为 SUCCEEDED 并发布 diff-review.skipped 事件作为依据；其余失败（内部一致性、快照无效、
+     * Worker 不可用等）落 FAILED，不伪装成成功（后端3 决策：按异常类型区分，不统一降级）。
+     */
     private String completeWithDiffBatch(TaskEntity task, TaskExecutionContext ctx) {
         try {
             finalDiffBundles.createPendingBatch(task.getProjectId(), task.getId(), ctx.lastCodingRunId);
             return WAITING_DIFF_CONFIRMATION;
+        } catch (ApiException e) {
+            if ("FINAL_DIFF_EMPTY".equals(e.code())) {
+                log.warn("final diff empty, task finishes SUCCEEDED, taskId={}: {}", task.getId(), e.getMessage());
+                publishDiffReviewSkipped(task, e.code());
+                return "SUCCEEDED";
+            }
+            log.warn("final diff batch creation failed, task finishes FAILED, taskId={}, code={}: {}",
+                    task.getId(), e.code(), e.getMessage());
+            return "FAILED";
         } catch (RuntimeException e) {
-            log.warn("final diff batch creation skipped, task finishes SUCCEEDED, taskId={}: {}",
-                    task.getId(), e.getMessage());
-            return "SUCCEEDED";
+            log.error("final diff batch creation failed, task finishes FAILED, taskId={}: {}",
+                    task.getId(), e.getMessage(), e);
+            return "FAILED";
         }
+    }
+
+    /** 无未提交改动导致 Diff 审核跳过时发布的事件，作为 SUCCEEDED 降级的事件依据（脱敏、带项目归属）。 */
+    private void publishDiffReviewSkipped(TaskEntity task, String reason) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("projectId", task.getProjectId());
+        payload.put("taskId", task.getId());
+        payload.put("reason", reason);
+        eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "diff-review.skipped",
+                task.getId().toString(), payload);
     }
 
     /**
