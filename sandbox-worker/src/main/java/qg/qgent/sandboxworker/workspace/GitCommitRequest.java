@@ -25,4 +25,8 @@ public class GitCommitRequest {
     @NotBlank
     @Size(max = 500)
     private String message;
+    /** 主后端持久化生成的幂等操作ID。 */
+    @NotBlank
+    @Pattern(regexp = "[0-9a-fA-F-]{36}")
+    private String operationId;
 }

@@ -8,6 +8,7 @@ import qg.qgent.sandboxworker.api.WorkerException;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
 import qg.qgent.sandboxworker.service.SandboxService;
 import qg.qgent.sandboxworker.runtime.WorkspacePathResolver;
+import qg.qgent.sandboxworker.api.MergePreviewResponse;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -104,6 +105,10 @@ public class WorkspaceManagerService {
             for (WorkspaceRepositoryResponse repository : existing.getRepositories()) {
                 repositories.remove(repository.getRepositoryId(),
                         workspace.resolve(repository.getWorkspacePath()).normalize());
+                if (repository.getSourceBranch() != null
+                        && repository.getSourceBranch().matches("qgents-test-[0-9a-fA-F-]{36}")) {
+                    repositories.deleteTemporaryBranch(repository.getRepositoryId(), repository.getSourceBranch());
+                }
             }
             deleteTree(workspace);
             try {
@@ -149,6 +154,83 @@ public class WorkspaceManagerService {
             return repositories.push(repositoryId, repositoryPath(workspaceId, repository),
                     repository.getSourceBranch(), request);
         });
+    }
+
+    /** 对共享 Git Store 中两个受控引用执行只读合并预演。 */
+    public MergePreviewResponse mergePreview(UUID repositoryId, String sourceRef, String targetBranch) {
+        return repositories.mergePreview(repositoryId, sourceRef, targetBranch);
+    }
+
+    /** 将分支、标签或 SHA 解析为不可变 commit SHA。 */
+    public String resolveGitRef(UUID repositoryId, String reference) {
+        return repositories.resolveRef(repositoryId, reference);
+    }
+
+    /** 仅供临时测试 Workspace 使用：把源引用合并进当前 worktree。 */
+    public void mergeForTest(UUID workspaceId, UUID repositoryId, String sourceRef) {
+        workspaceLock.execute(storageKey(workspaceId), () -> {
+            WorkspaceRepositoryResponse repository = requireRepository(get(workspaceId), repositoryId);
+            repositories.mergeForTest(repositoryId, repositoryPath(workspaceId, repository), sourceRef);
+            return null;
+        });
+    }
+
+    /** 清理 Worker 内部临时测试分支；只接受固定前缀。 */
+    public void deleteTemporaryBranch(UUID repositoryId, String branch) {
+        repositories.deleteTemporaryBranch(repositoryId, branch);
+    }
+
+    /** 创建当前未提交工作树的隔离快照；相同 snapshotWorkspaceId 可安全重试。 */
+    public WorkspaceResponse snapshotForTest(UUID sourceWorkspaceId, UUID repositoryId,
+            UUID snapshotWorkspaceId, UUID projectId) {
+        if (sourceWorkspaceId.equals(snapshotWorkspaceId)) {
+            throw conflict("TEST_SNAPSHOT_ID_INVALID", "测试快照不能覆盖源 Workspace");
+        }
+        return workspaceLock.execute(storageKey(sourceWorkspaceId), () -> {
+            WorkspaceResponse source = get(sourceWorkspaceId);
+            if (!projectId.equals(source.getProjectId())) {
+                throw conflict("TEST_SNAPSHOT_PROJECT_MISMATCH", "源 Workspace 不属于当前项目");
+            }
+            WorkspaceRepositoryResponse sourceRepository = requireRepository(source, repositoryId);
+            GitDiffResponse sourceDiff = repositories.diff(repositoryPath(sourceWorkspaceId, sourceRepository));
+            String branch = "qgents-test-" + snapshotWorkspaceId;
+            try {
+                WorkspaceResponse existing = get(snapshotWorkspaceId);
+                WorkspaceRepositoryResponse existingRepository = requireRepository(existing, repositoryId);
+                if (projectId.equals(existing.getProjectId()) && sourceDiff.getDiffHash().equals(
+                        repositories.diff(repositoryPath(snapshotWorkspaceId, existingRepository)).getDiffHash())) {
+                    return existing;
+                }
+            } catch (WorkerException exception) {
+                if (exception.getStatus() != HttpStatus.NOT_FOUND) {
+                    cleanupTemporary(snapshotWorkspaceId, repositoryId, branch);
+                }
+            }
+            cleanupTemporary(snapshotWorkspaceId, repositoryId, branch);
+            WorkspaceRepositoryRequest repository = new WorkspaceRepositoryRequest();
+            repository.setRepositoryId(repositoryId);
+            repository.setBaseRef(sourceRepository.getHeadCommit());
+            repository.setSourceBranch(branch);
+            repository.setWorkspacePath("repository");
+            WorkspaceProvisionRequest request = new WorkspaceProvisionRequest();
+            request.setProjectId(projectId);
+            request.setRepositories(List.of(repository));
+            WorkspaceResponse snapshot = provision(snapshotWorkspaceId, request);
+            repositories.copyWorkingTreeSnapshot(repositoryId,
+                    repositoryPath(sourceWorkspaceId, sourceRepository),
+                    repositoryPath(snapshotWorkspaceId, requireRepository(snapshot, repositoryId)));
+            return get(snapshotWorkspaceId);
+        });
+    }
+
+    /** 幂等清理临时测试 worktree、残留元数据和内部临时分支。 */
+    public void cleanupTemporary(UUID workspaceId, UUID repositoryId, String branch) {
+        Path workspace = workspacePath(workspaceId);
+        Path repository = workspace.resolve("repository").normalize();
+        try { repositories.remove(repositoryId, repository); } catch (RuntimeException ignored) { }
+        deleteTree(workspace);
+        try { Files.deleteIfExists(metadataPath(workspaceId)); } catch (Exception ignored) { }
+        repositories.deleteTemporaryBranch(repositoryId, branch);
     }
 
     private WorkspaceResponse refresh(WorkspaceResponse response) {

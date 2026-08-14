@@ -30,6 +30,8 @@ public class SandboxWorkerClient {
     private static final String GIT_STATUS = WORKSPACES + "/repositories/{repositoryId}/git/status";
     private static final String GIT_DIFF = WORKSPACES + "/repositories/{repositoryId}/git/diff";
     private static final String GIT_COMMIT = WORKSPACES + "/repositories/{repositoryId}/git/commit";
+    private static final String TEST_SNAPSHOT = WORKSPACES
+            + "/repositories/{repositoryId}/test-snapshots/{snapshotWorkspaceId}";
     private static final String SANDBOXES = BASE_PATH + "/sandboxes";
     private static final String SANDBOX = BASE_PATH + "/sandboxes/{sandboxId}";
     private static final String TOOL_EXECUTIONS = BASE_PATH + "/sandboxes/{sandboxId}/tool-executions";
@@ -37,6 +39,9 @@ public class SandboxWorkerClient {
     private static final String TOOL_EXECUTION_LOGS = TOOL_EXECUTION + "/logs";
     private static final String GIT_STORE_SYNC = BASE_PATH + "/git-stores/{repositoryId}/sync";
     private static final String GIT_PUSH = WORKSPACES + "/repositories/{repositoryId}/git/push";
+    private static final String TEST_EXECUTIONS = BASE_PATH + "/test-executions";
+    private static final String MERGE_PREVIEWS = BASE_PATH + "/merge-previews";
+    private static final String GIT_RESOLUTIONS = BASE_PATH + "/git-resolutions";
 
     private final RestClient client;
     private final ObjectMapper objectMapper;
@@ -166,6 +171,33 @@ public class SandboxWorkerClient {
                         .build(executionId))
                 .retrieve()
                 .body(WorkerExecutionLogs.class));
+    }
+
+    /** 在 Worker 内固化当前未提交工作树，不读取或传输宿主机路径。 */
+    public WorkerWorkspace createTestSnapshot(UUID workspaceId, UUID repositoryId,
+            UUID snapshotWorkspaceId, UUID projectId) {
+        return execute(() -> client.post()
+                .uri(uri -> uri.path(TEST_SNAPSHOT).queryParam("projectId", projectId)
+                        .build(workspaceId, repositoryId, snapshotWorkspaceId))
+                .retrieve().body(WorkerWorkspace.class));
+    }
+
+    /** 同步执行已由主后端校验的 Testset 定义。 */
+    public WorkerTestExecutionResponse executeTests(WorkerTestExecutionRequest request) {
+        return execute(() -> client.post().uri(TEST_EXECUTIONS).body(request).retrieve()
+                .body(WorkerTestExecutionResponse.class));
+    }
+
+    /** 解析真实 Git 引用并执行只读合并预演。 */
+    public WorkerMergePreviewResponse mergePreview(WorkerMergePreviewRequest request) {
+        return execute(() -> client.post().uri(MERGE_PREVIEWS).body(request).retrieve()
+                .body(WorkerMergePreviewResponse.class));
+    }
+
+    /** 在受控 Worker 中把 Git 引用解析为固定 commit SHA。 */
+    public WorkerGitResolveResponse resolveGitRef(WorkerGitResolveRequest request) {
+        return execute(() -> client.post().uri(GIT_RESOLUTIONS).body(request).retrieve()
+                .body(WorkerGitResolveResponse.class));
     }
 
     /** 统一执行调用并做错误映射，不让 RestClient 原始异常泄漏到上层。 */

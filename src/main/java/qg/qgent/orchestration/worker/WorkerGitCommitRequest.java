@@ -10,4 +10,5 @@ public class WorkerGitCommitRequest {
     private String expectedHeadCommit;
     private String expectedDiffHash;
     private String message;
+    private String operationId;
 }

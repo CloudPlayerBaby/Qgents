@@ -32,10 +32,11 @@ public class DiffService {
         private final ProjectAccessService access;
         private final EventService eventService;
         private final NotificationService notificationService;
+        private final DiffDeliveryService deliveryService;
 
         public DiffService(DiffMapper diffs, DiffFileMapper files, DiffCommentMapper comments, TaskMapper tasks,
                         WorkspaceMapper workspaces, ProjectAccessService access, EventService eventService,
-                        NotificationService notificationService) {
+                        NotificationService notificationService, DiffDeliveryService deliveryService) {
                 this.diffs = diffs;
                 this.files = files;
                 this.comments = comments;
@@ -44,6 +45,7 @@ public class DiffService {
                 this.access = access;
                 this.eventService = eventService;
                 this.notificationService = notificationService;
+                this.deliveryService = deliveryService;
         }
 
         /**
@@ -166,7 +168,6 @@ public class DiffService {
                 return response(value);
         }
 
-        @Transactional
         public DiffResponse decide(UUID projectId, UUID diffId, UUID actor, boolean accepted, String reason) {
                 DiffEntity diff = requireDiff(projectId, diffId);
                 TaskEntity task = tasks.selectById(diff.getTaskId());
@@ -187,18 +188,10 @@ public class DiffService {
                 if (!accepted && (reason == null || reason.isBlank()))
                         throw new ApiException(HttpStatus.BAD_REQUEST,
                                         "DIFF_REJECT_REASON_REQUIRED", "A rejection reason is required");
-                WorkspaceEntity workspace = workspaces.selectByIdForUpdate(diff.getWorkspaceId());
-                if (workspace == null || !projectId.equals(workspace.getProjectId())) {
-                        throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "DIFF_WORKSPACE_CONTEXT_INVALID",
-                                        "Diff Workspace does not belong to the current Project");
+                if (accepted) {
+                        return detail(deliveryService.acceptNonBatch(task, diff, actor));
                 }
-                diff.setStatus(accepted ? "ACCEPTED" : "REJECTED");
-                diff.setReviewedBy(actor);
-                diff.setReviewReason(reason);
-                diff.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
-                diff.setUpdatedAt(diff.getReviewedAt());
-                diffs.updateById(diff);
-                return detail(diff);
+                return detail(deliveryService.rejectNonBatch(task, diff, actor, reason));
         }
 
         private DiffEntity requireDiff(UUID projectId, UUID id) {

@@ -38,6 +38,9 @@ public class MergeRequestEntity {
     private String status;
     /** 门禁汇总状态，取值见类注释。 */
     private String qualityGateStatus;
+    private String mergeOperationId;
+    private String mergeOperationStatus;
+    private LocalDateTime mergeLeaseExpiresAt;
     /** GitHub 侧更新时间（UTC）。 */
     private LocalDateTime providerUpdatedAt;
     /** 本地最近同步时间（UTC）。 */

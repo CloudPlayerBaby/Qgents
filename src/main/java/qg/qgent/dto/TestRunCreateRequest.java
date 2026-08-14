@@ -2,6 +2,7 @@ package qg.qgent.dto;
 
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.util.List;
@@ -19,8 +20,10 @@ public class TestRunCreateRequest {
     /** 关联 Task ID，与 ref 二选一。 */
     private UUID taskId;
     /** 目标提交或分支引用，与 taskId 二选一。 */
+    @Size(max = 512)
     private String ref;
     /** 启用测试集ID数组。 */
     @NotEmpty
+    @Size(max = 32)
     private List<UUID> testsetIds;
 }

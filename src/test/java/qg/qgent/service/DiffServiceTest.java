@@ -25,9 +25,10 @@ class DiffServiceTest {
     private final WorkspaceMapper workspaces = mock(WorkspaceMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final EventService events = mock(EventService.class);
+    private final DiffDeliveryService delivery = mock(DiffDeliveryService.class);
     private final DiffService service = new DiffService(diffs, mock(DiffFileMapper.class),
             mock(DiffCommentMapper.class), tasks, workspaces, access, events,
-            mock(NotificationService.class));
+            mock(NotificationService.class), delivery);
 
     @Test
     void rejectRequiresReasonAndDoesNotCreateACommit() {
@@ -48,16 +49,18 @@ class DiffServiceTest {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
         DiffEntity diff = diff(projectId, taskId); TaskEntity task = new TaskEntity();
         task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(diff.getWorkspaceId()); task.setCreatedBy(actor);
-        WorkspaceEntity workspace = new WorkspaceEntity();
-        workspace.setId(diff.getWorkspaceId()); workspace.setProjectId(projectId);
         when(diffs.selectById(diff.getId())).thenReturn(diff); when(tasks.selectById(taskId)).thenReturn(task);
-        when(workspaces.selectByIdForUpdate(diff.getWorkspaceId())).thenReturn(workspace);
+        diff.setHeadCommit("base-head");
+        DiffEntity committed = diff(projectId, taskId);
+        committed.setId(diff.getId()); committed.setStatus("ACCEPTED"); committed.setReviewedBy(actor);
+        committed.setHeadCommit("real-commit"); committed.setDeliveryStatus("COMMITTED");
+        when(delivery.acceptNonBatch(task, diff, actor)).thenReturn(committed);
 
-        service.decide(projectId, diff.getId(), actor, true, null);
+        DiffResponse response = service.decide(projectId, diff.getId(), actor, true, null);
 
-        assertEquals("ACCEPTED", diff.getStatus()); assertEquals(actor, diff.getReviewedBy());
-        assertNull(diff.getHeadCommit()); verify(workspaces).selectByIdForUpdate(diff.getWorkspaceId());
-        verify(diffs).updateById(diff);
+        assertEquals("ACCEPTED", response.getStatus());
+        assertEquals("real-commit", response.getHeadCommit());
+        verify(delivery).acceptNonBatch(task, diff, actor);
     }
 
     @Test

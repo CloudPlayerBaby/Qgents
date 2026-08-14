@@ -12,8 +12,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 项目自定义测试集。
- * 本期只管理配置，实际执行由后续系统承担。
+ * 项目自定义测试集。公开定义保存在 JSON 中，由 Sandbox Worker 受控执行。
  * 状态枚举：ENABLED/DISABLED。
  */
 @Data

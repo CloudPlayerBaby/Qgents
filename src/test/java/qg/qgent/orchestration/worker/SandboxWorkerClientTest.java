@@ -104,6 +104,58 @@ class SandboxWorkerClientTest {
     }
 
     @Test
+    void createsControlledTestSnapshot() {
+        UUID snapshot = UUID.fromString("00000000-0000-0000-0000-000000000008");
+        UUID project = UUID.fromString("00000000-0000-0000-0000-000000000009");
+        server.expect(once(), requestTo(BASE + "/internal/v1/workspaces/" + WORKSPACE
+                        + "/repositories/" + REPO + "/test-snapshots/" + snapshot + "?projectId=" + project))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"id":"%s","projectId":"%s","storageKey":"workspaces/%s","status":"READY",
+                         "repositories":[],"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-14T00:00:00Z"}
+                        """.formatted(snapshot, project, snapshot), MediaType.APPLICATION_JSON));
+
+        WorkerWorkspace result = client.createTestSnapshot(WORKSPACE, REPO, snapshot, project);
+
+        assertEquals(snapshot, result.getId());
+        server.verify();
+    }
+
+    @Test
+    void resolvesGitRefToImmutableCommit() {
+        String sha = "0123456789012345678901234567890123456789";
+        server.expect(once(), requestTo(BASE + "/internal/v1/git-resolutions"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("{\"commitSha\":\"" + sha + "\"}", MediaType.APPLICATION_JSON));
+        WorkerGitResolveRequest request = new WorkerGitResolveRequest();
+        request.setRepositoryId(REPO); request.setRef("main");
+
+        WorkerGitResolveResponse response = client.resolveGitRef(request);
+
+        assertEquals(sha, response.getCommitSha());
+        server.verify();
+    }
+
+    @Test
+    void executesTestsetsThroughDedicatedWorkerOperation() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/test-executions"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"executionId":"%s","status":"PASSED","resolvedHeadCommit":"abc",
+                         "results":[{"testsetId":"%s","status":"PASSED","exitCode":0,"durationMs":12}]}
+                        """.formatted(EXECUTION, REPO), MediaType.APPLICATION_JSON));
+        WorkerTestExecutionRequest request = new WorkerTestExecutionRequest();
+        request.setExecutionId(EXECUTION); request.setProjectId(UUID.randomUUID()); request.setRepositoryId(REPO);
+        request.setWorkspaceId(WORKSPACE); request.setTestsets(List.of());
+
+        WorkerTestExecutionResponse response = client.executeTests(request);
+
+        assertEquals("PASSED", response.getStatus());
+        assertEquals(1, response.getResults().size());
+        server.verify();
+    }
+
+    @Test
     void submitsToolExecutionAndReadsQueuedResult() {
         server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/tool-executions"))
                 .andExpect(method(HttpMethod.POST))
