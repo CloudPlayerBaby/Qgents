@@ -12,8 +12,7 @@ import qg.qgent.service.TaskService;
 import java.util.*;
 
 /**
- * Project-scoped task and planned workflow-step API; no endpoint directly
- * controls Git, Workspace or Sandbox.
+ * Task 与 TaskStep 计划接口（§11.3）。
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/tasks")
@@ -25,10 +24,9 @@ public class TaskController {
     }
 
     /**
-     * Creates one task and its task-level workspace metadata; execution remains
-     * asynchronous and externally controlled.
+     * 从 ACTIVE REQUIREMENT 群创建 Task（可复用前序 Task 的 Workspace）。
      */
-    @Operation(summary = "Create a task")
+    @Operation(summary = "创建 Task")
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<?> create(@PathVariable UUID projectId, @AuthenticationPrincipal UUID actor,
@@ -36,31 +34,24 @@ public class TaskController {
         return ok(service.create(projectId, actor, body), request);
     }
 
-    /** Lists tasks visible to the authenticated project member. */
-    @Operation(summary = "List project tasks")
+    /** 查询项目可见的 Task。 */
+    @Operation(summary = "查询项目 Task 列表")
     @GetMapping
     public ApiResponse<?> list(@PathVariable UUID projectId, @AuthenticationPrincipal UUID actor,
             HttpServletRequest request) {
         return ok(service.list(projectId, actor), request);
     }
 
-    /**
-     * Returns a task including workspace and repository identifiers, without host
-     * paths.
-     */
-    @Operation(summary = "Get task")
+    /** 获取 Task、Workspace 与 repository 范围。 */
+    @Operation(summary = "获取 Task 详情")
     @GetMapping("/{taskId}")
     public ApiResponse<?> get(@PathVariable UUID projectId, @PathVariable UUID taskId,
             @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
         return ok(service.get(projectId, taskId, actor), request);
     }
 
-    /**
-     * Cancels an unfinished task. PLANNING/PENDING transitions to CANCELLED directly;
-     * RUNNING transitions to CANCELLING and is terminated by the controlled executor at a
-     * safe checkpoint. Accepted asynchronously with 202.
-     */
-    @Operation(summary = "Cancel a task")
+    /** 取消整个 Task（202 异步受理）。 */
+    @Operation(summary = "取消 Task")
     @PostMapping("/{taskId}/cancel")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> cancel(@PathVariable UUID projectId, @PathVariable UUID taskId,
@@ -68,8 +59,8 @@ public class TaskController {
         return ok(service.cancel(projectId, taskId, actor), request);
     }
 
-    /** Persists Planner output as ordered dependency-aware steps. */
-    @Operation(summary = "Add planned task steps")
+    /** 写入 Planner 生成的 TaskStep 计划。 */
+    @Operation(summary = "写入 TaskStep 计划")
     @PostMapping("/{taskId}/steps")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<?> addSteps(@PathVariable UUID projectId, @PathVariable UUID taskId,
@@ -78,8 +69,8 @@ public class TaskController {
         return ok(service.addSteps(projectId, taskId, actor, body), request);
     }
 
-    /** Replaces the selected Agent only before the step starts. */
-    @Operation(summary = "Replace pending step Agent")
+    /** 在步骤 PENDING 时更换执行 Agent。 */
+    @Operation(summary = "更换步骤执行 Agent")
     @PostMapping("/{taskId}/steps/{stepId}/replace-agent")
     public ApiResponse<?> replaceAgent(@PathVariable UUID projectId, @PathVariable UUID taskId,
             @PathVariable UUID stepId, @AuthenticationPrincipal UUID actor,

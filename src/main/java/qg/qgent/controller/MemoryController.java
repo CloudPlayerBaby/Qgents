@@ -24,9 +24,7 @@ import qg.qgent.service.MemoryService;
 import java.util.UUID;
 
 /**
- * 共享 Memory 接口（契约 §9）。
- * <p>
- * 写操作（POST）的 Idempotency-Key 由 {@code IdempotencyFilter} 统一强制与回放。
+ * 共享 Memory 接口（§9）。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -39,7 +37,7 @@ public class MemoryController {
     }
 
     /**
-     * 查询 Memory，默认仅 APPROVED；非 APPROVED 状态仅创建者或 Admin 可见；支持状态、标签过滤。
+     * 查询 Memory（默认仅 APPROVED，支持状态、标签过滤）。
      */
     @GetMapping("/projects/{projectId}/memories")
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -49,7 +47,7 @@ public class MemoryController {
     }
 
     /**
-     * 手动创建 Memory 草稿（需 Idempotency-Key）。
+     * 手动创建 Memory 草稿。
      */
     @PostMapping("/projects/{projectId}/memories")
     @ResponseStatus(HttpStatus.CREATED)
@@ -59,7 +57,7 @@ public class MemoryController {
     }
 
     /**
-     * 根据选中的群聊消息生成 AI 草稿（需 Idempotency-Key）。
+     * 根据选中的群聊消息生成 AI 草稿。
      */
     @PostMapping("/projects/{projectId}/memories/drafts")
     @ResponseStatus(HttpStatus.CREATED)
@@ -78,7 +76,7 @@ public class MemoryController {
     }
 
     /**
-     * 编辑草稿或审核中内容（PATCH 语义）。
+     * 编辑草稿或审核中内容。
      */
     @PatchMapping("/projects/{projectId}/memories/{memoryId}")
     public ApiResponse<?> update(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -87,7 +85,7 @@ public class MemoryController {
     }
 
     /**
-     * 提交审核（需 Idempotency-Key）。
+     * 提交 Memory 审核。
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/submit-review")
     public ApiResponse<?> submitReview(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -96,7 +94,7 @@ public class MemoryController {
     }
 
     /**
-     * 批准并发布 Memory（Project Admin，需 Idempotency-Key）。
+     * 批准并发布 Memory（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/approve")
     public ApiResponse<?> approve(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -105,7 +103,7 @@ public class MemoryController {
     }
 
     /**
-     * 拒绝 Memory 并给出原因（Project Admin，需 Idempotency-Key）。
+     * 拒绝 Memory 并给出原因（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/reject")
     public ApiResponse<?> reject(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -114,7 +112,7 @@ public class MemoryController {
     }
 
     /**
-     * 归档 Memory（Project Admin，需 Idempotency-Key）。
+     * 归档 Memory（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/archive")
     public ApiResponse<?> archive(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
