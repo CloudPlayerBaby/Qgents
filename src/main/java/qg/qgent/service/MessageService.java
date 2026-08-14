@@ -16,11 +16,15 @@ import qg.qgent.dto.MessageResponse;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.dto.PageInfo;
 import qg.qgent.dto.PageSlice;
+import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.entity.RequirementGroupEntity;
+import qg.qgent.entity.UserEntity;
+import qg.qgent.mapper.AgentMapper;
 import qg.qgent.mapper.GroupAgentMapper;
 import qg.qgent.mapper.MessageMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
+import qg.qgent.mapper.UserMapper;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
@@ -29,8 +33,11 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 群消息业务：发送（类型校验、clientMessageId 幂等、sequence 单调递增）与游标分页拉取（契约 §7）。
@@ -45,16 +52,20 @@ public class MessageService {
     private final MessageMapper messageMapper;
     private final RequirementGroupMapper groupMapper;
     private final GroupAgentMapper groupAgentMapper;
+    private final UserMapper userMapper;
+    private final AgentMapper agentMapper;
     private final ProjectAccessService access;
     private final TaskTriggerService taskTriggerService;
     private final ObjectMapper mapper;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
-            GroupAgentMapper groupAgentMapper, ProjectAccessService access, TaskTriggerService taskTriggerService,
-            ObjectMapper mapper) {
+            GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
+            ProjectAccessService access, TaskTriggerService taskTriggerService, ObjectMapper mapper) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupAgentMapper = groupAgentMapper;
+        this.userMapper = userMapper;
+        this.agentMapper = agentMapper;
         this.access = access;
         this.taskTriggerService = taskTriggerService;
         this.mapper = mapper;
@@ -210,7 +221,11 @@ public class MessageService {
                 .orderByDesc(MessageEntity::getSequenceNo)
                 .last("limit " + (pageSize + 1)));
         boolean hasMore = rows.size() > pageSize;
-        List<MessageResponse> views = rows.stream().limit(pageSize).map(this::toResponse).toList();
+        List<MessageEntity> pageRows = rows.stream().limit(pageSize).toList();
+        // 批量加载发送者显示名，避免逐条消息按 senderId 查询造成 N+1
+        Map<UUID, String> userNames = loadUserNames(pageRows);
+        Map<UUID, String> agentNames = loadAgentNames(pageRows);
+        List<MessageResponse> views = pageRows.stream().map(m -> toResponse(m, userNames, agentNames)).toList();
         String nextCursor = hasMore && !views.isEmpty()
                 ? encodeCursor(views.get(views.size() - 1).getSequence())
                 : null;
@@ -260,6 +275,20 @@ public class MessageService {
     }
 
     private MessageResponse toResponse(MessageEntity m) {
+        // 单条路径（发送/幂等返回）逐条解析发送者名称；列表路径使用批量加载版本 toResponse(m, userNames, agentNames)
+        String senderName = m.getAgentId() != null
+                ? agentName(m.getAgentId())
+                : m.getAuthorUserId() != null ? userName(m.getAuthorUserId()) : null;
+        return toResponse(m, senderName);
+    }
+
+    private MessageResponse toResponse(MessageEntity m, Map<UUID, String> userNames, Map<UUID, String> agentNames) {
+        String senderName = m.getAgentId() != null ? agentNames.get(m.getAgentId())
+                : m.getAuthorUserId() != null ? userNames.get(m.getAuthorUserId()) : null;
+        return toResponse(m, senderName);
+    }
+
+    private MessageResponse toResponse(MessageEntity m, String senderName) {
         Map<String, Object> content = readJson(m.getContent(), new TypeReference<Map<String, Object>>() {
         });
         List<Mention> mentions = m.getMentions() == null || m.getMentions().isBlank()
@@ -279,8 +308,45 @@ public class MessageService {
             senderId = null;
         }
         return new MessageResponse(m.getId().toString(), m.getRequirementGroupId().toString(), m.getSequenceNo(),
-                m.getMessageType(), content, senderId, senderType,
+                m.getMessageType(), content, senderId, senderType, senderName,
                 m.getReplyToMessageId() == null ? null : m.getReplyToMessageId().toString(), mentions, m.getCreatedAt());
+    }
+
+    /** 批量加载消息页中出现的用户显示名，返回 userId → displayName。 */
+    private Map<UUID, String> loadUserNames(List<MessageEntity> pageRows) {
+        Set<UUID> userIds = pageRows.stream().map(MessageEntity::getAuthorUserId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectList(Wrappers.<UserEntity>lambdaQuery().in(UserEntity::getId, userIds)).stream()
+                .collect(Collectors.toMap(UserEntity::getId,
+                        u -> u.getDisplayName() == null || u.getDisplayName().isBlank() ? "已注销用户"
+                                : u.getDisplayName()));
+    }
+
+    /** 批量加载消息页中出现的 Agent 名称，返回 agentId → name。 */
+    private Map<UUID, String> loadAgentNames(List<MessageEntity> pageRows) {
+        Set<UUID> agentIds = pageRows.stream().map(MessageEntity::getAgentId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (agentIds.isEmpty()) {
+            return Map.of();
+        }
+        return agentMapper.selectList(Wrappers.<AgentEntity>lambdaQuery().in(AgentEntity::getId, agentIds)).stream()
+                .collect(Collectors.toMap(AgentEntity::getId, AgentEntity::getName));
+    }
+
+    private String userName(UUID userId) {
+        UserEntity user = userMapper.selectById(userId);
+        if (user == null || user.getDisplayName() == null || user.getDisplayName().isBlank()) {
+            return "已注销用户";
+        }
+        return user.getDisplayName();
+    }
+
+    private String agentName(UUID agentId) {
+        AgentEntity agent = agentMapper.selectById(agentId);
+        return agent == null ? null : agent.getName();
     }
 
     private String writeJson(Object value) {
