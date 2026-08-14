@@ -15,6 +15,8 @@ import qg.qgent.dto.GitHubInstallationUrlResponse;
 import qg.qgent.dto.GitHubRepositoryResponse;
 import qg.qgent.dto.ProjectRepositoryResponse;
 import qg.qgent.dto.UpdateProjectRepositoryRequest;
+import qg.qgent.github.GitHubClient;
+import qg.qgent.github.GitHubInstallationState;
 import qg.qgent.security.CurrentActorProvider;
 import qg.qgent.service.GitHubRepositoryService;
 
@@ -185,5 +187,21 @@ class GitHubRepositoryControllerTest {
         assertEquals(302, response.getStatusCode().value());
         String expectedLocation = "https://frontend.com/app/integrations/github?teamId=" + teamId + "&installed=1";
         assertEquals(expectedLocation, response.getHeaders().getLocation().toString());
+    }
+
+    @Test
+    void installationCallbackUsesMobileFrontendFromVerifiedState() {
+        GitHubRepositoryController mobileController = new GitHubRepositoryController(
+                service, currentActor, "https://web.example.com", "https://mobile.example.com");
+        long installationId = 54321L;
+        String state = "mobile-state";
+        UUID teamId = UUID.randomUUID();
+        when(service.handleInstallationCallbackDetails(installationId, state))
+                .thenReturn(new GitHubInstallationState(teamId, GitHubClient.MOBILE));
+
+        ResponseEntity<Void> response = mobileController.installationCallback(installationId, state, "update");
+
+        assertEquals("https://mobile.example.com/app/integrations/github?teamId=" + teamId + "&installed=1",
+                response.getHeaders().getLocation().toString());
     }
 }

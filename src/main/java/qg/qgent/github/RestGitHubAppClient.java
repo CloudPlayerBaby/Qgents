@@ -59,11 +59,18 @@ public class RestGitHubAppClient implements GitHubAppClient {
 
     @Override
     public String createInstallationUrl(UUID teamId, UUID actorId) {
+        return createInstallationUrl(teamId, actorId, GitHubClient.WEB);
+    }
+
+    @Override
+    public String createInstallationUrl(UUID teamId, UUID actorId, GitHubClient client) {
         requireConfigured();
+        GitHubClient resolvedClient = client == null ? GitHubClient.WEB : client;
         String state = JWT.create()
                 .withIssuer("qgents-github-installation")
                 .withSubject(teamId.toString())
                 .withClaim("actorId", actorId.toString())
+                .withClaim("client", resolvedClient.name())
                 .withIssuedAt(Instant.now(clock))
                 .withExpiresAt(Instant.now(clock).plusSeconds(600))
                 .sign(Algorithm.HMAC256(properties.getStateSecret()));
@@ -75,13 +82,23 @@ public class RestGitHubAppClient implements GitHubAppClient {
 
     @Override
     public UUID verifyInstallationState(String state) {
+        return verifyInstallationStateDetails(state).teamId();
+    }
+
+    @Override
+    public GitHubInstallationState verifyInstallationStateDetails(String state) {
         requireConfigured();
         try {
             JWTVerifier verifier = JWT.require(Algorithm.HMAC256(properties.getStateSecret()))
                     .withIssuer("qgents-github-installation")
                     .build();
             DecodedJWT token = verifier.verify(state);
-            return UUID.fromString(token.getSubject());
+            UUID teamId = UUID.fromString(token.getSubject());
+            String clientClaim = token.getClaim("client").isNull() ? null : token.getClaim("client").asString();
+            GitHubClient client = clientClaim == null || clientClaim.isBlank()
+                    ? GitHubClient.WEB
+                    : GitHubClient.valueOf(clientClaim);
+            return new GitHubInstallationState(teamId, client);
         } catch (RuntimeException exception) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_GITHUB_INSTALLATION_STATE",
                     "GitHub installation state is invalid or expired");
