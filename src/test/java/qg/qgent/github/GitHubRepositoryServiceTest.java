@@ -2,6 +2,7 @@ package qg.qgent.github;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -278,6 +279,26 @@ class GitHubRepositoryServiceTest {
         assertEquals(myTeamId, returnedTeamId);
         verify(installationMapper).insert(any(GitHubInstallationEntity.class));
         verify(repositoryMapper).insert(any(GitHubRepositoryEntity.class));
+    }
+
+    @Test
+    void syncsEmptyRepositoryWithoutDefaultBranch() {
+        long providerInstallationId = 12345L;
+        UUID teamId = UUID.randomUUID();
+        when(gitHubClient.verifyInstallationState("mock_state")).thenReturn(teamId);
+        when(gitHubClient.getInstallation(providerInstallationId))
+                .thenReturn(new qg.qgent.github.GitHubInstallationDetails(
+                        providerInstallationId, "qgents", "Organization"));
+        when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
+                new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "empty-repository", null,
+                        "PRIVATE", false)));
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+
+        service.handleInstallationCallback(providerInstallationId, "mock_state");
+
+        ArgumentCaptor<GitHubRepositoryEntity> repository = ArgumentCaptor.forClass(GitHubRepositoryEntity.class);
+        verify(repositoryMapper).insert(repository.capture());
+        assertNull(repository.getValue().getDefaultBranch());
     }
 
     private GitHubRepositoryEntity repository(String branch) {
