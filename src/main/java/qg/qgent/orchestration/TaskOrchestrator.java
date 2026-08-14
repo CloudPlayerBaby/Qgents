@@ -1,5 +1,6 @@
 package qg.qgent.orchestration;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.bsc.langgraph4j.CompileConfig;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphDefinition;
@@ -8,14 +9,21 @@ import org.bsc.langgraph4j.StateGraph;
 import org.bsc.langgraph4j.action.AsyncEdgeAction;
 import org.bsc.langgraph4j.action.AsyncNodeAction;
 import org.bsc.langgraph4j.state.AgentState;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import qg.qgent.auth.UuidV7;
+import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.dto.TaskRepositoryScopeRequest;
 import qg.qgent.dto.TaskStepCreateRequest;
+import qg.qgent.entity.AgentEntity;
+import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
+import qg.qgent.mapper.AgentMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
@@ -24,13 +32,17 @@ import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.service.EventService;
+import qg.qgent.service.FinalDiffBundleService;
+import qg.qgent.service.MessageService;
 import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskEventPayloads;
+import qg.qgent.service.TaskExecutionArtifactService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -63,6 +75,10 @@ public class TaskOrchestrator {
             "plan", "plan", "coding", "coding", "test", "test", "review", "review",
             GraphDefinition.END, GraphDefinition.END);
 
+    private static final Logger log = LoggerFactory.getLogger(TaskOrchestrator.class);
+    /** 终态中等待用户确认的 Diff 审核状态；确认后的交付由 DiffReviewBatchService 驱动。 */
+    private static final String WAITING_DIFF_CONFIRMATION = "WAITING_DIFF_CONFIRMATION";
+
     private final OrchestrationStateMachine stateMachine;
     private final StepScheduler stepScheduler;
     private final AgentRunExecutor agentRunExecutor;
@@ -75,6 +91,11 @@ public class TaskOrchestrator {
     private final EventService eventService;
     private final NotificationService notificationService;
     private final SandboxSessionManager sandboxSessionManager;
+    private final TaskExecutionArtifactService artifactService;
+    private final FinalDiffBundleService finalDiffBundles;
+    private final MessageService messageService;
+    private final AgentMapper agentMapper;
+    private final ProjectMapper projectMapper;
 
     /** 各编排任务的执行现场（富结果/反馈/计数，不进图状态），按 taskId 暂存。 */
     private final Map<UUID, TaskExecutionContext> executions = new ConcurrentHashMap<>();
@@ -85,7 +106,9 @@ public class TaskOrchestrator {
             AgentRunExecutor agentRunExecutor, AgentContextAssembler contextAssembler, TaskService taskService,
             TaskRunService taskRunService, TaskMapper taskMapper, TaskStepMapper stepMapper,
             WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService,
-            NotificationService notificationService, SandboxSessionManager sandboxSessionManager) {
+            NotificationService notificationService, SandboxSessionManager sandboxSessionManager,
+            TaskExecutionArtifactService artifactService, FinalDiffBundleService finalDiffBundles,
+            MessageService messageService, AgentMapper agentMapper, ProjectMapper projectMapper) {
         this.stateMachine = stateMachine;
         this.stepScheduler = stepScheduler;
         this.agentRunExecutor = agentRunExecutor;
@@ -98,6 +121,11 @@ public class TaskOrchestrator {
         this.eventService = eventService;
         this.notificationService = notificationService;
         this.sandboxSessionManager = sandboxSessionManager;
+        this.artifactService = artifactService;
+        this.finalDiffBundles = finalDiffBundles;
+        this.messageService = messageService;
+        this.agentMapper = agentMapper;
+        this.projectMapper = projectMapper;
         this.graph = buildGraph();
     }
 
@@ -196,7 +224,7 @@ public class TaskOrchestrator {
                 route = nodeName(decision.getNextPhase());
             }
             default -> {
-                finishTask(task, decision.getAction());
+                finishTask(task, ctx, decision.getAction());
                 route = GraphDefinition.END;
             }
         }
@@ -208,11 +236,17 @@ public class TaskOrchestrator {
         TaskStepEntity step = stepScheduler.findStepForPhase(task.getId(), phase);
         markStepRunning(task, step);
         TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
-                phase.role(), null, task.getCreatedBy(), ctx.retryOf);
+                phase.role(), step.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
         taskRunService.markRunning(run.getId());
         AgentInput input = contextAssembler.assemble(task, step, phase, ctx.feedback, run.getId(), ctx.planResult,
                 ctx.codingResult, ctx.testResult);
         AgentRunOutcome outcome = safeExecute(phase, input);
+        if (phase == OrchestrationPhase.CODING && outcome.getOutcome() == RunOutcome.SUCCEEDED) {
+            ctx.lastCodingRunId = run.getId();
+            ctx.lastCodingAgentId = step.getAssignedAgentId();
+        }
+        // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件
+        artifactService.createRunArtifact(task, run, step, phase.name(), runArtifactSummary(phase, outcome));
         taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()));
         markStepSettled(task, step, outcome.getOutcome());
         return new PhaseRun(outcome, run.getId());
@@ -256,7 +290,16 @@ public class TaskOrchestrator {
         };
     }
 
-    /** 把 PlanResult 落为 DEVELOPER → TESTER → REVIEWER 三个依赖链步骤。 */
+    /** Run 级执行产物的脱敏摘要：角色、终态与 Agent 反馈消息，路径与敏感键由服务端 sanitize 兜底。 */
+    private Map<String, Object> runArtifactSummary(OrchestrationPhase phase, AgentRunOutcome outcome) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("role", phase.role());
+        summary.put("status", terminalStatus(outcome.getOutcome()));
+        summary.put("message", outcome.getMessage());
+        return summary;
+    }
+
+    /** 把 PlanResult 落为 DEVELOPER → TESTER → REVIEWER 三个依赖链步骤，并按角色分配团队内 ACTIVE Agent。 */
     private void persistPlanSteps(TaskEntity task, PlanResult plan) {
         List<UUID> repoIds = workspaceRepositoryMapper.selectByWorkspace(task.getWorkspaceId()).stream()
                 .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
@@ -264,20 +307,46 @@ public class TaskOrchestrator {
         UUID testId = UuidV7.next();
         UUID reviewId = UuidV7.next();
         List<TaskStepCreateRequest> requests = List.of(
-                planStep(devId, "Implement", planInstruction(plan), "DEVELOPER", List.of(), "WRITE", repoIds),
-                planStep(testId, "Verify", plan.getTestPlan(), "TESTER", List.of(devId), "READ", repoIds),
+                planStep(devId, "Implement", planInstruction(plan), "DEVELOPER", resolveAgent(task, "DEVELOPER"),
+                        List.of(), "WRITE", repoIds),
+                planStep(testId, "Verify", plan.getTestPlan(), "TESTER", resolveAgent(task, "TESTER"),
+                        List.of(devId), "READ", repoIds),
                 planStep(reviewId, "Review", "审查本次改动是否符合需求、质量与安全要求", "REVIEWER",
-                        List.of(testId), "READ", repoIds));
+                        resolveAgent(task, "REVIEWER"), List.of(testId), "READ", repoIds));
         taskService.addSteps(task.getProjectId(), task.getId(), task.getCreatedBy(), requests);
+        // PLAN 产物只属于 Task，不关联 TaskRun/TaskStep（AGENTS.md）
+        artifactService.createPlan(task, planSummary(plan));
     }
 
-    private TaskStepCreateRequest planStep(UUID id, String title, String instruction, String role,
+    /**
+     * 方案 A：按角色在团队内解析 ACTIVE Agent（优先 TEAM 可见；PRIVATE 仅限任务发起人，与
+     * TaskService.validateAgent 的校验条件一致），按名称升序取第一个；查不到时返回 null，
+     * 该步骤不回群（兜底约定，不使任务失败）。
+     */
+    private UUID resolveAgent(TaskEntity task, String role) {
+        ProjectEntity project = projectMapper.selectById(task.getProjectId());
+        if (project == null || project.getTeamId() == null) {
+            return null;
+        }
+        List<AgentEntity> candidates = agentMapper.selectList(Wrappers.<AgentEntity>lambdaQuery()
+                .eq(AgentEntity::getTeamId, project.getTeamId())
+                .eq(AgentEntity::getRole, role)
+                .eq(AgentEntity::getStatus, "ACTIVE")
+                .and(visibility -> visibility.eq(AgentEntity::getVisibility, "TEAM")
+                        .or(owner -> owner.eq(AgentEntity::getVisibility, "PRIVATE")
+                                .eq(AgentEntity::getCreatedBy, task.getCreatedBy())))
+                .orderByAsc(AgentEntity::getName));
+        return candidates.isEmpty() ? null : candidates.get(0).getId();
+    }
+
+    private TaskStepCreateRequest planStep(UUID id, String title, String instruction, String role, UUID agentId,
             List<UUID> dependencyIds, String accessMode, List<UUID> repoIds) {
         TaskStepCreateRequest request = new TaskStepCreateRequest();
         request.setId(id);
         request.setTitle(title);
         request.setInstruction(instruction);
         request.setRole(role);
+        request.setAssignedAgentId(agentId);
         request.setAcceptanceCriteria("满足该步骤验收条件");
         request.setDependencyIds(dependencyIds);
         request.setRepositoryScopes(repoIds.stream().map(repositoryId -> {
@@ -287,6 +356,15 @@ public class TaskOrchestrator {
             return scope;
         }).toList());
         return request;
+    }
+
+    /** PLAN 产物的用户可见摘要：目标与实现步骤标题，不落完整指令与文件路径明细。 */
+    private Map<String, Object> planSummary(PlanResult plan) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("objectives", plan.getObjectives());
+        summary.put("steps", plan.getImplementationSteps().stream()
+                .map(PlanResult.ImplementationStep::getTitle).toList());
+        return summary;
     }
 
     private String planInstruction(PlanResult plan) {
@@ -316,6 +394,8 @@ public class TaskOrchestrator {
         step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         stepMapper.updateById(step);
         publishStepUpdated(task, step);
+        sendAgentCard(task, step.getAssignedAgentId(), "step-" + step.getId(), step.getStatus(), step.getRole(),
+                stepSettledMessage(step));
     }
 
     private void publishStepUpdated(TaskEntity task, TaskStepEntity step) {
@@ -323,13 +403,89 @@ public class TaskOrchestrator {
                 step.getId().toString(), TaskEventPayloads.taskStepUpdated(task.getProjectId(), step));
     }
 
-    private void finishTask(TaskEntity task, StateMachineDecision.Action action) {
+    /**
+     * 任务到达终态：成功路径先创建待确认 Diff 批次再置 WAITING_DIFF_CONFIRMATION（失败降级 SUCCEEDED），
+     * 其余按取消/失败落终态；随后以编码 Agent 身份把任务结果卡片回群（失败不阻断编排）。
+     */
+    private void finishTask(TaskEntity task, TaskExecutionContext ctx, StateMachineDecision.Action action) {
         String status = switch (action) {
-            case COMPLETE_SUCCESS -> "SUCCEEDED";
+            case COMPLETE_SUCCESS -> completeWithDiffBatch(task, ctx);
             case COMPLETE_CANCELLED -> "CANCELLED";
             default -> "FAILED";
         };
         updateTaskStatus(task, status);
+        sendAgentCard(task, ctx.lastCodingAgentId, "task-" + task.getId(), status, null, taskResultMessage(status));
+    }
+
+    /** 成功终态：生成待用户确认的 Diff 批次；Worker 不可用或无未提交改动时降级为 SUCCEEDED（等同旧行为）。 */
+    private String completeWithDiffBatch(TaskEntity task, TaskExecutionContext ctx) {
+        try {
+            finalDiffBundles.createPendingBatch(task.getProjectId(), task.getId(), ctx.lastCodingRunId);
+            return WAITING_DIFF_CONFIRMATION;
+        } catch (RuntimeException e) {
+            log.warn("final diff batch creation skipped, task finishes SUCCEEDED, taskId={}: {}",
+                    task.getId(), e.getMessage());
+            return "SUCCEEDED";
+        }
+    }
+
+    /**
+     * 以分配 Agent 身份把 TASK_STATUS 卡片回群；agentId 为 null（查不到匹配 Agent）或发送失败时
+     * 记日志并跳过，回群失败不等于任务失败（与 TaskExecutionListener 吞异常模式一致）。
+     */
+    private void sendAgentCard(TaskEntity task, UUID agentId, String idSuffix, String status, String node,
+            String message) {
+        if (agentId == null) {
+            log.warn("agent card skipped (no assigned agent), taskId={}, suffix={}", task.getId(), idSuffix);
+            return;
+        }
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("taskId", task.getId().toString());
+        content.put("status", status);
+        if (node != null) {
+            content.put("node", node);
+        }
+        if (message != null) {
+            content.put("message", message);
+        }
+        MessageSendRequest body = new MessageSendRequest();
+        body.setType("TASK_STATUS");
+        body.setClientMessageId("agent-" + idSuffix + "-" + status);
+        body.setContent(content);
+        try {
+            messageService.sendAsAgent(task.getRequirementGroupId(), agentId, body);
+        } catch (RuntimeException e) {
+            log.warn("agent card skipped, taskId={}, suffix={}: {}", task.getId(), idSuffix, e.getMessage());
+        }
+    }
+
+    /** step 级卡片文案：以中文表达该角色步骤的完成/失败。 */
+    private String stepSettledMessage(TaskStepEntity step) {
+        return switch (step.getStatus()) {
+            case "SUCCEEDED" -> roleLabel(step.getRole()) + "步骤已完成";
+            default -> roleLabel(step.getRole()) + "步骤失败，已按重试或修复策略处理";
+        };
+    }
+
+    /** 任务结果卡片文案：按终态表达交付确认、完成、失败或取消。 */
+    private String taskResultMessage(String status) {
+        return switch (status) {
+            case WAITING_DIFF_CONFIRMATION -> "任务开发完成，等待你对 Diff 的确认";
+            case "SUCCEEDED" -> "任务已完成";
+            case "FAILED" -> "任务执行失败";
+            case "CANCELLED" -> "任务已取消";
+            default -> "任务状态更新：" + status;
+        };
+    }
+
+    /** 角色英文 → 中文业务名，用于卡片文案；未识别角色原样返回。 */
+    private String roleLabel(String role) {
+        return switch (role) {
+            case "DEVELOPER" -> "开发";
+            case "TESTER" -> "测试";
+            case "REVIEWER" -> "审查";
+            default -> role;
+        };
     }
 
     private void updateTaskStatus(TaskEntity task, String status) {
@@ -413,6 +569,10 @@ public class TaskOrchestrator {
         private AgentRunOutcome feedback;
         private UUID lastRunId;
         private UUID retryOf;
+        /** 最后一次 SUCCEEDED 的 CODING run，终态时供 FinalDiffBundleService 生成待确认 Diff 批次。 */
+        private UUID lastCodingRunId;
+        /** 上述 coding run 的执行 Agent，作为任务结果卡片发言身份。 */
+        private UUID lastCodingAgentId;
         private PlanResult planResult;
         private CodingResult codingResult;
         private TestResult testResult;

@@ -2,10 +2,15 @@ package qg.qgent.orchestration;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import qg.qgent.dto.MessageSendRequest;
+import qg.qgent.entity.AgentEntity;
+import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
+import qg.qgent.mapper.AgentMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepMapper;
@@ -30,6 +35,7 @@ import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.SandboxWorkerProperties;
 import qg.qgent.service.EventService;
+import qg.qgent.service.MessageService;
 import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
@@ -69,6 +75,10 @@ class TaskOrchestratorTest {
     private final EventService eventService = mock(EventService.class);
     private final TaskExecutionArtifactService artifactService = mock(TaskExecutionArtifactService.class);
     private final FinalDiffBundleService finalDiffBundles = mock(FinalDiffBundleService.class);
+    private final MessageService messageService = mock(MessageService.class);
+    private final AgentMapper agentMapper = mock(AgentMapper.class);
+    private final ProjectMapper projectMapper = mock(ProjectMapper.class);
+    private static final UUID AGENT_ID = UUID.randomUUID();
     private final AgentContextAssembler contextAssembler = new AgentContextAssembler();
     private final GitHubAppClient githubAppClient = mock(GitHubAppClient.class);
     private final SandboxSessionManager sessionManager = new SandboxSessionManager(
@@ -80,7 +90,8 @@ class TaskOrchestratorTest {
         when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenReturn(UUID.randomUUID());
         return new TaskOrchestrator(new OrchestrationStateMachine(), stepScheduler, executor, contextAssembler,
                 taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
-                mock(NotificationService.class), sessionManager, artifactService, finalDiffBundles);
+                mock(NotificationService.class), sessionManager, artifactService, finalDiffBundles, messageService,
+                agentMapper, projectMapper);
     }
 
     /** Maven 文件树 + Mock LLM：Plan 两轮、Coding 一次 finalResult、Test 一次分析、Review 一次 finalResult，全部成功。 */
@@ -140,8 +151,11 @@ class TaskOrchestratorTest {
     }
 
     private void stubStepScheduler(UUID taskId) {
-        when(stepScheduler.findStepForPhase(eq(taskId), any())).thenAnswer(inv ->
-                step(taskId, ((OrchestrationPhase) inv.getArgument(1)).role()));
+        when(stepScheduler.findStepForPhase(eq(taskId), any())).thenAnswer(inv -> {
+            TaskStepEntity s = step(taskId, ((OrchestrationPhase) inv.getArgument(1)).role());
+            s.setAssignedAgentId(AGENT_ID);
+            return s;
+        });
     }
 
     private void stubRunCreation(UUID projectId, UUID taskId) {
@@ -157,6 +171,20 @@ class TaskOrchestratorTest {
         WorkspaceRepositoryEntity repo = new WorkspaceRepositoryEntity();
         repo.setProjectRepositoryId(UUID.randomUUID());
         when(repoMapper.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repo));
+        stubAgents(task);
+    }
+
+    /** 方案 A：团队内存在与角色匹配的 ACTIVE TEAM Agent，供 persistPlanSteps 分配与回群断言。 */
+    private void stubAgents(TaskEntity task) {
+        ProjectEntity project = new ProjectEntity();
+        project.setTeamId(UUID.randomUUID());
+        when(projectMapper.selectById(eq(task.getProjectId()))).thenReturn(project);
+        AgentEntity agent = new AgentEntity();
+        agent.setId(AGENT_ID);
+        agent.setRole("DEVELOPER");
+        agent.setStatus("ACTIVE");
+        agent.setVisibility("TEAM");
+        when(agentMapper.selectList(any())).thenReturn(List.of(agent));
     }
 
     private AgentRunOutcome outcome(OrchestrationPhase phase, RunOutcome result) {
@@ -207,12 +235,25 @@ class TaskOrchestratorTest {
         assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
         verify(taskService).addSteps(eq(projectId), eq(taskId), eq(task.getCreatedBy()),
                 argThat(requests -> requests.size() == 3));
+        verify(taskService).addSteps(eq(projectId), eq(taskId), eq(task.getCreatedBy()),
+                argThat(requests -> requests.stream().allMatch(r -> AGENT_ID.equals(r.getAssignedAgentId()))));
 
         ArgumentCaptor<String> roleCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<UUID> agentCaptor = ArgumentCaptor.forClass(UUID.class);
         verify(taskRunService, times(3)).createForStep(eq(projectId), eq(taskId), any(), roleCaptor.capture(),
-                any(), any(), any());
+                agentCaptor.capture(), any(), any());
         assertThat(roleCaptor.getAllValues()).containsExactly("DEVELOPER", "TESTER", "REVIEWER");
+        // 方案 A：TaskRun.agentId 来自步骤分配的真实 Agent，不再恒 null
+        assertThat(agentCaptor.getAllValues()).allSatisfy(agentId -> assertThat(agentId).isEqualTo(AGENT_ID));
         verify(taskRunService, times(3)).complete(any(), anyString());
+
+        // sendAsAgent 接线：step 卡片 + 任务结果卡片均为 AGENT 身份、TASK_STATUS 类型、幂等键前缀正确
+        ArgumentCaptor<MessageSendRequest> reqCaptor = ArgumentCaptor.forClass(MessageSendRequest.class);
+        verify(messageService, atLeast(1)).sendAsAgent(eq(task.getRequirementGroupId()), eq(AGENT_ID),
+                reqCaptor.capture());
+        assertThat(reqCaptor.getAllValues()).allSatisfy(req -> assertThat(req.getType()).isEqualTo("TASK_STATUS"));
+        assertThat(reqCaptor.getAllValues()).anyMatch(req -> req.getClientMessageId().startsWith("agent-step-"));
+        assertThat(reqCaptor.getAllValues()).anyMatch(req -> req.getClientMessageId().startsWith("agent-task-"));
     }
 
     @Test void testFailureRequeuesCodingWithFeedbackThenSucceeds() {
