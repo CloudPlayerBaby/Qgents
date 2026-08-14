@@ -11,6 +11,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 import java.time.Clock;
 import java.util.List;
+import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import qg.qgent.config.GitHubAppProperties;
 
@@ -134,5 +136,18 @@ class RestGitHubAppClientTest {
             return;
         }
         throw new AssertionError("Expected GitHub API failure");
+    }
+
+    @Test
+    void signsAndVerifiesTheInitiatingClientInState() {
+        UUID teamId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+
+        String installationUrl = client.createInstallationUrl(teamId, actorId, GitHubClient.MOBILE);
+        String state = UriComponentsBuilder.fromUriString(installationUrl).build().getQueryParams().getFirst("state");
+
+        GitHubInstallationState verified = client.verifyInstallationStateDetails(state);
+        assertEquals(teamId, verified.teamId());
+        assertEquals(GitHubClient.MOBILE, verified.client());
     }
 }

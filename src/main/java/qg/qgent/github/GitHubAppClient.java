@@ -16,6 +16,11 @@ public interface GitHubAppClient {
      */
     String createInstallationUrl(UUID teamId, UUID actorId);
 
+    /** Creates an installation URL while recording the initiating client in the signed state. */
+    default String createInstallationUrl(UUID teamId, UUID actorId, GitHubClient client) {
+        return createInstallationUrl(teamId, actorId);
+    }
+
     /**
      * 验证 GitHub 回调携带的安装 state，并取得其绑定的团队。
      *
@@ -23,6 +28,11 @@ public interface GitHubAppClient {
      * @return state 中的团队 ID
      */
     UUID verifyInstallationState(String state);
+
+    /** Verifies state and returns its team/client context. Legacy states are treated as WEB. */
+    default GitHubInstallationState verifyInstallationStateDetails(String state) {
+        return new GitHubInstallationState(verifyInstallationState(state), GitHubClient.WEB);
+    }
 
     /**
      * 查询单个 GitHub App 安装的元数据。

@@ -25,6 +25,8 @@ import qg.qgent.dto.GitHubInstallationUrlResponse;
 import qg.qgent.dto.GitHubRepositoryResponse;
 import qg.qgent.dto.ProjectRepositoryResponse;
 import qg.qgent.dto.UpdateProjectRepositoryRequest;
+import qg.qgent.github.GitHubClient;
+import qg.qgent.github.GitHubInstallationState;
 import qg.qgent.security.CurrentActorProvider;
 import qg.qgent.service.GitHubRepositoryService;
 
@@ -37,7 +39,8 @@ import qg.qgent.service.GitHubRepositoryService;
 public class GitHubRepositoryController {
     private final GitHubRepositoryService service;
     private final CurrentActorProvider currentActor;
-    private final String frontendUrl;
+    private final String frontendUrlWeb;
+    private final String frontendUrlMobile;
 
     /**
      * 创建 GitHub 接口控制器。
@@ -46,10 +49,18 @@ public class GitHubRepositoryController {
      * @param currentActor 当前认证用户提供者
      */
     public GitHubRepositoryController(GitHubRepositoryService service, CurrentActorProvider currentActor,
-            @org.springframework.beans.factory.annotation.Value("${app.frontend-url}") String frontendUrl) {
+            String frontendUrl) {
+        this(service, currentActor, frontendUrl, frontendUrl);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public GitHubRepositoryController(GitHubRepositoryService service, CurrentActorProvider currentActor,
+            @org.springframework.beans.factory.annotation.Value("${app.frontend-url-web:${app.frontend-url}}") String frontendUrlWeb,
+            @org.springframework.beans.factory.annotation.Value("${app.frontend-url-mobile:${app.frontend-url}}") String frontendUrlMobile) {
         this.service = service;
         this.currentActor = currentActor;
-        this.frontendUrl = frontendUrl;
+        this.frontendUrlWeb = frontendUrlWeb;
+        this.frontendUrlMobile = frontendUrlMobile;
     }
 
     /**
@@ -61,7 +72,13 @@ public class GitHubRepositoryController {
      */
     @PostMapping("/teams/{teamId}/integrations/github/installations")
     public ApiResponse<GitHubInstallationUrlResponse> createInstallationUrl(@PathVariable UUID teamId,
+            @RequestParam(name = "client", defaultValue = "WEB") GitHubClient client,
             HttpServletRequest request) {
+        return ok(service.createInstallationUrl(currentActor.currentUserId(), teamId, client), request);
+    }
+
+    /** Legacy overload used by existing callers; defaults to the Web client. */
+    public ApiResponse<GitHubInstallationUrlResponse> createInstallationUrl(UUID teamId, HttpServletRequest request) {
         return ok(service.createInstallationUrl(currentActor.currentUserId(), teamId), request);
     }
 
@@ -171,10 +188,21 @@ public class GitHubRepositoryController {
      * @param state 创建安装跳转地址时生成的签名状态
      * @return 成功后通过 302 重定向到前端路径
      */
+    public ResponseEntity<Void> installationCallback(long installationId, String state) {
+        UUID teamId = service.handleInstallationCallback(installationId, state);
+        return redirectTo(frontendUrlWeb, teamId);
+    }
+
     @GetMapping("/integrations/github/callback")
     public ResponseEntity<Void> installationCallback(@RequestParam("installation_id") long installationId,
-                                                      @RequestParam String state) {
-        UUID teamId = service.handleInstallationCallback(installationId, state);
+                                                      @RequestParam String state,
+                                                      @RequestParam(name = "setup_action", required = false) String setupAction) {
+        GitHubInstallationState callbackState = service.handleInstallationCallbackDetails(installationId, state);
+        String frontendUrl = callbackState.client() == GitHubClient.MOBILE ? frontendUrlMobile : frontendUrlWeb;
+        return redirectTo(frontendUrl, callbackState.teamId());
+    }
+
+    private ResponseEntity<Void> redirectTo(String frontendUrl, UUID teamId) {
         String redirectUrl = org.springframework.web.util.UriComponentsBuilder.fromUriString(frontendUrl)
                 .pathSegment("app", "integrations", "github")
                 .queryParam("teamId", teamId.toString())
