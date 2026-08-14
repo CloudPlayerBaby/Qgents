@@ -50,6 +50,7 @@ github:
     state-secret: ${GITHUB_APP_STATE_SECRET:}
 
 app:
+  diff-snapshot-root: ${DIFF_SNAPSHOT_ROOT:./data/diff-snapshots}
   # 本地 Workspace 代码根目录（真实 Sandbox 接入前的临时约定，未配置则 Plan Agent 读到空文件树）
   workspace:
     base-dir: ${WORKSPACE_BASE_DIR:}

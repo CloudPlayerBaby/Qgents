@@ -40,6 +40,9 @@ public class DiffEntity {
     private UUID reviewedBy;
     private String reviewReason;
     private LocalDateTime reviewedAt;
+    private UUID reviewBatchId;
+    private String deliveryStatus;
+    private String deliveryFailureReason;
     /** 变更统计 JSON，如文件数、增删行数。 */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> changeStats;

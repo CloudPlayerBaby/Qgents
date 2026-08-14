@@ -64,8 +64,12 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         
         // GitHub Project Repositories: POST, PATCH, DELETE
         boolean isGitHubRepoApi = path.matches("^/api/v1/projects/[^/]+/repositories(?:/[^/]+)?$");
+
+        // Task final Diff review: confirmation, rejection and delivery retry are state-changing operations.
+        boolean isTaskDiffReviewApi = path.matches(
+                "^/api/v1/projects/[^/]+/tasks/[^/]+/diff-review/(?:confirm|reject|retry-delivery)$");
         
-        if (isGitHubInstallApi || isGitHubRepoApi) {
+        if (isGitHubInstallApi || isGitHubRepoApi || isTaskDiffReviewApi) {
             return false;
         }
         

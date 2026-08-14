@@ -63,6 +63,10 @@ class GitRepositoryManagerTest {
         GitDiffResponse diff = manager.diff(worktree);
         assertFalse(status.isClean());
         assertTrue(diff.getPatch().contains("new.txt"));
+        assertEquals("MODIFIED", diff.getFiles().stream()
+                .filter(file -> file.getPath().equals("README.md")).findFirst().orElseThrow().getChangeType());
+        assertEquals("ADDED", diff.getFiles().stream()
+                .filter(file -> file.getPath().equals("new.txt")).findFirst().orElseThrow().getChangeType());
 
         GitCommitRequest request = new GitCommitRequest();
         request.setExpectedHeadCommit(created.headCommit());
