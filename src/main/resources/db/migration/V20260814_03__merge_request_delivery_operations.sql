@@ -1,9 +1,17 @@
-ALTER TABLE merge_requests
-    ADD COLUMN merge_operation_id VARCHAR(64) NULL COMMENT '受控合并幂等操作 ID' AFTER quality_gate_status,
-    ADD COLUMN merge_operation_status VARCHAR(32) NOT NULL DEFAULT 'NOT_STARTED' COMMENT 'NOT_STARTED/RUNNING/COMPLETED/FAILED' AFTER merge_operation_id,
-    ADD COLUMN merge_lease_expires_at DATETIME(6) NULL COMMENT '合并操作租约到期时间 UTC' AFTER merge_operation_status;
+-- 幂等化：merge_requests 三列存在性探测 + PREPARE 动态执行；表用 IF NOT EXISTS。
+-- 对已存在列的库自动跳过 ALTER，整体可重复执行，避免 Duplicate column name。
+SET @mr_op_col_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'merge_requests' AND COLUMN_NAME = 'merge_operation_id'
+);
+SET @mr_op_alter_sql = IF(@mr_op_col_exists = 0,
+    'ALTER TABLE merge_requests ADD COLUMN merge_operation_id VARCHAR(64) NULL COMMENT ''受控合并幂等操作 ID'' AFTER quality_gate_status, ADD COLUMN merge_operation_status VARCHAR(32) NOT NULL DEFAULT ''NOT_STARTED'' COMMENT ''NOT_STARTED/RUNNING/COMPLETED/FAILED'' AFTER merge_operation_id, ADD COLUMN merge_lease_expires_at DATETIME(6) NULL COMMENT ''合并操作租约到期时间 UTC'' AFTER merge_operation_status',
+    'SELECT 1');
+PREPARE mr_op_alter_stmt FROM @mr_op_alter_sql;
+EXECUTE mr_op_alter_stmt;
+DEALLOCATE PREPARE mr_op_alter_stmt;
 
-CREATE TABLE merge_request_delivery_operations (
+CREATE TABLE IF NOT EXISTS merge_request_delivery_operations (
     id BINARY(16) PRIMARY KEY COMMENT 'MR 创建操作 UUIDv7',
     operation_key CHAR(64) NOT NULL COMMENT '项目、Task、Workspace、仓库、分支与 HEAD 组成的 SHA-256 幂等键',
     project_id BINARY(16) NOT NULL COMMENT '所属项目 ID',
