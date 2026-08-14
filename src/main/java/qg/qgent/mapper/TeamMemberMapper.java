@@ -8,7 +8,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Update;
-import org.apache.ibatis.annotations.Param;
+import qg.qgent.dto.TeamMemberView;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 
@@ -32,14 +32,18 @@ public interface TeamMemberMapper extends BaseMapper<TeamMemberEntity> {
         List<TeamMemberEntity> selectByTeamId(@Param("teamId") UUID teamId);
 
         @Select({ "<script>",
-                        "SELECT team_id, user_id, role FROM team_members WHERE team_id = #{teamId}",
-                        "<if test='anchor != null'>AND user_id &gt; #{anchor}</if>",
-                        "ORDER BY user_id LIMIT #{limit}",
+                        "SELECT tm.team_id, tm.user_id, tm.role, u.display_name, u.email",
+                        "FROM team_members tm INNER JOIN users u ON u.id = tm.user_id",
+                        "WHERE tm.team_id = #{teamId}",
+                        "<if test='anchor != null'>AND tm.user_id &gt; #{anchor}</if>",
+                        "ORDER BY tm.user_id LIMIT #{limit}",
                         "</script>" })
         @Results({ @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class),
                         @Result(column = "user_id", property = "userId", typeHandler = UuidBinaryTypeHandler.class),
-                        @Result(column = "role", property = "role") })
-        List<TeamMemberEntity> selectMemberPage(@Param("teamId") UUID teamId, @Param("anchor") UUID anchor,
+                        @Result(column = "role", property = "role"),
+                        @Result(column = "display_name", property = "displayName"),
+                        @Result(column = "email", property = "email") })
+        List<TeamMemberView> selectMemberPage(@Param("teamId") UUID teamId, @Param("anchor") UUID anchor,
                         @Param("limit") int limit);
 
         @Insert("INSERT INTO team_members (team_id, user_id, role) VALUES (#{teamId}, #{userId}, #{role})")

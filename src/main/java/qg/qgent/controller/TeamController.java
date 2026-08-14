@@ -80,7 +80,7 @@ public class TeamController {
     }
 
     /**
-     * Team Owner 修改团队资料。
+     * Team Owner 修改团队名称（description 传 null 保留原值，传空串清空）。
      */
     @PatchMapping("/{teamId}")
     public ApiResponse<TeamResponse> update(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
@@ -93,7 +93,20 @@ public class TeamController {
     }
 
     /**
-     * 分页获取团队成员列表。
+     * Team Owner 解散团队：级联删除团队下所有项目、需求群、消息与成员关系（不可恢复）。
+     * 仅 Team Owner 可调用，其他角色返回 403；同一 Idempotency-Key 重试幂等。
+     */
+    @DeleteMapping("/{teamId}")
+    public ApiResponse<TeamResponse> disband(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+        TeamResponse result = idempotency.execute(actor, "DELETE:/teams/{teamId}", key,
+                Map.of("teamId", teamId), 200, TeamResponse.class,
+                () -> teams.disband(actor, teamId));
+        return ok(result, request);
+    }
+
+    /**
+     * 分页获取团队成员及其生效角色。
      */
     @GetMapping("/{teamId}/members")
     public PagedApiResponse<TeamMemberResponse> members(@AuthenticationPrincipal UUID actor,
