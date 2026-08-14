@@ -1,5 +1,20 @@
 # AGENTS.md
 
+## 项目补充规则：任务产物与最终 Diff 审核
+
+以下规则属于 Qgents 的跨模块长期约束。
+
+- TaskStep 和 TaskRun 可以持久化用户可见的执行产物，但不能被建模为独立的用户 Diff 或 MR 交付物。
+- PLAN 产物只属于 Task，不关联 TaskRun 或 TaskStep；CODING、TESTING、REVIEWING 产物必须关联产生它们的 Task、TaskRun 和 TaskStep。
+- 执行产物必须不可变，按照 Task 内部序号排序，经过 Project 权限校验，并限制大小和内容。不得包含 Token、密码、私钥、环境变量、宿主机路径或未经脱敏的原始命令输出。
+- 执行产物必须先成功落库，再发布 SSE 事件。普通运行顺序为：Step RUNNING、Run RUNNING、Run 产物创建、Run 终态、Step 终态。PLAN 没有 TaskRun，因此使用 Task 产物事件。
+- 多仓库最终审核使用一个 Task 级 DiffReviewBatch 表示，不能新增为 TaskStep、TaskRun、Deliverable 或 MR 模型。
+- 多仓库审核决定可以在数据库层原子完成，但跨仓库的 commit、push 和 MR 创建不是分布式事务。每个仓库必须独立保存交付状态，并支持重试，避免重复 push 或重复创建 Open MR。
+- 总 Diff 确认必须在任何 commit 前完成所有仓库的预检。持有数据库事务或行锁时不得调用 Worker、GitHub 或其他外部 HTTP 服务。
+- Worker Git Diff 契约必须提供真实的 baseCommit、headCommit、diffHash 和结构化文件元数据。主后端不得使用临时正则或字符串切分解析原始 Git patch。
+- DIFF_FIRST 和 MR_FIRST 两种交付模式必须持久化在 Task 上。本次多仓库确认流程实现 DIFF_FIRST；每个仓库仍独立创建自己的 MR。
+- 公开接口、状态值、SSE 事件名和 payload 结构写入版本化接口契约文档；本文件只记录长期有效的实现约束。
+
 > Qgents Coding Agent 协作规范
 >
 > 版本：v1.0

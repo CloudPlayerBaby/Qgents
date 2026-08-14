@@ -29,11 +29,14 @@ public class SandboxWorkerClient {
     private static final String WORKSPACES = BASE_PATH + "/workspaces/{workspaceId}";
     private static final String GIT_STATUS = WORKSPACES + "/repositories/{repositoryId}/git/status";
     private static final String GIT_DIFF = WORKSPACES + "/repositories/{repositoryId}/git/diff";
+    private static final String GIT_COMMIT = WORKSPACES + "/repositories/{repositoryId}/git/commit";
     private static final String SANDBOXES = BASE_PATH + "/sandboxes";
     private static final String SANDBOX = BASE_PATH + "/sandboxes/{sandboxId}";
     private static final String TOOL_EXECUTIONS = BASE_PATH + "/sandboxes/{sandboxId}/tool-executions";
     private static final String TOOL_EXECUTION = BASE_PATH + "/tool-executions/{executionId}";
     private static final String TOOL_EXECUTION_LOGS = TOOL_EXECUTION + "/logs";
+    private static final String GIT_STORE_SYNC = BASE_PATH + "/git-stores/{repositoryId}/sync";
+    private static final String GIT_PUSH = WORKSPACES + "/repositories/{repositoryId}/git/push";
 
     private final RestClient client;
     private final ObjectMapper objectMapper;
@@ -76,12 +79,40 @@ public class SandboxWorkerClient {
                 .body(WorkerGitStatus.class));
     }
 
+    /** 同步受控 Git Store */
+    public WorkerGitStoreSyncResponse syncGitStore(UUID repositoryId, WorkerGitStoreSyncRequest request) {
+        return execute(() -> client.post()
+                .uri(GIT_STORE_SYNC, repositoryId)
+                .body(request)
+                .retrieve()
+                .body(WorkerGitStoreSyncResponse.class));
+    }
+
     /** 生成包含未跟踪文件的完整 Diff。 */
     public WorkerGitDiff createWorkspaceGitDiff(UUID workspaceId, UUID repositoryId) {
         return execute(() -> client.post()
                 .uri(GIT_DIFF, workspaceId, repositoryId)
                 .retrieve()
                 .body(WorkerGitDiff.class));
+    }
+
+    /** Commits the exact Worker snapshot identified by its head and patch hash. */
+    public WorkerGitCommitResponse commitWorkspaceDiff(UUID workspaceId, UUID repositoryId,
+            WorkerGitCommitRequest request) {
+        return execute(() -> client.post()
+                .uri(GIT_COMMIT, workspaceId, repositoryId)
+                .body(request)
+                .retrieve()
+                .body(WorkerGitCommitResponse.class));
+    }
+
+    /** 校验 expectedHeadCommit 并带凭证发起推送。 */
+    public WorkerGitPushResponse pushWorkspaceBranch(UUID workspaceId, UUID repositoryId, WorkerGitPushRequest request) {
+        return execute(() -> client.post()
+                .uri(GIT_PUSH, workspaceId, repositoryId)
+                .body(request)
+                .retrieve()
+                .body(WorkerGitPushResponse.class));
     }
 
     /** 创建 Sandbox 并应用 Worker 本地资源上限。 */

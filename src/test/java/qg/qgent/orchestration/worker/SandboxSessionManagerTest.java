@@ -2,7 +2,10 @@ package qg.qgent.orchestration.worker;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -18,9 +21,14 @@ import org.mockito.ArgumentCaptor;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.WorkspaceEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
+import qg.qgent.entity.GitHubRepositoryEntity;
+import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.WorkspaceMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.mapper.GitHubRepositoryMapper;
+import qg.qgent.mapper.GitHubInstallationMapper;
+import qg.qgent.service.GitCredentialService;
 
 /**
  * {@link SandboxSessionManager} 单元测试：验证 provision/创建 Sandbox 的字段映射、
@@ -37,6 +45,10 @@ class SandboxSessionManagerTest {
     private WorkspaceMapper workspaceMapper;
     private WorkspaceRepositoryMapper repositoryMapper;
     private ProjectRepositoryMapper projectRepositoryMapper;
+    private GitHubRepositoryMapper gitHubRepositoryMapper;
+    private GitHubInstallationMapper installationMapper;
+    private GitCredentialService credentialService;
+    private qg.qgent.github.GitHubAppClient githubAppClient;
 
     @BeforeEach
     void setUp() {
@@ -44,13 +56,17 @@ class SandboxSessionManagerTest {
         workspaceMapper = mock(WorkspaceMapper.class);
         repositoryMapper = mock(WorkspaceRepositoryMapper.class);
         projectRepositoryMapper = mock(ProjectRepositoryMapper.class);
+        gitHubRepositoryMapper = mock(GitHubRepositoryMapper.class);
+        installationMapper = mock(GitHubInstallationMapper.class);
+        credentialService = mock(GitCredentialService.class);
+        githubAppClient = mock(qg.qgent.github.GitHubAppClient.class);
     }
 
     private SandboxSessionManager enabledManager() {
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         properties.setEnabled(true);
         return new SandboxSessionManager(client, properties, workspaceMapper, repositoryMapper,
-                projectRepositoryMapper);
+                projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient);
     }
 
     private WorkspaceEntity workspace() {
@@ -71,11 +87,42 @@ class SandboxSessionManagerTest {
         return entity;
     }
 
+    private void mockDependenciesForAcquire() {
+        when(workspaceMapper.selectById(WORKSPACE)).thenReturn(workspace());
+        when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(repository()));
+
+        ProjectRepositoryEntity projectRepo = new ProjectRepositoryEntity();
+        projectRepo.setId(REPO);
+        projectRepo.setRepositoryId(UUID.randomUUID());
+        projectRepo.setDefaultBranch("main");
+        when(projectRepositoryMapper.selectById(REPO)).thenReturn(projectRepo);
+
+        GitHubRepositoryEntity ghRepo = new GitHubRepositoryEntity();
+        ghRepo.setId(projectRepo.getRepositoryId());
+        ghRepo.setInstallationId(UUID.randomUUID());
+        ghRepo.setOwnerLogin("owner");
+        ghRepo.setName("repo");
+        ghRepo.setAuthorizationStatus("AUTHORIZED");
+        when(gitHubRepositoryMapper.selectById(projectRepo.getRepositoryId())).thenReturn(ghRepo);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(ghRepo.getInstallationId());
+        installation.setProviderInstallationId(12345L);
+        installation.setStatus("ACTIVE");
+        installation.setTeamId(UUID.randomUUID());
+        when(installationMapper.selectById(ghRepo.getInstallationId())).thenReturn(installation);
+
+        when(credentialService.generateGrant(any(), any(), any(), any(), any(), any(), any())).thenReturn("mock-grant");
+        
+        qg.qgent.orchestration.worker.WorkerGitStoreSyncResponse syncResponse = new qg.qgent.orchestration.worker.WorkerGitStoreSyncResponse();
+        when(client.syncGitStore(any(), any())).thenReturn(syncResponse);
+    }
+
     @Test
     void disabledManagerIsNoOp() {
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         SandboxSessionManager manager = new SandboxSessionManager(client, properties, workspaceMapper, repositoryMapper,
-                projectRepositoryMapper);
+                projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient);
 
         assertThat(manager.acquire(TASK, PROJECT, WORKSPACE)).isNull();
         manager.release(WORKSPACE);
@@ -85,6 +132,7 @@ class SandboxSessionManagerTest {
 
     @Test
     void acquireProvisionsAndCreatesSandbox() {
+        mockDependenciesForAcquire();
         when(workspaceMapper.selectById(WORKSPACE)).thenReturn(workspace());
         when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(repository()));
         WorkerWorkspace provisioned = new WorkerWorkspace();
@@ -120,13 +168,14 @@ class SandboxSessionManagerTest {
 
     @Test
     void acquireReusesExistingSession() {
+        mockDependenciesForAcquire();
         when(workspaceMapper.selectById(WORKSPACE)).thenReturn(workspace());
         when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(repository()));
         WorkerWorkspace provisioned = new WorkerWorkspace();
         provisioned.setStorageKey("workspaces/" + WORKSPACE);
         when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
-        SandboxSessionManager manager = enabledManager();
 
+        SandboxSessionManager manager = enabledManager();
         SandboxSession first = manager.acquire(TASK, PROJECT, WORKSPACE);
         SandboxSession second = manager.acquire(TASK, PROJECT, WORKSPACE);
 
@@ -136,39 +185,72 @@ class SandboxSessionManagerTest {
     }
 
     @Test
-    void acquireFailsWhenRepositoryHasNoBaseRef() {
-        when(workspaceMapper.selectById(WORKSPACE)).thenReturn(workspace());
-        WorkspaceRepositoryEntity noBase = repository();
-        noBase.setBaseCommit(null);
-        when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(noBase));
+    void acquireFailsWhenProjectRepositoryNotBound() {
+        mockDependenciesForAcquire();
         when(projectRepositoryMapper.selectById(REPO)).thenReturn(null);
-
-        assertThatThrownBy(() -> enabledManager().acquire(TASK, PROJECT, WORKSPACE))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("no base ref");
-        verify(client, never()).createSandbox(any());
+        
+        assertThrows(qg.qgent.api.ApiException.class, () -> enabledManager().acquire(TASK, PROJECT, WORKSPACE));
+    }
+    
+    @Test
+    void acquireFailsWhenGitHubRepositoryNotFound() {
+        mockDependenciesForAcquire();
+        when(gitHubRepositoryMapper.selectById(any())).thenReturn(null);
+        
+        assertThrows(qg.qgent.api.ApiException.class, () -> enabledManager().acquire(TASK, PROJECT, WORKSPACE));
+    }
+    
+    @Test
+    void acquireFailsWhenGitHubInstallationNotActive() {
+        mockDependenciesForAcquire();
+        GitHubInstallationEntity inactive = new GitHubInstallationEntity();
+        inactive.setStatus("SUSPENDED");
+        when(installationMapper.selectById(any())).thenReturn(inactive);
+        
+        assertThrows(qg.qgent.api.ApiException.class, () -> enabledManager().acquire(TASK, PROJECT, WORKSPACE));
     }
 
     @Test
-    void acquireFallsBackToDefaultBranchWhenBaseCommitMissing() {
+    void acquireFetchesBranchWhenBaseCommitMissing() {
+        mockDependenciesForAcquire();
         when(workspaceMapper.selectById(WORKSPACE)).thenReturn(workspace());
         WorkspaceRepositoryEntity noBase = repository();
         noBase.setBaseCommit(null);
         when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(noBase));
+        
         ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
         binding.setId(REPO);
+        binding.setRepositoryId(UUID.randomUUID());
         binding.setDefaultBranch("main");
         when(projectRepositoryMapper.selectById(REPO)).thenReturn(binding);
+        
+        GitHubRepositoryEntity ghRepo = new GitHubRepositoryEntity();
+        ghRepo.setId(binding.getRepositoryId());
+        ghRepo.setInstallationId(UUID.randomUUID());
+        ghRepo.setOwnerLogin("owner");
+        ghRepo.setName("repo");
+        ghRepo.setAuthorizationStatus("AUTHORIZED");
+        when(gitHubRepositoryMapper.selectById(binding.getRepositoryId())).thenReturn(ghRepo);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(ghRepo.getInstallationId());
+        installation.setProviderInstallationId(12345L);
+        installation.setStatus("ACTIVE");
+        installation.setTeamId(UUID.randomUUID());
+        when(installationMapper.selectById(ghRepo.getInstallationId())).thenReturn(installation);
+        
+        when(githubAppClient.getBranch(eq(12345L), eq("owner"), eq("repo"), eq("main")))
+                .thenReturn(new qg.qgent.github.GitHubBranchDetails("main", "fetched-sha"));
+                
         WorkerWorkspace provisioned = new WorkerWorkspace();
         provisioned.setStorageKey("workspaces/" + WORKSPACE);
         when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
 
-        enabledManager().acquire(TASK, PROJECT, WORKSPACE);
-
-        ArgumentCaptor<WorkerWorkspaceProvisionRequest> captor =
-                ArgumentCaptor.forClass(WorkerWorkspaceProvisionRequest.class);
-        verify(client).provisionWorkspace(org.mockito.ArgumentMatchers.eq(WORKSPACE), captor.capture());
-        assertThat(captor.getValue().getRepositories().get(0).getBaseRef()).isEqualTo("main");
+        SandboxSession session = enabledManager().acquire(TASK, PROJECT, WORKSPACE); // note: acquire uses TASK, PROJECT, WORKSPACE in some tests. Wait, does it?
+        
+        verify(githubAppClient).getBranch(12345L, "owner", "repo", "main");
+        verify(credentialService).generateGrant(any(UUID.class), any(UUID.class), eq(12345L), eq("owner/repo"), eq("main"), eq("fetched-sha"), eq(qg.qgent.entity.GitCredentialPurpose.FETCH));
+        assertEquals("workspaces/" + WORKSPACE, session.getStorageKey());
     }
 
     @Test
@@ -181,6 +263,7 @@ class SandboxSessionManagerTest {
 
     @Test
     void releaseDestroysSandboxAndRemovesSession() {
+        mockDependenciesForAcquire();
         when(workspaceMapper.selectById(WORKSPACE)).thenReturn(workspace());
         when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(repository()));
         WorkerWorkspace provisioned = new WorkerWorkspace();

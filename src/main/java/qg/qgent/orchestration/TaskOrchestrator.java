@@ -18,12 +18,16 @@ import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.service.EventService;
 import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskEventPayloads;
+import qg.qgent.service.TaskExecutionArtifactService;
+import qg.qgent.service.FinalDiffBundleService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -52,12 +56,15 @@ public class TaskOrchestrator {
     private final EventService eventService;
     private final NotificationService notificationService;
     private final SandboxSessionManager sandboxSessionManager;
+    private final TaskExecutionArtifactService artifactService;
+    private final FinalDiffBundleService finalDiffBundles;
 
     public TaskOrchestrator(OrchestrationStateMachine stateMachine, StepScheduler stepScheduler,
             AgentRunExecutor agentRunExecutor, AgentContextAssembler contextAssembler, TaskService taskService,
             TaskRunService taskRunService, TaskMapper taskMapper, TaskStepMapper stepMapper,
             WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService,
-            NotificationService notificationService, SandboxSessionManager sandboxSessionManager) {
+            NotificationService notificationService, SandboxSessionManager sandboxSessionManager,
+            TaskExecutionArtifactService artifactService, FinalDiffBundleService finalDiffBundles) {
         this.stateMachine = stateMachine;
         this.stepScheduler = stepScheduler;
         this.agentRunExecutor = agentRunExecutor;
@@ -70,6 +77,8 @@ public class TaskOrchestrator {
         this.eventService = eventService;
         this.notificationService = notificationService;
         this.sandboxSessionManager = sandboxSessionManager;
+        this.artifactService = artifactService;
+        this.finalDiffBundles = finalDiffBundles;
     }
 
     /**
@@ -97,6 +106,7 @@ public class TaskOrchestrator {
         AgentRunOutcome feedback = null;
         UUID retryOf = null;
         UUID lastRunId = null;
+        UUID lastCodingRunId = null;
         PlanResult planResult = null;
         CodingResult codingResult = null;
         TestResult testResult = null;
@@ -109,13 +119,20 @@ public class TaskOrchestrator {
             if (phase == OrchestrationPhase.PLAN && result.outcome.getPlanResult() != null) {
                 planResult = result.outcome.getPlanResult();
             }
-            if (phase == OrchestrationPhase.CODING && result.outcome.getCodingResult() != null) {
-                codingResult = result.outcome.getCodingResult();
+            if (phase == OrchestrationPhase.CODING) {
+                if (result.outcome.getCodingResult() != null) {
+                    codingResult = result.outcome.getCodingResult();
+                }
+                lastCodingRunId = result.runId;
             }
             if (phase == OrchestrationPhase.TESTING && result.outcome.getTestResult() != null) {
                 testResult = result.outcome.getTestResult();
             }
             StateMachineDecision decision = stateMachine.decide(phase, result.outcome.getOutcome(), counters);
+            if (phase == OrchestrationPhase.REVIEWING && decision.getAction() == StateMachineDecision.Action.COMPLETE_SUCCESS) {
+                awaitFinalDiffConfirmation(task, lastCodingRunId);
+                return;
+            }
             switch (decision.getAction()) {
                 case ADVANCE -> {
                     if (phase == OrchestrationPhase.PLAN) {
@@ -149,7 +166,9 @@ public class TaskOrchestrator {
             PlanResult planResult, CodingResult codingResult, TestResult testResult) {
         if (phase == OrchestrationPhase.PLAN) {
             AgentInput input = contextAssembler.assemblePlan(task);
-            return new PhaseRun(safeExecute(phase, input), null);
+            AgentRunOutcome outcome = safeExecute(phase, input);
+            artifactService.createPlan(task, artifactSummary(phase, outcome));
+            return new PhaseRun(outcome, null);
         }
         TaskStepEntity step = stepScheduler.findStepForPhase(task.getId(), phase);
         markStepRunning(task, step);
@@ -159,6 +178,7 @@ public class TaskOrchestrator {
         AgentInput input = contextAssembler.assemble(task, step, phase, feedback, run.getId(), planResult,
                 codingResult, testResult);
         AgentRunOutcome outcome = safeExecute(phase, input);
+        artifactService.createRunArtifact(task, run, step, phase.name(), artifactSummary(phase, outcome));
         taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()));
         markStepSettled(task, step, outcome.getOutcome());
         return new PhaseRun(outcome, run.getId());
@@ -183,6 +203,72 @@ public class TaskOrchestrator {
             case CANCELLED -> "CANCELLED";
             default -> "FAILED";
         };
+    }
+
+    /** Produce a compact, durable card without exposing raw prompts, secrets, or command output. */
+    private Map<String, Object> artifactSummary(OrchestrationPhase phase, AgentRunOutcome outcome) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("phase", phase.name());
+        summary.put("outcome", outcome.getOutcome().name());
+        switch (phase) {
+            case PLAN -> {
+                PlanResult plan = outcome.getPlanResult();
+                if (plan != null) {
+                    summary.put("taskUnderstanding", plan.getTaskUnderstanding());
+                    summary.put("objectives", plan.getObjectives());
+                    summary.put("implementationSteps", plan.getImplementationSteps().stream()
+                            .map(step -> artifactMap("title", step.getTitle(), "files", step.getFiles(),
+                                    "description", step.getDescription())).toList());
+                    summary.put("testPlan", plan.getTestPlan());
+                    summary.put("risks", plan.getRisks());
+                }
+            }
+            case CODING -> {
+                CodingResult coding = outcome.getCodingResult();
+                if (coding != null) {
+                    summary.put("modifiedFiles", coding.getModifiedFiles());
+                    summary.put("summary", coding.getSummary());
+                    summary.put("changes", coding.getChanges());
+                    summary.put("selfChecks", coding.getSelfChecks().stream()
+                            .map(check -> artifactMap("exitCode", check.getExitCode(), "ok", check.isOk())).toList());
+                    summary.put("errors", coding.getErrors());
+                }
+            }
+            case TESTING -> {
+                TestResult testing = outcome.getTestResult();
+                if (testing != null) {
+                    summary.put("exitCode", testing.getExitCode());
+                    summary.put("summary", testing.getSummary());
+                    summary.put("needsCodingFix", testing.isNeedsCodingFix());
+                    summary.put("failures", testing.getFailures().stream()
+                            .map(failure -> artifactMap("name", failure.getName(), "reason", failure.getReason(),
+                                    "severity", failure.getSeverity())).toList());
+                }
+            }
+            case REVIEWING -> {
+                var review = outcome.getReviewResult();
+                if (review != null) {
+                    summary.put("summary", review.getSummary());
+                    summary.put("needsCodingFix", review.isNeedsCodingFix());
+                    summary.put("suggestions", review.getSuggestions());
+                    summary.put("findings", review.getFindings().stream()
+                            .map(finding -> artifactMap("severity", finding.getSeverity(), "file", finding.getFile(),
+                                    "line", finding.getLine(), "issue", finding.getIssue(),
+                                    "suggestion", finding.getSuggestion())).toList());
+                }
+            }
+        }
+        return summary;
+    }
+
+    private Map<String, Object> artifactMap(Object... values) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (int index = 0; index < values.length; index += 2) {
+            if (values[index + 1] != null) {
+                result.put((String) values[index], values[index + 1]);
+            }
+        }
+        return result;
     }
 
     /** 把 PlanResult 落为 DEVELOPER → TESTER → REVIEWER 三个依赖链步骤。 */
@@ -259,6 +345,26 @@ public class TaskOrchestrator {
             default -> "FAILED";
         };
         updateTaskStatus(task, status);
+    }
+
+    /** Review approval produces a Task-level Diff; actual Git delivery remains user-confirmed. */
+    private void awaitFinalDiffConfirmation(TaskEntity task, UUID finalCodingRunId) {
+        if (finalCodingRunId == null) {
+            finishTask(task, StateMachineDecision.Action.COMPLETE_FAILED);
+            return;
+        }
+        try {
+            UUID batchId = finalDiffBundles.createPendingBatch(task.getProjectId(), task.getId(), finalCodingRunId);
+            updateTaskStatus(task, "WAITING_DIFF_CONFIRMATION");
+            eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.awaiting-diff-confirmation",
+                    task.getId().toString(), Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
+                            "reviewBatchId", batchId));
+        } catch (RuntimeException failure) {
+            eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.diff-review.failed",
+                    task.getId().toString(), Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
+                            "reason", failure.getMessage() == null ? "Final Diff snapshot creation failed" : failure.getMessage()));
+            finishTask(task, StateMachineDecision.Action.COMPLETE_FAILED);
+        }
     }
 
     private void updateTaskStatus(TaskEntity task, String status) {

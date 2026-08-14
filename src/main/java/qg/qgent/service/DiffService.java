@@ -180,6 +180,10 @@ public class DiffService {
                 if (!"PENDING_REVIEW".equals(diff.getStatus()))
                         throw new ApiException(HttpStatus.CONFLICT,
                                         "DIFF_NOT_DECIDABLE", "Only a pending Diff may be reviewed");
+                if (diff.getReviewBatchId() != null) {
+                        throw new ApiException(HttpStatus.CONFLICT, "DIFF_BATCH_REVIEW_REQUIRED",
+                                        "This Diff belongs to a Task-level final Diff review");
+                }
                 if (!accepted && (reason == null || reason.isBlank()))
                         throw new ApiException(HttpStatus.BAD_REQUEST,
                                         "DIFF_REJECT_REASON_REQUIRED", "A rejection reason is required");

@@ -147,6 +147,7 @@ public class TaskService {
         task.setTitle(body.getTitle().trim());
         task.setRequirement(body.getRequirement().trim());
         task.setStatus("PLANNING");
+        task.setDeliveryMode("DIFF_FIRST");
         task.setCreatedBy(actor);
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
@@ -364,6 +365,7 @@ public class TaskService {
                 w.getHeadCommit())).toList();
         return new TaskResponse(id(task.getId()), id(task.getProjectId()), id(task.getRequirementGroupId()),
                 id(task.getTriggerMessageId()), task.getTitle(), task.getRequirement(), task.getStatus(),
+                task.getDeliveryMode(),
                 workspace == null ? null : id(workspace.getId()),
                 workspace == null ? null : workspace.getStatus(), id(task.getContinuationOfTaskId()),
                 repositoryIds, scopes,

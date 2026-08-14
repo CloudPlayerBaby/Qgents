@@ -200,4 +200,44 @@ class SandboxWorkerClientTest {
         assertEquals("执行编号已经存在", exception.getMessage());
         server.verify();
     }
+
+    @Test
+    void syncGitStore() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/git-stores/" + REPO + "/sync"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"headCommit":"abcdef0123456789"}
+                        """, MediaType.APPLICATION_JSON));
+
+        WorkerGitStoreSyncRequest request = new WorkerGitStoreSyncRequest();
+        request.setRepositoryUrl("https://github.com/owner/repo.git");
+        request.setRemoteBranch("main");
+        request.setExpectedHeadCommit("abcdef0123456789");
+        request.setCredentialGrantId("mock-grant");
+
+        WorkerGitStoreSyncResponse response = client.syncGitStore(REPO, request);
+
+        assertEquals("abcdef0123456789", response.getHeadCommit());
+        server.verify();
+    }
+
+    @Test
+    void pushWorkspaceBranch() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/workspaces/" + WORKSPACE + "/repositories/" + REPO + "/git/push"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"branch":"feat/login","headCommit":"abcdef0123456789","verified":true}
+                        """, MediaType.APPLICATION_JSON));
+
+        WorkerGitPushRequest request = new WorkerGitPushRequest();
+        request.setExpectedHeadCommit("abcdef0123456789");
+        request.setCredentialGrantId("mock-grant");
+
+        WorkerGitPushResponse response = client.pushWorkspaceBranch(WORKSPACE, REPO, request);
+
+        assertEquals("feat/login", response.getBranch());
+        assertEquals("abcdef0123456789", response.getHeadCommit());
+        assertEquals(true, response.isVerified());
+        server.verify();
+    }
 }

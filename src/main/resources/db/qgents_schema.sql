@@ -511,7 +511,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL, requirement_group_id BINARY(16) NOT NULL,
     trigger_message_id BINARY(16) NULL, workspace_id BINARY(16) NOT NULL, continuation_of_task_id BINARY(16) NULL,
     title VARCHAR(255) NOT NULL, requirement TEXT NOT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'PLANNING' COMMENT 'PLANNING/PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLING/CANCELLED', created_by BINARY(16) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PLANNING' COMMENT 'PLANNING/PENDING/RUNNING/WAITING_DIFF_CONFIRMATION/DELIVERING/SUCCEEDED/DELIVERY_FAILED/FAILED/CANCELLING/CANCELLED', created_by BINARY(16) NOT NULL,
+    delivery_mode VARCHAR(32) NOT NULL DEFAULT 'DIFF_FIRST' COMMENT '交付模式：DIFF_FIRST/MR_FIRST',
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     KEY idx_task_project(project_id,status), KEY idx_task_group(requirement_group_id), KEY idx_task_workspace(workspace_id),
@@ -628,6 +629,44 @@ CREATE TABLE IF NOT EXISTS
         CONSTRAINT fk_input_creator FOREIGN KEY (created_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '任务运行期间的人机输入/审批请求';
 
+CREATE TABLE IF NOT EXISTS task_execution_artifacts (
+    id BINARY(16) PRIMARY KEY COMMENT '产物UUIDv7',
+    task_id BINARY(16) NOT NULL COMMENT '任务ID',
+    task_run_id BINARY(16) NULL COMMENT '任务运行ID',
+    task_step_id BINARY(16) NULL COMMENT '任务步骤ID',
+    sequence_no INT NOT NULL COMMENT '时间线排序序号',
+    artifact_type VARCHAR(32) NOT NULL COMMENT '产物类型：PLAN/CODING/TESTING/REVIEWING',
+    summary JSON NOT NULL COMMENT '产物摘要内容JSON',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间(UTC)',
+    UNIQUE KEY uk_artifact_task_sequence (task_id, sequence_no),
+    KEY idx_artifact_run (task_run_id),
+    CONSTRAINT fk_artifact_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    CONSTRAINT fk_artifact_run FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE CASCADE,
+    CONSTRAINT fk_artifact_step FOREIGN KEY (task_step_id) REFERENCES task_steps(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Task 及 Step 运行产物时间线';
+
+CREATE TABLE IF NOT EXISTS diff_review_batches (
+    id BINARY(16) PRIMARY KEY COMMENT '总Diff批次UUIDv7',
+    project_id BINARY(16) NOT NULL COMMENT '项目ID',
+    task_id BINARY(16) NOT NULL COMMENT '任务ID',
+    workspace_id BINARY(16) NOT NULL COMMENT '工作区ID',
+    final_coding_task_run_id BINARY(16) NOT NULL COMMENT '最终成功的代码编写Run ID',
+    review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING_CONFIRMATION' COMMENT '审核状态：PENDING_CONFIRMATION/ACCEPTED/REJECTED',
+    delivery_status VARCHAR(32) NOT NULL DEFAULT 'NOT_STARTED' COMMENT '交付状态：NOT_STARTED/DELIVERING/PARTIALLY_DELIVERED/DELIVERED/FAILED',
+    aggregate_hash VARCHAR(256) NOT NULL COMMENT '聚合Hash',
+    reviewed_by BINARY(16) NULL COMMENT '审核人用户ID',
+    review_reason TEXT NULL COMMENT '审核拒绝原因',
+    reviewed_at DATETIME(6) NULL COMMENT '审核时间(UTC)',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间(UTC)',
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间(UTC)',
+    UNIQUE KEY uk_diff_batch_task_run (task_id, final_coding_task_run_id),
+    KEY idx_diff_batch_project (project_id),
+    CONSTRAINT fk_diff_batch_project FOREIGN KEY (project_id) REFERENCES projects(id),
+    CONSTRAINT fk_diff_batch_task FOREIGN KEY (task_id) REFERENCES tasks(id),
+    CONSTRAINT fk_diff_batch_workspace FOREIGN KEY (workspace_id) REFERENCES workspaces(id),
+    CONSTRAINT fk_diff_batch_run FOREIGN KEY (final_coding_task_run_id) REFERENCES task_runs(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Task级多仓库总Diff确认批次';
+
 CREATE TABLE IF NOT EXISTS
     diffs (
         id BINARY(16) PRIMARY KEY COMMENT 'Diff UUIDv7',
@@ -644,17 +683,22 @@ CREATE TABLE IF NOT EXISTS
         head_commit VARCHAR(128) NULL COMMENT 'Commit created after acceptance',
         status VARCHAR(32) NOT NULL DEFAULT 'PENDING_REVIEW',
         reviewed_by BINARY(16) NULL, review_reason TEXT NULL, reviewed_at DATETIME(6) NULL,
+        review_batch_id BINARY(16) NULL COMMENT '关联的总Diff批次ID',
+        delivery_status VARCHAR(32) NOT NULL DEFAULT 'NOT_STARTED' COMMENT '交付状态：NOT_STARTED/COMMITTED/PUSHED/MR_CREATED/FAILED',
+        delivery_failure_reason TEXT NULL COMMENT '交付失败原因',
         change_stats JSON NULL COMMENT '变更统计JSON，如文件数、增删行数',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
         KEY idx_diff_project (project_id), KEY idx_diff_task(task_id,status), KEY idx_diff_task_run(task_run_id),
+        KEY idx_diff_review_batch(review_batch_id),
         CONSTRAINT fk_diff_project FOREIGN KEY (project_id) REFERENCES projects (id),
         CONSTRAINT fk_diff_task FOREIGN KEY(task_id) REFERENCES tasks(id),
         CONSTRAINT fk_diff_task_run FOREIGN KEY(task_run_id) REFERENCES task_runs(id),
         CONSTRAINT fk_diff_task_step FOREIGN KEY(task_step_id) REFERENCES task_steps(id),
         CONSTRAINT fk_diff_workspace FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
         CONSTRAINT fk_diff_reviewer FOREIGN KEY(reviewed_by) REFERENCES users(id),
-        CONSTRAINT fk_diff_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id)
+        CONSTRAINT fk_diff_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
+        CONSTRAINT fk_diff_batch FOREIGN KEY (review_batch_id) REFERENCES diff_review_batches(id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Immutable Task working-tree Diff snapshots';
 
 CREATE TABLE IF NOT EXISTS
