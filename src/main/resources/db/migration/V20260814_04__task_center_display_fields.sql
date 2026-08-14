@@ -1,4 +1,4 @@
--- V20260814_02__task_center_display_fields.sql
+-- V20260814_04__task_center_display_fields.sql
 -- 任务中心 / 任务详情展示字段:
 --   1. tasks.display_code(项目内唯一、创建后不可变的展示编号,如 T-1024);
 --   2. task_acceptance_criteria(Task 级验收标准,由 Planner/编排后续写入,前端只读展示)。
