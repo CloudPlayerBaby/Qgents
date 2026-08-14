@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS
         provider_repository_id BIGINT UNSIGNED NOT NULL COMMENT 'GitHub仓库数字ID',
         owner_login VARCHAR(255) NOT NULL COMMENT 'GitHub仓库所有者登录名',
         name VARCHAR(255) NOT NULL COMMENT '仓库名称',
-        default_branch VARCHAR(512) NOT NULL COMMENT 'GitHub默认分支名',
+        default_branch VARCHAR(512) NULL COMMENT 'GitHub默认分支名；空仓库尚未创建首个提交时为空',
         visibility VARCHAR(32) NOT NULL COMMENT '仓库可见性枚举：PUBLIC/PRIVATE/INTERNAL',
         archived TINYINT (1) NOT NULL DEFAULT 0 COMMENT '是否已在GitHub归档：0否1是',
         authorization_status VARCHAR(32) NOT NULL DEFAULT 'AUTHORIZED' COMMENT '授权状态枚举：AUTHORIZED/REVOKED',
