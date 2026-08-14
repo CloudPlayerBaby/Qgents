@@ -24,6 +24,7 @@ import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.service.EventService;
+import qg.qgent.service.FinalDiffBundleService;
 import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskEventPayloads;
 import qg.qgent.service.TaskRunService;
@@ -57,7 +58,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Service
 public class TaskOrchestrator {
-    private static final Set<String> STARTABLE_TASK_STATUSES = Set.of("PLANNING", "PENDING", "RUNNING");
+    private static final Set<String> STARTABLE_TASK_STATUSES = Set.of("PLANNING", "PENDING");
     /** 条件边路由：route 值 → 下一节点名；终态路由到 {@link GraphDefinition#END}。 */
     private static final Map<String, String> ROUTES = Map.of(
             "plan", "plan", "coding", "coding", "test", "test", "review", "review",
@@ -75,6 +76,7 @@ public class TaskOrchestrator {
     private final EventService eventService;
     private final NotificationService notificationService;
     private final SandboxSessionManager sandboxSessionManager;
+    private final FinalDiffBundleService finalDiffBundles;
 
     /** 各编排任务的执行现场（富结果/反馈/计数，不进图状态），按 taskId 暂存。 */
     private final Map<UUID, TaskExecutionContext> executions = new ConcurrentHashMap<>();
@@ -85,7 +87,8 @@ public class TaskOrchestrator {
             AgentRunExecutor agentRunExecutor, AgentContextAssembler contextAssembler, TaskService taskService,
             TaskRunService taskRunService, TaskMapper taskMapper, TaskStepMapper stepMapper,
             WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService,
-            NotificationService notificationService, SandboxSessionManager sandboxSessionManager) {
+            NotificationService notificationService, SandboxSessionManager sandboxSessionManager,
+            FinalDiffBundleService finalDiffBundles) {
         this.stateMachine = stateMachine;
         this.stepScheduler = stepScheduler;
         this.agentRunExecutor = agentRunExecutor;
@@ -98,6 +101,7 @@ public class TaskOrchestrator {
         this.eventService = eventService;
         this.notificationService = notificationService;
         this.sandboxSessionManager = sandboxSessionManager;
+        this.finalDiffBundles = finalDiffBundles;
         this.graph = buildGraph();
     }
 
@@ -115,11 +119,20 @@ public class TaskOrchestrator {
     public void orchestrate(UUID projectId, UUID taskId) {
         TaskEntity task = requireTask(projectId, taskId);
         requireStartable(task);
+        if (taskMapper.claimForOrchestration(projectId, taskId) != 1) {
+            throw new IllegalStateException("task is already being orchestrated or is no longer startable");
+        }
+        task.setStatus("RUNNING");
         TaskExecutionContext ctx = new TaskExecutionContext(task);
         executions.put(taskId, ctx);
         try {
             sandboxSessionManager.acquire(task.getId(), task.getProjectId(), task.getWorkspaceId());
             graph.invoke(Map.of("projectId", projectId.toString(), "taskId", taskId.toString()));
+        } catch (RuntimeException failure) {
+            if ("RUNNING".equals(task.getStatus())) {
+                failTaskPreserving(task, failure);
+            }
+            throw failure;
         } finally {
             sandboxSessionManager.release(task.getWorkspaceId());
             executions.remove(taskId);
@@ -165,6 +178,9 @@ public class TaskOrchestrator {
         AgentRunOutcome outcome = result.outcome;
         if (result.runId != null) {
             ctx.lastRunId = result.runId;
+            if (phase == OrchestrationPhase.CODING && outcome.getOutcome() == RunOutcome.SUCCEEDED) {
+                ctx.finalCodingRunId = result.runId;
+            }
         }
         if (phase == OrchestrationPhase.PLAN && outcome.getPlanResult() != null) {
             ctx.planResult = outcome.getPlanResult();
@@ -196,7 +212,7 @@ public class TaskOrchestrator {
                 route = nodeName(decision.getNextPhase());
             }
             default -> {
-                finishTask(task, decision.getAction());
+                finishTask(task, decision.getAction(), ctx);
                 route = GraphDefinition.END;
             }
         }
@@ -323,13 +339,41 @@ public class TaskOrchestrator {
                 step.getId().toString(), TaskEventPayloads.taskStepUpdated(task.getProjectId(), step));
     }
 
-    private void finishTask(TaskEntity task, StateMachineDecision.Action action) {
+    private void finishTask(TaskEntity task, StateMachineDecision.Action action, TaskExecutionContext ctx) {
+        if (action == StateMachineDecision.Action.COMPLETE_SUCCESS && "DIFF_FIRST".equals(task.getDeliveryMode())) {
+            finishDiffFirstTask(task, ctx.finalCodingRunId);
+            return;
+        }
         String status = switch (action) {
             case COMPLETE_SUCCESS -> "SUCCEEDED";
             case COMPLETE_CANCELLED -> "CANCELLED";
             default -> "FAILED";
         };
         updateTaskStatus(task, status);
+    }
+
+    /** Review 通过后生成不可变总 Diff；创建失败必须终止 Task，不能让其停留在 RUNNING。 */
+    private void finishDiffFirstTask(TaskEntity task, UUID finalCodingRunId) {
+        if (finalCodingRunId == null) {
+            updateTaskStatus(task, "FAILED");
+            throw new IllegalStateException("successful DIFF_FIRST Task has no successful coding run");
+        }
+        try {
+            finalDiffBundles.createPendingBatch(task.getProjectId(), task.getId(), finalCodingRunId);
+        } catch (RuntimeException failure) {
+            failTaskPreserving(task, failure);
+            throw failure;
+        }
+        // FinalDiffBundleService 已在同一事务中持久化该状态；这里只同步当前编排上下文。
+        task.setStatus("WAITING_DIFF_CONFIRMATION");
+    }
+
+    private void failTaskPreserving(TaskEntity task, RuntimeException failure) {
+        try {
+            updateTaskStatus(task, "FAILED");
+        } catch (RuntimeException statusFailure) {
+            failure.addSuppressed(statusFailure);
+        }
     }
 
     private void updateTaskStatus(TaskEntity task, String status) {
@@ -412,6 +456,7 @@ public class TaskOrchestrator {
         private final OrchestrationCounters counters = new OrchestrationCounters();
         private AgentRunOutcome feedback;
         private UUID lastRunId;
+        private UUID finalCodingRunId;
         private UUID retryOf;
         private PlanResult planResult;
         private CodingResult codingResult;

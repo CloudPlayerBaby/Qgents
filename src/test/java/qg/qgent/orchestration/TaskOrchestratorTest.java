@@ -30,10 +30,12 @@ import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.SandboxWorkerProperties;
 import qg.qgent.service.EventService;
+import qg.qgent.service.FinalDiffBundleService;
 import qg.qgent.service.NotificationService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -65,6 +67,9 @@ class TaskOrchestratorTest {
     private final TaskService taskService = mock(TaskService.class);
     private final TaskRunService taskRunService = mock(TaskRunService.class);
     private final EventService eventService = mock(EventService.class);
+    private final FinalDiffBundleService finalDiffBundles = mock(FinalDiffBundleService.class);
+    private final NotificationService notificationService = mock(NotificationService.class);
+    private final List<UUID> createdRunIds = new ArrayList<>();
     private final AgentContextAssembler contextAssembler = new AgentContextAssembler();
     private final GitHubAppClient githubAppClient = mock(GitHubAppClient.class);
     private final SandboxSessionManager sessionManager = new SandboxSessionManager(
@@ -75,7 +80,7 @@ class TaskOrchestratorTest {
     private TaskOrchestrator orchestrator(AgentRunExecutor executor) {
         return new TaskOrchestrator(new OrchestrationStateMachine(), stepScheduler, executor, contextAssembler,
                 taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
-                mock(NotificationService.class), sessionManager);
+                notificationService, sessionManager, finalDiffBundles);
     }
 
     /** Maven 文件树 + Mock LLM：Plan 两轮、Coding 一次 finalResult、Test 一次分析、Review 一次 finalResult，全部成功。 */
@@ -120,7 +125,9 @@ class TaskOrchestratorTest {
         t.setTitle("sample task");
         t.setRequirement("do something");
         t.setStatus("PLANNING");
+        t.setDeliveryMode("DIFF_FIRST");
         t.setCreatedBy(UUID.randomUUID());
+        when(taskMapper.claimForOrchestration(projectId, taskId)).thenReturn(1);
         return t;
     }
 
@@ -144,6 +151,7 @@ class TaskOrchestratorTest {
                 .thenAnswer(inv -> {
                     TaskRunEntity run = new TaskRunEntity();
                     run.setId(UUID.randomUUID());
+                    createdRunIds.add(run.getId());
                     return run;
                 });
     }
@@ -424,6 +432,85 @@ class TaskOrchestratorTest {
                 retryCaptor.capture());
         assertThat(retryCaptor.getAllValues().get(0)).isNull();
         assertThat(retryCaptor.getAllValues().get(1)).isNotNull();
+    }
+
+    @Test void reviewSuccessCreatesDiffBatchFromLatestSuccessfulCodingRun() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubStepScheduler(taskId);
+        stubRunCreation(projectId, taskId);
+        stubPlanPersistence(task);
+
+        runSequence(task, List.of(
+                planSuccess(),
+                outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
+                outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY),
+                outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
+                outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
+                outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
+
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        verify(finalDiffBundles).createPendingBatch(projectId, taskId, createdRunIds.get(2));
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test void diffBundleFailureFailsTaskInsteadOfLeavingItRunning() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubStepScheduler(taskId);
+        stubRunCreation(projectId, taskId);
+        stubPlanPersistence(task);
+        when(finalDiffBundles.createPendingBatch(eq(projectId), eq(taskId), any()))
+                .thenThrow(new IllegalStateException("snapshot failed"));
+
+        assertThatThrownBy(() -> runSequence(task, List.of(
+                planSuccess(),
+                outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
+                outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
+                outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED))))
+                .hasRootCauseInstanceOf(IllegalStateException.class)
+                .hasRootCauseMessage("snapshot failed");
+
+        assertTerminalStatus("FAILED");
+    }
+
+    @Test void mrFirstReviewSuccessKeepsExistingSucceededTerminalState() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        task.setDeliveryMode("MR_FIRST");
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubStepScheduler(taskId);
+        stubRunCreation(projectId, taskId);
+        stubPlanPersistence(task);
+
+        runSequence(task, List.of(
+                planSuccess(),
+                outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
+                outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
+                outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
+
+        assertTerminalStatus("SUCCEEDED");
+        verify(finalDiffBundles, never()).createPendingBatch(any(), any(), any());
+    }
+
+    @Test void concurrentOrchestrationIsRejectedWhenPersistentClaimIsLost() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        when(taskMapper.claimForOrchestration(projectId, taskId)).thenReturn(0);
+        AgentRunExecutor executor = mock(AgentRunExecutor.class);
+
+        assertThatThrownBy(() -> orchestrator(executor).orchestrate(projectId, taskId))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("already being orchestrated");
+
+        verify(executor, never()).execute(any(), any());
     }
 
     @Test void cancelledCompletesCancelled() {
