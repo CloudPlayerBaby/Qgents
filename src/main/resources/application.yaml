@@ -61,6 +61,7 @@ app:
     image-profile: ${SANDBOX_IMAGE_PROFILE:java-node}
     poll-interval: ${SANDBOX_POLL_INTERVAL:250ms}
     poll-timeout: ${SANDBOX_POLL_TIMEOUT:15m}
+    lease-renew-interval: ${SANDBOX_LEASE_RENEW_INTERVAL:10s}
   frontend-url: ${FRONTEND_URL:http://localhost:5173}
   frontend-url-web: ${FRONTEND_URL_WEB:${FRONTEND_URL:http://localhost:5173}}
   frontend-url-mobile: ${FRONTEND_URL_MOBILE:${FRONTEND_URL:http://localhost:5173}}
@@ -78,6 +79,19 @@ app:
   attachment-upload-base: ${ATTACHMENT_UPLOAD_BASE:/api/v1/internal/attachments}
   attachment-signing-secret: ${ATTACHMENT_SIGNING_SECRET:dev-only-change-me}
   attachment-upload-expiry-seconds: ${ATTACHMENT_UPLOAD_EXPIRY_SECONDS:900}
+  # 附件大小上限（字节，默认 50MB）与临时下载地址有效期（秒，默认 900）
+  attachment-max-size-bytes: ${APP_ATTACHMENT_MAX_SIZE_BYTES:52428800}
+  attachment-download-expiry-seconds: ${APP_ATTACHMENT_DOWNLOAD_EXPIRY_SECONDS:900}
+
+# 阿里云 OSS 对象存储（附件真实存储）；密钥只通过环境变量注入，禁止写死或提交
+aliyun:
+  oss:
+    enabled: ${ALIYUN_OSS_ENABLED:false}
+    endpoint: ${ALIYUN_OSS_ENDPOINT:}
+    bucket-name: ${ALIYUN_OSS_BUCKET_NAME:}
+    access-key-id: ${ALIYUN_OSS_ACCESS_KEY_ID:}
+    access-key-secret: ${ALIYUN_OSS_ACCESS_KEY_SECRET:}
+    presign-expiry-seconds: ${ALIYUN_OSS_PRESIGN_EXPIRY_SECONDS:900}
 
 springdoc:
   swagger-ui:

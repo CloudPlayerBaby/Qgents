@@ -22,6 +22,7 @@ import qg.qgent.dto.InputReplyRequest;
 import qg.qgent.dto.InputRequestResponse;
 import qg.qgent.dto.LogEntryResponse;
 import qg.qgent.dto.TaskRunDetailResponse;
+import qg.qgent.dto.TaskRunListItemResponse;
 import qg.qgent.dto.TaskRunSummaryResponse;
 import qg.qgent.service.TaskRunService;
 
@@ -44,7 +45,7 @@ public class TaskRunController {
 
     /** 查询 Task 的执行记录。 */
     @GetMapping("/tasks/{taskId}/task-runs")
-    public ApiPageResponse<TaskRunSummaryResponse> listByTask(@PathVariable UUID projectId,
+    public ApiPageResponse<TaskRunListItemResponse> listByTask(@PathVariable UUID projectId,
             @PathVariable UUID taskId, @AuthenticationPrincipal UUID userId,
             @RequestParam(required = false) String cursor, @RequestParam(defaultValue = "20") int limit,
             HttpServletRequest request) {

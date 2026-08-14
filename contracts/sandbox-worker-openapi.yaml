@@ -1,9 +1,33 @@
 openapi: 3.1.0
 info:
   title: Qgents Workspace 与 Sandbox Worker 内部接口
-  version: 0.4.0
+  version: 0.5.0
   description: 内部控制面接口。调用方不能提交宿主机路径、Git 远端、凭证或任意 Git 参数。
 paths:
+  /internal/v1/git-resolutions:
+    post:
+      operationId: resolveGitRef
+      summary: Resolve a controlled Git ref to an immutable commit SHA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repositoryId, ref]
+              properties:
+                repositoryId: {type: string, format: uuid}
+                ref: {type: string, minLength: 1, maxLength: 512}
+      responses:
+        '200':
+          description: Resolved commit
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [commitSha]
+                properties:
+                  commitSha: {type: string}
   /internal/v1/health:
     get:
       operationId: health
@@ -30,6 +54,18 @@ paths:
     get:
       operationId: getWorkspaceGitStatus
       responses: {'200': {description: 结构化状态, content: {application/json: {schema: {$ref: '#/components/schemas/GitStatus'}}}}}
+  /internal/v1/workspaces/{workspaceId}/repositories/{repositoryId}/test-snapshots/{snapshotWorkspaceId}:
+    parameters:
+      - {$ref: '#/components/parameters/WorkspaceId'}
+      - {$ref: '#/components/parameters/RepositoryId'}
+      - {name: snapshotWorkspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+      - {name: projectId, in: query, required: true, schema: {type: string, format: uuid}}
+    post:
+      operationId: createWorkspaceTestSnapshot
+      description: 将当前未提交工作树以受控 patch 固化到独立临时 Workspace；相同快照编号可幂等重试。
+      responses:
+        '200': {description: 已固化且哈希校验通过的隔离 Workspace, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
+        '409': {description: HEAD 或快照哈希不一致}
   /internal/v1/workspaces/{workspaceId}/repositories/{repositoryId}/git/diff:
     parameters: [{$ref: '#/components/parameters/WorkspaceId'}, {$ref: '#/components/parameters/RepositoryId'}]
     post:
@@ -96,6 +132,16 @@ paths:
   /internal/v1/tool-executions/{executionId}/cancel:
     parameters: [{$ref: '#/components/parameters/ExecutionId'}]
     post: {operationId: cancelToolExecution, responses: {'200': {description: 已取消, content: {application/json: {schema: {$ref: '#/components/schemas/ToolExecution'}}}}}}
+  /internal/v1/test-executions:
+    post:
+      operationId: executeTestsets
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/TestExecutionRequest'}}}}
+      responses: {'200': {description: Controlled test results, content: {application/json: {schema: {$ref: '#/components/schemas/TestExecutionResponse'}}}}}
+  /internal/v1/merge-previews:
+    post:
+      operationId: previewMerge
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/MergePreviewRequest'}}}}
+      responses: {'200': {description: Read-only merge preview, content: {application/json: {schema: {$ref: '#/components/schemas/MergePreviewResponse'}}}}}
 components:
   parameters:
     WorkspaceId: {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -103,6 +149,47 @@ components:
     SandboxId: {name: sandboxId, in: path, required: true, schema: {type: string, format: uuid}}
     ExecutionId: {name: executionId, in: path, required: true, schema: {type: string, format: uuid}}
   schemas:
+    TestExecutionItemRequest:
+      type: object
+      required: [testsetId, command, timeoutSeconds, passRuleType, expectedExitCode]
+      properties:
+        testsetId: {type: string, format: uuid}
+        command: {type: string, minLength: 1, maxLength: 4096}
+        timeoutSeconds: {type: integer, minimum: 1, maximum: 3600}
+        passRuleType: {type: string, enum: [EXIT_CODE]}
+        expectedExitCode: {type: integer}
+    TestExecutionRequest:
+      type: object
+      required: [executionId, projectId, repositoryId, testsets]
+      properties:
+        executionId: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        repositoryId: {type: string, format: uuid}
+        workspaceId: {type: [string, 'null'], format: uuid}
+        ref: {type: [string, 'null'], maxLength: 512}
+        mergeSourceRef: {type: [string, 'null'], maxLength: 512, description: DryRun 时在一次性 checkout 中合并的受控源引用}
+        testsets: {type: array, minItems: 1, maxItems: 32, items: {$ref: '#/components/schemas/TestExecutionItemRequest'}}
+    TestExecutionResponse:
+      type: object
+      properties:
+        executionId: {type: string, format: uuid}
+        status: {type: string, enum: [PASSED, FAILED]}
+        resolvedHeadCommit: {type: string}
+        results: {type: array, items: {type: object, properties: {testsetId: {type: string, format: uuid}, status: {type: string}, exitCode: {type: [integer, 'null']}, durationMs: {type: integer}, failureCode: {type: [string, 'null']}}}}
+    MergePreviewRequest:
+      type: object
+      required: [repositoryId, sourceRef, targetBranch]
+      properties:
+        repositoryId: {type: string, format: uuid}
+        sourceRef: {type: string, minLength: 1, maxLength: 512}
+        targetBranch: {type: string, minLength: 1, maxLength: 512}
+    MergePreviewResponse:
+      type: object
+      properties:
+        resolvedHeadCommit: {type: string}
+        resolvedTargetCommit: {type: string}
+        mergeable: {type: boolean}
+        conflicts: {type: array, items: {type: string}}
     WorkspaceRepositoryRequest:
       type: object
       required: [repositoryId, baseRef, sourceBranch, workspacePath]
@@ -142,8 +229,8 @@ components:
       properties: {headCommit: {type: string}, diffHash: {type: string}, patch: {type: string}}
     GitCommitRequest:
       type: object
-      required: [expectedHeadCommit, expectedDiffHash, message]
-      properties: {expectedHeadCommit: {type: string, minLength: 40, maxLength: 64, pattern: '^[0-9a-fA-F]{40,64}$'}, expectedDiffHash: {type: string, minLength: 71, maxLength: 71, pattern: '^sha256:[0-9a-f]{64}$'}, message: {type: string, minLength: 1, maxLength: 500}}
+      required: [expectedHeadCommit, expectedDiffHash, message, operationId]
+      properties: {expectedHeadCommit: {type: string, minLength: 40, maxLength: 64, pattern: '^[0-9a-fA-F]{40,64}$'}, expectedDiffHash: {type: string, minLength: 71, maxLength: 71, pattern: '^sha256:[0-9a-f]{64}$'}, message: {type: string, minLength: 1, maxLength: 500}, operationId: {type: string, format: uuid, description: Commit 幂等操作ID}}
     GitCommit: {type: object, properties: {commitSha: {type: string}}}
     GitPushRequest:
       type: object

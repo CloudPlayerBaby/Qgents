@@ -42,7 +42,13 @@ public class DiffEntity {
     private LocalDateTime reviewedAt;
     private UUID reviewBatchId;
     private String deliveryStatus;
+    /** 稳定的失败分类码，供接口和重试策略使用。 */
+    private String deliveryFailureCode;
     private String deliveryFailureReason;
+    private String deliveryOperationId;
+    /** 每次领取交付时重新生成的 fencing token，旧执行者不得写回。 */
+    private String deliveryClaimToken;
+    private LocalDateTime deliveryLeaseExpiresAt;
     /** 变更统计 JSON，如文件数、增删行数。 */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> changeStats;

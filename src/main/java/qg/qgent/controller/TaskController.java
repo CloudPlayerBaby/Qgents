@@ -8,19 +8,23 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.*;
 import qg.qgent.dto.*;
+import qg.qgent.service.TaskDisplayService;
 import qg.qgent.service.TaskService;
 import java.util.*;
 
 /**
  * Task 与 TaskStep 计划接口（§11.3）。
+ * 列表/详情/步骤为任务中心展示摘要（{@link TaskDisplayService}），写侧仍由 {@link TaskService} 承担。
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/tasks")
 public class TaskController {
     private final TaskService service;
+    private final TaskDisplayService display;
 
-    public TaskController(TaskService service) {
+    public TaskController(TaskService service, TaskDisplayService display) {
         this.service = service;
+        this.display = display;
     }
 
     /**
@@ -34,20 +38,39 @@ public class TaskController {
         return ok(service.create(projectId, actor, body), request);
     }
 
-    /** 查询项目可见的 Task。 */
+    /**
+     * 任务中心列表：游标分页并支持 groupId/status/createdBy/repositoryId 筛选。
+     * 返回卡片摘要 DTO，避免前端逐条发起 Group/Member/Repository/Agent 查询。
+     */
     @Operation(summary = "查询项目 Task 列表")
     @GetMapping
-    public ApiResponse<?> list(@PathVariable UUID projectId, @AuthenticationPrincipal UUID actor,
-            HttpServletRequest request) {
-        return ok(service.list(projectId, actor), request);
+    public PagedApiResponse<TaskListItemResponse> list(@PathVariable UUID projectId,
+            @AuthenticationPrincipal UUID actor, @RequestParam(required = false) String groupId,
+            @RequestParam(required = false) String status, @RequestParam(required = false) String createdBy,
+            @RequestParam(required = false) String repositoryId, @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer limit, HttpServletRequest request) {
+        return display.list(projectId, actor, groupId, status, createdBy, repositoryId, cursor, limit,
+                (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
 
-    /** 获取 Task、Workspace 与 repository 范围。 */
+    /**
+     * 任务详情：完整上下文摘要（验收标准/Workspace/操作能力/产物统计/总 Diff/来源消息）。
+     */
     @Operation(summary = "获取 Task 详情")
     @GetMapping("/{taskId}")
     public ApiResponse<?> get(@PathVariable UUID projectId, @PathVariable UUID taskId,
             @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
-        return ok(service.get(projectId, taskId, actor), request);
+        return ok(display.detail(projectId, taskId, actor), request);
+    }
+
+    /**
+     * 任务执行流程步骤列表：展示序号、标题、角色、Agent、目标仓库、依赖、状态、验收说明与最新运行。
+     */
+    @Operation(summary = "查询任务执行步骤")
+    @GetMapping("/{taskId}/steps")
+    public ApiResponse<?> steps(@PathVariable UUID projectId, @PathVariable UUID taskId,
+            @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
+        return ok(display.steps(projectId, taskId, actor), request);
     }
 
     /** 取消整个 Task（202 异步受理）。 */

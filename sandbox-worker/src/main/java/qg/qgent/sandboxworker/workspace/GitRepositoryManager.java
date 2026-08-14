@@ -5,6 +5,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import qg.qgent.sandboxworker.api.WorkerException;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
+import qg.qgent.sandboxworker.api.MergePreviewResponse;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.channels.FileChannel;
@@ -100,13 +101,47 @@ public class GitRepositoryManager {
         locked(repositoryId, () -> {
             Path store = gitStore(repositoryId);
             requireStore(store);
-            requireSuccess(
-                    run(List.of("git", "--git-dir", store.toString(), "worktree", "remove", "--force",
-                            target.toString()), Map.of()),
-                    "WORKTREE_REMOVE_FAILED", "鏃犳硶娉ㄩ攢 linked worktree");
+            if (Files.exists(target)) {
+                requireSuccess(
+                        run(List.of("git", "--git-dir", store.toString(), "worktree", "remove", "--force",
+                                target.toString()), Map.of()),
+                        "WORKTREE_REMOVE_FAILED", "无法注销 linked worktree");
+            }
             requireSuccess(run(List.of("git", "--git-dir", store.toString(), "worktree", "prune"), Map.of()),
                 "WORKTREE_PRUNE_FAILED", "Cannot prune linked worktree metadata");
             return null;
+        });
+    }
+
+    /** 把源 worktree 的完整未提交 patch 应用到相同 HEAD 的隔离 worktree，并校验快照哈希。 */
+    public void copyWorkingTreeSnapshot(UUID repositoryId, Path source, Path target) {
+        locked(repositoryId, () -> {
+            if (!head(source).equals(head(target))) {
+                throw conflict("TEST_SNAPSHOT_HEAD_MISMATCH", "源工作树与隔离工作树 HEAD 不一致");
+            }
+            GitDiffResponse sourceDiff = diff(source);
+            if (sourceDiff.getPatch() == null || sourceDiff.getPatch().isEmpty()) return null;
+            Path patch = null;
+            try {
+                patch = Files.createTempFile("qgents-test-snapshot-", ".patch");
+                Files.writeString(patch, sourceDiff.getPatch(), StandardCharsets.UTF_8,
+                        StandardOpenOption.TRUNCATE_EXISTING);
+                requireSuccess(run(List.of("git", "-C", target.toString(), "apply", "--binary",
+                                "--whitespace=nowarn", patch.toString()), Map.of()),
+                        "TEST_SNAPSHOT_APPLY_FAILED", "无法创建隔离工作树快照");
+                GitDiffResponse copied = diff(target);
+                if (!sourceDiff.getDiffHash().equals(copied.getDiffHash())) {
+                    throw conflict("TEST_SNAPSHOT_HASH_MISMATCH", "隔离工作树与源工作树快照不一致");
+                }
+                return null;
+            } catch (WorkerException exception) {
+                throw exception;
+            } catch (Exception exception) {
+                throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "TEST_SNAPSHOT_CREATE_FAILED",
+                        "无法创建隔离工作树快照");
+            } finally {
+                if (patch != null) try { Files.deleteIfExists(patch); } catch (Exception ignored) { }
+            }
         });
     }
 
@@ -242,6 +277,12 @@ public class GitRepositoryManager {
     public GitCommitResponse commit(Path repository, GitCommitRequest request) {
         String currentHead = head(repository);
         if (!currentHead.equals(request.getExpectedHeadCommit())) {
+            String message = requireSuccess(run(List.of("git", "-C", repository.toString(), "log", "-1",
+                    "--format=%B", currentHead), Map.of()), "GIT_COMMIT_READ_FAILED",
+                    "Cannot inspect existing commit").stdout();
+            if (message.lines().anyMatch(line -> line.equals("Qgents-Operation-Id: " + request.getOperationId()))) {
+                return new GitCommitResponse(currentHead);
+            }
             throw conflict("GIT_HEAD_MISMATCH", "Workspace HEAD has changed");
         }
         GitDiffResponse currentDiff = diff(repository);
@@ -261,7 +302,8 @@ public class GitRepositoryManager {
             run(List.of("git", "-C", repository.toString(), "reset", "--mixed", "HEAD"), Map.of());
             throw conflict("GIT_DIFF_MISMATCH", "Staged diff differs from reviewed diff");
         }
-        requireSuccess(run(List.of("git", "-C", repository.toString(), "commit", "-m", request.getMessage()), Map.of()),
+        String commitMessage = request.getMessage() + "\n\nQgents-Operation-Id: " + request.getOperationId();
+        requireSuccess(run(List.of("git", "-C", repository.toString(), "commit", "-m", commitMessage), Map.of()),
                 "GIT_COMMIT_FAILED", "Cannot create Git commit");
         return new GitCommitResponse(head(repository));
     }
@@ -399,6 +441,71 @@ public class GitRepositoryManager {
     public String head(Path repository) {
         return requireSuccess(run(List.of("git", "-C", repository.toString(), "rev-parse", "HEAD"), Map.of()),
                 "REPOSITORY_INVALID", "Cannot read Workspace repository HEAD").stdout().trim();
+    }
+
+    /** 使用 git merge-tree 做只读预演，并只返回结构化冲突路径。 */
+    public MergePreviewResponse mergePreview(UUID repositoryId, String sourceRef, String targetBranch) {
+        return locked(repositoryId, () -> {
+            Path store = gitStore(repositoryId);
+            requireStore(store);
+            String source = resolveCommit(store, sourceRef);
+            String target = resolveCommit(store, targetBranch);
+            if (source == null) throw invalid("GIT_SOURCE_REF_NOT_FOUND", "Source ref was not found");
+            if (target == null) throw invalid("GIT_TARGET_REF_NOT_FOUND", "Target branch was not found");
+            CommandResult result = run(List.of("git", "--git-dir", store.toString(), "merge-tree", "--write-tree",
+                    target, source), Map.of());
+            if (result.exitCode() != 0 && result.exitCode() != 1) {
+                throw invalid("GIT_MERGE_PREVIEW_FAILED", "Git merge preview failed");
+            }
+            List<String> conflicts = result.stdout().lines()
+                    .filter(line -> line.matches("^[0-9]+ [0-9a-f]+ [123]\\t.*$"))
+                    .map(line -> line.substring(line.indexOf('\t') + 1)).distinct().sorted().toList();
+            boolean mergeable = result.exitCode() == 0 && conflicts.isEmpty();
+            return new MergePreviewResponse(source, target, mergeable, conflicts);
+        });
+    }
+
+    /** 在共享 Git Store 中解析引用并固定为 commit SHA。 */
+    public String resolveRef(UUID repositoryId, String reference) {
+        return locked(repositoryId, () -> {
+            Path store = gitStore(repositoryId);
+            requireStore(store);
+            String commit = resolveCommit(store, reference);
+            if (commit == null) throw invalid("GIT_REF_NOT_FOUND", "Git reference was not found");
+            return commit;
+        });
+    }
+
+    /** 在一次性 worktree 中合并受控源引用，供 DryRun 在真实合并树上执行门禁。 */
+    public String mergeForTest(UUID repositoryId, Path repository, String sourceRef) {
+        return locked(repositoryId, () -> {
+            Path store = gitStore(repositoryId);
+            requireStore(store);
+            String source = resolveCommit(store, sourceRef);
+            if (source == null) throw invalid("GIT_SOURCE_REF_NOT_FOUND", "Source ref was not found");
+            CommandResult result = run(List.of("git", "-C", repository.toString(), "merge", "--no-commit",
+                    "--no-ff", source), Map.of());
+            if (result.exitCode() != 0) {
+                run(List.of("git", "-C", repository.toString(), "merge", "--abort"), Map.of());
+                throw conflict("GIT_MERGE_CONFLICT", "Merge result contains conflicts");
+            }
+            return source;
+        });
+    }
+
+    /** 删除已经移除 worktree 的内部临时测试分支。 */
+    public void deleteTemporaryBranch(UUID repositoryId, String branch) {
+        if (branch == null || !branch.matches("qgents-test-[0-9a-fA-F-]{36}")) {
+            throw invalid("TEMPORARY_BRANCH_INVALID", "Temporary branch name is invalid");
+        }
+        locked(repositoryId, () -> {
+            Path store = gitStore(repositoryId);
+            requireStore(store);
+            if (resolveCommit(store, "refs/heads/" + branch) == null) return null;
+            requireSuccess(run(List.of("git", "--git-dir", store.toString(), "branch", "-D", branch), Map.of()),
+                    "TEMPORARY_BRANCH_DELETE_FAILED", "Cannot delete temporary test branch");
+            return null;
+        });
     }
 
     private void configureIdentity(Path target) {

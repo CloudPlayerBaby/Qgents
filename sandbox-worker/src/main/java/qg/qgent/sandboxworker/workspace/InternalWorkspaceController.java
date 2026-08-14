@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -46,6 +47,14 @@ public class InternalWorkspaceController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID workspaceId) {
         workspaceManagerService.delete(workspaceId);
+    }
+
+    /** 固化一个仓库当前未提交工作树，返回独立且可重复使用的测试 Workspace。 */
+    @PostMapping("/{workspaceId}/repositories/{repositoryId}/test-snapshots/{snapshotWorkspaceId}")
+    public WorkspaceResponse snapshotForTest(@PathVariable UUID workspaceId,
+            @PathVariable UUID repositoryId, @PathVariable UUID snapshotWorkspaceId,
+            @RequestParam UUID projectId) {
+        return workspaceManagerService.snapshotForTest(workspaceId, repositoryId, snapshotWorkspaceId, projectId);
     }
 
     /** 查询仓库当前分支、HEAD 和结构化变更。 */

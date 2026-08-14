@@ -17,8 +17,13 @@ import qg.qgent.github.GitHubPullRequestDetails;
 import qg.qgent.github.GitHubPullRequestMergeRequest;
 import qg.qgent.github.GitHubPullRequestMergeResult;
 import qg.qgent.mapper.*;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -45,17 +50,42 @@ class MergeRequestServiceTest {
     private final NotificationService notificationService = mock(NotificationService.class);
     private final qg.qgent.orchestration.worker.SandboxWorkerClient sandboxWorkerClient = mock(qg.qgent.orchestration.worker.SandboxWorkerClient.class);
     private final GitCredentialService gitCredentialService = mock(GitCredentialService.class);
+    private final MergeRequestDeliveryOperationMapper deliveryOperations = mock(MergeRequestDeliveryOperationMapper.class);
+    private final TransactionTemplate transactions = mock(TransactionTemplate.class);
+    private final DiffMapper diffs = mock(DiffMapper.class);
+    private final AtomicBoolean inTransaction = new AtomicBoolean();
+    private final AtomicReference<MergeRequestDeliveryOperationEntity> operation = new AtomicReference<>();
 
     private MergeRequestService service;
 
     @BeforeEach
     void setUp() {
+        when(mergeRequestMapper.selectByIdForUpdate(any())).thenAnswer(invocation ->
+                mergeRequestMapper.selectById(invocation.getArgument(0)));
+        when(projectRepositoryMapper.selectByIdForUpdate(any())).thenAnswer(invocation ->
+                projectRepositoryMapper.selectById(invocation.getArgument(0)));
+        operation.set(null);
+        when(deliveryOperations.selectByKeyForUpdate(anyString())).thenAnswer(invocation -> operation.get());
+        when(deliveryOperations.selectByIdForUpdate(any())).thenAnswer(invocation -> operation.get());
+        when(deliveryOperations.selectById(any())).thenAnswer(invocation -> operation.get());
+        when(deliveryOperations.insert((MergeRequestDeliveryOperationEntity)
+                any(MergeRequestDeliveryOperationEntity.class))).thenAnswer(invocation -> {
+            operation.set(invocation.getArgument(0)); return 1;
+        });
+        when(deliveryOperations.updateById(any(MergeRequestDeliveryOperationEntity.class))).thenReturn(1);
+        when(diffs.selectAcceptedCommittedForMr(any(), any(), any(), any(), anyString()))
+                .thenReturn(new DiffEntity());
+        when(transactions.execute(any())).thenAnswer(invocation -> {
+            inTransaction.set(true);
+            try { return ((TransactionCallback<?>) invocation.getArgument(0)).doInTransaction(null); }
+            finally { inTransaction.set(false); }
+        });
         service = new MergeRequestService(
                 mergeRequestMapper, mergeRequestGroupMapper, qualityCheckMapper, reviewMapper,
                 taskMapper, workspaceRepositoryMapper, projectRepositoryMapper, branchConfigMapper,
                 branchConfigTestsetMapper, projectAccess, eventService, githubInstallationMapper,
                 githubRepositoryMapper, projectMapper, githubClient, notificationService,
-                sandboxWorkerClient, gitCredentialService
+                sandboxWorkerClient, gitCredentialService, deliveryOperations, transactions, diffs
         );
     }
 
@@ -78,7 +108,7 @@ class MergeRequestServiceTest {
         task.setId(taskId);
         task.setProjectId(projectId);
         task.setCreatedBy(userId);
-        task.setWorkspaceId(workspaceId);
+        task.setWorkspaceId(workspaceId); task.setDeliveryMode("DIFF_FIRST");
         task.setRequirementGroupId(requirementGroupId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
 
@@ -121,13 +151,16 @@ class MergeRequestServiceTest {
                 .setBranch("feature/test")
                 .setHeadCommit("sha123")
                 .setVerified(true);
-        when(sandboxWorkerClient.pushWorkspaceBranch(any(), any(), any())).thenReturn(mockPushResponse);
+        when(sandboxWorkerClient.pushWorkspaceBranch(any(), any(), any())).thenAnswer(invocation -> {
+            assertFalse(inTransaction.get());
+            return mockPushResponse;
+        });
 
         GitHubPullRequestDetails githubPr = new GitHubPullRequestDetails(
                 1L, 100, "open", "Test PR", "sha123", "feature/test", "main", false, "url"
         );
         when(githubClient.createPullRequest(eq(12345L), eq("owner"), eq("repo"), any(GitHubPullRequestCreateRequest.class)))
-                .thenReturn(githubPr);
+                .thenAnswer(invocation -> { assertFalse(inTransaction.get()); return githubPr; });
 
         MergeRequestSummaryResponse response = service.create(projectId, userId, request);
 
@@ -155,6 +188,49 @@ class MergeRequestServiceTest {
     }
 
     @Test
+    void createRequiresAcceptedCommittedDiffForCurrentWorkspaceHead() {
+        UUID projectId = UUID.randomUUID(), userId = UUID.randomUUID(), taskId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        MergeRequestCreateRequest request = new MergeRequestCreateRequest();
+        request.setTaskId(taskId); request.setRepositoryId(repositoryId); request.setTargetBranch("main");
+        TaskEntity task = new TaskEntity(); task.setId(taskId); task.setProjectId(projectId);
+        task.setCreatedBy(userId); task.setWorkspaceId(workspaceId); task.setDeliveryMode("DIFF_FIRST");
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId); repository.setProjectId(projectId);
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setWorkspaceId(workspaceId); worktree.setProjectRepositoryId(repositoryId);
+        worktree.setSourceBranch("feat/x"); worktree.setHeadCommit("head");
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        when(projectRepositoryMapper.selectById(repositoryId)).thenReturn(repository);
+        when(workspaceRepositoryMapper.selectForUpdate(workspaceId, repositoryId)).thenReturn(worktree);
+        when(diffs.selectAcceptedCommittedForMr(taskId, projectId, workspaceId, repositoryId, "head"))
+                .thenReturn(null);
+
+        ApiException error = assertThrows(ApiException.class, () -> service.create(projectId, userId, request));
+
+        assertEquals("MR_REVIEWED_DIFF_REQUIRED", error.code());
+        verifyNoInteractions(githubClient);
+    }
+
+    @Test
+    void operationKeySeparatesTasksAndWorkspaces() {
+        UUID projectId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        MergeRequestCreateRequest request = new MergeRequestCreateRequest();
+        request.setRepositoryId(repositoryId); request.setTargetBranch("main");
+        TaskEntity first = new TaskEntity(); first.setId(UUID.randomUUID()); first.setWorkspaceId(UUID.randomUUID());
+        TaskEntity second = new TaskEntity(); second.setId(UUID.randomUUID()); second.setWorkspaceId(UUID.randomUUID());
+        WorkspaceRepositoryEntity firstTree = new WorkspaceRepositoryEntity();
+        firstTree.setSourceBranch("feat/x"); firstTree.setHeadCommit("same-head");
+        WorkspaceRepositoryEntity secondTree = new WorkspaceRepositoryEntity();
+        secondTree.setSourceBranch("feat/x"); secondTree.setHeadCommit("same-head");
+
+        String firstKey = ReflectionTestUtils.invokeMethod(service, "operationKey", projectId, first, firstTree, request);
+        String secondKey = ReflectionTestUtils.invokeMethod(service, "operationKey", projectId, second, secondTree, request);
+
+        assertNotEquals(firstKey, secondKey);
+    }
+
+    @Test
     void createFailsWhenWorkerPushVerificationFails() {
         UUID projectId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
@@ -172,7 +248,7 @@ class MergeRequestServiceTest {
         task.setId(taskId);
         task.setProjectId(projectId);
         task.setCreatedBy(userId);
-        task.setWorkspaceId(workspaceId);
+        task.setWorkspaceId(workspaceId); task.setDeliveryMode("DIFF_FIRST");
         when(taskMapper.selectById(taskId)).thenReturn(task);
 
         ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
@@ -267,14 +343,17 @@ class MergeRequestServiceTest {
         
         GitHubPullRequestMergeResult mergeResult = new GitHubPullRequestMergeResult(true, "sha456", "Merged");
         when(githubClient.mergePullRequest(eq(12345L), eq("owner"), eq("repo"), eq(100), any(GitHubPullRequestMergeRequest.class)))
-                .thenReturn(mergeResult);
+                .thenAnswer(invocation -> {
+                    assertFalse(inTransaction.get(), "GitHub 合并不得发生在数据库事务中");
+                    return mergeResult;
+                });
 
         MergeRequestSummaryResponse response = service.merge(projectId, mergeRequestId, userId);
 
         assertNotNull(response);
         assertEquals("MERGED", response.getStatus());
 
-        verify(mergeRequestMapper).updateById(any(MergeRequestEntity.class));
+        verify(mergeRequestMapper, times(2)).updateById(any(MergeRequestEntity.class));
         verify(eventService).publish(any(), any(), eq("merge-request.updated"), any(), any());
     }
 
@@ -346,7 +425,7 @@ class MergeRequestServiceTest {
         task.setId(taskId);
         task.setProjectId(projectId);
         task.setCreatedBy(userId);
-        task.setWorkspaceId(workspaceId);
+        task.setWorkspaceId(workspaceId); task.setDeliveryMode("DIFF_FIRST");
         when(taskMapper.selectById(taskId)).thenReturn(task);
 
         ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
@@ -420,7 +499,7 @@ class MergeRequestServiceTest {
         task.setId(taskId);
         task.setProjectId(projectId);
         task.setCreatedBy(userId);
-        task.setWorkspaceId(workspaceId);
+        task.setWorkspaceId(workspaceId); task.setDeliveryMode("DIFF_FIRST");
         when(taskMapper.selectById(taskId)).thenReturn(task);
 
         ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
@@ -594,7 +673,7 @@ class MergeRequestServiceTest {
         task.setId(taskId);
         task.setProjectId(projectId);
         task.setCreatedBy(userId);
-        task.setWorkspaceId(workspaceId);
+        task.setWorkspaceId(workspaceId); task.setDeliveryMode("DIFF_FIRST");
         when(taskMapper.selectById(taskId)).thenReturn(task);
 
         ProjectRepositoryEntity repository = new ProjectRepositoryEntity();

@@ -41,9 +41,13 @@ public class MessageResponse {
     @Schema(description = "发送者 ID；SYSTEM 消息为空")
     private String senderId;
 
-    /** 发送者类型：USER / SYSTEM（Agent 后续扩展）。 */
-    @Schema(description = "发送者类型：USER / SYSTEM")
+    /** 发送者类型：USER / AGENT / SYSTEM。 */
+    @Schema(description = "发送者类型：USER / AGENT / SYSTEM")
     private String senderType;
+
+    /** 发送者显示名称（用户 displayName 或 Agent name）；SYSTEM 消息为空。 */
+    @Schema(description = "发送者显示名称")
+    private String senderName;
 
     /** 回复或引用的原消息 ID；为空表示无回复。 */
     @Schema(description = "回复或引用的原消息 ID")

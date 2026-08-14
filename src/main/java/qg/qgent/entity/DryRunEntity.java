@@ -29,8 +29,12 @@ public class DryRunEntity {
     private UUID taskStepId;
     /** 项目仓库绑定ID。 */
     private UUID projectRepositoryId;
-    /** 源分支或提交引用。 */
+    /** 客户端请求且可恢复调度使用的源分支或提交引用。 */
+    private String sourceRef;
+    /** Worker 解析后的确定提交 SHA；QUEUED 时为空。 */
     private String headCommit;
+    /** 首次受理时解析并固定的目标分支 commit SHA，重试不得重新解析分支。 */
+    private String resolvedTargetCommit;
     /** 目标分支名。 */
     private String targetBranch;
     /** 运行状态，取值见类注释。 */
@@ -38,6 +42,12 @@ public class DryRunEntity {
     /** 试运行报告 JSON，含冲突与测试摘要。 */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> report;
+    /** 目标分支门禁在创建时固化的 Testset 执行定义。 */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private java.util.List<Map<String, Object>> testsetSnapshot;
+    private String claimToken;
+    private LocalDateTime leaseExpiresAt;
+    private Integer attemptCount;
     /** 发起用户ID。 */
     private UUID createdBy;
     private LocalDateTime createdAt;

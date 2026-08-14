@@ -104,6 +104,58 @@ class SandboxWorkerClientTest {
     }
 
     @Test
+    void createsControlledTestSnapshot() {
+        UUID snapshot = UUID.fromString("00000000-0000-0000-0000-000000000008");
+        UUID project = UUID.fromString("00000000-0000-0000-0000-000000000009");
+        server.expect(once(), requestTo(BASE + "/internal/v1/workspaces/" + WORKSPACE
+                        + "/repositories/" + REPO + "/test-snapshots/" + snapshot + "?projectId=" + project))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"id":"%s","projectId":"%s","storageKey":"workspaces/%s","status":"READY",
+                         "repositories":[],"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-14T00:00:00Z"}
+                        """.formatted(snapshot, project, snapshot), MediaType.APPLICATION_JSON));
+
+        WorkerWorkspace result = client.createTestSnapshot(WORKSPACE, REPO, snapshot, project);
+
+        assertEquals(snapshot, result.getId());
+        server.verify();
+    }
+
+    @Test
+    void resolvesGitRefToImmutableCommit() {
+        String sha = "0123456789012345678901234567890123456789";
+        server.expect(once(), requestTo(BASE + "/internal/v1/git-resolutions"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("{\"commitSha\":\"" + sha + "\"}", MediaType.APPLICATION_JSON));
+        WorkerGitResolveRequest request = new WorkerGitResolveRequest();
+        request.setRepositoryId(REPO); request.setRef("main");
+
+        WorkerGitResolveResponse response = client.resolveGitRef(request);
+
+        assertEquals(sha, response.getCommitSha());
+        server.verify();
+    }
+
+    @Test
+    void executesTestsetsThroughDedicatedWorkerOperation() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/test-executions"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"executionId":"%s","status":"PASSED","resolvedHeadCommit":"abc",
+                         "results":[{"testsetId":"%s","status":"PASSED","exitCode":0,"durationMs":12}]}
+                        """.formatted(EXECUTION, REPO), MediaType.APPLICATION_JSON));
+        WorkerTestExecutionRequest request = new WorkerTestExecutionRequest();
+        request.setExecutionId(EXECUTION); request.setProjectId(UUID.randomUUID()); request.setRepositoryId(REPO);
+        request.setWorkspaceId(WORKSPACE); request.setTestsets(List.of());
+
+        WorkerTestExecutionResponse response = client.executeTests(request);
+
+        assertEquals("PASSED", response.getStatus());
+        assertEquals(1, response.getResults().size());
+        server.verify();
+    }
+
+    @Test
     void submitsToolExecutionAndReadsQueuedResult() {
         server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/tool-executions"))
                 .andExpect(method(HttpMethod.POST))
@@ -238,6 +290,65 @@ class SandboxWorkerClientTest {
         assertEquals("feat/login", response.getBranch());
         assertEquals("abcdef0123456789", response.getHeadCommit());
         assertEquals(true, response.isVerified());
+        server.verify();
+    }
+
+    @Test
+    void renewsSandboxLeaseWithoutTtl() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/lease/renew"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"id":"%s","taskRunId":"00000000-0000-0000-0000-000000000005","status":"READY",
+                         "runtimeKind":"fake","createdAt":"2026-08-13T00:00:00Z"}
+                        """.formatted(SANDBOX), MediaType.APPLICATION_JSON));
+
+        WorkerSandbox sandbox = client.renewSandbox(SANDBOX);
+
+        assertEquals(SANDBOX, sandbox.getId());
+        assertEquals("READY", sandbox.getStatus());
+        server.verify();
+    }
+
+    @Test
+    void renewsSandboxLeaseWithTtlSeconds() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/lease/renew?ttlSeconds=60"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"id":"%s","taskRunId":"00000000-0000-0000-0000-000000000005","status":"READY",
+                         "runtimeKind":"fake","createdAt":"2026-08-13T00:00:00Z"}
+                        """.formatted(SANDBOX), MediaType.APPLICATION_JSON));
+
+        WorkerSandbox sandbox = client.renewSandbox(SANDBOX, 60L);
+
+        assertEquals(SANDBOX, sandbox.getId());
+        assertEquals("READY", sandbox.getStatus());
+        server.verify();
+    }
+
+    @Test
+    void renewsSandboxPreserves404() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/lease/renew"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"code\":\"SANDBOX_NOT_FOUND\",\"message\":\"sandbox is missing\"}"));
+
+        ApiException exception = assertThrows(ApiException.class, () -> client.renewSandbox(SANDBOX));
+
+        assertEquals("SANDBOX_NOT_FOUND", exception.code());
+        assertEquals(HttpStatus.NOT_FOUND, exception.status());
+        assertEquals("sandbox is missing", exception.getMessage());
+        server.verify();
+    }
+
+    @Test
+    void renewsSandboxMapsNetworkErrorToUnavailable() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/sandboxes/" + SANDBOX + "/lease/renew"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+
+        ApiException exception = assertThrows(ApiException.class, () -> client.renewSandbox(SANDBOX));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, exception.status());
         server.verify();
     }
 }

@@ -69,7 +69,7 @@ public class FinalDiffBundleService {
         DiffReviewBatchEntity existing = batches.selectOne(Wrappers.<DiffReviewBatchEntity>lambdaQuery()
                 .eq(DiffReviewBatchEntity::getTaskId, taskId)
                 .eq(DiffReviewBatchEntity::getFinalCodingTaskRunId, finalCodingRunId).last("LIMIT 1"));
-        if (existing != null) return existing.getId();
+        if (existing != null) return restoreExistingPendingBatch(task, existing.getId());
 
         TaskRunEntity coding = runs.selectById(finalCodingRunId);
         if (coding == null || !taskId.equals(coding.getTaskId()) || !"DEVELOPER".equals(coding.getRole())
@@ -138,10 +138,32 @@ public class FinalDiffBundleService {
                     Map.of("projectId", task.getProjectId(), "taskId", task.getId(), "diffId", diff.getId(),
                             "repositoryId", diff.getProjectRepositoryId(), "status", diff.getStatus()));
         }
+        task.setStatus("WAITING_DIFF_CONFIRMATION");
+        task.setUpdatedAt(now);
+        tasks.updateById(task);
+        events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated", task.getId().toString(),
+                TaskEventPayloads.taskUpdated(task));
         events.publish(task.getProjectId(), task.getRequirementGroupId(), "diff-review.created", batch.getId().toString(),
                 Map.of("projectId", task.getProjectId(), "taskId", task.getId(), "reviewBatchId", batch.getId(),
                         "reviewStatus", batch.getReviewStatus(), "aggregateHash", aggregateHash));
         return batch.getId();
+    }
+
+    /** 兼容批次已提交但旧流程尚未更新 Task 状态的窗口；锁定后只恢复仍待确认的批次。 */
+    private UUID restoreExistingPendingBatch(TaskEntity task, UUID batchId) {
+        return transactions.execute(status -> {
+            DiffReviewBatchEntity batch = batches.selectByIdForUpdate(batchId);
+            TaskEntity lockedTask = tasks.selectByIdForUpdate(task.getId());
+            if (batch != null && lockedTask != null && "PENDING_CONFIRMATION".equals(batch.getReviewStatus())
+                    && "RUNNING".equals(lockedTask.getStatus())) {
+                lockedTask.setStatus("WAITING_DIFF_CONFIRMATION");
+                lockedTask.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+                tasks.updateById(lockedTask);
+                events.publish(lockedTask.getProjectId(), lockedTask.getRequirementGroupId(), "task.updated",
+                        lockedTask.getId().toString(), TaskEventPayloads.taskUpdated(lockedTask));
+            }
+            return batchId;
+        });
     }
 
     private void saveFiles(UUID diffId, List<WorkerGitDiffFile> values, LocalDateTime now) {

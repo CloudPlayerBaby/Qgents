@@ -18,4 +18,5 @@ public class DiffReviewBatchResponse {
     private String aggregateHash;
     private String reviewReason;
     private List<DiffListItemResponse> diffs;
+    private List<DiffRepositoryDeliveryResponse> repositoryDeliveries;
 }

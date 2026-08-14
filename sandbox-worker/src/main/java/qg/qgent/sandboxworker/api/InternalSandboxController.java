@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import qg.qgent.sandboxworker.service.SandboxService;
 import qg.qgent.sandboxworker.service.ToolExecutionService;
+import qg.qgent.sandboxworker.service.TestExecutionService;
+import qg.qgent.sandboxworker.workspace.WorkspaceManagerService;
 
 import java.util.Map;
 import java.util.UUID;
@@ -33,6 +35,8 @@ import java.util.UUID;
 public class InternalSandboxController {
     private final SandboxService sandboxService;
     private final ToolExecutionService toolExecutionService;
+    private final TestExecutionService testExecutionService;
+    private final WorkspaceManagerService workspaceManagerService;
 
     /** 返回 Worker 进程的基础存活状态。 */
     @GetMapping("/health")
@@ -115,5 +119,24 @@ public class InternalSandboxController {
     public void destroySandbox(@PathVariable UUID sandboxId) {
         toolExecutionService.cancelBySandbox(sandboxId);
         sandboxService.destroy(sandboxId);
+    }
+
+    /** 同步执行一组已验证 Testset，返回脱敏结果。 */
+    @PostMapping("/test-executions")
+    public TestExecutionResponse executeTests(@Valid @RequestBody TestExecutionRequest request) {
+        return testExecutionService.execute(request);
+    }
+
+    /** 基于共享 Git Store 做只读合并预演，不创建 Commit。 */
+    @PostMapping("/merge-previews")
+    public MergePreviewResponse mergePreview(@Valid @RequestBody MergePreviewRequest request) {
+        return workspaceManagerService.mergePreview(request.getRepositoryId(), request.getSourceRef(),
+                request.getTargetBranch());
+    }
+
+    /** 在受控 Git Store 中把引用解析为固定 commit SHA。 */
+    @PostMapping("/git-resolutions")
+    public GitResolveResponse resolveGitRef(@Valid @RequestBody GitResolveRequest request) {
+        return new GitResolveResponse(workspaceManagerService.resolveGitRef(request.getRepositoryId(), request.getRef()));
     }
 }

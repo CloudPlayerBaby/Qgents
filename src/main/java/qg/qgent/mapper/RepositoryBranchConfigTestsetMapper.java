@@ -27,4 +27,8 @@ public interface RepositoryBranchConfigTestsetMapper extends BaseMapper<Reposito
     })
     List<RepositoryBranchConfigTestsetEntity> selectByBranchConfigId(@Param("branchConfigId") UUID branchConfigId);
 
+    /** 返回引用指定 Testset 的门禁数量，用于阻止删除仍在使用的配置。 */
+    @Select("SELECT COUNT(*) FROM repository_branch_config_testsets WHERE testset_id = #{testsetId}")
+    long countByTestsetId(@Param("testsetId") UUID testsetId);
+
 }

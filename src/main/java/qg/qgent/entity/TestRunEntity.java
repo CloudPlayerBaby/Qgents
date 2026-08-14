@@ -26,9 +26,19 @@ public class TestRunEntity {
     private String ref;
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<String> testsetIds;
+    /** 创建时固化的 Testset 执行定义，后续配置修改不会改变本次运行。 */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private List<Map<String, Object>> executionSnapshot;
+    /** Worker 使用的不可变 Git 引用；Task 运行也通过临时 checkout 执行。 */
+    private String executionSourceRef;
+    /** Task 当前未提交工作树在 Worker 中固化出的隔离 Workspace；ref 运行为空。 */
+    private UUID executionWorkspaceId;
     private String status;
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> summary;
+    private String claimToken;
+    private LocalDateTime leaseExpiresAt;
+    private Integer attemptCount;
     private UUID createdBy;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

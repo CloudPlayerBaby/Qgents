@@ -2,6 +2,7 @@ package qg.qgent.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -22,7 +23,8 @@ public class AttachmentCreateRequest {
     @Schema(description = "MIME 媒体类型", maxLength = 255)
     private String contentType;
 
-    /** 文件大小（字节，可空）。 */
-    @Schema(description = "文件大小（字节）")
+    /** 文件大小（字节，必填；上限由 app.attachment-max-size-bytes 配置，默认 50MB）。 */
+    @NotNull
+    @Schema(description = "文件大小（字节，必填）", requiredMode = Schema.RequiredMode.REQUIRED)
     private Long sizeBytes;
 }

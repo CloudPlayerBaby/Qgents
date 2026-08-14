@@ -20,6 +20,10 @@ public class DiffReviewBatchEntity {
     private UUID finalCodingTaskRunId;
     private String reviewStatus;
     private String deliveryStatus;
+    private String deliveryOperationId;
+    /** 每次领取批次交付时重新生成的 fencing token。 */
+    private String deliveryClaimToken;
+    private LocalDateTime deliveryLeaseExpiresAt;
     private String aggregateHash;
     private UUID reviewedBy;
     private String reviewReason;

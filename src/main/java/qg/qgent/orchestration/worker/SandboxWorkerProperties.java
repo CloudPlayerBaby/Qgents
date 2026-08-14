@@ -1,5 +1,6 @@
 package qg.qgent.orchestration.worker;
 
+import jakarta.annotation.PostConstruct;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -31,4 +32,23 @@ public class SandboxWorkerProperties {
 
     /** 等待一次工具执行进入终态的最大时长。 */
     private Duration pollTimeout = Duration.ofMinutes(15);
+
+    /** 定时续租 Sandbox 空闲租约的间隔。 */
+    private Duration leaseRenewInterval = Duration.ofSeconds(10);
+
+    /**
+     * 续租频率必须为正数；零或负数会令轮询循环持续调用 Worker，造成请求风暴。
+     */
+    @PostConstruct
+    void validateLeaseRenewInterval() {
+        leaseRenewInterval();
+    }
+
+    /** 返回已校验的续租间隔，供非 Spring 单元测试和运行时调用共同使用。 */
+    public Duration leaseRenewInterval() {
+        if (leaseRenewInterval == null || leaseRenewInterval.isZero() || leaseRenewInterval.isNegative()) {
+            throw new IllegalStateException("app.worker.lease-renew-interval must be greater than zero");
+        }
+        return leaseRenewInterval;
+    }
 }

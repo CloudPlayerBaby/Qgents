@@ -1,7 +1,6 @@
 package qg.qgent.service;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 import qg.qgent.dto.UploadCredential;
 
@@ -18,13 +17,13 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 本地签名直传凭证（开发默认策略，实现 {@link AttachmentStorageStrategy}）。
+ * 本地签名直传凭证（开发回退策略，实现 {@link AttachmentStorageStrategy}）。
  * <p>
- * 对象存储尚未接入，先签发指向未来上传端点的签名 URL：签名 = HMAC-SHA256(secret, attachmentId:expiresAtEpochMs)。
- * 凭证过期即失效；真实对象存储接入后由新策略替换，本实现仅用于开发联调。
+ * 仅在未启用阿里云 OSS（aliyun.oss.enabled=false）时作为唯一策略被注入；
+ * 签发指向未来上传端点的签名 URL：签名 = HMAC-SHA256(secret, attachmentId:expiresAtEpochMs)，不真实存文件。
+ * 真实存储接入后由 {@link AliyunOssAttachmentStorage}（@Primary）替换。
  */
 @Component
-@Primary
 public class LocalSignedAttachmentStorage implements AttachmentStorageStrategy {
 
     private static final String HMAC_ALGORITHM = "HmacSHA256";
@@ -48,7 +47,8 @@ public class LocalSignedAttachmentStorage implements AttachmentStorageStrategy {
     }
 
     @Override
-    public UploadCredential createCredential(UUID attachmentId, String fileName, String mediaType, Long sizeBytes) {
+    public UploadCredential createCredential(UUID attachmentId, String objectKey, String fileName, String mediaType,
+            Long sizeBytes) {
         LocalDateTime expiresAt = LocalDateTime.now(ZoneOffset.UTC).plus(expiry);
         long expiresAtMillis = expiresAt.toInstant(ZoneOffset.UTC).toEpochMilli();
         String payload = attachmentId + ":" + expiresAtMillis;
