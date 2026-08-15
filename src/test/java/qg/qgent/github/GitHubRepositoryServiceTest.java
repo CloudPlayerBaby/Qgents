@@ -239,11 +239,13 @@ class GitHubRepositoryServiceTest {
         // Return 2 repositories from Database
         GitHubRepositoryEntity repo1 = new GitHubRepositoryEntity();
         repo1.setId(UUID.randomUUID());
+        repo1.setInstallationId(installationId);
         repo1.setProviderRepositoryId(100L);
         repo1.setAuthorizationStatus("AUTHORIZED");
-        
+
         GitHubRepositoryEntity repo2 = new GitHubRepositoryEntity();
         repo2.setId(UUID.randomUUID());
+        repo2.setInstallationId(installationId);
         repo2.setProviderRepositoryId(200L); // Missing from GitHub
         repo2.setAuthorizationStatus("AUTHORIZED");
         
@@ -279,6 +281,74 @@ class GitHubRepositoryServiceTest {
         assertEquals(myTeamId, returnedTeamId);
         verify(installationMapper).insert(any(GitHubInstallationEntity.class));
         verify(repositoryMapper).insert(any(GitHubRepositoryEntity.class));
+    }
+
+    @Test
+    void movesExistingRepositoryToNewInstallationForSameTeam() {
+        long providerInstallationId = 12345L;
+        UUID teamId = UUID.randomUUID();
+        UUID previousInstallationId = UUID.randomUUID();
+        GitHubRepositoryEntity existingRepository = repository("main");
+        existingRepository.setInstallationId(previousInstallationId);
+        existingRepository.setProviderRepositoryId(100L);
+
+        GitHubInstallationEntity previousInstallation = new GitHubInstallationEntity();
+        previousInstallation.setId(previousInstallationId);
+        previousInstallation.setTeamId(teamId);
+
+        when(gitHubClient.verifyInstallationState("mock_state")).thenReturn(teamId);
+        when(gitHubClient.getInstallation(providerInstallationId))
+                .thenReturn(new qg.qgent.github.GitHubInstallationDetails(
+                        providerInstallationId, "qgents", "Organization"));
+        when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
+                new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "repo1", "main", "PRIVATE", false)));
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(installationMapper.selectById(previousInstallationId)).thenReturn(previousInstallation);
+        when(repositoryMapper.selectList(any(Wrapper.class)))
+                .thenReturn(java.util.List.of(), java.util.List.of(existingRepository));
+
+        service.handleInstallationCallback(providerInstallationId, "mock_state");
+
+        ArgumentCaptor<GitHubInstallationEntity> installation = ArgumentCaptor.forClass(GitHubInstallationEntity.class);
+        ArgumentCaptor<GitHubRepositoryEntity> repository = ArgumentCaptor.forClass(GitHubRepositoryEntity.class);
+        verify(installationMapper).insert(installation.capture());
+        verify(repositoryMapper).updateById(repository.capture());
+        verify(repositoryMapper, never()).insert(any(GitHubRepositoryEntity.class));
+        assertEquals(existingRepository.getId(), repository.getValue().getId());
+        assertEquals(installation.getValue().getId(), repository.getValue().getInstallationId());
+    }
+
+    @Test
+    void rejectsExistingRepositoryFromAnotherTeam() {
+        long providerInstallationId = 12345L;
+        UUID teamId = UUID.randomUUID();
+        UUID previousInstallationId = UUID.randomUUID();
+        GitHubRepositoryEntity existingRepository = repository("main");
+        existingRepository.setInstallationId(previousInstallationId);
+        existingRepository.setProviderRepositoryId(100L);
+
+        GitHubInstallationEntity previousInstallation = new GitHubInstallationEntity();
+        previousInstallation.setId(previousInstallationId);
+        previousInstallation.setTeamId(UUID.randomUUID());
+
+        when(gitHubClient.verifyInstallationState("mock_state")).thenReturn(teamId);
+        when(gitHubClient.getInstallation(providerInstallationId))
+                .thenReturn(new qg.qgent.github.GitHubInstallationDetails(
+                        providerInstallationId, "qgents", "Organization"));
+        when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
+                new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "repo1", "main", "PRIVATE", false)));
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(installationMapper.selectById(previousInstallationId)).thenReturn(previousInstallation);
+        when(repositoryMapper.selectList(any(Wrapper.class)))
+                .thenReturn(java.util.List.of(), java.util.List.of(existingRepository));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.handleInstallationCallback(providerInstallationId, "mock_state"));
+
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("GITHUB_REPOSITORY_INSTALLATION_CONFLICT", exception.code());
+        verify(repositoryMapper, never()).insert(any(GitHubRepositoryEntity.class));
+        verify(repositoryMapper, never()).updateById(any(GitHubRepositoryEntity.class));
     }
 
     @Test

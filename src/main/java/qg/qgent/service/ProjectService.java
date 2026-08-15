@@ -29,10 +29,11 @@ public class ProjectService {
     private final ProjectAccessService access;
     private final ApplicationEventPublisher eventPublisher;
     private final NotificationService notificationService;
+    private final EventService eventService;
 
     public ProjectService(ProjectMapper projectMapper, ProjectMemberMapper memberMapper, TeamMapper teamMapper,
                           TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher,
-                          NotificationService notificationService) {
+                          NotificationService notificationService, EventService eventService) {
         this.projectMapper = projectMapper;
         this.memberMapper = memberMapper;
         this.teamMapper = teamMapper;
@@ -40,6 +41,7 @@ public class ProjectService {
         this.access = access;
         this.eventPublisher = eventPublisher;
         this.notificationService = notificationService;
+        this.eventService = eventService;
     }
 
     /**
@@ -74,6 +76,9 @@ public class ProjectService {
         }
         // 触发自动创建唯一 PROJECT_MAIN 群（契约 §7），监听方为 GroupService
         eventPublisher.publishEvent(new ProjectCreatedEvent(project.getId(), project.getName(), actor));
+        // 项目创建动态事件：供「团队最近动态」聚合展示，与项目同事务落库
+        eventService.publish(project.getId(), null, "project.created", project.getId().toString(),
+                Map.of("projectId", project.getId(), "name", project.getName(), "createdBy", actor));
         return response(project, "PROJECT_ADMIN");
     }
 

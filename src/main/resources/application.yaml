@@ -63,6 +63,7 @@ app:
   worker:
     base-url: ${SANDBOX_WORKER_URL:http://localhost:8091}
     enabled: ${SANDBOX_WORKER_ENABLED:false}
+    backend-service-token: ${SANDBOX_BACKEND_SERVICE_TOKEN:}
     image-profile: ${SANDBOX_IMAGE_PROFILE:java-node}
     poll-interval: ${SANDBOX_POLL_INTERVAL:250ms}
     poll-timeout: ${SANDBOX_POLL_TIMEOUT:15m}

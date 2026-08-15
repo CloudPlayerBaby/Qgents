@@ -36,8 +36,10 @@ class ProjectServiceTest {
     private final TeamMemberMapper teamMembers = mock(TeamMemberMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
+    private final NotificationService notificationService = mock(NotificationService.class);
+    private final EventService eventService = mock(EventService.class);
     private final ProjectService service = new ProjectService(projects, members, teams, teamMembers, access,
-            eventPublisher);
+            eventPublisher, notificationService, eventService);
 
     @Test
     void createAddsCreatorAdminAndUniqueInitialMembers() {

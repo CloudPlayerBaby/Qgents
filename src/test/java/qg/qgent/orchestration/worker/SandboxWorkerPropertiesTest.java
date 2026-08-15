@@ -18,6 +18,15 @@ class SandboxWorkerPropertiesTest {
     }
 
     @Test
+    void storesBackendServiceToken() {
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+
+        properties.setBackendServiceToken("shared-secret");
+
+        assertEquals("shared-secret", properties.getBackendServiceToken());
+    }
+
+    @Test
     void rejectsNonPositiveLeaseRenewInterval() {
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         properties.setLeaseRenewInterval(Duration.ZERO);

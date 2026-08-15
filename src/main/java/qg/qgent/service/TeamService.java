@@ -12,6 +12,10 @@ import qg.qgent.auth.TeamInvitationMailer;
 import qg.qgent.auth.TokenService;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
+import qg.qgent.entity.EventEntity;
+import qg.qgent.entity.MergeRequestEntity;
+import qg.qgent.entity.ProjectEntity;
+import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamInvitationEntity;
 import qg.qgent.entity.TeamMemberEntity;
@@ -21,11 +25,17 @@ import qg.qgent.mapper.*;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 团队服务 service
@@ -43,11 +53,15 @@ public class TeamService {
     private final TeamInvitationMailer invitationMailer;
     private final TeamDisbandService teamDisbandService;
     private final NotificationService notificationService;
+    private final EventMapper eventMapper;
+    private final TaskMapper taskMapper;
+    private final MergeRequestMapper mergeRequestMapper;
 
     public TeamService(TeamMapper teamMapper, TeamMemberMapper memberMapper,
                        TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, ProjectMapper projectMapper,
                        UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer,
-                       TeamDisbandService teamDisbandService, NotificationService notificationService) {
+                       TeamDisbandService teamDisbandService, NotificationService notificationService,
+                       EventMapper eventMapper, TaskMapper taskMapper, MergeRequestMapper mergeRequestMapper) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
         this.invitationMapper = invitationMapper;
@@ -58,6 +72,9 @@ public class TeamService {
         this.invitationMailer = invitationMailer;
         this.teamDisbandService = teamDisbandService;
         this.notificationService = notificationService;
+        this.eventMapper = eventMapper;
+        this.taskMapper = taskMapper;
+        this.mergeRequestMapper = mergeRequestMapper;
     }
 
     /**
@@ -263,24 +280,56 @@ public class TeamService {
     }
 
     /**
-     * 接受团队邀请
+     * 当前用户收到的待处理团队邀请（收件人视角）。
+     * <p>
+     * 按当前登录用户邮箱的归一化值匹配 email_normalized 的 PENDING 邀请（PENDING 但已过期
+     * 在响应中按 EXPIRED 展示，由调用方在事务外完成状态判定）；不返回明文邀请 token，
+     * 接受时使用响应中的 id 调用 {@link #accept}。团队名与邀请人显示名页内批量补全，避免 N+1。
      *
-     * @param actor
-     * @param rawToken
-     * @return
+     * @param actor  当前用户 ID
+     * @param cursor 上一页游标，可为空
+     * @param limit  每页数量（自动收敛到 1..100）
+     * @return 收到的邀请分页结果
+     */
+    public PageSlice<ReceivedInvitationResponse> myInvitations(UUID actor, String cursor, Integer limit) {
+        UserEntity user = userMapper.selectById(actor);
+        if (user == null || user.getEmail() == null || user.getEmail().isBlank()) {
+            throw notFound();
+        }
+        int pageSize = pageSize(limit);
+        String scope = "my-team-invitations";
+        UUID anchor = decodeCursor(cursor, scope);
+        List<TeamInvitationEntity> rows = invitationMapper.selectPendingByEmail(normalize(user.getEmail()), anchor,
+                pageSize + 1);
+        Map<UUID, String> teamNames = loadTeamNames(rows);
+        Map<UUID, String> inviterNames = loadUserDisplayNames(rows);
+        return keysetPage(rows, pageSize, scope, TeamInvitationEntity::getId,
+                invitation -> receivedInvitation(invitation, teamNames, inviterNames));
+    }
+
+    /**
+     * 接受团队邀请。
+     * <p>
+     * reference 为「邀请记录 id（UUIDv7）或明文邀请 token」：若能被解析为 UUID 则按 id 查找，
+     * 否则按明文 token 的 SHA-256 哈希查找（token 为 base64url 字符串、无连字符，永远不会被
+     * UUID.fromString 误判，两种查找方式可安全区分）。两种路径收敛到同一接受逻辑：
+     * 当前用户邮箱必须与被邀请邮箱归一化后一致；已接受且已是成员时幂等返回；过期置 EXPIRED。
+     *
+     * @param actor     当前用户 ID
+     * @param reference 邀请记录 id 或明文邀请 token
+     * @return 接受后的团队成员视图
      */
     @Transactional(noRollbackFor = PersistedApiException.class)
-    public TeamMemberResponse accept(UUID actor, String rawToken) {
-        if (rawToken == null || rawToken.isBlank() || rawToken.length() > 512) {
+    public TeamMemberResponse accept(UUID actor, String reference) {
+        if (reference == null || reference.isBlank() || reference.length() > 512) {
             throw notFound();
         }
         UserEntity user = userMapper.selectById(actor);
         if (user == null) {
             throw notFound();
         }
-        // 找出来这个邀请对应的记录
-        TeamInvitationEntity invitation = invitationMapper.selectOne(Wrappers.<TeamInvitationEntity>lambdaQuery()
-                .eq(TeamInvitationEntity::getTokenHash, tokens.hash(rawToken)).last("FOR UPDATE"));
+        // reference 为邀请 id（UUIDv7）或明文邀请 token；两者以 UUID 解析区分
+        TeamInvitationEntity invitation = resolveInvitation(reference);
         if (invitation == null || !normalize(user.getEmail()).equals(invitation.getEmailNormalized())) {
             throw notFound();
         }
@@ -323,6 +372,29 @@ public class TeamService {
                     user.getDisplayName() + " 已加入团队 " + team.getName(), null, team.getId().toString());
         }
         return memberResponse(actor, team, member.getRole(), user);
+    }
+
+    /**
+     * 解析接受邀请的引用：reference 为邀请 id 时按主键查找（加行锁），否则视为明文 token 按其哈希查找。
+     * 明文 token 由 {@link TokenService#opaque()} 生成（base64url、无连字符），不可能等于 UUIDv7 字符串，
+     * 因此只有真正的邀请 id 会命中 by-id 分支，存量 token 流程行为不变。
+     */
+    private TeamInvitationEntity resolveInvitation(String reference) {
+        UUID parsed = tryUuid(reference);
+        if (parsed != null) {
+            return invitationMapper.selectOne(Wrappers.<TeamInvitationEntity>lambdaQuery()
+                    .eq(TeamInvitationEntity::getId, parsed).last("FOR UPDATE"));
+        }
+        return invitationMapper.selectOne(Wrappers.<TeamInvitationEntity>lambdaQuery()
+                .eq(TeamInvitationEntity::getTokenHash, tokens.hash(reference)).last("FOR UPDATE"));
+    }
+
+    private UUID tryUuid(String value) {
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /**
@@ -441,6 +513,264 @@ public class TeamService {
         TeamResponse summary = team(team, "TEAM_OWNER");
         teamDisbandService.deleteTeam(teamId);
         return summary;
+    }
+
+    /**
+     * 团队最近动态（基于项目事件聚合，轻量方案）。
+     * <p>
+     * 在 events 表上按团队 JOIN projects 拉取最近事件，覆盖事件保留窗口（24 小时）；
+     * 类型过滤（type 逗号分隔、前缀匹配）与 keyset 分页都在数据库侧完成，游标为事件 id
+     * （UUIDv7 自带时间序，倒序即最近优先）。事件载荷中的 UUID 字段读回为字符串，
+     * 统一经 {@link #uuidOf} 转换。MESSAGE/GROUP_CREATED/MEMBER_JOINED/TASK_CREATED
+     * 四类动态当前无事件来源，不在此接口产出。
+     *
+     * @param actor  当前用户 ID（必须是团队成员）
+     * @param teamId 团队 ID
+     * @param type   动态类型过滤，逗号分隔（如 TASK,MR），可为空表示全部
+     * @param cursor 上一页游标，可为空
+     * @param limit  每页数量（默认 20、最大 50，前端清单约定）
+     * @return 团队最近动态分页结果
+     */
+    public PageSlice<ActivityResponse> activities(UUID actor, UUID teamId, String type, String cursor, Integer limit) {
+        requireMember(teamId, actor);
+        requireTeam(teamId);
+        int pageSize = Math.min(Math.max(limit == null ? 20 : limit, 1), 50);
+        String scope = "team-activities:" + teamId;
+        UUID anchor = decodeCursor(cursor, scope);
+        List<String> fragments = activityFragments(type);
+        List<EventEntity> rows = eventMapper.listTeamAfter(teamId, anchor, fragments, pageSize + 1);
+        Map<UUID, TaskEntity> tasks = loadTasks(rows);
+        Map<UUID, MergeRequestEntity> mergeRequests = loadMergeRequests(rows);
+        Map<UUID, ProjectEntity> projects = loadProjects(rows);
+        Map<UUID, String> userNames = loadActivityUserNames(rows, tasks);
+        return keysetPage(rows, pageSize, scope, EventEntity::getId,
+                event -> activity(event, tasks, mergeRequests, projects, userNames));
+    }
+
+    // ---------- 团队动态：事件类型映射与条目构建 ----------
+
+    /**
+     * 动态类型 → SQL 过滤片段白名单（event_type 与 payload.status 的 JSON 取值约束）。
+     * TASK_CREATED 复用创建任务时已发布的 task.updated(PLANNING)：PLANNING 仅出现在任务创建态，
+     * 后续状态转移不会回到 PLANNING，故可安全代表「任务已创建」，无需新增独立事件发布源。
+     * 仅由服务端常量引用，绝不拼接用户输入；{@link #activityFragments} 只挑选其中子集。
+     */
+    private static final Map<String, String> ACTIVITY_FRAGMENTS = Map.ofEntries(
+            Map.entry("GROUP_CREATED", "e.event_type='project.created'"),
+            Map.entry("TASK_CREATED", "e.event_type='task.updated' AND "
+                    + "JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.status'))='PLANNING'"),
+            Map.entry("TASK_COMPLETED", "e.event_type='task.updated' AND "
+                    + "JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.status'))='SUCCEEDED'"),
+            Map.entry("TASK_FAILED", "e.event_type='task.updated' AND "
+                    + "JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.status'))='FAILED'"),
+            Map.entry("DIFF_CREATED", "e.event_type='diff.created'"),
+            Map.entry("MR_CREATED", "e.event_type='merge-request.updated' AND "
+                    + "JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.status'))='OPEN'"),
+            Map.entry("MR_MERGED", "e.event_type='merge-request.updated' AND "
+                    + "JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.status'))='MERGED'"),
+            Map.entry("TEST_RUN_FAILED", "e.event_type='test-run.updated' AND "
+                    + "JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.status'))='FAILED'"));
+
+    /**
+     * 将逗号分隔的 type 过滤参数映射为 SQL 片段集合；无参数返回全部。
+     * 每个过滤 token 按前缀匹配命中动态类型（TASK→TASK_COMPLETED/TASK_FAILED，MR→MR_*，精确值同样可用）；
+     * 过滤 token 命中不到任何动态类型时返回 {@code List.of("1=0")}，保证查询返回空集而非全量。
+     */
+    private List<String> activityFragments(String type) {
+        List<String> tokens = type == null || type.isBlank()
+                ? List.of()
+                : Arrays.stream(type.split(",")).map(String::trim).filter(t -> !t.isBlank()).toList();
+        List<String> fragments = new ArrayList<>();
+        for (String activityType : ACTIVITY_FRAGMENTS.keySet()) {
+            if (tokens.isEmpty() || tokens.stream().anyMatch(t -> activityType.equals(t) || activityType.startsWith(t))) {
+                fragments.add(ACTIVITY_FRAGMENTS.get(activityType));
+            }
+        }
+        return fragments.isEmpty() ? List.of("1=0") : fragments;
+    }
+
+    private ActivityResponse activity(EventEntity event, Map<UUID, TaskEntity> tasks,
+                                      Map<UUID, MergeRequestEntity> mergeRequests,
+                                      Map<UUID, ProjectEntity> projects, Map<UUID, String> userNames) {
+        String type = activityType(event);
+        UUID taskId = taskIdOf(event);
+        TaskEntity task = taskId == null ? null : tasks.get(taskId);
+        String taskTitle = task == null ? null : task.getTitle();
+        String actorId = task == null || task.getCreatedBy() == null ? null : task.getCreatedBy().toString();
+        String targetType;
+        String targetId;
+        String targetTitle;
+        String title;
+        switch (type) {
+            case "GROUP_CREATED" -> {
+                UUID groupProjectId = uuidOf(event.getPayload() == null ? null : event.getPayload().get("projectId"));
+                ProjectEntity project = groupProjectId == null ? null : projects.get(groupProjectId);
+                String projectName = project == null ? null : project.getName();
+                targetType = "PROJECT";
+                targetId = groupProjectId == null ? null : groupProjectId.toString();
+                targetTitle = projectName;
+                title = "项目「" + safe(projectName) + "」已创建";
+                actorId = payloadString(event, "createdBy");
+            }
+            case "TASK_CREATED", "TASK_COMPLETED", "TASK_FAILED" -> {
+                targetType = "TASK";
+                targetId = taskId.toString();
+                targetTitle = taskTitle;
+                title = "任务「" + safe(taskTitle) + "」" + switch (type) {
+                    case "TASK_CREATED" -> "已创建";
+                    case "TASK_COMPLETED" -> "已完成";
+                    default -> "已失败";
+                };
+            }
+            case "DIFF_CREATED" -> {
+                UUID diffId = uuidOf(event.getPayload() == null ? null : event.getPayload().get("diffId"));
+                targetType = "DIFF";
+                targetId = diffId.toString();
+                targetTitle = taskTitle;
+                title = "任务「" + safe(taskTitle) + "」的 Diff 待验收";
+            }
+            case "MR_CREATED", "MR_MERGED" -> {
+                UUID mrId = uuidOf(event.getResourceId());
+                MergeRequestEntity mr = mrId == null ? null : mergeRequests.get(mrId);
+                String mrTitle = mr == null || mr.getTitle() == null || mr.getTitle().isBlank()
+                        ? "MR" : mr.getTitle();
+                String mrNumber = mr == null || mr.getProviderNumber() == null
+                        ? "?" : String.valueOf(mr.getProviderNumber());
+                targetType = "MR";
+                targetId = mrId == null ? null : mrId.toString();
+                targetTitle = "#" + mrNumber + " " + mrTitle;
+                title = mrTitle + " MR #" + mrNumber + ("MR_CREATED".equals(type) ? " 已创建" : " 已合并");
+                actorId = null;
+            }
+            case "TEST_RUN_FAILED" -> {
+                if (taskId != null) {
+                    targetType = "TASK";
+                    targetId = taskId.toString();
+                    targetTitle = taskTitle;
+                } else {
+                    UUID projectId = uuidOf(event.getPayload() == null ? null : event.getPayload().get("projectId"));
+                    ProjectEntity project = projectId == null ? null : projects.get(projectId);
+                    targetType = "PROJECT";
+                    targetId = projectId == null ? null : projectId.toString();
+                    targetTitle = project == null ? null : project.getName();
+                }
+                title = "测试运行失败";
+                actorId = null;
+            }
+            default -> throw new IllegalStateException("unmapped activity type: " + type);
+        }
+        String actorName = actorId == null ? null : userNames.get(UUID.fromString(actorId));
+        return new ActivityResponse(event.getId().toString(), type, title, null,
+                actorId == null ? null : new ActivityResponse.ActivityActor(actorId, actorName, null),
+                new ActivityResponse.ActivityTarget(targetType, targetId, targetTitle), null,
+                iso(event.getCreatedAt()));
+    }
+
+    /**
+     * 事件 → 动态类型；SQL 片段已按状态过滤，返回值与 {@link #ACTIVITY_FRAGMENTS} 的 key 一致。
+     */
+    private String activityType(EventEntity event) {
+        String eventType = event.getEventType();
+        String status = payloadString(event, "status");
+        return switch (eventType) {
+            case "task.updated" -> switch (status) {
+                case "PLANNING" -> "TASK_CREATED";
+                case "SUCCEEDED" -> "TASK_COMPLETED";
+                case "FAILED" -> "TASK_FAILED";
+                default -> null;
+            };
+            case "project.created" -> "GROUP_CREATED";
+            case "diff.created" -> "DIFF_CREATED";
+            case "merge-request.updated" -> switch (status) {
+                case "OPEN" -> "MR_CREATED";
+                case "MERGED" -> "MR_MERGED";
+                default -> null;
+            };
+            case "test-run.updated" -> "FAILED".equals(status) ? "TEST_RUN_FAILED" : null;
+            default -> null;
+        };
+    }
+
+    private String payloadString(EventEntity event, String key) {
+        Object value = event.getPayload() == null ? null : event.getPayload().get(key);
+        return value == null ? null : String.valueOf(value);
+    }
+
+    /**
+     * 事件关联的 Task id：task.updated/diff.created/test-run.updated 均在 payload.taskId 中携带。
+     */
+    private UUID taskIdOf(EventEntity event) {
+        return uuidOf(event.getPayload() == null ? null : event.getPayload().get("taskId"));
+    }
+
+    private UUID uuidOf(Object value) {
+        if (value instanceof UUID uuid) {
+            return uuid;
+        }
+        if (value instanceof String s) {
+            try {
+                return UUID.fromString(s);
+            } catch (IllegalArgumentException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private String safe(String value) {
+        return value == null || value.isBlank() ? "未知任务" : value;
+    }
+
+    // ---------- 团队动态：页内批量富化 ----------
+
+    private Map<UUID, TaskEntity> loadTasks(List<EventEntity> rows) {
+        Set<UUID> taskIds = rows.stream().map(this::taskIdOf).filter(Objects::nonNull).collect(Collectors.toSet());
+        if (taskIds.isEmpty()) {
+            return Map.of();
+        }
+        return taskMapper.selectBatchIds(taskIds).stream().collect(Collectors.toMap(TaskEntity::getId, t -> t));
+    }
+
+    private Map<UUID, MergeRequestEntity> loadMergeRequests(List<EventEntity> rows) {
+        Set<UUID> mrIds = rows.stream()
+                .filter(event -> "merge-request.updated".equals(event.getEventType()))
+                .map(event -> uuidOf(event.getResourceId()))
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (mrIds.isEmpty()) {
+            return Map.of();
+        }
+        return mergeRequestMapper.selectBatchIds(mrIds).stream()
+                .collect(Collectors.toMap(MergeRequestEntity::getId, mr -> mr));
+    }
+
+    private Map<UUID, ProjectEntity> loadProjects(List<EventEntity> rows) {
+        Set<UUID> projectIds = rows.stream()
+                .map(event -> uuidOf(event.getPayload() == null ? null : event.getPayload().get("projectId")))
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (projectIds.isEmpty()) {
+            return Map.of();
+        }
+        return projectMapper.selectBatchIds(projectIds).stream().collect(Collectors.toMap(ProjectEntity::getId, p -> p));
+    }
+
+    private Map<UUID, String> loadActivityUserNames(List<EventEntity> rows, Map<UUID, TaskEntity> tasks) {
+        Set<UUID> userIds = tasks.values().stream().map(TaskEntity::getCreatedBy).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        // 项目创建动态的发起人取自 project.created 载荷，而非任务关联
+        for (EventEntity row : rows) {
+            if ("project.created".equals(row.getEventType())) {
+                UUID creator = uuidOf(row.getPayload() == null ? null : row.getPayload().get("createdBy"));
+                if (creator != null) {
+                    userIds.add(creator);
+                }
+            }
+        }
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectBatchIds(userIds).stream().collect(Collectors.toMap(UserEntity::getId,
+                user -> user.getDisplayName() == null || user.getDisplayName().isBlank() ? "已注销用户"
+                        : user.getDisplayName()));
     }
 
     // 查询到团队和成员信息并检查是否存在
@@ -562,6 +892,39 @@ public class TeamService {
             response.setStatus("EXPIRED");
         }
         return response;
+    }
+
+    private ReceivedInvitationResponse receivedInvitation(TeamInvitationEntity value, Map<UUID, String> teamNames,
+                                                          Map<UUID, String> inviterNames) {
+        String status = "PENDING".equals(value.getStatus()) && !value.getExpiresAt().isAfter(now())
+                ? "EXPIRED" : value.getStatus();
+        return new ReceivedInvitationResponse(value.getId().toString(), value.getTeamId().toString(),
+                teamNames.get(value.getTeamId()), "TEAM_MEMBER", inviterNames.get(value.getInvitedBy()),
+                status, iso(value.getExpiresAt()), iso(value.getCreatedAt()));
+    }
+
+    private Map<UUID, String> loadTeamNames(List<TeamInvitationEntity> rows) {
+        Set<UUID> teamIds = rows.stream().map(TeamInvitationEntity::getTeamId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (teamIds.isEmpty()) {
+            return Map.of();
+        }
+        return teamMapper.selectBatchIds(teamIds).stream().collect(Collectors.toMap(TeamEntity::getId, TeamEntity::getName));
+    }
+
+    private Map<UUID, String> loadUserDisplayNames(List<TeamInvitationEntity> rows) {
+        Set<UUID> userIds = rows.stream().map(TeamInvitationEntity::getInvitedBy).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectBatchIds(userIds).stream().collect(Collectors.toMap(UserEntity::getId,
+                user -> user.getDisplayName() == null || user.getDisplayName().isBlank() ? "已注销用户"
+                        : user.getDisplayName()));
+    }
+
+    private String iso(LocalDateTime time) {
+        return time == null ? null : time.atOffset(ZoneOffset.UTC).toInstant().toString();
     }
 
     private LocalDateTime now() {

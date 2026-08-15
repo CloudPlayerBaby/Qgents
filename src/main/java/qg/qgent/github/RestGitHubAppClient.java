@@ -9,10 +9,13 @@ import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
 import org.bouncycastle.openssl.PEMKeyPair;
 import org.bouncycastle.openssl.PEMParser;
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.util.UriComponentsBuilder;
 import qg.qgent.api.ApiException;
 import qg.qgent.config.GitHubAppProperties;
@@ -30,6 +33,7 @@ import java.util.UUID;
 import java.util.function.LongFunction;
 
 public class RestGitHubAppClient implements GitHubAppClient {
+    private static final Logger log = LoggerFactory.getLogger(RestGitHubAppClient.class);
     private static final String GITHUB_ACCEPT = "application/vnd.github+json";
     private static final String API_VERSION = "2022-11-28";
 
@@ -147,7 +151,13 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 }
                 page++;
             }
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub installation token request rejected: status={}, body={}",
+                    exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            throw upstreamFailure();
         } catch (RestClientException exception) {
+            log.warn("GitHub installation token request failed before receiving a response: {}",
+                    exception.getMessage());
             throw upstreamFailure();
         }
     }
@@ -168,7 +178,13 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 throw upstreamFailure();
             }
             return response.token();
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub installation token request rejected: installationId={}, status={}, body={}",
+                    installationId, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            throw upstreamFailure();
         } catch (RestClientException exception) {
+            log.warn("GitHub installation token request failed before receiving a response: installationId={}, {}",
+                    installationId, exception.getMessage());
             throw upstreamFailure();
         }
     }

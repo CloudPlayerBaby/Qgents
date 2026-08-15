@@ -14,8 +14,10 @@ import qg.qgent.mapper.*;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -395,13 +397,21 @@ public class GitHubRepositoryService {
         List<Long> returnedProviderRepoIds = providerRepositories.stream()
                 .map(GitHubRepositoryDetails::getRepositoryId).toList();
 
-        // 批量查询本地已存在的仓库避免 N+1
-        List<GitHubRepositoryEntity> existingRepos = newInstallation ? List.of() :
-                repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+        // Keep all current-installation records for the later revocation pass.
+        List<GitHubRepositoryEntity> existingInstallationRepos = repositoryMapper.selectList(
+                new LambdaQueryWrapper<GitHubRepositoryEntity>()
                         .eq(GitHubRepositoryEntity::getInstallationId, installationEntity.getId()));
+        Map<Long, GitHubRepositoryEntity> existingRepoMap = new HashMap<>();
+        existingInstallationRepos.forEach(repository ->
+                existingRepoMap.put(repository.getProviderRepositoryId(), repository));
 
-        java.util.Map<Long, GitHubRepositoryEntity> existingRepoMap = existingRepos.stream()
-                .collect(java.util.stream.Collectors.toMap(GitHubRepositoryEntity::getProviderRepositoryId, r -> r));
+        // A repository ID is globally unique in GitHub. Look it up globally so a reinstall for the
+        // same team updates its existing mirror instead of violating uk_ghr_provider.
+        if (!returnedProviderRepoIds.isEmpty()) {
+            repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+                            .in(GitHubRepositoryEntity::getProviderRepositoryId, returnedProviderRepoIds))
+                    .forEach(repository -> existingRepoMap.put(repository.getProviderRepositoryId(), repository));
+        }
 
         for (GitHubRepositoryDetails repository : providerRepositories) {
             GitHubRepositoryEntity repositoryEntity = existingRepoMap.get(repository.getRepositoryId());
@@ -410,6 +420,16 @@ public class GitHubRepositoryService {
             if (newRepository) {
                 repositoryEntity = new GitHubRepositoryEntity();
                 repositoryEntity.setId(UUID.randomUUID());
+                repositoryEntity.setInstallationId(installationEntity.getId());
+            } else if (!installationEntity.getId().equals(repositoryEntity.getInstallationId())) {
+                GitHubInstallationEntity existingRepositoryInstallation = installationMapper
+                        .selectById(repositoryEntity.getInstallationId());
+                if (existingRepositoryInstallation == null
+                        || !teamId.equals(existingRepositoryInstallation.getTeamId())) {
+                    throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_INSTALLATION_CONFLICT",
+                            "This GitHub repository is already bound to another team installation");
+                }
+                // Keep the repository UUID so existing project repository bindings remain valid.
                 repositoryEntity.setInstallationId(installationEntity.getId());
             }
 
@@ -431,7 +451,7 @@ public class GitHubRepositoryService {
 
         // 把不再返回的仓库标记为撤销授权
         if (!newInstallation) {
-            for (GitHubRepositoryEntity existingRepo : existingRepos) {
+            for (GitHubRepositoryEntity existingRepo : existingInstallationRepos) {
                 if ("AUTHORIZED".equals(existingRepo.getAuthorizationStatus()) &&
                         !returnedProviderRepoIds.contains(existingRepo.getProviderRepositoryId())) {
                     existingRepo.setAuthorizationStatus("REVOKED");

@@ -24,6 +24,11 @@ public class SandboxWorkerProperties {
     private String baseUrl = "http://localhost:8091";
 
     /**
+     * Shared secret used for authenticated calls from the main backend to Worker.
+     */
+    private String backendServiceToken = "";
+
+    /**
      * 是否启用 Worker 端口实现；false 时保留本地端口，true 时改走 Worker HTTP API。
      */
     private boolean enabled = false;
