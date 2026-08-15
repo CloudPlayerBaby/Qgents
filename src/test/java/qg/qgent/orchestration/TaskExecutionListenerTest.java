@@ -1,6 +1,7 @@
 package qg.qgent.orchestration;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -9,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.scheduling.annotation.Async;
 
 import qg.qgent.service.TaskCreatedEvent;
 
@@ -17,6 +19,15 @@ import qg.qgent.service.TaskCreatedEvent;
  * 直接调用监听器方法，不验证 @Async/@TransactionalEventListener 的代理行为。
  */
 class TaskExecutionListenerTest {
+
+    @Test
+    void usesDedicatedOrchestrationExecutor() throws NoSuchMethodException {
+        Async async = TaskExecutionListener.class
+                .getMethod("onTaskCreated", TaskCreatedEvent.class)
+                .getAnnotation(Async.class);
+
+        assertEquals("taskOrchestratorExecutor", async.value());
+    }
 
     @Test
     void onTaskCreatedTriggersOrchestration() {

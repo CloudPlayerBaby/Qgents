@@ -112,6 +112,9 @@ class SandboxSessionManagerTest {
         installation.setTeamId(UUID.randomUUID());
         when(installationMapper.selectById(ghRepo.getInstallationId())).thenReturn(installation);
 
+        when(githubAppClient.getBranch(eq(12345L), eq("owner"), eq("repo"), eq("main")))
+                .thenReturn(new qg.qgent.github.GitHubBranchDetails("main", "a".repeat(40)));
+
         when(credentialService.generateGrant(any(), any(), any(), any(), any(), any(), any())).thenReturn("mock-grant");
         
         qg.qgent.orchestration.worker.WorkerGitStoreSyncResponse syncResponse = new qg.qgent.orchestration.worker.WorkerGitStoreSyncResponse();
@@ -240,7 +243,7 @@ class SandboxSessionManagerTest {
         when(installationMapper.selectById(ghRepo.getInstallationId())).thenReturn(installation);
         
         when(githubAppClient.getBranch(eq(12345L), eq("owner"), eq("repo"), eq("main")))
-                .thenReturn(new qg.qgent.github.GitHubBranchDetails("main", "fetched-sha"));
+                .thenReturn(new qg.qgent.github.GitHubBranchDetails("main", "b".repeat(40)));
                 
         WorkerWorkspace provisioned = new WorkerWorkspace();
         provisioned.setStorageKey("workspaces/" + WORKSPACE);
@@ -249,8 +252,24 @@ class SandboxSessionManagerTest {
         SandboxSession session = enabledManager().acquire(TASK, PROJECT, WORKSPACE); // note: acquire uses TASK, PROJECT, WORKSPACE in some tests. Wait, does it?
         
         verify(githubAppClient).getBranch(12345L, "owner", "repo", "main");
-        verify(credentialService).generateGrant(any(UUID.class), any(UUID.class), eq(12345L), eq("owner/repo"), eq("main"), eq("fetched-sha"), eq(qg.qgent.entity.GitCredentialPurpose.FETCH));
+        verify(credentialService).generateGrant(any(UUID.class), any(UUID.class), eq(12345L), eq("owner/repo"), eq("main"), eq("b".repeat(40)), eq(qg.qgent.entity.GitCredentialPurpose.FETCH));
         assertEquals("workspaces/" + WORKSPACE, session.storageKey());
+    }
+
+    @Test
+    void acquireResolvesLegacyBaseRefBeforeWorkerSync() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+
+        enabledManager().acquire(TASK, PROJECT, WORKSPACE);
+
+        ArgumentCaptor<WorkerGitStoreSyncRequest> syncCaptor =
+                ArgumentCaptor.forClass(WorkerGitStoreSyncRequest.class);
+        verify(client).syncGitStore(eq(REPO), syncCaptor.capture());
+        assertEquals("main", syncCaptor.getValue().getRemoteBranch());
+        assertEquals("a".repeat(40), syncCaptor.getValue().getExpectedHeadCommit());
     }
 
     @Test

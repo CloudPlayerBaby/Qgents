@@ -20,4 +20,5 @@ public class TeamInvitationEntity {
     private String status;
     private LocalDateTime expiresAt;
     private LocalDateTime acceptedAt;
+    private LocalDateTime createdAt;
 }
