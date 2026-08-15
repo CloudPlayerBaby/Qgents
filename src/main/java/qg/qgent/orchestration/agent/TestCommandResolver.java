@@ -24,20 +24,28 @@ public class TestCommandResolver {
             return null;
         }
         Set<String> names = Set.copyOf(files);
-        if (names.contains("pom.xml")) {
-            return names.contains("mvnw") || names.contains("mvnw.cmd")
+        if (hasFile(names, "pom.xml")) {
+            return hasFile(names, "mvnw") || hasFile(names, "mvnw.cmd")
                     ? List.of("mvnw", "test")
                     : List.of("mvn", "test");
         }
-        if (names.contains("build.gradle") || names.contains("build.gradle.kts")
-                || names.contains("settings.gradle")) {
-            return names.contains("gradlew") || names.contains("gradlew.cmd")
+        if (hasFile(names, "build.gradle") || hasFile(names, "build.gradle.kts")
+                || hasFile(names, "settings.gradle")) {
+            return hasFile(names, "gradlew") || hasFile(names, "gradlew.cmd")
                     ? List.of("gradlew", "test")
                     : List.of("gradle", "test");
         }
-        if (names.contains("package.json")) {
+        if (hasFile(names, "package.json")) {
             return List.of("npm", "test");
         }
         return null;
+    }
+
+    /**
+     * 判断文件列表是否包含指定文件名。文件路径可能带 workspace 前缀（如 repo-1/package.json），
+     * 因此同时匹配精确文件名与以 "/文件名" 结尾的路径。
+     */
+    private boolean hasFile(Set<String> files, String name) {
+        return files.stream().anyMatch(f -> f.equals(name) || f.endsWith("/" + name));
     }
 }

@@ -53,6 +53,10 @@ github:
     private-key-path: ${GITHUB_APP_PRIVATE_KEY_PATH:}
     callback-url: ${GITHUB_APP_CALLBACK_URL:}
     state-secret: ${GITHUB_APP_STATE_SECRET:}
+  # Webhook 验签 Secret；只从环境变量注入，未配置时 Webhook 接口返回 503 fail-closed
+  webhook:
+    secret: ${GITHUB_WEBHOOK_SECRET:}
+    max-body-bytes: ${GITHUB_WEBHOOK_MAX_BODY_BYTES:1048576}
 
 app:
   diff-snapshot-root: ${DIFF_SNAPSHOT_ROOT:./data/diff-snapshots}

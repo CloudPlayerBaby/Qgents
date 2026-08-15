@@ -960,8 +960,9 @@ public class MergeRequestService {
         p.put("mergeRequestId", mr.getId());
         p.put("number", mr.getProviderNumber());
         p.put("status", mr.getStatus());
+        p.put("headCommit", mr.getHeadCommit());
+        p.put("providerUpdatedAt", iso(mr.getProviderUpdatedAt()));
         p.put("qualityGateStatus", mr.getQualityGateStatus());
-        p.put("sequence", 0);
         p.put("timestamp", Instant.now().toString());
         eventService.publish(repo == null ? null : repo.getProjectId(), null, "merge-request.updated",
                 mr.getId().toString(), p);

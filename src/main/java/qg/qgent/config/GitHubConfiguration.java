@@ -10,7 +10,7 @@ import qg.qgent.github.RestGitHubAppClient;
 import java.time.Clock;
 
 @Configuration
-@EnableConfigurationProperties(GitHubAppProperties.class)
+@EnableConfigurationProperties({GitHubAppProperties.class, GitHubWebhookProperties.class})
 public class GitHubConfiguration {
 
     @Bean
