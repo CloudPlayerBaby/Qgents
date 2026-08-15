@@ -9,6 +9,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import qg.qgent.config.GitHubWebhookProperties;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -27,16 +28,14 @@ class WebhookBodyLimitFilterTest {
     }
 
     /**
-     * 下游 FilterChain：完整读取请求体，模拟 Spring MVC 消费 body；读完返回 200。
+     * 下游 FilterChain：完整读取请求体并校验内容，模拟 Spring MVC 消费 body。
      */
     private static final class BodyReadingFilter implements FilterChain {
         private byte[] consumed;
 
         @Override
-        public void doFilter(ServletRequest request, ServletResponse servletResponse)
-                throws java.io.IOException {
+        public void doFilter(ServletRequest request, ServletResponse servletResponse) throws IOException {
             consumed = request.getInputStream().readAllBytes();
-            servletResponse.setContentType("text/plain");
         }
 
         byte[] consumed() {
@@ -60,7 +59,7 @@ class WebhookBodyLimitFilterTest {
 
     @Test
     void chunkedBodyExactlyAtLimitPassesThrough() throws Exception {
-        // 无 Content-Length 的 chunked 请求：恰好 10 字节，应能完整读到并放行
+        // 无 Content-Length 的 chunked 请求：恰好 10 字节，应完整读到并放行
         byte[] body = "1234567890".getBytes(StandardCharsets.UTF_8); // 10 == limit
         BodyReadingFilter downstream = new BodyReadingFilter();
         filter.doFilter(request(body), response, downstream);
@@ -70,7 +69,7 @@ class WebhookBodyLimitFilterTest {
 
     @Test
     void chunkedBodyOverLimitReturns413() throws Exception {
-        // 无 Content-Length 的 chunked 请求：11 字节，读取时判定超限，返回 413
+        // 无 Content-Length 的 chunked 请求：11 字节，filter 主动读取判定超限，返回 413
         byte[] body = "12345678901".getBytes(StandardCharsets.UTF_8);
         BodyReadingFilter downstream = new BodyReadingFilter();
         filter.doFilter(request(body), response, downstream);
