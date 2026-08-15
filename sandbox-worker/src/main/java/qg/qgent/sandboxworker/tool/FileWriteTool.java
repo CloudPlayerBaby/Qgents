@@ -82,13 +82,22 @@ public class FileWriteTool implements SandboxTool {
     }
 
     private void grantSandboxOwnership(Path target, Set<PosixFilePermission> permissions) throws IOException {
+        // 先设置权限（保证 group/others 可读），即使后续 chown 失败，沙箱进程仍能读取文件。
+        try {
+            Files.setPosixFilePermissions(target, permissions);
+        } catch (UnsupportedOperationException e) {
+            // 非 POSIX 文件系统（如 Windows 挂载）不支持权限设置，跳过。
+        }
         PosixFileAttributeView view = Files.getFileAttributeView(target, PosixFileAttributeView.class,
                 LinkOption.NOFOLLOW_LINKS);
         if (view == null) {
             return;
         }
-        Files.setAttribute(target, "unix:uid", SANDBOX_UID, LinkOption.NOFOLLOW_LINKS);
-        Files.setAttribute(target, "unix:gid", SANDBOX_GID, LinkOption.NOFOLLOW_LINKS);
-        Files.setPosixFilePermissions(target, permissions);
+        try {
+            Files.setAttribute(target, "unix:uid", SANDBOX_UID, LinkOption.NOFOLLOW_LINKS);
+            Files.setAttribute(target, "unix:gid", SANDBOX_GID, LinkOption.NOFOLLOW_LINKS);
+        } catch (IOException | UnsupportedOperationException e) {
+            // chown 需要特权，失败不阻断写入；文件权限已在上方保证可读。
+        }
     }
 }
