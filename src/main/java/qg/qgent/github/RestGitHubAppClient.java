@@ -26,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.interfaces.RSAPrivateKey;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,6 +37,11 @@ public class RestGitHubAppClient implements GitHubAppClient {
     private static final Logger log = LoggerFactory.getLogger(RestGitHubAppClient.class);
     private static final String GITHUB_ACCEPT = "application/vnd.github+json";
     private static final String API_VERSION = "2022-11-28";
+    /**
+     * 分页拉取仓库列表的总 deadline：显著小于 Webhook RECEIVED 的 5 分钟重领阈值，
+     * 避免多页循环累计超时后，重投与原请求并发写业务。
+     */
+    private static final Duration PAGE_TOTAL_DEADLINE = Duration.ofSeconds(60);
 
     private final RestClient client;
     private final GitHubAppProperties properties;
@@ -131,8 +137,14 @@ public class RestGitHubAppClient implements GitHubAppClient {
         String token = installationToken(installationId);
         List<GitHubRepositoryDetails> repositories = new ArrayList<>();
         int page = 1;
+        long deadlineNanos = System.nanoTime() + PAGE_TOTAL_DEADLINE.toNanos();
         try {
             while (true) {
+                if (System.nanoTime() > deadlineNanos) {
+                    throw new ApiException(org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR,
+                            "GITHUB_REPOSITORY_LIST_TIMEOUT",
+                            "GitHub 仓库分页拉取超过总超时，请重试");
+                }
                 int currentPage = page;
                 RepositoryListResponse response = client.get()
                         .uri(uriBuilder -> uriBuilder.path("/installation/repositories")
