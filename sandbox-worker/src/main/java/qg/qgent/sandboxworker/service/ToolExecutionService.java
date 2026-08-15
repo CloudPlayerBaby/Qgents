@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import qg.qgent.sandboxworker.api.ExecutionLogEntryResponse;
@@ -39,6 +40,7 @@ import java.util.concurrent.RejectedExecutionException;
  * 统一管理结构化工具的异步执行、取消、日志和 MySQL 持久化。
  * 提交接口只负责建立 QUEUED 记录，实际工具在 Worker 固定线程池中运行。
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ToolExecutionService {
@@ -91,6 +93,8 @@ public class ToolExecutionService {
             throw exception;
         }
         append(entity.getId(), "SYSTEM", "工具执行已进入队列：" + request.getTool());
+        log.info("tool queued executionId={} sandboxId={} tool={} repositoryId={}",
+                entity.getId(), sandboxId, request.getTool(), request.getRepositoryId());
         // 投给后台开始跑
         try {
             sandboxExecutionPool.execute(() -> run(entity.getId(), sandbox, request));
@@ -130,6 +134,7 @@ public class ToolExecutionService {
             thread.interrupt();
         }
         append(executionId.toString(), "SYSTEM", "工具执行已取消");
+        log.info("tool cancel executionId={}", executionId);
         logLocks.remove(executionId.toString());
         return response(require(executionId));
     }
@@ -177,6 +182,8 @@ public class ToolExecutionService {
             return;
         }
         append(executionId, "SYSTEM", "开始执行工具：" + request.getTool());
+        log.info("tool start executionId={} sandboxId={} tool={} repositoryId={}",
+                executionId, sandbox.getId(), request.getTool(), request.getRepositoryId());
 
         String status;
         Integer exitCode = null;
@@ -195,9 +202,12 @@ public class ToolExecutionService {
             Thread.currentThread().interrupt();
             status = "TIMED_OUT";
             failureReason = "工具执行超时或被中断";
+            log.warn("tool interrupted executionId={} tool={}", executionId, request.getTool());
         } catch (RuntimeException exception) {
             status = "FAILED";
             failureReason = safeMessage(exception);
+            log.error("tool failed executionId={} sandboxId={} tool={} failureReason={}",
+                    executionId, sandbox.getId(), request.getTool(), failureReason);
         } finally {
             activeThreads.remove(id, Thread.currentThread());
         }
@@ -210,6 +220,9 @@ public class ToolExecutionService {
             append(executionId, "SYSTEM", "工具执行结束，状态：" + completed.getStatus());
         }
         logLocks.remove(executionId);
+        log.info("tool done executionId={} sandboxId={} tool={} status={} exitCode={} durationMs={} failureReason={}",
+                executionId, sandbox.getId(), request.getTool(), status, exitCode,
+                Duration.between(started, clock.instant()).toMillis(), failureReason);
     }
 
     private void validateRepository(ToolExecutionRequest request) {

@@ -23,7 +23,6 @@ import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
 import qg.qgent.mapper.GitHubWebhookDeliveryMapper;
 import qg.qgent.mapper.MergeRequestMapper;
-import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 
 import javax.crypto.Mac;
@@ -50,7 +49,6 @@ class GitHubWebhookServiceTest {
     private final GitHubInstallationMapper installationMapper = mock(GitHubInstallationMapper.class);
     private final GitHubRepositoryMapper repositoryMapper = mock(GitHubRepositoryMapper.class);
     private final ProjectRepositoryMapper projectRepositoryMapper = mock(ProjectRepositoryMapper.class);
-    private final ProjectMapper projectMapper = mock(ProjectMapper.class);
     private final MergeRequestMapper mergeRequestMapper = mock(MergeRequestMapper.class);
     private final EventService eventService = mock(EventService.class);
     private final GitHubAppClient gitHubClient = mock(GitHubAppClient.class);
@@ -66,7 +64,7 @@ class GitHubWebhookServiceTest {
         initTableInfo();
         when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         service = new GitHubWebhookService(properties, deliveryMapper, installationMapper, repositoryMapper,
-                projectRepositoryMapper, projectMapper, mergeRequestMapper, eventService, gitHubClient,
+                projectRepositoryMapper, mergeRequestMapper, eventService, gitHubClient,
                 objectMapper, transactionManager);
     }
 
@@ -80,7 +78,6 @@ class GitHubWebhookServiceTest {
         TableInfoHelper.initTableInfo(assistant, GitHubInstallationEntity.class);
         TableInfoHelper.initTableInfo(assistant, GitHubRepositoryEntity.class);
         TableInfoHelper.initTableInfo(assistant, ProjectRepositoryEntity.class);
-        TableInfoHelper.initTableInfo(assistant, ProjectEntity.class);
         TableInfoHelper.initTableInfo(assistant, MergeRequestEntity.class);
     }
 
@@ -200,6 +197,21 @@ class GitHubWebhookServiceTest {
     }
 
     @Test
+    void staleReceivedDeliveryIsReclaimedAndProcessed() {
+        String body = "{\"zen\":\"x\"}";
+        GitHubWebhookDeliveryEntity stale = deliveryRow("d1", "RECEIVED");
+        // 超过 5 分钟阈值：视为处理中断，允许重新领取
+        stale.setReceivedAt(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(10));
+        when(deliveryMapper.selectByProviderDeliveryIdForUpdate("d1")).thenReturn(stale);
+
+        service.handle(bodyBytes(body), sign(SECRET, body), "ping", "d1");
+
+        assertEquals(2, stale.getAttemptCount());
+        assertEquals("PROCESSED", stale.getStatus());
+        verify(deliveryMapper, times(2)).updateById(stale);
+    }
+
+    @Test
     void unknownEventIsIgnored() {
         String body = "{\"action\":\"created\"}";
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
@@ -213,13 +225,23 @@ class GitHubWebhookServiceTest {
     // ---------- installation ----------
 
     @Test
-    void installationCreatedActivatesAndPublishesToTeamProjects() {
+    void installationCreatedActivatesAndPublishesOnlyToBoundProjects() {
         GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
         ProjectEntity project = new ProjectEntity();
         project.setId(UUID.randomUUID());
         project.setTeamId(installation.getTeamId());
+        GitHubRepositoryEntity mirror = new GitHubRepositoryEntity();
+        mirror.setId(UUID.randomUUID());
+        mirror.setInstallationId(installation.getId());
+        mirror.setProviderRepositoryId(500L);
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(UUID.randomUUID());
+        binding.setProjectId(project.getId());
+        binding.setRepositoryId(mirror.getId());
         when(installationMapper.selectOne(any())).thenReturn(installation);
-        when(projectMapper.selectList(any())).thenReturn(List.of(project));
+        // 该安装下有一个仓库，且仓库只绑定到 project：SSE 只发 project，不按 Team 广播
+        when(repositoryMapper.selectList(any())).thenReturn(List.of(mirror));
+        when(projectRepositoryMapper.selectList(any())).thenReturn(List.of(binding));
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
         service.handle(bodyBytes("{\"action\":\"created\",\"installation\":{\"id\":100}}"),
@@ -236,10 +258,27 @@ class GitHubWebhookServiceTest {
     }
 
     @Test
+    void installationWithoutRepositoryBindingPublishesNoSse() {
+        GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
+        when(installationMapper.selectOne(any())).thenReturn(installation);
+        // 该安装下没有任何仓库：没有项目归属，不发布 SSE
+        when(repositoryMapper.selectList(any())).thenReturn(List.of());
+        when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
+
+        service.handle(bodyBytes("{\"action\":\"created\",\"installation\":{\"id\":100}}"),
+                sign(SECRET, "{\"action\":\"created\",\"installation\":{\"id\":100}}"),
+                "installation", delivery("d1"));
+
+        verify(installationMapper).updateById(installation);
+        verify(eventService, never()).publish(any(), any(), anyString(), anyString(), anyMap());
+        verify(deliveryMapper).updateById(argThat((GitHubWebhookDeliveryEntity row) -> "PROCESSED".equals(row.getStatus())));
+    }
+
+    @Test
     void installationSuspendAndDeleteMapStates() {
         GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
         when(installationMapper.selectOne(any())).thenReturn(installation);
-        when(projectMapper.selectList(any())).thenReturn(List.of());
+        when(repositoryMapper.selectList(any())).thenReturn(List.of());
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
         service.handle(bodyBytes("{\"action\":\"suspend\",\"installation\":{\"id\":100}}"),
@@ -331,6 +370,76 @@ class GitHubWebhookServiceTest {
                 anyString(), argThat(p -> "REVOKED".equals(p.get("authorizationStatus"))));
     }
 
+    @Test
+    void repositoryUpdateRejectedWhenInstallationMismatch() {
+        GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
+        GitHubRepositoryEntity mirror = new GitHubRepositoryEntity();
+        mirror.setId(UUID.randomUUID());
+        // 本地镜像属于另一个安装：payload installation=100 与 mirror.installationId 不一致
+        mirror.setInstallationId(UUID.randomUUID());
+        mirror.setProviderRepositoryId(500L);
+        mirror.setAuthorizationStatus("AUTHORIZED");
+
+        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(repositoryMapper.selectOne(any())).thenReturn(mirror);
+        // claim 时查不到（新建 RECEIVED）；markFailed 时能查到该记录并标记 FAILED
+        when(deliveryMapper.selectByProviderDeliveryIdForUpdate("d1")).thenReturn(null, deliveryRow("d1", "RECEIVED"));
+
+        String body = "{\"action\":\"added\",\"installation\":{\"id\":100},\"repositories_added\":[{\"id\":500,\"name\":\"Hello-World\",\"full_name\":\"octocat/Hello-World\"}]}";
+        ApiException failure = assertThrows(ApiException.class, () ->
+                service.handle(bodyBytes(body), sign(SECRET, body), "installation_repositories", delivery("d1")));
+
+        assertEquals("WEBHOOK_INSTALLATION_MISMATCH", failure.code());
+        verify(repositoryMapper, never()).updateById(any(GitHubRepositoryEntity.class));
+        verify(eventService, never()).publish(any(), any(), anyString(), anyString(), anyMap());
+        // 业务失败后 delivery 标记 FAILED，供 GitHub 重投
+        verify(deliveryMapper).updateById(argThat((GitHubWebhookDeliveryEntity row) -> "FAILED".equals(row.getStatus())));
+    }
+
+    @Test
+    void repositoryRemovedRejectedWhenInstallationMismatch() {
+        GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
+        GitHubRepositoryEntity mirror = new GitHubRepositoryEntity();
+        mirror.setId(UUID.randomUUID());
+        mirror.setInstallationId(UUID.randomUUID()); // 与 payload installation=100 不一致
+        mirror.setProviderRepositoryId(500L);
+        mirror.setAuthorizationStatus("AUTHORIZED");
+
+        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(repositoryMapper.selectOne(any())).thenReturn(mirror);
+        when(deliveryMapper.selectByProviderDeliveryIdForUpdate("d1")).thenReturn(null, deliveryRow("d1", "RECEIVED"));
+
+        String body = "{\"action\":\"removed\",\"installation\":{\"id\":100},\"repositories_removed\":[{\"id\":500}]}";
+        ApiException failure = assertThrows(ApiException.class, () ->
+                service.handle(bodyBytes(body), sign(SECRET, body), "installation_repositories", delivery("d1")));
+
+        assertEquals("WEBHOOK_INSTALLATION_MISMATCH", failure.code());
+        verify(repositoryMapper, never()).updateById(any(GitHubRepositoryEntity.class));
+        verify(eventService, never()).publish(any(), any(), anyString(), anyString(), anyMap());
+        verify(deliveryMapper).updateById(argThat((GitHubWebhookDeliveryEntity row) -> "FAILED".equals(row.getStatus())));
+    }
+
+    @Test
+    void repositoryPrefetchFailureMarksDeliveryFailed() {
+        GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
+        when(installationMapper.selectOne(any())).thenReturn(installation);
+        // 本地无镜像 -> 需要补齐；GitHub 客户端调用失败 -> 整单 FAILED，等待重投
+        when(repositoryMapper.selectOne(any())).thenReturn(null);
+        when(repositoryMapper.selectList(any())).thenReturn(List.of());
+        when(gitHubClient.listRepositories(100L))
+                .thenThrow(new ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                        "GITHUB_API_UNAVAILABLE", "upstream"));
+        when(deliveryMapper.selectByProviderDeliveryIdForUpdate("d1")).thenReturn(null, deliveryRow("d1", "RECEIVED"));
+
+        String body = "{\"action\":\"added\",\"installation\":{\"id\":100},\"repositories_added\":[{\"id\":500,\"name\":\"Hello-World\",\"full_name\":\"octocat/Hello-World\"}]}";
+        ApiException failure = assertThrows(ApiException.class, () ->
+                service.handle(bodyBytes(body), sign(SECRET, body), "installation_repositories", delivery("d1")));
+
+        assertEquals("WEBHOOK_REPOSITORY_FETCH_FAILED", failure.code());
+        verify(repositoryMapper, never()).insert(any(GitHubRepositoryEntity.class));
+        verify(deliveryMapper).updateById(argThat((GitHubWebhookDeliveryEntity row) -> "FAILED".equals(row.getStatus())));
+    }
+
     // ---------- pull_request ----------
 
     @Test
@@ -338,6 +447,7 @@ class GitHubWebhookServiceTest {
         GitHubRepositoryEntity githubRepo = new GitHubRepositoryEntity();
         githubRepo.setId(UUID.randomUUID());
         githubRepo.setProviderRepositoryId(500L);
+        mockMatchingInstallation(githubRepo);
         ProjectRepositoryEntity bindingA = new ProjectRepositoryEntity();
         bindingA.setId(UUID.randomUUID());
         bindingA.setProjectId(UUID.randomUUID());
@@ -352,7 +462,7 @@ class GitHubWebhookServiceTest {
         when(mergeRequestMapper.selectOne(any())).thenReturn(null);
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
-        String body = "{\"action\":\"opened\",\"repository\":{\"id\":500},\"pull_request\":{"
+        String body = "{\"action\":\"opened\",\"installation\":{\"id\":100},\"repository\":{\"id\":500},\"pull_request\":{"
                 + "\"number\":128,\"title\":\"Add login\",\"merged\":false,"
                 + "\"head\":{\"sha\":\"0123456789abcdef0123456789abcdef01234567\",\"ref\":\"feat/login\"},"
                 + "\"base\":{\"ref\":\"main\"},\"updated_at\":\"2026-08-15T03:00:00Z\"}}";
@@ -376,6 +486,7 @@ class GitHubWebhookServiceTest {
         GitHubRepositoryEntity githubRepo = new GitHubRepositoryEntity();
         githubRepo.setId(UUID.randomUUID());
         githubRepo.setProviderRepositoryId(500L);
+        mockMatchingInstallation(githubRepo);
         ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
         binding.setId(UUID.randomUUID());
         binding.setProjectId(UUID.randomUUID());
@@ -385,7 +496,7 @@ class GitHubWebhookServiceTest {
         when(mergeRequestMapper.selectOne(any())).thenReturn(null);
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
-        String body = "{\"action\":\"closed\",\"repository\":{\"id\":500},\"pull_request\":{"
+        String body = "{\"action\":\"closed\",\"installation\":{\"id\":100},\"repository\":{\"id\":500},\"pull_request\":{"
                 + "\"number\":128,\"merged\":true,"
                 + "\"head\":{\"sha\":\"0123456789abcdef0123456789abcdef01234567\",\"ref\":\"feat/login\"},"
                 + "\"base\":{\"ref\":\"main\"},\"updated_at\":\"2026-08-15T04:00:00Z\"}}";
@@ -401,7 +512,7 @@ class GitHubWebhookServiceTest {
         when(repositoryMapper.selectOne(any())).thenReturn(null);
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
-        String body = "{\"action\":\"opened\",\"repository\":{\"id\":999},\"pull_request\":{"
+        String body = "{\"action\":\"opened\",\"installation\":{\"id\":100},\"repository\":{\"id\":999},\"pull_request\":{"
                 + "\"number\":1,\"head\":{\"sha\":\"0123456789abcdef0123456789abcdef01234567\",\"ref\":\"f\"},"
                 + "\"base\":{\"ref\":\"main\"}}}";
         service.handle(bodyBytes(body), sign(SECRET, body), "pull_request", delivery("d1"));
@@ -411,10 +522,32 @@ class GitHubWebhookServiceTest {
     }
 
     @Test
+    void pullRequestInstallationMismatchIsIgnored() {
+        GitHubRepositoryEntity githubRepo = new GitHubRepositoryEntity();
+        githubRepo.setId(UUID.randomUUID());
+        githubRepo.setProviderRepositoryId(500L);
+        // payload installation=100，本地 mirror 属于另一个安装 -> 不一致，不落业务
+        githubRepo.setInstallationId(UUID.randomUUID());
+        when(repositoryMapper.selectOne(any())).thenReturn(githubRepo);
+        when(installationMapper.selectOne(any())).thenReturn(null);
+        when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
+
+        String body = "{\"action\":\"opened\",\"installation\":{\"id\":100},\"repository\":{\"id\":500},\"pull_request\":{"
+                + "\"number\":128,\"head\":{\"sha\":\"0123456789abcdef0123456789abcdef01234567\",\"ref\":\"feat/login\"},"
+                + "\"base\":{\"ref\":\"main\"}}}";
+        service.handle(bodyBytes(body), sign(SECRET, body), "pull_request", delivery("d1"));
+
+        verify(deliveryMapper).updateById(argThat((GitHubWebhookDeliveryEntity row) -> "IGNORED".equals(row.getStatus())));
+        verify(mergeRequestMapper, never()).insert(any(MergeRequestEntity.class));
+        verify(eventService, never()).publish(any(), any(), anyString(), anyString(), anyMap());
+    }
+
+    @Test
     void invalidHeadShaIsIgnored() {
         GitHubRepositoryEntity githubRepo = new GitHubRepositoryEntity();
         githubRepo.setId(UUID.randomUUID());
         githubRepo.setProviderRepositoryId(500L);
+        mockMatchingInstallation(githubRepo);
         ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
         binding.setId(UUID.randomUUID());
         binding.setProjectId(UUID.randomUUID());
@@ -423,7 +556,7 @@ class GitHubWebhookServiceTest {
         when(projectRepositoryMapper.selectList(any())).thenReturn(List.of(binding));
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
-        String body = "{\"action\":\"opened\",\"repository\":{\"id\":500},\"pull_request\":{"
+        String body = "{\"action\":\"opened\",\"installation\":{\"id\":100},\"repository\":{\"id\":500},\"pull_request\":{"
                 + "\"number\":1,\"head\":{\"sha\":\"short\",\"ref\":\"f\"},\"base\":{\"ref\":\"main\"}}}";
         service.handle(bodyBytes(body), sign(SECRET, body), "pull_request", delivery("d1"));
 
@@ -436,6 +569,7 @@ class GitHubWebhookServiceTest {
         GitHubRepositoryEntity githubRepo = new GitHubRepositoryEntity();
         githubRepo.setId(UUID.randomUUID());
         githubRepo.setProviderRepositoryId(500L);
+        mockMatchingInstallation(githubRepo);
         ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
         binding.setId(UUID.randomUUID());
         binding.setProjectId(UUID.randomUUID());
@@ -452,7 +586,7 @@ class GitHubWebhookServiceTest {
         when(mergeRequestMapper.selectOne(any())).thenReturn(existing);
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
-        String body = "{\"action\":\"synchronize\",\"repository\":{\"id\":500},\"pull_request\":{"
+        String body = "{\"action\":\"synchronize\",\"installation\":{\"id\":100},\"repository\":{\"id\":500},\"pull_request\":{"
                 + "\"number\":128,\"title\":\"New title\",\"merged\":false,"
                 + "\"head\":{\"sha\":\"abcdef0123456789abcdef0123456789abcdef01\",\"ref\":\"feat/login\"},"
                 + "\"base\":{\"ref\":\"main\"},\"updated_at\":\"2026-08-15T05:00:00Z\"}}";
@@ -466,6 +600,15 @@ class GitHubWebhookServiceTest {
     }
 
     // ---------- helpers ----------
+
+    /**
+     * 让 payload installation=100 与本地仓库镜像的 installationId 匹配（pull_request 校验用）。
+     */
+    private void mockMatchingInstallation(GitHubRepositoryEntity githubRepo) {
+        GitHubInstallationEntity payloadInstallation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
+        githubRepo.setInstallationId(payloadInstallation.getId());
+        when(installationMapper.selectOne(any())).thenReturn(payloadInstallation);
+    }
 
     private byte[] bodyBytes(String body) {
         return body.getBytes(StandardCharsets.UTF_8);

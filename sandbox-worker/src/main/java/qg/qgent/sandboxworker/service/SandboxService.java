@@ -1,6 +1,7 @@
 package qg.qgent.sandboxworker.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import qg.qgent.sandboxworker.api.CreateSandboxRequest;
@@ -25,6 +26,7 @@ import java.util.UUID;
  * 管理沙箱状态、租约和底层容器生命周期。
  * 资源请求始终受到 Worker 本地配置约束，控制层不能通过请求放宽上限。
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SandboxService {
@@ -75,8 +77,13 @@ public class SandboxService {
 
         try {
             // 上锁 -> 创建沙箱 -> 返回响应
-            return workspaceLock.execute(request.getWorkspaceStorageKey(),
-                    () -> response(runtime.create(request, allocation)));
+            return workspaceLock.execute(request.getWorkspaceStorageKey(), () -> {
+                SandboxAllocation created = runtime.create(request, allocation);
+                log.info("sandbox created sandboxId={} taskRunId={} workspace={} image={} repos={} container={}",
+                        created.getId(), created.getTaskRunId(), created.getWorkspaceStorageKey(),
+                        created.getImageProfile(), created.getRepositoryPaths().size(), created.getRuntimeHandle());
+                return response(created);
+            });
         } catch (IllegalStateException exception) {
             throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT", exception.getMessage());
         }
@@ -110,6 +117,8 @@ public class SandboxService {
 
         allocation.setLastActiveAt(now);
         allocation.setExpiresAt(min(now.plus(ttl), allocation.getMaxExpiresAt()));
+        log.info("sandbox renewed sandboxId={} expiresAt={} requestedSeconds={}",
+                sandboxId, allocation.getExpiresAt(), requestedSeconds);
         return response(allocation);
     }
 
@@ -118,6 +127,7 @@ public class SandboxService {
      */
     public void destroy(UUID sandboxId) {
         runtime.destroy(sandboxId);
+        log.info("sandbox destroyed sandboxId={}", sandboxId);
     }
 
     /**

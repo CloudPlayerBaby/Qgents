@@ -2,6 +2,7 @@ package qg.qgent.sandboxworker.workspace;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import qg.qgent.sandboxworker.api.WorkerException;
@@ -24,6 +25,7 @@ import java.util.UUID;
 /**
  * 管理 Project 内持久 Workspace、仓库 worktree 和受控 Git 操作。
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class WorkspaceManagerService {
@@ -38,6 +40,8 @@ public class WorkspaceManagerService {
      * 幂等准备 Workspace；相同编号但规格不同时拒绝。
      */
     public WorkspaceResponse provision(UUID workspaceId, WorkspaceProvisionRequest request) {
+        log.info("workspace provision request workspaceId={} projectId={} repos={}",
+                workspaceId, request.getProjectId(), request.getRepositories().size());
         return workspaceLock.execute(storageKey(workspaceId), () -> provisionLocked(workspaceId, request));
     }
 
@@ -48,6 +52,8 @@ public class WorkspaceManagerService {
             WorkspaceResponse existing = read(metadata);
             if (sameSpec(existing, request)) {
                 ensureGitMarker(workspacePath(workspaceId));
+                log.info("workspace exists with same spec workspaceId={} storageKey={}",
+                        workspaceId, existing.getStorageKey());
                 return refresh(existing);
             }
             throw conflict("WORKSPACE_SPEC_CONFLICT", "Workspace 已存在但创建规格不同");
@@ -73,8 +79,12 @@ public class WorkspaceManagerService {
                     storageKey(workspaceId),
                     "READY", List.copyOf(created), now, now);
             write(metadata, response);
+            log.info("workspace provisioned workspaceId={} storageKey={} repos={}",
+                    workspaceId, response.getStorageKey(), created.size());
             return response;
         } catch (RuntimeException exception) {
+            log.error("WORKSPACE_PROVISION_FAILED workspaceId={} projectId={} category={}",
+                    workspaceId, request.getProjectId(), exception.getClass().getSimpleName());
             for (WorkspaceRepositoryResponse repository : created) {
                 repositories.remove(repository.getRepositoryId(),
                         workspace.resolve(repository.getWorkspacePath()).normalize());
@@ -82,6 +92,8 @@ public class WorkspaceManagerService {
             deleteTree(workspace);
             throw exception;
         } catch (Exception exception) {
+            log.error("WORKSPACE_PROVISION_FAILED workspaceId={} projectId={} category={}",
+                    workspaceId, request.getProjectId(), exception.getClass().getSimpleName());
             deleteTree(workspace);
             throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "WORKSPACE_PROVISION_FAILED",
                     "准备 Workspace 失败");
@@ -125,6 +137,8 @@ public class WorkspaceManagerService {
                 throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR,
                         "WORKSPACE_METADATA_DELETE_FAILED", "Workspace 已删除，但元数据清理失败");
             }
+            log.info("workspace deleted workspaceId={} storageKey={}",
+                    workspaceId, existing.getStorageKey());
             return null;
         });
     }
@@ -152,15 +166,22 @@ public class WorkspaceManagerService {
             if (sandboxes.isWorkspaceInUse(workspace.getStorageKey()))
                 throw conflict("WORKSPACE_IN_USE", "Workspace 仍被 Sandbox 使用，不能创建 Commit");
             WorkspaceRepositoryResponse repository = requireRepository(workspace, repositoryId);
-            return repositories.locked(repositoryId, () -> repositories.commit(repositoryPath(workspaceId, repository), request));
+            GitCommitResponse committed = repositories.locked(repositoryId,
+                    () -> repositories.commit(repositoryPath(workspaceId, repository), request));
+            log.info("git commit workspaceId={} repositoryId={} branch={} commitSha={}",
+                    workspaceId, repositoryId, repository.getSourceBranch(), committed.getCommitSha());
+            return committed;
         });
     }
 
     public GitPushResponse gitPush(UUID workspaceId, UUID repositoryId, GitPushRequest request) {
         return workspaceLock.execute(storageKey(workspaceId), () -> {
             WorkspaceRepositoryResponse repository = requireRepository(get(workspaceId), repositoryId);
-            return repositories.push(repositoryId, repositoryPath(workspaceId, repository),
+            GitPushResponse pushed = repositories.push(repositoryId, repositoryPath(workspaceId, repository),
                     repository.getSourceBranch(), request);
+            log.info("git push workspaceId={} repositoryId={} branch={} head={} verified={}",
+                    workspaceId, repositoryId, pushed.getBranch(), pushed.getHeadCommit(), pushed.isVerified());
+            return pushed;
         });
     }
 

@@ -20,10 +20,10 @@ public interface GitHubWebhookDeliveryMapper extends BaseMapper<GitHubWebhookDel
     GitHubWebhookDeliveryEntity selectByProviderDeliveryIdForUpdate(@Param("deliveryId") String deliveryId);
 
     /**
-     * 清理保留窗口前已完成的投递记录。
-     * 只删除 PROCESSED/IGNORED/FAILED 的过期记录，RECEIVED（处理中或中断）保留以便审计和重投。
+     * 清理保留窗口前的投递记录：PROCESSED/IGNORED/FAILED 按 updated_at 过期删除；
+     * RECEIVED 仅当超过保留窗口（处理中断的僵尸记录，不可能仍在处理中）时一并清除。
      */
     @Delete("DELETE FROM github_webhook_deliveries "
-            + "WHERE status <> 'RECEIVED' AND updated_at < #{before}")
+            + "WHERE (status <> 'RECEIVED' OR received_at < #{before}) AND updated_at < #{before}")
     int deleteCompletedBefore(@Param("before") LocalDateTime before);
 }

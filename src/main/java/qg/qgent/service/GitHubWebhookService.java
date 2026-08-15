@@ -17,7 +17,6 @@ import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.GitHubRepositoryEntity;
 import qg.qgent.entity.GitHubWebhookDeliveryEntity;
 import qg.qgent.entity.MergeRequestEntity;
-import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.github.GitHubAppClient;
 import qg.qgent.github.GitHubRepositoryDetails;
@@ -25,13 +24,13 @@ import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
 import qg.qgent.mapper.GitHubWebhookDeliveryMapper;
 import qg.qgent.mapper.MergeRequestMapper;
-import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -63,13 +62,17 @@ public class GitHubWebhookService {
     private static final String STATUS_IGNORED = "IGNORED";
     private static final String STATUS_FAILED = "FAILED";
     private static final Pattern SHA_PATTERN = Pattern.compile("^[0-9a-fA-F]{40,64}$");
+    /**
+     * RECEIVED 投递的过期阈值：超过该时长仍未完成视为处理中断，允许重新领取处理。
+     * 防止进程崩溃或网络超时留下永远无法恢复的 RECEIVED 记录。
+     */
+    private static final Duration RECEIVED_STALE_AFTER = Duration.ofMinutes(5);
 
     private final GitHubWebhookProperties properties;
     private final GitHubWebhookDeliveryMapper deliveryMapper;
     private final GitHubInstallationMapper installationMapper;
     private final GitHubRepositoryMapper repositoryMapper;
     private final ProjectRepositoryMapper projectRepositoryMapper;
-    private final ProjectMapper projectMapper;
     private final MergeRequestMapper mergeRequestMapper;
     private final EventService eventService;
     private final GitHubAppClient gitHubClient;
@@ -79,7 +82,7 @@ public class GitHubWebhookService {
 
     public GitHubWebhookService(GitHubWebhookProperties properties, GitHubWebhookDeliveryMapper deliveryMapper,
                                 GitHubInstallationMapper installationMapper, GitHubRepositoryMapper repositoryMapper,
-                                ProjectRepositoryMapper projectRepositoryMapper, ProjectMapper projectMapper,
+                                ProjectRepositoryMapper projectRepositoryMapper,
                                 MergeRequestMapper mergeRequestMapper, EventService eventService,
                                 GitHubAppClient gitHubClient, ObjectMapper objectMapper,
                                 PlatformTransactionManager transactionManager) {
@@ -88,7 +91,6 @@ public class GitHubWebhookService {
         this.installationMapper = installationMapper;
         this.repositoryMapper = repositoryMapper;
         this.projectRepositoryMapper = projectRepositoryMapper;
-        this.projectMapper = projectMapper;
         this.mergeRequestMapper = mergeRequestMapper;
         this.eventService = eventService;
         this.gitHubClient = gitHubClient;
@@ -131,8 +133,15 @@ public class GitHubWebhookService {
             return; // 幂等命中：PROCESSED/IGNORED 直接返回 200
         }
 
-        // 事务外补齐仓库详情（仅在 installation_repositories added 且本地缺失时调用 GitHub）
-        Map<Long, GitHubRepositoryDetails> fetched = prefetchRepositoryDetails(payload, eventName, action);
+        // 事务外补齐仓库详情（仅在 installation_repositories added 且本地缺失时调用 GitHub）；
+        // 补齐失败必须纳入失败处理并标记 FAILED，否则 delivery 会永久停留在 RECEIVED 无法恢复。
+        Map<Long, GitHubRepositoryDetails> fetched;
+        try {
+            fetched = prefetchRepositoryDetails(payload, eventName, action);
+        } catch (RuntimeException failure) {
+            markFailed(deliveryId, failure);
+            throw failure;
+        }
 
         try {
             required.execute(status -> {
@@ -189,7 +198,7 @@ public class GitHubWebhookService {
     /**
      * 短事务领取投递记录：
      * 不存在 -> 创建 RECEIVED；已 PROCESSED/IGNORED -> 幂等返回；FAILED -> 重置 RECEIVED 并累加 attempt；
-     * 已 RECEIVED（并发处理中）-> 503 让 GitHub 重试。
+     * 已 RECEIVED 且未过期（并发处理中）-> 503 让 GitHub 重试；已 RECEIVED 且过期（处理中断）-> 重新领取。
      */
     private GitHubWebhookDeliveryEntity claim(String deliveryId, String eventName, String action,
                                               Long providerInstallationId, Long providerRepositoryId, String payloadSha256) {
@@ -212,11 +221,14 @@ public class GitHubWebhookService {
             if (isTerminal(existing)) {
                 return existing; // PROCESSED/IGNORED：幂等命中
             }
-            if (STATUS_RECEIVED.equals(existing.getStatus())) {
+            if (STATUS_RECEIVED.equals(existing.getStatus())
+                    && (existing.getReceivedAt() == null
+                    || existing.getReceivedAt().plus(RECEIVED_STALE_AFTER).isAfter(now))) {
+                // 处理中（未过期）：让 GitHub 重试，避免并发重复执行
                 throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "WEBHOOK_DELIVERY_IN_PROGRESS",
                         "该投递正在处理中，请稍后重试");
             }
-            // FAILED：重新验签通过后重置为 RECEIVED 再次处理
+            // FAILED 或过期的 RECEIVED：重新验签通过后重置为 RECEIVED 再次处理
             existing.setStatus(STATUS_RECEIVED);
             existing.setAttemptCount(existing.getAttemptCount() == null ? 1 : existing.getAttemptCount() + 1);
             existing.setFailureCode(null);
@@ -311,11 +323,19 @@ public class GitHubWebhookService {
         installation.setUpdatedAt(now);
         installationMapper.updateById(installation);
 
-        // 只有能通过 team_id 找到项目绑定时才发布 SSE；没有项目归属时只记录投递状态
-        List<ProjectEntity> projects = projectMapper.selectList(Wrappers.<ProjectEntity>lambdaQuery()
-                .eq(ProjectEntity::getTeamId, installation.getTeamId()));
-        for (ProjectEntity project : projects) {
-            eventService.publish(project.getId(), null, "github-installation.updated",
+        // Project 隔离：只发给实际关联该安装下仓库的 Project；没有仓库绑定则不发 SSE。
+        // 禁止按 Team 广播，避免把安装状态泄漏到无关项目。
+        List<GitHubRepositoryEntity> installationRepositories = repositoryMapper.selectList(Wrappers
+                .<GitHubRepositoryEntity>lambdaQuery()
+                .eq(GitHubRepositoryEntity::getInstallationId, installation.getId()));
+        Set<UUID> affectedProjectIds = new java.util.LinkedHashSet<>();
+        for (GitHubRepositoryEntity mirror : installationRepositories) {
+            projectRepositoryMapper.selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
+                            .eq(ProjectRepositoryEntity::getRepositoryId, mirror.getId()))
+                    .forEach(binding -> affectedProjectIds.add(binding.getProjectId()));
+        }
+        for (UUID projectId : affectedProjectIds) {
+            eventService.publish(projectId, null, "github-installation.updated",
                     installation.getId().toString(),
                     Map.of("installationId", installation.getId().toString(), "status", status));
         }
@@ -364,6 +384,11 @@ public class GitHubWebhookService {
         }
         GitHubRepositoryEntity mirror = repositoryMapper.selectOne(Wrappers.<GitHubRepositoryEntity>lambdaQuery()
                 .eq(GitHubRepositoryEntity::getProviderRepositoryId, providerRepositoryId));
+        if (mirror != null && !installation.getId().equals(mirror.getInstallationId())) {
+            // 核验 payload 的 installation 与本地仓库镜像的 installationId 一致；不一致不跨安装修改
+            throw new ApiException(HttpStatus.CONFLICT, "WEBHOOK_INSTALLATION_MISMATCH",
+                    "仓库镜像属于其他安装，拒绝跨安装更新授权状态");
+        }
         GitHubRepositoryDetails details = fetched == null ? null : fetched.get(providerRepositoryId);
         boolean created = false;
         if (mirror == null) {
@@ -411,6 +436,11 @@ public class GitHubWebhookService {
         if (mirror == null) {
             return; // 本地无镜像：无绑定可撤销
         }
+        if (!installation.getId().equals(mirror.getInstallationId())) {
+            // 核验 payload 的 installation 与本地仓库镜像的 installationId 一致；不一致不跨安装修改
+            throw new ApiException(HttpStatus.CONFLICT, "WEBHOOK_INSTALLATION_MISMATCH",
+                    "仓库镜像属于其他安装，拒绝跨安装撤销授权");
+        }
         if (!"REVOKED".equals(mirror.getAuthorizationStatus())) {
             mirror.setAuthorizationStatus("REVOKED");
             mirror.setSyncedAt(now);
@@ -452,6 +482,20 @@ public class GitHubWebhookService {
                 .eq(GitHubRepositoryEntity::getProviderRepositoryId, providerRepositoryId));
         if (githubRepository == null) {
             complete(row, STATUS_IGNORED); // 未找到本地仓库：不创建伪造数据
+            return;
+        }
+        // 核验 payload 的 installation 与本地仓库镜像的 installationId 一致；不一致不跨安装更新 MR
+        Long providerInstallationId = nestedLong(payload, "installation", "id");
+        if (providerInstallationId == null) {
+            complete(row, STATUS_IGNORED);
+            return;
+        }
+        GitHubInstallationEntity payloadInstallation = installationMapper.selectOne(Wrappers
+                .<GitHubInstallationEntity>lambdaQuery()
+                .eq(GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+        if (payloadInstallation == null
+                || !payloadInstallation.getId().equals(githubRepository.getInstallationId())) {
+            complete(row, STATUS_IGNORED); // installation 与本地镜像不一致：不落业务
             return;
         }
         List<ProjectRepositoryEntity> bindings = projectRepositoryMapper.selectList(Wrappers
