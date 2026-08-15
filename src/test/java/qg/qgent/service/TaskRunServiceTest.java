@@ -16,17 +16,25 @@ import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.ExecutionLogEntity;
 import qg.qgent.entity.InputRequestEntity;
+import qg.qgent.entity.ProjectRepositoryEntity;
+import qg.qgent.entity.RequirementGroupEntity;
+import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskExecutionArtifactEntity;
 import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.entity.TaskStepEntity;
+import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 import qg.qgent.mapper.AgentMapper;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.ExecutionLogMapper;
 import qg.qgent.mapper.InputRequestMapper;
+import qg.qgent.mapper.ProjectRepositoryMapper;
+import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TaskExecutionArtifactMapper;
+import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskRunMapper;
 import qg.qgent.mapper.TaskStepMapper;
+import qg.qgent.mapper.WorkspaceRepositoryMapper;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -46,10 +54,15 @@ class TaskRunServiceTest {
     private final TaskStepMapper steps = mock(TaskStepMapper.class);
     private final AgentMapper agents = mock(AgentMapper.class);
     private final TaskExecutionArtifactMapper artifacts = mock(TaskExecutionArtifactMapper.class);
+    private final TaskMapper tasks = mock(TaskMapper.class);
+    private final RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
+    private final ProjectRepositoryMapper projectRepositories = mock(ProjectRepositoryMapper.class);
+    private final WorkspaceRepositoryMapper workspaceRepositories = mock(WorkspaceRepositoryMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final EventService events = mock(EventService.class);
     private final TaskRunService service = new TaskRunService(runs, logs, inputRequests, diffs, steps, agents,
-            artifacts, access, events, mock(NotificationService.class));
+            artifacts, tasks, groups, projectRepositories, workspaceRepositories, access, events,
+            mock(NotificationService.class));
 
     @BeforeAll
     static void registerTableInfos() {
@@ -64,6 +77,10 @@ class TaskRunServiceTest {
         TableInfoHelper.initTableInfo(assistant, InputRequestEntity.class);
         TableInfoHelper.initTableInfo(assistant, TaskExecutionArtifactEntity.class);
         TableInfoHelper.initTableInfo(assistant, DiffEntity.class);
+        TableInfoHelper.initTableInfo(assistant, TaskEntity.class);
+        TableInfoHelper.initTableInfo(assistant, RequirementGroupEntity.class);
+        TableInfoHelper.initTableInfo(assistant, ProjectRepositoryEntity.class);
+        TableInfoHelper.initTableInfo(assistant, WorkspaceRepositoryEntity.class);
     }
 
     @BeforeEach

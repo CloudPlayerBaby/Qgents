@@ -40,6 +40,20 @@ public class TaskRunController {
     }
 
     /**
+     * 契约 v1.8.0 §20（成员 B B05）：项目级按 Agent 查询 TaskRun；agentId 必填。
+     */
+    @GetMapping("/task-runs")
+    public ApiPageResponse<TaskRunListItemResponse> listByAgent(@PathVariable UUID projectId,
+                                                                @RequestParam UUID agentId,
+                                                                @AuthenticationPrincipal UUID userId,
+                                                                @RequestParam(required = false) String status,
+                                                                @RequestParam(required = false) String cursor,
+                                                                @RequestParam(defaultValue = "20") int limit,
+                                                                HttpServletRequest request) {
+        return taskRunService.listByAgent(projectId, agentId, userId, status, cursor, limit, requestId(request));
+    }
+
+    /**
      * 契约 §12.2：获取单次运行的详情与产物摘要。
      */
     @GetMapping("/task-runs/{taskRunId}")

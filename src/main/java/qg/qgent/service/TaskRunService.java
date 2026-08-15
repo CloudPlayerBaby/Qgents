@@ -40,6 +40,10 @@ public class TaskRunService {
     private final TaskStepMapper taskStepMapper;
     private final AgentMapper agentMapper;
     private final TaskExecutionArtifactMapper artifactMapper;
+    private final TaskMapper taskMapper;
+    private final RequirementGroupMapper requirementGroupMapper;
+    private final ProjectRepositoryMapper projectRepositoryMapper;
+    private final WorkspaceRepositoryMapper workspaceRepositoryMapper;
     private final ProjectAccessService projectAccess;
     private final EventService eventService;
     private final NotificationService notificationService;
@@ -47,6 +51,8 @@ public class TaskRunService {
     public TaskRunService(TaskRunMapper taskRunMapper,
                           ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
                           TaskStepMapper taskStepMapper, AgentMapper agentMapper, TaskExecutionArtifactMapper artifactMapper,
+                          TaskMapper taskMapper, RequirementGroupMapper requirementGroupMapper,
+                          ProjectRepositoryMapper projectRepositoryMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
                           ProjectAccessService projectAccess, EventService eventService,
                           NotificationService notificationService) {
         this.taskRunMapper = taskRunMapper;
@@ -56,6 +62,10 @@ public class TaskRunService {
         this.taskStepMapper = taskStepMapper;
         this.agentMapper = agentMapper;
         this.artifactMapper = artifactMapper;
+        this.taskMapper = taskMapper;
+        this.requirementGroupMapper = requirementGroupMapper;
+        this.projectRepositoryMapper = projectRepositoryMapper;
+        this.workspaceRepositoryMapper = workspaceRepositoryMapper;
         this.projectAccess = projectAccess;
         this.eventService = eventService;
         this.notificationService = notificationService;
@@ -433,13 +443,38 @@ public class TaskRunService {
     }
 
     /**
+     * 项目级按 Agent 查询 TaskRun（契约 v1.8.0 §20，成员 B B05）；agentId 必填。
+     */
+    public ApiPageResponse<TaskRunListItemResponse> listByAgent(UUID projectId, UUID agentId, UUID userId,
+                                                                String status, String cursor, int limit,
+                                                                String requestId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        int size = clampLimit(limit);
+        UUID cursorUuid = parseCursor(cursor);
+        List<TaskRunEntity> rows = taskRunMapper.selectList(Wrappers.<TaskRunEntity>lambdaQuery()
+                .eq(TaskRunEntity::getProjectId, projectId)
+                .eq(TaskRunEntity::getAgentId, agentId)
+                .eq(status != null && !status.isBlank(), TaskRunEntity::getStatus, status)
+                .lt(cursorUuid != null, TaskRunEntity::getId, cursorUuid).orderByDesc(TaskRunEntity::getId)
+                .last("LIMIT " + (size + 1)));
+        boolean hasMore = rows.size() > size;
+        List<TaskRunEntity> page = hasMore ? rows.subList(0, size) : rows;
+        List<TaskRunListItemResponse> items = page.isEmpty() ? List.of() : buildListItems(page);
+        String next = hasMore ? items.get(items.size() - 1).getId() : null;
+        return new ApiPageResponse<>(items, new PageMeta(next, hasMore), requestId);
+    }
+
+    /**
      * 批量构造任务运行列表项；步骤、Agent、输入请求、产物与 Diff 一次性加载，避免逐条运行 N+1。
+     * 同时批量加载 Task/需求群/仓库摘要，供 Agent 页与任务详情页展示。
      */
     private List<TaskRunListItemResponse> buildListItems(List<TaskRunEntity> page) {
         List<UUID> runIds = page.stream().map(TaskRunEntity::getId).toList();
         Set<UUID> stepIds = page.stream().map(TaskRunEntity::getTaskStepId).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         Set<UUID> agentIds = page.stream().map(TaskRunEntity::getAgentId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Set<UUID> taskIds = page.stream().map(TaskRunEntity::getTaskId).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         // 空 Map 用 emptyMap 保证 null 键查找返回 null（TaskRun.agentId 可为 null，Map.of() 的 get(null) 会抛 NPE）
         Map<UUID, TaskStepEntity> stepById = stepIds.isEmpty() ? Collections.emptyMap()
@@ -448,6 +483,28 @@ public class TaskRunService {
         Map<UUID, AgentEntity> agentById = agentIds.isEmpty() ? Collections.emptyMap()
                 : agentMapper.selectList(Wrappers.<AgentEntity>lambdaQuery().in(AgentEntity::getId, agentIds)).stream()
                 .collect(Collectors.toMap(AgentEntity::getId, Function.identity()));
+        Map<UUID, TaskEntity> taskById = taskIds.isEmpty() ? Collections.emptyMap()
+                : taskMapper.selectList(Wrappers.<TaskEntity>lambdaQuery().in(TaskEntity::getId, taskIds)).stream()
+                .collect(Collectors.toMap(TaskEntity::getId, Function.identity()));
+        Set<UUID> groupIds = taskById.values().stream().map(TaskEntity::getRequirementGroupId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<UUID, RequirementGroupEntity> groupById = groupIds.isEmpty() ? Collections.emptyMap()
+                : requirementGroupMapper
+                .selectList(Wrappers.<RequirementGroupEntity>lambdaQuery().in(RequirementGroupEntity::getId, groupIds))
+                .stream().collect(Collectors.toMap(RequirementGroupEntity::getId, Function.identity()));
+        Set<UUID> workspaceIds = taskById.values().stream().map(TaskEntity::getWorkspaceId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<UUID, WorkspaceRepositoryEntity> firstWorktreeByWorkspace = workspaceIds.isEmpty()
+                ? Collections.emptyMap()
+                : workspaceRepositoryMapper.selectByWorkspaces(new ArrayList<>(workspaceIds)).stream()
+                .collect(Collectors.toMap(WorkspaceRepositoryEntity::getWorkspaceId,
+                        Function.identity(), (a, b) -> a));
+        Set<UUID> bindingIds = firstWorktreeByWorkspace.values().stream()
+                .map(WorkspaceRepositoryEntity::getProjectRepositoryId).collect(Collectors.toSet());
+        Map<UUID, ProjectRepositoryEntity> bindingById = bindingIds.isEmpty() ? Collections.emptyMap()
+                : projectRepositoryMapper
+                .selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery().in(ProjectRepositoryEntity::getId, bindingIds))
+                .stream().collect(Collectors.toMap(ProjectRepositoryEntity::getId, Function.identity()));
         Map<UUID, List<InputRequestEntity>> inputByRun = runIds.isEmpty() ? Collections.emptyMap()
                 : inputRequestMapper
                 .selectList(Wrappers.<InputRequestEntity>lambdaQuery()
@@ -463,22 +520,52 @@ public class TaskRunService {
                 : diffMapper.selectList(Wrappers.<DiffEntity>lambdaQuery().in(DiffEntity::getTaskRunId, runIds))
                 .stream().collect(Collectors.groupingBy(DiffEntity::getTaskRunId, Collectors.counting()));
         return page.stream().map(run -> toListItem(run, stepById.get(run.getTaskStepId()),
-                        agentById.get(run.getAgentId()), inputByRun.getOrDefault(run.getId(), List.of()),
+                        agentById.get(run.getAgentId()), taskById.get(run.getTaskId()),
+                        groupById.get(taskById.get(run.getTaskId()) == null ? null
+                                : taskById.get(run.getTaskId()).getRequirementGroupId()),
+                        repositorySummary(taskById.get(run.getTaskId()), firstWorktreeByWorkspace, bindingById),
+                        inputByRun.getOrDefault(run.getId(), List.of()),
                         artifactCountByRun.getOrDefault(run.getId(), 0L), diffCountByRun.getOrDefault(run.getId(), 0L)))
                 .toList();
     }
 
     private TaskRunListItemResponse toListItem(TaskRunEntity run, TaskStepEntity step, AgentEntity agent,
-                                               List<InputRequestEntity> requests, long artifactTotal, long diffCount) {
+                                               TaskEntity task, RequirementGroupEntity group,
+                                               RepositorySummary repository, List<InputRequestEntity> requests,
+                                               long artifactTotal, long diffCount) {
         Map<String, Object> artifactSummary = new LinkedHashMap<>();
         artifactSummary.put("total", artifactTotal);
         artifactSummary.put("diffCount", diffCount);
+        RequirementGroupSummary groupSummary = group == null ? null
+                : new RequirementGroupSummary(id(group.getId()), group.getName(), group.getStatus());
         return new TaskRunListItemResponse(id(run.getId()), id(run.getTaskId()), id(run.getTaskStepId()),
-                step == null ? null : step.getTitle(), run.getRole(), agentSummary(agent), run.getStatus(),
+                task == null ? null : task.getDisplayCode(), task == null ? null : task.getTitle(),
+                step == null ? null : step.getTitle(), step == null ? null : step.getRole(),
+                groupSummary, repository, run.getRole(), agentSummary(agent), run.getStatus(),
                 statusSummary(run.getStatus()), statusReason(run, requests), id(run.getRetryOfTaskRunId()),
                 iso(run.getStartedAt()), iso(run.getFinishedAt()),
                 durationMs(run.getStartedAt(), run.getFinishedAt()), artifactSummary, iso(run.getCreatedAt()),
                 iso(run.getUpdatedAt()));
+    }
+
+    /**
+     * 取任务第一个 worktree 对应仓库的轻量摘要（repositoryId + 展示名，其余字段为空）。
+     */
+    private RepositorySummary repositorySummary(TaskEntity task,
+                                                Map<UUID, WorkspaceRepositoryEntity> firstWorktreeByWorkspace,
+                                                Map<UUID, ProjectRepositoryEntity> bindingById) {
+        if (task == null || task.getWorkspaceId() == null) {
+            return null;
+        }
+        WorkspaceRepositoryEntity worktree = firstWorktreeByWorkspace.get(task.getWorkspaceId());
+        if (worktree == null) {
+            return null;
+        }
+        ProjectRepositoryEntity binding = bindingById.get(worktree.getProjectRepositoryId());
+        return new RepositorySummary(id(worktree.getProjectRepositoryId()),
+                binding == null ? null : binding.getDisplayName(), null, null,
+                binding == null ? null : binding.getDefaultBranch(), null,
+                worktree.getBaseCommit(), worktree.getSourceBranch(), worktree.getHeadCommit());
     }
 
     /**

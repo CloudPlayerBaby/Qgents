@@ -42,10 +42,11 @@ public class MemoryService {
     private final UserMapper userMapper;
     private final ChatClient chatClient;
     private final ObjectMapper mapper;
+    private final EventService eventService;
 
     public MemoryService(MemoryMapper memoryMapper, MemoryMessageSourceMapper sourceMapper,
                          MessageMapper messageMapper, ProjectAccessService access, UserMapper userMapper,
-                         ChatClient.Builder chatClientBuilder, ObjectMapper mapper) {
+                         ChatClient.Builder chatClientBuilder, ObjectMapper mapper, EventService eventService) {
         this.memoryMapper = memoryMapper;
         this.sourceMapper = sourceMapper;
         this.messageMapper = messageMapper;
@@ -53,6 +54,7 @@ public class MemoryService {
         this.userMapper = userMapper;
         this.chatClient = chatClientBuilder.build();
         this.mapper = mapper;
+        this.eventService = eventService;
     }
 
     /**
@@ -194,6 +196,8 @@ public class MemoryService {
         }
         memory.setStatus("PENDING_REVIEW");
         memoryMapper.updateById(memory);
+        eventService.publish(projectId, null, "memory.submit-review", id(memoryId),
+                deliveryPayload(projectId, memoryId));
         return toResponse(memoryMapper.selectById(memoryId));
     }
 
@@ -211,6 +215,8 @@ public class MemoryService {
         memory.setReviewerId(actor);
         memory.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
         memoryMapper.updateById(memory);
+        eventService.publish(projectId, null, "memory.approved", id(memoryId),
+                deliveryPayload(projectId, memoryId));
         return toResponse(memoryMapper.selectById(memoryId));
     }
 
@@ -229,6 +235,8 @@ public class MemoryService {
         memory.setRejectionReason(reason);
         memory.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
         memoryMapper.updateById(memory);
+        eventService.publish(projectId, null, "memory.rejected", id(memoryId),
+                deliveryPayload(projectId, memoryId));
         return toResponse(memoryMapper.selectById(memoryId));
     }
 
@@ -244,7 +252,26 @@ public class MemoryService {
         }
         memory.setStatus("ARCHIVED");
         memoryMapper.updateById(memory);
+        eventService.publish(projectId, null, "memory.archived", id(memoryId),
+                deliveryPayload(projectId, memoryId));
         return toResponse(memoryMapper.selectById(memoryId));
+    }
+
+    /**
+     * Memory 交付事件 payload（契约 v1.8.0 §20 DeliveryEventPayload 基座）。
+     */
+    private Map<String, Object> deliveryPayload(UUID projectId, UUID memoryId) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("projectId", id(projectId));
+        payload.put("resourceType", "MEMORY");
+        payload.put("resourceId", id(memoryId));
+        payload.put("eventVersion", 1);
+        payload.put("updatedAt", LocalDateTime.now(ZoneOffset.UTC).toInstant(ZoneOffset.UTC).toString());
+        return payload;
+    }
+
+    private String id(UUID value) {
+        return value == null ? null : value.toString();
     }
 
     private MemoryEntity requireMemoryInProject(UUID projectId, UUID memoryId) {

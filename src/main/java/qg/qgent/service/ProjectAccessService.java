@@ -105,6 +105,18 @@ public class ProjectAccessService {
         }
     }
 
+    /**
+     * 判断当前用户是否为项目 Admin（含 canonical Team Owner 兜底）；供能力派生使用。
+     */
+    public boolean isProjectAdmin(UUID projectId, UUID userId) {
+        try {
+            requireProjectAdmin(projectId, userId);
+            return true;
+        } catch (ApiException e) {
+            return false;
+        }
+    }
+
     private ProjectEntity requireProject(UUID projectId, boolean allowArchived) {
         ProjectEntity project = projectMapper.selectById(projectId);
         if (project == null || (!allowArchived && !"ACTIVE".equals(project.getStatus()))) {

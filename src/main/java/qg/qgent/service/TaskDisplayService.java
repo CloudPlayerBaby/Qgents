@@ -143,11 +143,11 @@ public class TaskDisplayService {
                         List.of(task.getRequirementGroupId())))
                 .stream().collect(Collectors.toMap(RequirementGroupEntity::getId, Function.identity()));
 
-        Attention attention = buildAttention(task, allRuns, inputByRun);
-        ExecutionSummary execution = buildExecutionSummary(stepList, allRuns, attention != null);
         DiffReviewBatchEntity batch = latestBatch(projectId, taskId);
         List<DiffEntity> batchDiffs = batch == null ? List.of()
                 : diffs.selectList(Wrappers.<DiffEntity>lambdaQuery().eq(DiffEntity::getReviewBatchId, batch.getId()));
+        Attention attention = buildAttention(task, allRuns, inputByRun, batch, batchDiffs);
+        ExecutionSummary execution = buildExecutionSummary(stepList, allRuns, attention != null);
         List<AcceptanceCriterion> criteria = acceptanceCriteria(
                 acceptanceCriteria.selectList(Wrappers.<TaskAcceptanceCriterionEntity>lambdaQuery()
                         .eq(TaskAcceptanceCriterionEntity::getTaskId, taskId)
@@ -163,9 +163,17 @@ public class TaskDisplayService {
     }
 
     /**
-     * 任务执行流程步骤列表：每步展示序号、标题、角色、Agent、目标仓库、依赖、状态、验收说明与最新运行。
+     * 任务执行流程步骤列表（契约 v1.8.0 §20 N01：统一 cursor envelope）。
+     * 每步展示序号、标题、角色、Agent、目标仓库、依赖、状态、验收说明与最新运行；
+     * 步骤数据量小，单页返回全部（hasMore=false）。
      */
-    public List<TaskStepListItemResponse> steps(UUID projectId, UUID taskId, UUID actor) {
+    public PagedApiResponse<TaskStepListItemResponse> steps(UUID projectId, UUID taskId, UUID actor,
+                                                            String requestId) {
+        List<TaskStepListItemResponse> items = stepsList(projectId, taskId, actor);
+        return new PagedApiResponse<>(items, new PageInfo(null, false), requestId);
+    }
+
+    private List<TaskStepListItemResponse> stepsList(UUID projectId, UUID taskId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         TaskEntity task = requireTask(projectId, taskId);
         List<TaskStepEntity> stepList = steps.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
@@ -228,19 +236,29 @@ public class TaskDisplayService {
         Map<UUID, RequirementGroupEntity> groupById = groups
                 .selectList(Wrappers.<RequirementGroupEntity>lambdaQuery().in(RequirementGroupEntity::getId, groupIds))
                 .stream().collect(Collectors.toMap(RequirementGroupEntity::getId, Function.identity()));
+        Map<UUID, DiffReviewBatchEntity> batchByTask = taskIds.isEmpty() ? Collections.emptyMap() : diffBatches
+                .selectList(Wrappers.<DiffReviewBatchEntity>lambdaQuery().in(DiffReviewBatchEntity::getTaskId, taskIds))
+                .stream().collect(Collectors.toMap(DiffReviewBatchEntity::getTaskId, Function.identity()));
+        Set<UUID> batchIds = batchByTask.values().stream().map(DiffReviewBatchEntity::getId).collect(Collectors.toSet());
+        Map<UUID, List<DiffEntity>> diffsByBatch = batchIds.isEmpty() ? Collections.emptyMap() : diffs
+                .selectList(Wrappers.<DiffEntity>lambdaQuery().in(DiffEntity::getReviewBatchId, batchIds)).stream()
+                .collect(Collectors.groupingBy(DiffEntity::getReviewBatchId));
 
         return page.stream().map(task -> toListItem(task,
                         stepsByTask.getOrDefault(task.getId(), List.of()),
                         runsByTask.getOrDefault(task.getId(), List.of()), inputByRun,
-                        worktreesByTask.getOrDefault(task.getWorkspaceId(), List.of()), worktreeData, userById, groupById))
+                        worktreesByTask.getOrDefault(task.getWorkspaceId(), List.of()), worktreeData, userById, groupById,
+                        batchByTask.get(task.getId()), diffsByBatch))
                 .toList();
     }
 
     private TaskListItemResponse toListItem(TaskEntity task, List<TaskStepEntity> stepList, List<TaskRunEntity> taskRuns,
                                             Map<UUID, List<InputRequestEntity>> inputByRun, List<WorkspaceRepositoryEntity> worktreeList,
                                             WorktreeData worktreeData, Map<UUID, UserEntity> userById,
-                                            Map<UUID, RequirementGroupEntity> groupById) {
-        Attention attention = buildAttention(task, taskRuns, inputByRun);
+                                            Map<UUID, RequirementGroupEntity> groupById,
+                                            DiffReviewBatchEntity batch, Map<UUID, List<DiffEntity>> diffsByBatch) {
+        Attention attention = buildAttention(task, taskRuns, inputByRun, batch,
+                batch == null ? List.of() : diffsByBatch.getOrDefault(batch.getId(), List.of()));
         ExecutionSummary execution = buildExecutionSummary(stepList, taskRuns, attention != null);
         List<RepositorySummary> repositories = worktreeList.stream()
                 .map(w -> repositorySummary(w, worktreeData.bindingById.get(w.getProjectRepositoryId()),
@@ -307,17 +325,23 @@ public class TaskDisplayService {
 
     /**
      * 按任务状态与最新运行推导待处理事项；无待处理事项返回 null。
+     * batch/batchDiffs 用于 DIFF_CONFIRMATION_REQUIRED/DELIVERY_FAILED 的关联跳转 ID。
      */
     private Attention buildAttention(TaskEntity task, List<TaskRunEntity> taskRuns,
-                                     Map<UUID, List<InputRequestEntity>> inputByRun) {
+                                     Map<UUID, List<InputRequestEntity>> inputByRun,
+                                     DiffReviewBatchEntity batch, List<DiffEntity> batchDiffs) {
         String status = task.getStatus();
         if ("WAITING_DIFF_CONFIRMATION".equals(status)) {
             return new Attention("DIFF_CONFIRMATION_REQUIRED", "等待确认最终 Diff", "已生成多仓库总 Diff，等待确认",
-                    null, null, iso(task.getUpdatedAt()));
+                    null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
         }
         if ("DELIVERY_FAILED".equals(status)) {
+            UUID failedRepo = batchDiffs == null ? null : batchDiffs.stream()
+                    .filter(d -> "FAILED".equals(d.getDeliveryStatus()))
+                    .map(DiffEntity::getProjectRepositoryId).filter(Objects::nonNull)
+                    .findFirst().orElse(null);
             return new Attention("DELIVERY_FAILED", "交付失败", "部分或全部仓库交付失败，可查看详情后重试",
-                    null, null, iso(task.getUpdatedAt()));
+                    null, null, id(batch == null ? null : batch.getId()), id(failedRepo), iso(task.getUpdatedAt()));
         }
         List<TaskRunEntity> desc = taskRuns.stream().sorted(latestFirst()).toList();
         for (TaskRunEntity run : desc) {
@@ -327,26 +351,28 @@ public class TaskDisplayService {
                 InputRequestEntity req = firstPending(requests, "INPUT");
                 return new Attention("INPUT_REQUIRED", "等待用户输入",
                         req == null ? "等待用户补充输入" : req.getPrompt(), id(run.getId()),
-                        req == null ? null : id(req.getId()), iso(req == null ? run.getUpdatedAt() : req.getCreatedAt()));
+                        req == null ? null : id(req.getId()), null, null,
+                        iso(req == null ? run.getUpdatedAt() : req.getCreatedAt()));
             }
             if ("WAITING_APPROVAL".equals(runStatus)) {
                 InputRequestEntity req = firstPending(requests, "APPROVAL");
                 return new Attention("APPROVAL_REQUIRED", "等待审批",
                         req == null ? "等待审批确认" : req.getPrompt(), id(run.getId()),
-                        req == null ? null : id(req.getId()), iso(req == null ? run.getUpdatedAt() : req.getCreatedAt()));
+                        req == null ? null : id(req.getId()), null, null,
+                        iso(req == null ? run.getUpdatedAt() : req.getCreatedAt()));
             }
             if ("BLOCKED".equals(runStatus)) {
                 InputRequestEntity req = latestRequest(requests, "APPROVAL");
                 String reason = req == null ? null : req.getReason();
                 return new Attention("BLOCKED", "执行被阻塞",
                         reason == null || reason.isBlank() ? "执行流程被阻塞，等待处理" : reason, id(run.getId()),
-                        req == null ? null : id(req.getId()), iso(run.getUpdatedAt()));
+                        req == null ? null : id(req.getId()), null, null, iso(run.getUpdatedAt()));
             }
         }
         boolean hasFailed = taskRuns.stream().anyMatch(r -> "FAILED".equals(r.getStatus()));
         if (hasFailed && !TERMINAL_TASK_STATUSES.contains(status)) {
             return new Attention("EXECUTION_FAILED", "执行失败", "任务执行出现失败，请查看执行记录",
-                    null, null, iso(task.getUpdatedAt()));
+                    null, null, null, null, iso(task.getUpdatedAt()));
         }
         return null;
     }

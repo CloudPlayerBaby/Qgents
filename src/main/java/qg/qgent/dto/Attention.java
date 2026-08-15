@@ -9,8 +9,8 @@ import lombok.NoArgsConstructor;
  * 任务中心待处理事项提示。
  * <p>
  * kind 枚举：INPUT_REQUIRED/APPROVAL_REQUIRED/BLOCKED/EXECUTION_FAILED/DIFF_CONFIRMATION_REQUIRED/DELIVERY_FAILED。
- * 只返回脱敏用户可见摘要；taskRunId/inputRequestId 供前端跳转具体处理入口，可为 null。
- * 没有待处理事项时该对象整体为 null。
+ * 只返回脱敏用户可见摘要；taskRunId/inputRequestId/diffReviewBatchId/repositoryId 供前端跳转
+ * 具体处理入口，无对应关联时为 null。没有待处理事项时该对象整体为 null。
  */
 @Data
 @NoArgsConstructor
@@ -46,6 +46,18 @@ public class Attention {
      */
     @Schema(description = "关联输入/审批请求 ID")
     private String inputRequestId;
+
+    /**
+     * 关联的总 Diff 批次 ID（DIFF_CONFIRMATION_REQUIRED/DELIVERY_FAILED 时非 null）。
+     */
+    @Schema(description = "关联总 Diff 批次 ID")
+    private String diffReviewBatchId;
+
+    /**
+     * 关联的项目仓库绑定 ID（DELIVERY_FAILED 时为首个失败仓库）。
+     */
+    @Schema(description = "关联项目仓库绑定 ID")
+    private String repositoryId;
 
     /**
      * 待处理事项发生时间（UTC）。

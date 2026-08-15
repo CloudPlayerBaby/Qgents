@@ -13,6 +13,7 @@ import qg.qgent.dto.TaskAgentUpdateRequest;
 import qg.qgent.dto.TaskCreateRequest;
 import qg.qgent.dto.TaskListItemResponse;
 import qg.qgent.dto.TaskStepCreateRequest;
+import qg.qgent.dto.TaskStepListItemResponse;
 import qg.qgent.service.TaskDisplayService;
 import qg.qgent.service.TaskService;
 
@@ -71,13 +72,15 @@ public class TaskController {
     }
 
     /**
-     * 契约 §16.3：任务执行流程步骤列表，展示序号、标题、角色、Agent、目标仓库、依赖、状态、验收说明与最新运行。
+     * 契约 v1.8.0 §20（N01）：任务执行流程步骤列表（统一 cursor envelope）。
      */
     @Operation(summary = "查询任务执行步骤")
     @GetMapping("/{taskId}/steps")
-    public ApiResponse<?> steps(@PathVariable UUID projectId, @PathVariable UUID taskId,
-                                @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
-        return ok(display.steps(projectId, taskId, actor), request);
+    public PagedApiResponse<TaskStepListItemResponse> steps(@PathVariable UUID projectId, @PathVariable UUID taskId,
+                                                            @AuthenticationPrincipal UUID actor,
+                                                            HttpServletRequest request) {
+        return display.steps(projectId, taskId, actor,
+                (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
 
     /**

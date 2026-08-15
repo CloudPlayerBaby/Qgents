@@ -35,11 +35,14 @@ public class SkillService {
     private final SkillMapper skillMapper;
     private final ProjectAccessService access;
     private final UserMapper userMapper;
+    private final EventService eventService;
 
-    public SkillService(SkillMapper skillMapper, ProjectAccessService access, UserMapper userMapper) {
+    public SkillService(SkillMapper skillMapper, ProjectAccessService access, UserMapper userMapper,
+                        EventService eventService) {
         this.skillMapper = skillMapper;
         this.access = access;
         this.userMapper = userMapper;
+        this.eventService = eventService;
     }
 
     /**
@@ -141,6 +144,8 @@ public class SkillService {
         }
         skill.setStatus("PENDING_REVIEW");
         skillMapper.updateById(skill);
+        eventService.publish(projectId, null, "skill.submit-review", id(skillId),
+                deliveryPayload(projectId, skillId));
         return toResponse(skillMapper.selectById(skillId));
     }
 
@@ -159,6 +164,8 @@ public class SkillService {
         skill.setReviewerId(actor);
         skill.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
         skillMapper.updateById(skill);
+        eventService.publish(projectId, null, "skill.published", id(skillId),
+                deliveryPayload(projectId, skillId));
         return toResponse(skillMapper.selectById(skillId));
     }
 
@@ -177,6 +184,8 @@ public class SkillService {
         skill.setRejectionReason(reason);
         skill.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
         skillMapper.updateById(skill);
+        eventService.publish(projectId, null, "skill.rejected", id(skillId),
+                deliveryPayload(projectId, skillId));
         return toResponse(skillMapper.selectById(skillId));
     }
 
@@ -192,7 +201,26 @@ public class SkillService {
         }
         skill.setStatus("ARCHIVED");
         skillMapper.updateById(skill);
+        eventService.publish(projectId, null, "skill.archived", id(skillId),
+                deliveryPayload(projectId, skillId));
         return toResponse(skillMapper.selectById(skillId));
+    }
+
+    /**
+     * Skill 交付事件 payload（契约 v1.8.0 §20 DeliveryEventPayload 基座）。
+     */
+    private java.util.Map<String, Object> deliveryPayload(UUID projectId, UUID skillId) {
+        java.util.Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("projectId", id(projectId));
+        payload.put("resourceType", "SKILL");
+        payload.put("resourceId", id(skillId));
+        payload.put("eventVersion", 1);
+        payload.put("updatedAt", LocalDateTime.now(ZoneOffset.UTC).toInstant(ZoneOffset.UTC).toString());
+        return payload;
+    }
+
+    private String id(UUID value) {
+        return value == null ? null : value.toString();
     }
 
     private SkillEntity requireSkillInProject(UUID projectId, UUID skillId) {

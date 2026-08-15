@@ -37,10 +37,40 @@ public class TaskRunListItemResponse {
     private String taskStepId;
 
     /**
+     * 所属任务展示编号（仅展示用）。
+     */
+    @Schema(description = "所属任务展示编号")
+    private String taskDisplayCode;
+
+    /**
+     * 所属任务标题。
+     */
+    @Schema(description = "所属任务标题")
+    private String taskTitle;
+
+    /**
      * 所属任务步骤标题。
      */
     @Schema(description = "所属任务步骤标题")
     private String taskStepTitle;
+
+    /**
+     * 所属任务步骤角色。
+     */
+    @Schema(description = "所属任务步骤角色")
+    private String taskStepRole;
+
+    /**
+     * 来源需求群摘要；无群时 null。
+     */
+    @Schema(description = "来源需求群摘要")
+    private RequirementGroupSummary requirementGroup;
+
+    /**
+     * 仓库摘要；无关联仓库时 null。
+     */
+    @Schema(description = "仓库摘要")
+    private RepositorySummary repository;
 
     /**
      * 执行角色。
