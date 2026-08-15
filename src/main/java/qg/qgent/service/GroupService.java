@@ -286,7 +286,7 @@ public class GroupService {
 
     private GroupResponse toResponse(RequirementGroupEntity g, GroupLatestMessageRow latest) {
         GroupLatestMessage latestMessage = latest == null ? null
-                : new GroupLatestMessage(latest.getSenderName(), latest.getText());
+                : new GroupLatestMessage(latest.getSenderName(), latest.getText(), latest.getMessageType());
         return new GroupResponse(g.getId().toString(), g.getProjectId().toString(), g.getGroupType(),
                 g.getName(), g.getDescription(), g.getStatus(), g.getLastMessageAt(),
                 g.getLastMessageAt() != null ? g.getLastMessageAt() : g.getCreatedAt(), latestMessage,
