@@ -77,7 +77,7 @@ public class DockerContainerRuntime implements ContainerRuntime {
 
         paths.resolveLocal(request.getWorkspaceStorageKey());
         for (UUID repositoryId : allocation.getRepositoryPaths().keySet()) {
-            grantSandboxOwnership(paths.resolveRepositoryLocal(allocation, repositoryId));
+            grantSandboxOwnership(repositoryId, paths.resolveRepositoryLocal(allocation, repositoryId));
         }
         String image = Optional.ofNullable(properties.getImages().get(request.getImageProfile()))
                 .orElseThrow(() -> new WorkerException(CONFLICT, "IMAGE_PROFILE_NOT_CONFIGURED", "镜像配置尚未映射到镜像"));
@@ -105,8 +105,12 @@ public class DockerContainerRuntime implements ContainerRuntime {
             docker.startContainerCmd(containerId).exec();
             allocation.setRuntimeHandle(containerId);
             allocations.put(allocation.getId(), allocation);
+            log.info("sandbox container started sandboxId={} taskRunId={} workspace={} containerId={}",
+                    allocation.getId(), allocation.getTaskRunId(), allocation.getWorkspaceStorageKey(), containerId);
             return allocation;
         } catch (RuntimeException exception) {
+            log.warn("DOCKER_CREATE_FAILED sandboxId={} workspace={} category={}",
+                    allocation.getId(), allocation.getWorkspaceStorageKey(), exception.getClass().getSimpleName());
             removeContainerQuietly(containerId);
             throw new WorkerException(BAD_GATEWAY, "DOCKER_CREATE_FAILED", "Docker Engine 创建沙箱失败");
         }
@@ -117,7 +121,7 @@ public class DockerContainerRuntime implements ContainerRuntime {
      * worker 以 root 运行 git worktree add 时落盘文件属主为 root，若沙箱保持 10001 运行则无法修改这些文件；
      * 在宿主机原生文件系统（Linux 服务器）上 chown 真实生效；Docker Desktop 的 Windows 挂载不支持 chown，静默跳过。
      */
-    private void grantSandboxOwnership(Path repository) {
+    private void grantSandboxOwnership(UUID repositoryId, Path repository) {
         try (var stream = Files.walk(repository)) {
             int failed = 0;
             for (Path path : stream.filter(p -> Files.exists(p, LinkOption.NOFOLLOW_LINKS)).toList()) {
@@ -129,10 +133,11 @@ public class DockerContainerRuntime implements ContainerRuntime {
                 }
             }
             if (failed > 0) {
-                log.warn("sandbox ownership partially granted for {}, {} paths skipped", repository, failed);
+                log.warn("sandbox ownership partially granted repositoryId={}, {} paths skipped", repositoryId, failed);
             }
         } catch (Exception e) {
-            log.warn("grant sandbox ownership failed for {}: {}", repository, e.getMessage());
+            log.warn("grant sandbox ownership failed repositoryId={} category={}",
+                    repositoryId, e.getClass().getSimpleName());
         }
     }
 
@@ -168,6 +173,8 @@ public class DockerContainerRuntime implements ContainerRuntime {
         }
         try {
             docker.removeContainerCmd(allocation.getRuntimeHandle()).withForce(true).withRemoveVolumes(true).exec();
+            log.info("sandbox container removed sandboxId={} containerId={}",
+                    sandboxId, allocation.getRuntimeHandle());
         } catch (RuntimeException exception) {
             allocations.putIfAbsent(sandboxId, allocation);
             throw new WorkerException(BAD_GATEWAY, "DOCKER_DESTROY_FAILED", "Docker Engine 销毁沙箱失败");

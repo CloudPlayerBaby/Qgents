@@ -1,6 +1,7 @@
 package qg.qgent.sandboxworker.workspace;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import qg.qgent.sandboxworker.api.WorkerException;
@@ -33,6 +34,7 @@ import java.util.function.Supplier;
  * 管理 Worker 专属的共享 bare Git Store 及其 linked worktree。
  * 所有命令参数均由服务端构造，调用方不能传入远程地址、凭据或任意 Git 参数。
  */
+@Slf4j
 @Component
 public class GitRepositoryManager {
     private static final Duration COMMAND_TIMEOUT = Duration.ofMinutes(5);
@@ -89,7 +91,10 @@ public class GitRepositoryManager {
         }
         try {
             configureIdentity(target);
-            return new WorktreeResult(baseCommit, head(target));
+            WorktreeResult worktree = new WorktreeResult(baseCommit, head(target));
+            log.info("worktree created repositoryId={} branch={} base={} head={}",
+                    repositoryId, sourceBranch, worktree.baseCommit(), worktree.headCommit());
+            return worktree;
         } catch (RuntimeException exception) {
             run(List.of("git", "--git-dir", store.toString(), "worktree", "remove", "--force", target.toString()),
                     Map.of());
@@ -324,7 +329,9 @@ public class GitRepositoryManager {
         String commitMessage = request.getMessage() + "\n\nQgents-Operation-Id: " + request.getOperationId();
         requireSuccess(run(List.of("git", "-C", repository.toString(), "commit", "-m", commitMessage), Map.of()),
                 "GIT_COMMIT_FAILED", "Cannot create Git commit");
-        return new GitCommitResponse(head(repository));
+        String commitHead = head(repository);
+        log.info("git commit created head={} operationId={}", commitHead, request.getOperationId());
+        return new GitCommitResponse(commitHead);
     }
 
     /**
@@ -374,6 +381,8 @@ public class GitRepositoryManager {
             }
 
             /* Command result is already verified while the short-lived credential is still active. */
+            log.info("git push repositoryId={} branch={} head={} verified={}",
+                    repositoryId, sourceBranch, currentHead, true);
             return new GitPushResponse(sourceBranch, currentHead, true);
         });
     }
