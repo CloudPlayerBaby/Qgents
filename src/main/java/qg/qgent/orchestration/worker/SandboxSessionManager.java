@@ -11,6 +11,7 @@ import qg.qgent.service.GitCredentialService;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * Sandbox 会话生命周期管理：把 Task 编排需要的"一次执行现场"映射为 Worker 的
@@ -30,6 +31,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Service
 public class SandboxSessionManager {
+
+    private static final Pattern COMMIT_SHA_PATTERN = Pattern.compile("[0-9a-fA-F]{40,64}");
 
     private final SandboxWorkerClient client;
     private final SandboxWorkerProperties properties;
@@ -141,7 +144,11 @@ public class SandboxSessionManager {
                 throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "PROJECT_REPOSITORY_NOT_BOUND",
                         "Repository binding not found for workspace repository");
             }
-            String remoteBranch = projectRepo.getDefaultBranch();
+            String configuredBaseRef = repository.getBaseCommit();
+            String defaultBranch = projectRepo.getDefaultBranch();
+            String remoteBranch = isCommitSha(configuredBaseRef)
+                    ? defaultBranch
+                    : firstNonBlank(configuredBaseRef, defaultBranch);
             if (remoteBranch == null || remoteBranch.isBlank()) {
                 throw new IllegalStateException("project repository has no default branch: " + repository.getProjectRepositoryId());
             }
@@ -165,11 +172,14 @@ public class SandboxSessionManager {
                         "GitHub repository authorization has been revoked");
             }
 
-            String expectedHeadCommit = repository.getBaseCommit();
-            if (expectedHeadCommit == null || expectedHeadCommit.isBlank()) {
+            String expectedHeadCommit = configuredBaseRef;
+            if (!isCommitSha(expectedHeadCommit)) {
                 GitHubBranchDetails branchDetails = githubAppClient.getBranch(
                         installation.getProviderInstallationId(), ghRepo.getOwnerLogin(), ghRepo.getName(), remoteBranch);
-                expectedHeadCommit = branchDetails.commitSha();
+                expectedHeadCommit = branchDetails == null ? null : branchDetails.commitSha();
+                if (!isCommitSha(expectedHeadCommit)) {
+                    throw new IllegalStateException("GitHub branch did not return a valid HEAD commit: " + remoteBranch);
+                }
             }
 
             String fullName = ghRepo.getOwnerLogin() + "/" + ghRepo.getName();
@@ -235,5 +245,13 @@ public class SandboxSessionManager {
         }
         throw new IllegalStateException("workspace repository has no base ref: "
                 + repository.getProjectRepositoryId());
+    }
+
+    private boolean isCommitSha(String value) {
+        return value != null && COMMIT_SHA_PATTERN.matcher(value).matches();
+    }
+
+    private String firstNonBlank(String first, String fallback) {
+        return first != null && !first.isBlank() ? first : fallback;
     }
 }
