@@ -17,8 +17,8 @@ import qg.qgent.service.AgentSkillBindingService;
 import java.util.UUID;
 
 /**
- * Agent-Skill 绑定接口（§11.1.1）。
- * PUT 全量替换且幂等，无需 Idempotency-Key。
+ * Agent-Skill 绑定接口
+ * 管理 Agent 在当前项目内的 Skill 绑定集，全量替换且幂等，无需 Idempotency-Key。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -30,7 +30,7 @@ public class AgentSkillBindingController {
         this.bindingService = bindingService;
     }
 
-    /** 读取指定 Agent 在当前项目的 Skill 绑定集。 */
+    /** 契约 §11.1.1：读取指定 Agent 在当前项目的 Skill 绑定集。 */
     @GetMapping("/projects/{projectId}/agent-skill-bindings/{agentId}")
     public ApiResponse<?> get(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
             @PathVariable UUID agentId, HttpServletRequest request) {
@@ -38,7 +38,7 @@ public class AgentSkillBindingController {
     }
 
     /**
-     * 全量替换 Skill 绑定集（空数组清空，幂等）。
+     * 契约 §11.1.1：全量替换 Skill 绑定集（空数组清空，幂等）。
      */
     @PutMapping("/projects/{projectId}/agent-skill-bindings/{agentId}")
     public ApiResponse<?> replace(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,

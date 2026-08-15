@@ -14,7 +14,10 @@ import qg.qgent.service.AgentService;
 import java.util.List;
 import java.util.UUID;
 
-/** Team Agent resource endpoints. */
+/**
+ * 团队 Agent 接口
+ * 查询指定 Team 下的 Agent 列表资源，供前端展示团队内可用的 Agent。
+ */
 @RestController
 @RequestMapping("/api/v1")
 public class AgentController {
@@ -26,6 +29,7 @@ public class AgentController {
         this.currentActor = currentActor;
     }
 
+    /** 契约 §11.1：查询指定 Team 下的 Agent 列表。 */
     @GetMapping("/teams/{teamId}/agents")
     public ApiResponse<List<AgentResponse>> list(@PathVariable UUID teamId, HttpServletRequest request) {
         return ApiResponse.ok(service.list(currentActor.currentUserId(), teamId),

@@ -23,7 +23,8 @@ import qg.qgent.service.TestRunService;
 import java.util.UUID;
 
 /**
- * 受控 Test Run 与 Dry Run 接口（§12.4）。
+ * 受控 Test Run 与 Dry Run 接口
+ * 受控 Test Run 与 Dry Run 的创建与结果查询。
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}")
@@ -34,7 +35,7 @@ public class TestRunController {
         this.testRunService = testRunService;
     }
 
-    /** 对指定提交或 Task 发起已启用 Testset 的受控运行。 */
+    /** 契约 §12.4：对指定提交或 Task 发起已启用 Testset 的受控运行。 */
     @PostMapping("/test-runs")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> createTestRun(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
@@ -43,7 +44,7 @@ public class TestRunController {
         return ok(data, request);
     }
 
-    /** 获取测试运行状态、用例摘要和产物引用。 */
+    /** 契约 §12.4：获取测试运行状态、用例摘要和产物引用。 */
     @GetMapping("/test-runs/{testRunId}")
     public ApiResponse<?> testRun(@PathVariable UUID projectId, @PathVariable UUID testRunId,
             @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
@@ -51,7 +52,7 @@ public class TestRunController {
         return ok(data, request);
     }
 
-    /** 针对源分支和目标分支发起合并前试运行。 */
+    /** 契约 §12.4：针对源分支和目标分支发起合并前试运行。 */
     @PostMapping("/dry-runs")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> createDryRun(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
@@ -60,7 +61,7 @@ public class TestRunController {
         return ok(data, request);
     }
 
-    /** 获取试运行报告和冲突、测试摘要。 */
+    /** 契约 §12.4：获取试运行报告和冲突、测试摘要。 */
     @GetMapping("/dry-runs/{dryRunId}/report")
     public ApiResponse<?> dryRunReport(@PathVariable UUID projectId, @PathVariable UUID dryRunId,
             @AuthenticationPrincipal UUID userId, HttpServletRequest request) {

@@ -22,7 +22,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 项目群组接口（§7）。
+ * 项目群组接口
+ * 提供项目群组列表查询、创建、详情、更新、归档、成员列表与退出操作。
  * POST 写操作的 Idempotency-Key 由 {@code IdempotencyFilter} 统一强制与回放。
  */
 @RestController
@@ -36,7 +37,7 @@ public class GroupController {
     }
 
     /**
-     * 项目总群与需求群列表（按最近活跃排序）。
+     * 契约 §7：项目总群与需求群列表（按最近活跃排序）。
      */
     @GetMapping("/projects/{projectId}/groups")
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -45,7 +46,7 @@ public class GroupController {
     }
 
     /**
-     * 创建 REQUIREMENT 需求群。
+     * 契约 §7：创建 REQUIREMENT 需求群。
      */
     @PostMapping("/projects/{projectId}/groups")
     @ResponseStatus(HttpStatus.CREATED)
@@ -55,7 +56,7 @@ public class GroupController {
     }
 
     /**
-     * 获取群详情（含 memberCount）。
+     * 契约 §7：获取群详情（含 memberCount）。
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}")
     public ApiResponse<?> get(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -64,7 +65,7 @@ public class GroupController {
     }
 
     /**
-     * 修改需求群标题、描述和关联仓库。
+     * 契约 §7：修改需求群标题、描述和关联仓库。
      */
     @PatchMapping("/projects/{projectId}/groups/{groupId}")
     public ApiResponse<?> update(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -73,7 +74,7 @@ public class GroupController {
     }
 
     /**
-     * 归档需求群（仅 REQUIREMENT）。
+     * 契约 §7：归档需求群（仅 REQUIREMENT）。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/archive")
     public ApiResponse<?> archive(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -82,7 +83,7 @@ public class GroupController {
     }
 
     /**
-     * 获取群成员列表（含参与群聊的 Agent，无角色）。
+     * 契约 §7：获取群成员列表（含参与群聊的 Agent，无角色）。
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}/members")
     public ApiResponse<?> members(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -91,7 +92,7 @@ public class GroupController {
     }
 
     /**
-     * 当前用户退出群聊（即移出本项目成员）。
+     * 契约 §7：当前用户退出群聊（即移出本项目成员）。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/leave")
     public ApiResponse<?> leave(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,

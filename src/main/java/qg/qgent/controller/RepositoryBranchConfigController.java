@@ -22,7 +22,8 @@ import qg.qgent.security.CurrentActorProvider;
 import qg.qgent.service.RepositoryBranchConfigService;
 
 /**
- * 分支策略与质量门禁接口（§6.1）。
+ * 仓库分支策略与质量门禁接口
+ * 读取/配置受保护分支策略（BranchPolicy）与目标分支质量门禁（QualityGate）。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -36,7 +37,7 @@ public class RepositoryBranchConfigController {
     }
 
     /**
-     * 查询受保护分支策略。
+     * 契约 §6.1：查询受保护分支策略。
      */
     @GetMapping("/projects/{projectId}/repositories/{repositoryId}/branch-policies/{branch}")
     public ApiResponse<BranchPolicyDto> getBranchPolicy(
@@ -48,7 +49,7 @@ public class RepositoryBranchConfigController {
     }
 
     /**
-     * 配置受保护分支策略。
+     * 契约 §6.1：配置受保护分支策略。
      */
     @PutMapping("/projects/{projectId}/repositories/{repositoryId}/branch-policies/{branch}")
     public ApiResponse<BranchPolicyDto> updateBranchPolicy(
@@ -61,7 +62,7 @@ public class RepositoryBranchConfigController {
     }
 
     /**
-     * 查询目标分支的门禁。
+     * 契约 §6.1：查询目标分支的质量门禁。
      */
     @GetMapping("/projects/{projectId}/repositories/{repositoryId}/quality-gates/{branch}")
     public ApiResponse<QualityGateDto> getQualityGate(
@@ -73,7 +74,7 @@ public class RepositoryBranchConfigController {
     }
 
     /**
-     * 配置目标分支的门禁。
+     * 契约 §6.1：配置目标分支的质量门禁。
      */
     @PutMapping("/projects/{projectId}/repositories/{repositoryId}/quality-gates/{branch}")
     public ApiResponse<QualityGateDto> updateQualityGate(

@@ -25,7 +25,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 认证与账户接口（§4）。
+ * 认证与账户接口
  * 注册/登录/刷新/重置密码无需已认证 Token；password 字段为平台 RSA 公钥加密的 Base64 密文（见契约 §4.1）。
  */
 @RestController
@@ -38,7 +38,7 @@ public class AuthController {
     }
 
     /**
-     * 注册新用户并签发登录 Token。
+     * 契约 §4：注册新用户并签发登录 Token。
      */
     @PostMapping("/auth/register")
     @ResponseStatus(HttpStatus.CREATED)
@@ -47,7 +47,7 @@ public class AuthController {
     }
 
     /**
-     * 邮箱密码登录并签发新 Token。
+     * 契约 §4：邮箱密码登录并签发新 Token。
      */
     @PostMapping("/auth/login")
     public ApiResponse<?> login(@Valid @RequestBody LoginRequest body, HttpServletRequest request) {
@@ -55,7 +55,7 @@ public class AuthController {
     }
 
     /**
-     * 用 refreshToken 轮换一组新 Token。
+     * 契约 §4：用 refreshToken 轮换一组新 Token。
      */
     @PostMapping("/auth/refresh")
     public ApiResponse<?> refresh(@Valid @RequestBody RefreshTokenRequest body, HttpServletRequest request) {
@@ -63,7 +63,7 @@ public class AuthController {
     }
 
     /**
-     * 注销当前登录态。
+     * 契约 §4：注销当前登录态。
      */
     @PostMapping("/auth/logout")
     public ApiResponse<?> logout(@AuthenticationPrincipal UUID userId,
@@ -73,7 +73,7 @@ public class AuthController {
     }
 
     /**
-     * 发起找回密码邮件（未注册邮箱同样返回成功，规避枚举）。
+     * 契约 §4：发起找回密码邮件（未注册邮箱同样返回成功，规避枚举）。
      */
     @PostMapping("/auth/password-reset-requests")
     @ResponseStatus(HttpStatus.ACCEPTED)
@@ -84,7 +84,7 @@ public class AuthController {
     }
 
     /**
-     * 用重置令牌设置新密码并撤销全部 refreshToken。
+     * 契约 §4：用重置令牌设置新密码并撤销全部 refreshToken。
      */
     @PostMapping("/auth/password-resets")
     public ApiResponse<?> reset(@Valid @RequestBody ResetPasswordRequest body, HttpServletRequest request) {
@@ -93,7 +93,7 @@ public class AuthController {
     }
 
     /**
-     * 获取当前账户、团队与项目角色摘要。
+     * 契约 §4：获取当前账户、团队与项目角色摘要。
      */
     @GetMapping("/me")
     public ApiResponse<?> me(@AuthenticationPrincipal UUID userId, HttpServletRequest request) {
@@ -101,7 +101,7 @@ public class AuthController {
     }
 
     /**
-     * 修改昵称或头像。
+     * 契约 §4：修改昵称或头像。
      */
     @PatchMapping("/me")
     public ApiResponse<?> updateMe(@AuthenticationPrincipal UUID userId, @Valid @RequestBody UpdateMeRequest body,

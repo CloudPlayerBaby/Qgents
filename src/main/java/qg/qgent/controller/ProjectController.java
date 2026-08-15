@@ -32,7 +32,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 项目与项目成员接口（§5.2）。
+ * 项目与项目成员接口
+ * 项目资料的创建、查询、修改、归档/恢复与项目成员管理。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -46,7 +47,7 @@ public class ProjectController {
     }
 
     /**
-     * 创建项目，创建者自动成为 PROJECT_ADMIN。
+     * 契约 §5.2：创建项目，创建者自动成为 PROJECT_ADMIN。
      */
     @PostMapping("/teams/{teamId}/projects")
     @ResponseStatus(HttpStatus.CREATED)
@@ -60,7 +61,7 @@ public class ProjectController {
     }
 
     /**
-     * 分页获取当前用户可见的项目。
+     * 契约 §5.2：分页获取当前用户可见的项目。
      */
     @GetMapping("/teams/{teamId}/projects")
     public PagedApiResponse<ProjectResponse> list(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
@@ -70,7 +71,7 @@ public class ProjectController {
     }
 
     /**
-     * 获取项目资料。
+     * 契约 §5.2：获取项目资料。
      */
     @GetMapping("/projects/{projectId}")
     public ApiResponse<ProjectResponse> get(@AuthenticationPrincipal UUID actor, @PathVariable UUID projectId,
@@ -79,7 +80,7 @@ public class ProjectController {
     }
 
     /**
-     * 修改项目资料（Project Admin 或 Team Owner）。
+     * 契约 §5.2：修改项目资料（Project Admin 或 Team Owner）。
      */
     @PatchMapping("/projects/{projectId}")
     public ApiResponse<ProjectResponse> update(@AuthenticationPrincipal UUID actor, @PathVariable UUID projectId,
@@ -92,7 +93,7 @@ public class ProjectController {
     }
 
     /**
-     * 归档项目。
+     * 契约 §5.2：归档项目。
      */
     @PostMapping("/projects/{projectId}/archive")
     public ApiResponse<ProjectResponse> archive(@AuthenticationPrincipal UUID actor, @PathVariable UUID projectId,
@@ -104,7 +105,7 @@ public class ProjectController {
     }
 
     /**
-     * 恢复已归档项目。
+     * 契约 §5.2：恢复已归档项目。
      */
     @PostMapping("/projects/{projectId}/restore")
     public ApiResponse<ProjectResponse> restore(@AuthenticationPrincipal UUID actor, @PathVariable UUID projectId,
@@ -116,7 +117,7 @@ public class ProjectController {
     }
 
     /**
-     * 分页获取项目成员与角色。
+     * 契约 §5.2：分页获取项目成员与角色。
      */
     @GetMapping("/projects/{projectId}/members")
     public PagedApiResponse<ProjectMemberResponse> members(@AuthenticationPrincipal UUID actor,
@@ -126,7 +127,7 @@ public class ProjectController {
     }
 
     /**
-     * 将团队现有成员加入项目（初始 PROJECT_MEMBER）。
+     * 契约 §5.2：将团队现有成员加入项目（初始 PROJECT_MEMBER）。
      */
     @PostMapping("/projects/{projectId}/members")
     @ResponseStatus(HttpStatus.CREATED)
@@ -140,7 +141,7 @@ public class ProjectController {
     }
 
     /**
-     * 调整项目成员角色（保护最后一名 Project Admin）。
+     * 契约 §5.2：调整项目成员角色（保护最后一名 Project Admin）。
      */
     @PatchMapping("/projects/{projectId}/members/{userId}")
     public ApiResponse<ProjectMemberResponse> updateMember(@AuthenticationPrincipal UUID actor,
@@ -155,7 +156,7 @@ public class ProjectController {
     }
 
     /**
-     * 移除项目成员。
+     * 契约 §5.2：移除项目成员。
      */
     @DeleteMapping("/projects/{projectId}/members/{userId}")
     public ApiResponse<ProjectMemberResponse> removeMember(@AuthenticationPrincipal UUID actor,

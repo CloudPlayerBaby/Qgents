@@ -33,7 +33,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 团队与团队邀请接口（§5.1）。
+ * 团队与团队邀请接口
  * 列表/详情为团队成员可见，其余写操作需 Team Owner 权限。
  */
 @RestController
@@ -48,7 +48,7 @@ public class TeamController {
     }
 
     /**
-     * 创建团队，创建者成为 TEAM_OWNER。
+     * 契约 §5.1：创建团队，创建者成为 TEAM_OWNER。
      */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -61,7 +61,7 @@ public class TeamController {
     }
 
     /**
-     * 分页获取我加入的团队。
+     * 契约 §5.1：分页获取我加入的团队。
      */
     @GetMapping
     public PagedApiResponse<TeamResponse> list(@AuthenticationPrincipal UUID actor,
@@ -71,7 +71,7 @@ public class TeamController {
     }
 
     /**
-     * 获取团队资料与当前用户生效角色。
+     * 契约 §5.1：获取团队资料与当前用户生效角色。
      */
     @GetMapping("/{teamId}")
     public ApiResponse<TeamResponse> get(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
@@ -80,7 +80,7 @@ public class TeamController {
     }
 
     /**
-     * Team Owner 修改团队名称（description 传 null 保留原值，传空串清空）。
+     * 契约 §5.1：Team Owner 修改团队名称（description 传 null 保留原值，传空串清空）。
      */
     @PatchMapping("/{teamId}")
     public ApiResponse<TeamResponse> update(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
@@ -93,7 +93,7 @@ public class TeamController {
     }
 
     /**
-     * Team Owner 解散团队：级联删除团队下所有项目、需求群、消息与成员关系（不可恢复）。
+     * 契约 §5.1：Team Owner 解散团队：级联删除团队下所有项目、需求群、消息与成员关系（不可恢复）。
      * 仅 Team Owner 可调用，其他角色返回 403；同一 Idempotency-Key 重试幂等。
      */
     @DeleteMapping("/{teamId}")
@@ -106,7 +106,7 @@ public class TeamController {
     }
 
     /**
-     * 分页获取团队成员及其生效角色。
+     * 契约 §5.1：分页获取团队成员及其生效角色。
      */
     @GetMapping("/{teamId}/members")
     public PagedApiResponse<TeamMemberResponse> members(@AuthenticationPrincipal UUID actor,
@@ -116,7 +116,7 @@ public class TeamController {
     }
 
     /**
-     * Team Owner 按邮箱创建团队邀请。
+     * 契约 §5.1：Team Owner 按邮箱创建团队邀请。
      */
     @PostMapping("/{teamId}/invitations")
     @ResponseStatus(HttpStatus.CREATED)
@@ -130,7 +130,7 @@ public class TeamController {
     }
 
     /**
-     * 分页查询团队邀请状态（Team Owner）。
+     * 契约 §5.1：分页查询团队邀请状态（Team Owner）。
      */
     @GetMapping("/{teamId}/invitations")
     public PagedApiResponse<TeamInvitationResponse> invitations(@AuthenticationPrincipal UUID actor,
@@ -140,7 +140,7 @@ public class TeamController {
     }
 
     /**
-     * 撤销未接受的团队邀请。
+     * 契约 §5.1：撤销未接受的团队邀请。
      */
     @DeleteMapping("/{teamId}/invitations/{invitationId}")
     public ApiResponse<TeamInvitationResponse> revoke(@AuthenticationPrincipal UUID actor,
@@ -154,7 +154,7 @@ public class TeamController {
     }
 
     /**
-     * 调整团队成员角色（保护 canonical Owner）。
+     * 契约 §5.1：调整团队成员角色（保护 canonical Owner）。
      */
     @PatchMapping("/{teamId}/members/{userId}")
     public ApiResponse<TeamMemberResponse> updateMember(@AuthenticationPrincipal UUID actor,
@@ -168,7 +168,7 @@ public class TeamController {
     }
 
     /**
-     * 移除团队成员。
+     * 契约 §5.1：移除团队成员。
      */
     @DeleteMapping("/{teamId}/members/{userId}")
     public ApiResponse<TeamMemberResponse> removeMember(@AuthenticationPrincipal UUID actor,

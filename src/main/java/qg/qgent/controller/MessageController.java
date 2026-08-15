@@ -25,7 +25,8 @@ import qg.qgent.service.TaskTriggerService;
 import java.util.UUID;
 
 /**
- * 群消息接口（§7）。
+ * 群消息接口
+ * 群消息的发送、分页拉取与从消息触发 Task。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -40,7 +41,7 @@ public class MessageController {
     }
 
     /**
-     * 发送文本、代码块、图片、文件或引用消息。
+     * 契约 §7：发送文本、代码块、图片、文件或引用消息。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/messages")
     @ResponseStatus(HttpStatus.CREATED)
@@ -50,7 +51,7 @@ public class MessageController {
     }
 
     /**
-     * 游标分页拉取群消息（新消息在前）。
+     * 契约 §7：游标分页拉取群消息（新消息在前）。
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}/messages")
     public PagedApiResponse<MessageResponse> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -63,7 +64,7 @@ public class MessageController {
     }
 
     /**
-     * 从群消息显式触发 Task。
+     * 契约 §7：从群消息显式触发 Task。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/messages/{messageId}/trigger-task")
     public ApiResponse<?> triggerTask(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,

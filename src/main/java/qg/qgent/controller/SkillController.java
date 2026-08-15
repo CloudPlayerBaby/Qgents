@@ -23,7 +23,8 @@ import qg.qgent.service.SkillService;
 import java.util.UUID;
 
 /**
- * 共享 Skill 接口（§8）。
+ * 共享 Skill 接口
+ * 提供 Skill 列表查询、创建、详情、编辑、审核、发布、拒绝与下线操作。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -36,7 +37,7 @@ public class SkillController {
     }
 
     /**
-     * 查询 Skill（支持状态、标签过滤）。
+     * 契约 §8：查询 Skill（支持状态、标签过滤）。
      */
     @GetMapping("/projects/{projectId}/skills")
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -46,7 +47,7 @@ public class SkillController {
     }
 
     /**
-     * 创建草稿 Skill。
+     * 契约 §8：创建草稿 Skill。
      */
     @PostMapping("/projects/{projectId}/skills")
     @ResponseStatus(HttpStatus.CREATED)
@@ -56,7 +57,7 @@ public class SkillController {
     }
 
     /**
-     * 获取 Skill。
+     * 契约 §8：获取 Skill 详情。
      */
     @GetMapping("/projects/{projectId}/skills/{skillId}")
     public ApiResponse<?> get(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -65,7 +66,7 @@ public class SkillController {
     }
 
     /**
-     * 编辑草稿或审核中内容。
+     * 契约 §8：编辑草稿或审核中内容。
      */
     @PatchMapping("/projects/{projectId}/skills/{skillId}")
     public ApiResponse<?> update(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -74,7 +75,7 @@ public class SkillController {
     }
 
     /**
-     * 提交 Skill 审核。
+     * 契约 §8：提交 Skill 审核。
      */
     @PostMapping("/projects/{projectId}/skills/{skillId}/submit-review")
     public ApiResponse<?> submitReview(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -83,7 +84,7 @@ public class SkillController {
     }
 
     /**
-     * 发布 Skill（Project Admin）。
+     * 契约 §8：发布 Skill（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/skills/{skillId}/approve")
     public ApiResponse<?> approve(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -92,7 +93,7 @@ public class SkillController {
     }
 
     /**
-     * 拒绝 Skill 并给出原因（Project Admin）。
+     * 契约 §8：拒绝 Skill 并给出原因（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/skills/{skillId}/reject")
     public ApiResponse<?> reject(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -101,7 +102,7 @@ public class SkillController {
     }
 
     /**
-     * 下线已发布 Skill（Project Admin）。
+     * 契约 §8：下线已发布 Skill（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/skills/{skillId}/archive")
     public ApiResponse<?> archive(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,

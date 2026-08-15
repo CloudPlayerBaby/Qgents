@@ -17,7 +17,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 团队邀请接受接口（§5.1）。
+ * 团队邀请接受接口
+ * 提供通过邀请令牌接受邀请并加入团队的操作。
  */
 @RestController
 @RequestMapping("/api/v1/team-invitations")
@@ -31,7 +32,7 @@ public class TeamInvitationController {
     }
 
     /**
-     * 接受邀请令牌并加入团队。
+     * 契约 §5.1：接受邀请令牌并加入团队。
      */
     @PostMapping("/{token}/accept")
     public ApiResponse<TeamMemberResponse> accept(@AuthenticationPrincipal UUID actor, @PathVariable String token,

@@ -24,7 +24,8 @@ import qg.qgent.service.MemoryService;
 import java.util.UUID;
 
 /**
- * 共享 Memory 接口（§9）。
+ * 共享 Memory 接口
+ * 提供 Memory 列表查询、创建、AI 草稿生成、详情、编辑、审核与归档操作。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -37,7 +38,7 @@ public class MemoryController {
     }
 
     /**
-     * 查询 Memory（默认仅 APPROVED，支持状态、标签过滤）。
+     * 契约 §9：查询 Memory（默认仅 APPROVED，支持状态、标签过滤）。
      */
     @GetMapping("/projects/{projectId}/memories")
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -47,7 +48,7 @@ public class MemoryController {
     }
 
     /**
-     * 手动创建 Memory 草稿。
+     * 契约 §9：手动创建 Memory 草稿。
      */
     @PostMapping("/projects/{projectId}/memories")
     @ResponseStatus(HttpStatus.CREATED)
@@ -57,7 +58,7 @@ public class MemoryController {
     }
 
     /**
-     * 根据选中的群聊消息生成 AI 草稿。
+     * 契约 §9：根据选中的群聊消息生成 AI 草稿。
      */
     @PostMapping("/projects/{projectId}/memories/drafts")
     @ResponseStatus(HttpStatus.CREATED)
@@ -67,7 +68,7 @@ public class MemoryController {
     }
 
     /**
-     * 获取 Memory。
+     * 契约 §9：获取 Memory 详情。
      */
     @GetMapping("/projects/{projectId}/memories/{memoryId}")
     public ApiResponse<?> get(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -76,7 +77,7 @@ public class MemoryController {
     }
 
     /**
-     * 编辑草稿或审核中内容。
+     * 契约 §9：编辑草稿或审核中内容。
      */
     @PatchMapping("/projects/{projectId}/memories/{memoryId}")
     public ApiResponse<?> update(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -85,7 +86,7 @@ public class MemoryController {
     }
 
     /**
-     * 提交 Memory 审核。
+     * 契约 §9：提交 Memory 审核。
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/submit-review")
     public ApiResponse<?> submitReview(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -94,7 +95,7 @@ public class MemoryController {
     }
 
     /**
-     * 批准并发布 Memory（Project Admin）。
+     * 契约 §9：批准并发布 Memory（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/approve")
     public ApiResponse<?> approve(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -103,7 +104,7 @@ public class MemoryController {
     }
 
     /**
-     * 拒绝 Memory 并给出原因（Project Admin）。
+     * 契约 §9：拒绝 Memory 并给出原因（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/reject")
     public ApiResponse<?> reject(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
@@ -112,7 +113,7 @@ public class MemoryController {
     }
 
     /**
-     * 归档 Memory（Project Admin）。
+     * 契约 §9：归档 Memory（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/archive")
     public ApiResponse<?> archive(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
