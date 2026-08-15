@@ -4,6 +4,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -28,6 +29,12 @@ public class RequestIdFilter extends OncePerRequestFilter {
         String id = "req_" + UUID.randomUUID();
         request.setAttribute(ATTRIBUTE, id);
         response.setHeader("X-Request-Id", id);
-        chain.doFilter(request, response);
+        MDC.put(ATTRIBUTE, id);
+        try {
+            chain.doFilter(request, response);
+        } finally {
+            // Tomcat reuses request threads; do not leak this ID to the next request.
+            MDC.remove(ATTRIBUTE);
+        }
     }
 }
