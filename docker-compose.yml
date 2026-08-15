@@ -20,9 +20,11 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
+    profiles:
+      - api-tunnel
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_API_TUNNEL_TOKEN:?Set CLOUDFLARE_API_TUNNEL_TOKEN in .env}
 
 volumes:
   mysql_data:
