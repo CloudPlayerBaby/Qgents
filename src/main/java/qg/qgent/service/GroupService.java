@@ -292,7 +292,7 @@ public class GroupService {
         GroupLatestMessage latestMessage = latest == null ? null
                 : new GroupLatestMessage(latest.getSenderName(), latest.getText(), latest.getMessageType());
         return new GroupResponse(g.getId().toString(), g.getProjectId().toString(), g.getGroupType(),
-                g.getName(), g.getDescription(), g.getStatus(), iso(g.getLastMessageAt()),
+                g.getName(), g.getDescription(), g.getStatus(), id(g.getCreatedBy()), iso(g.getLastMessageAt()),
                 iso(g.getLastMessageAt() != null ? g.getLastMessageAt() : g.getCreatedAt()), latestMessage,
                 iso(g.getCreatedAt()),
                 groupRepositoryMapper.selectRepositoryIds(g.getId()).stream().map(UUID::toString).toList(),
@@ -304,5 +304,9 @@ public class GroupService {
      */
     private String iso(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC).toString();
+    }
+
+    private String id(UUID value) {
+        return value == null ? null : value.toString();
     }
 }

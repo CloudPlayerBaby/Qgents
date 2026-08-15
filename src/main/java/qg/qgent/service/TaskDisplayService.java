@@ -109,7 +109,7 @@ public class TaskDisplayService {
         List<TaskEntity> rows = tasks.selectList(Wrappers.<TaskEntity>lambdaQuery()
                 .eq(TaskEntity::getProjectId, projectId)
                 .eq(groupUuid != null, TaskEntity::getRequirementGroupId, groupUuid)
-                .eq(status != null && !status.isBlank(), TaskEntity::getStatus, status)
+                .in(!splitStatuses(status).isEmpty(), TaskEntity::getStatus, splitStatuses(status))
                 .eq(creatorUuid != null, TaskEntity::getCreatedBy, creatorUuid)
                 .apply(repositoryUuid != null,
                         "workspace_id in (select workspace_id from workspace_repositories where project_repository_id = {0})",
@@ -681,6 +681,18 @@ public class TaskDisplayService {
             throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "任务不存在或无权访问");
         }
         return task;
+    }
+
+    /**
+     * 解析状态过滤参数：支持逗号分隔多值（如 status=SUCCEEDED,FAILED,CANCELLED），
+     * 空值返回空列表（不过滤）。
+     */
+    private List<String> splitStatuses(String status) {
+        if (status == null || status.isBlank()) {
+            return List.of();
+        }
+        return java.util.Arrays.stream(status.split(","))
+                .map(String::trim).filter(s -> !s.isEmpty()).distinct().toList();
     }
 
     private UUID parseCursor(String cursor) {

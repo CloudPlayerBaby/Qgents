@@ -52,6 +52,12 @@ public class GroupResponse {
     private String status;
 
     /**
+     * 群创建者用户 ID（需求群创建者，用于前端判断「归档需求群」按钮显隐）。
+     */
+    @Schema(description = "群创建者用户 ID")
+    private String createdBy;
+
+    /**
      * 最近消息时间（ISO8601 UTC，带时区后缀 Z），从未发言为空。
      */
     @Schema(description = "最近消息时间（ISO8601 UTC）")
