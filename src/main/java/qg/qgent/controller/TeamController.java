@@ -99,6 +99,19 @@ public class TeamController {
     }
 
     /**
+     * 团队最近动态（团队成员可见，基于项目事件聚合，覆盖最近 24 小时）。
+     * type 过滤逗号分隔、前缀匹配（如 TASK,MR）；limit 默认 20、最大 50。
+     */
+    @GetMapping("/{teamId}/activities")
+    public PagedApiResponse<ActivityResponse> activities(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
+                                                         @RequestParam(required = false) String type,
+                                                         @RequestParam(required = false) String cursor,
+                                                         @RequestParam(required = false) Integer limit,
+                                                         HttpServletRequest request) {
+        return page(teams.activities(actor, teamId, type, cursor, limit), request);
+    }
+
+    /**
      * 契约 §5.1：Team Owner 按邮箱创建团队邀请。
      */
     @PostMapping("/{teamId}/invitations")

@@ -46,6 +46,41 @@ public interface EventMapper extends BaseMapper<EventEntity> {
                                 @Param("limit") int limit);
 
     /**
+     * 拉取团队内所有项目的最远动态事件（events JOIN projects 按 team_id 过滤）。
+     * <p>
+     * 按事件 id（UUIDv7，含时间序）倒序做 keyset 分页；fragments 为服务端白名单拼装的
+     * 动态类型过滤片段（如 event_type 与 payload.status 的 JSON 取值约束），仅来自固定映射表，
+     * 不含任何用户输入。anchor 为上一页最后一条事件 id，返回 id 小于 anchor 的一页。
+     *
+     * @param teamId    团队 ID
+     * @param anchor    上一页游标事件 id，可为 null
+     * @param fragments 动态类型过滤 SQL 片段（OR 连接）；为空时返回空集
+     * @param limit     本次拉取条数上限
+     * @return 该团队事件页（按 id 倒序）
+     */
+    @Select({"<script>",
+            "SELECT e.id, e.project_id, e.requirement_group_id, e.sequence_no, e.event_type, e.resource_id, e.payload, e.created_at",
+            "FROM events e JOIN projects p ON e.project_id = p.id",
+            "WHERE p.team_id = #{teamId}",
+            "<if test='anchor != null'>AND e.id &lt; #{anchor}</if>",
+            "AND (<foreach collection='fragments' item='f' separator=' OR '>${f}</foreach>)",
+            "ORDER BY e.id DESC LIMIT #{limit}",
+            "</script>"})
+    @Results({
+            @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "project_id", property = "projectId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "requirement_group_id", property = "requirementGroupId",
+                    typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "sequence_no", property = "sequenceNo"),
+            @Result(column = "event_type", property = "eventType"),
+            @Result(column = "resource_id", property = "resourceId"),
+            @Result(column = "payload", property = "payload", typeHandler = JacksonTypeHandler.class),
+            @Result(column = "created_at", property = "createdAt")
+    })
+    List<EventEntity> listTeamAfter(@Param("teamId") UUID teamId, @Param("anchor") UUID anchor,
+                                    @Param("fragments") List<String> fragments, @Param("limit") int limit);
+
+    /**
      * 删除指定项目早于 cutoff 的过期事件（发布时顺带清理）。
      */
     @Delete("DELETE FROM events WHERE project_id = #{projectId} AND created_at < #{cutoff}")
