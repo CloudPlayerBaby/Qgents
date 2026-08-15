@@ -20,5 +20,6 @@ public class DiffCommentResponse {
     private String commitSha;
     private String body;
     private String authorUserId;
+    private String authorName;
     private String createdAt;
 }

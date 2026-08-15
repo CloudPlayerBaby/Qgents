@@ -546,6 +546,11 @@ public class GitHubWebhookService {
                     .eq(MergeRequestEntity::getProjectRepositoryId, binding.getId())
                     .eq(MergeRequestEntity::getProvider, "GITHUB")
                     .eq(MergeRequestEntity::getProviderNumber, providerNumber));
+            // 乱序投递保护：payload 更新时间不晚于已存镜像时忽略，避免延迟事件把新状态覆盖回旧状态
+            if (mr != null && providerUpdatedAt != null && mr.getProviderUpdatedAt() != null
+                    && !providerUpdatedAt.isAfter(mr.getProviderUpdatedAt())) {
+                continue;
+            }
             boolean created = false;
             if (mr == null) {
                 mr = new MergeRequestEntity();

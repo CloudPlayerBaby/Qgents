@@ -5,7 +5,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -53,16 +52,16 @@ public class GroupResponse {
     private String status;
 
     /**
-     * 最近消息时间（UTC），从未发言为空。
+     * 最近消息时间（ISO8601 UTC，带时区后缀 Z），从未发言为空。
      */
-    @Schema(description = "最近消息时间（UTC），从未发言为空")
-    private LocalDateTime lastMessageAt;
+    @Schema(description = "最近消息时间（ISO8601 UTC）")
+    private String lastMessageAt;
 
     /**
-     * 最近活跃时间（UTC），排序依据；从未发言时以创建时间兜底（A 联调约定 §2）。
+     * 最近活跃时间（ISO8601 UTC，带时区后缀 Z），排序依据；从未发言时以创建时间兜底（A 联调约定 §2）。
      */
-    @Schema(description = "最近活跃时间（UTC），排序依据；从未发言时以创建时间兜底")
-    private LocalDateTime latestActivityAt;
+    @Schema(description = "最近活跃时间（ISO8601 UTC）")
+    private String latestActivityAt;
 
     /**
      * 最新消息摘要（发送者昵称 + 文本），从未发言为空（A 联调约定 §2）。
@@ -71,10 +70,10 @@ public class GroupResponse {
     private GroupLatestMessage latestMessage;
 
     /**
-     * 创建时间（UTC）。
+     * 创建时间（ISO8601 UTC，带时区后缀 Z）。
      */
-    @Schema(description = "创建时间（UTC）")
-    private LocalDateTime createdAt;
+    @Schema(description = "创建时间（ISO8601 UTC）")
+    private String createdAt;
 
     /**
      * 关联的项目仓库绑定 ID 列表。

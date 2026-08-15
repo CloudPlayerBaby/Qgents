@@ -27,7 +27,7 @@ class DiffServiceTest {
     private final DiffDeliveryService delivery = mock(DiffDeliveryService.class);
     private final DiffService service = new DiffService(diffs, mock(DiffFileMapper.class),
             mock(DiffCommentMapper.class), tasks, workspaces, access, events,
-            mock(NotificationService.class), delivery);
+            mock(NotificationService.class), delivery, mock(UserMapper.class));
 
     @Test
     void rejectRequiresReasonAndDoesNotCreateACommit() {

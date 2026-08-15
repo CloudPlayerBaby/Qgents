@@ -61,12 +61,12 @@ public class MergeRequestController {
     }
 
     /**
-     * 契约 §13：查询门禁检查详情。
+     * 契约 §13 / §21：查询门禁检查汇总（{status, requiredChecks, items[]}）。
      */
     @GetMapping("/{mergeRequestId}/checks")
     public ApiResponse<?> checks(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
                                  @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
-        List<MergeRequestCheckResponse> data = mergeRequestService.checks(projectId, mergeRequestId, userId);
+        MergeRequestChecksResponse data = mergeRequestService.checks(projectId, mergeRequestId, userId);
         return ok(data, request);
     }
 

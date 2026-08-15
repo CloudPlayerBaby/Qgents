@@ -874,9 +874,9 @@ class MergeRequestServiceTest {
         c1.setCheckType("AI_REVIEW");
         when(qualityCheckMapper.selectList(any())).thenReturn(java.util.List.of(c1));
 
-        java.util.List<qg.qgent.dto.MergeRequestCheckResponse> checks = service.checks(projectId, mergeRequestId, userId);
-        assertEquals(1, checks.size());
-        assertEquals("AI_REVIEW", checks.get(0).getType());
+        qg.qgent.dto.MergeRequestChecksResponse checks = service.checks(projectId, mergeRequestId, userId);
+        assertEquals(1, checks.getItems().size());
+        assertEquals("AI_REVIEW", checks.getItems().get(0).getType());
     }
 
     @Test

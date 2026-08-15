@@ -13,6 +13,8 @@ import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.mapper.*;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -84,6 +86,7 @@ public class GroupService {
         group.setName(title);
         group.setGroupType("PROJECT_MAIN");
         group.setStatus("ACTIVE");
+        group.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         groupMapper.insert(group);
         return toResponse(groupMapper.selectById(group.getId()));
     }
@@ -113,6 +116,7 @@ public class GroupService {
         group.setDescription(body.getDescription());
         group.setGroupType("REQUIREMENT");
         group.setStatus("ACTIVE");
+        group.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         groupMapper.insert(group);
         for (UUID repositoryId : repositories) {
             groupRepositoryMapper.insertLink(group.getId(), repositoryId);
@@ -288,10 +292,17 @@ public class GroupService {
         GroupLatestMessage latestMessage = latest == null ? null
                 : new GroupLatestMessage(latest.getSenderName(), latest.getText(), latest.getMessageType());
         return new GroupResponse(g.getId().toString(), g.getProjectId().toString(), g.getGroupType(),
-                g.getName(), g.getDescription(), g.getStatus(), g.getLastMessageAt(),
-                g.getLastMessageAt() != null ? g.getLastMessageAt() : g.getCreatedAt(), latestMessage,
-                g.getCreatedAt(),
+                g.getName(), g.getDescription(), g.getStatus(), iso(g.getLastMessageAt()),
+                iso(g.getLastMessageAt() != null ? g.getLastMessageAt() : g.getCreatedAt()), latestMessage,
+                iso(g.getCreatedAt()),
                 groupRepositoryMapper.selectRepositoryIds(g.getId()).stream().map(UUID::toString).toList(),
                 projectMemberMapper.countMembers(g.getProjectId()) + groupAgentMapper.selectAgentIds(g.getId()).size());
+    }
+
+    /**
+     * 时间统一序列化为 UTC 并带 Z 后缀（ISO8601），避免前端按本地时区误解析。
+     */
+    private String iso(LocalDateTime value) {
+        return value == null ? null : value.toInstant(ZoneOffset.UTC).toString();
     }
 }

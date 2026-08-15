@@ -24,5 +24,6 @@ public class MergeRequestSummaryResponse {
     private String headCommit;
     private QualityGateResponse qualityGate;
     private String title;
+    private String webUrl;
     private String createdAt;
 }
