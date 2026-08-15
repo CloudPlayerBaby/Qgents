@@ -84,6 +84,8 @@ public class SecurityConfig {
                                 "/api/v1/auth/password-resets")
                         .permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/integrations/github/callback").permitAll()
+                        // GitHub Webhook 公开接口：安全依据为 X-Hub-Signature-256 验签，不携带 Qgents JWT。
+                        .requestMatchers(HttpMethod.POST, "/api/v1/integrations/github/webhook").permitAll()
                         // SSE 断线时容器触发 async dispatch 会重走授权链，此时 SecurityContext 已丢失；
                         // 授权层放行，成员鉴权由 EventController/EventService 的 requireProjectMember 保证。
                         .requestMatchers(HttpMethod.GET, "/api/v1/projects/*/events").permitAll()
