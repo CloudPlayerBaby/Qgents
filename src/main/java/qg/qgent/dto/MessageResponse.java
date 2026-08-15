@@ -5,7 +5,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -78,8 +77,8 @@ public class MessageResponse {
     private List<Mention> mentions;
 
     /**
-     * 发送时间（UTC）。
+     * 发送时间（ISO8601 UTC，带时区后缀 Z）。
      */
-    @Schema(description = "发送时间（UTC）")
-    private LocalDateTime createdAt;
+    @Schema(description = "发送时间（ISO8601 UTC）")
+    private String createdAt;
 }

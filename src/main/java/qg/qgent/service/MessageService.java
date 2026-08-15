@@ -160,6 +160,8 @@ public class MessageService {
         message.setContent(writeJson(body.getContent()));
         message.setMentions(writeJson(mentions));
         message.setReplyToMessageId(body.getReplyToId());
+        // 显式使用 UTC：不依赖数据库 DEFAULT CURRENT_TIMESTAMP（其取 MySQL 服务器时区，可能为本地时间）
+        message.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         try {
             messageMapper.insert(message);
         } catch (DuplicateKeyException e) {
@@ -294,7 +296,15 @@ public class MessageService {
         }
         return new MessageResponse(m.getId().toString(), m.getRequirementGroupId().toString(), m.getSequenceNo(),
                 m.getMessageType(), content, senderId, senderType, senderName,
-                m.getReplyToMessageId() == null ? null : m.getReplyToMessageId().toString(), mentions, m.getCreatedAt());
+                m.getReplyToMessageId() == null ? null : m.getReplyToMessageId().toString(), mentions,
+                iso(m.getCreatedAt()));
+    }
+
+    /**
+     * 时间统一序列化为 UTC 并带 Z 后缀（ISO8601），避免前端按本地时区误解析。
+     */
+    private String iso(LocalDateTime value) {
+        return value == null ? null : value.toInstant(ZoneOffset.UTC).toString();
     }
 
     /**

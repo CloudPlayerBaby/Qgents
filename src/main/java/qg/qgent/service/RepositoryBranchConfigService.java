@@ -13,15 +13,16 @@ import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * 6.1 分支策略与质量门禁服务。
- * 负责管理项目级 GitHub 仓库指定分支（如 main/develop）的保护策略（例如是否允许直接 Push、最少需要多少人 Review）
- * 以及质量门禁（必须通过哪些测试集、代码检查等）。
+ * 6.1 鍒嗘敮绛栫暐涓庤川閲忛棬绂佹湇鍔°€?
+ * 璐熻矗绠＄悊椤圭洰绾?GitHub 浠撳簱鎸囧畾鍒嗘敮锛堝 main/develop锛夌殑淇濇姢绛栫暐锛堜緥濡傛槸鍚﹀厑璁哥洿鎺?Push銆佹渶灏戦渶瑕佸灏戜汉 Review锛?
+ * 浠ュ強璐ㄩ噺闂ㄧ锛堝繀椤婚€氳繃鍝簺娴嬭瘯闆嗐€佷唬鐮佹鏌ョ瓑锛夈€?
  */
 @Service
 public class RepositoryBranchConfigService {
@@ -50,22 +51,22 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 获取指定分支的保护策略配置。
+     * 鑾峰彇鎸囧畾鍒嗘敮鐨勪繚鎶ょ瓥鐣ラ厤缃€?
      *
-     * @param actorId      当前操作用户的 ID
-     * @param projectId    项目 ID
-     * @param repositoryId GitHub 仓库映射在项目内的绑定 ID (ProjectRepositoryId)
-     * @param branchName   分支名称（如 "main"）
-     * @return 分支保护策略数据传输对象 (BranchPolicyDto)
+     * @param actorId      褰撳墠鎿嶄綔鐢ㄦ埛鐨?ID
+     * @param projectId    椤圭洰 ID
+     * @param repositoryId GitHub 浠撳簱鏄犲皠鍦ㄩ」鐩唴鐨勭粦瀹?ID (ProjectRepositoryId)
+     * @param branchName   鍒嗘敮鍚嶇О锛堝 "main"锛?
+     * @return 鍒嗘敮淇濇姢绛栫暐鏁版嵁浼犺緭瀵硅薄 (BranchPolicyDto)
      */
     public BranchPolicyDto getBranchPolicy(UUID actorId, UUID projectId, UUID repositoryId, String branchName) {
-        // 权限校验：至少需要是项目成员才能查看分支策略
-        requireProjectMember(actorId, projectId); // 如果不是项目成员，则抛出权限不足异常
+        // 鏉冮檺鏍￠獙锛氳嚦灏戦渶瑕佹槸椤圭洰鎴愬憳鎵嶈兘鏌ョ湅鍒嗘敮绛栫暐
+        requireProjectMember(actorId, projectId); // 濡傛灉涓嶆槸椤圭洰鎴愬憳锛屽垯鎶涘嚭鏉冮檺涓嶈冻寮傚父
 
-        // 获取项目与仓库的绑定记录，确保该仓库真的被这个项目绑定了
+        // 鑾峰彇椤圭洰涓庝粨搴撶殑缁戝畾璁板綍锛岀‘淇濊浠撳簱鐪熺殑琚繖涓」鐩粦瀹氫簡
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
 
-        // 懒加载设计：获取该分支现有的配置，如果没有则只在内存里返回默认配置
+        // 鎳掑姞杞借璁★細鑾峰彇璇ュ垎鏀幇鏈夌殑閰嶇疆锛屽鏋滄病鏈夊垯鍙湪鍐呭瓨閲岃繑鍥為粯璁ら厤缃?
         RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, false);
 
         BranchPolicyDto dto = new BranchPolicyDto();
@@ -81,45 +82,45 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 更新指定分支的保护策略配置。
+     * 鏇存柊鎸囧畾鍒嗘敮鐨勪繚鎶ょ瓥鐣ラ厤缃€?
      *
-     * @param actorId      当前操作用户的 ID
-     * @param projectId    项目 ID
-     * @param repositoryId GitHub 仓库映射在项目内的绑定 ID
-     * @param branchName   分支名称
-     * @param request      包含新策略配置的请求对象
-     * @return 更新后的分支保护策略
+     * @param actorId      褰撳墠鎿嶄綔鐢ㄦ埛鐨?ID
+     * @param projectId    椤圭洰 ID
+     * @param repositoryId GitHub 浠撳簱鏄犲皠鍦ㄩ」鐩唴鐨勭粦瀹?ID
+     * @param branchName   鍒嗘敮鍚嶇О
+     * @param request      鍖呭惈鏂扮瓥鐣ラ厤缃殑璇锋眰瀵硅薄
+     * @return 鏇存柊鍚庣殑鍒嗘敮淇濇姢绛栫暐
      */
-    @Transactional // 开启事务，保证更新过程中发生异常时数据能够回滚
+    @Transactional // 寮€鍚簨鍔★紝淇濊瘉鏇存柊杩囩▼涓彂鐢熷紓甯告椂鏁版嵁鑳藉鍥炴粴
     public BranchPolicyDto updateBranchPolicy(UUID actorId, UUID projectId, UUID repositoryId, String branchName,
                                               UpdateBranchPolicyRequest request) {
-        // 权限校验：修改分支策略属于高危操作，必须是项目管理员 (Project Admin) 才能执行
+        // 鏉冮檺鏍￠獙锛氫慨鏀瑰垎鏀瓥鐣ュ睘浜庨珮鍗辨搷浣滐紝蹇呴』鏄」鐩鐞嗗憳 (Project Admin) 鎵嶈兘鎵ц
         requireProjectAdmin(actorId, projectId);
 
-        // 获取项目与仓库的绑定记录
+        // 鑾峰彇椤圭洰涓庝粨搴撶殑缁戝畾璁板綍
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
 
-        // 获取或初始化该分支的配置实体
+        // 鑾峰彇鎴栧垵濮嬪寲璇ュ垎鏀殑閰嶇疆瀹炰綋
         RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, true);
 
         Map<String, Object> policyJson = config.getPolicyJson();
         if (policyJson == null) {
             policyJson = new java.util.HashMap<>();
         }
-        // 开始根据请求设置
+        // 寮€濮嬫牴鎹姹傝缃?
         if (request.getRequirePullRequest() != null)
             policyJson.put("requirePullRequest", request.getRequirePullRequest());
         if (request.getMinimumHumanApprovals() != null)
             policyJson.put("minimumHumanApprovals", request.getMinimumHumanApprovals());
         if (request.getAllowDirectPush() != null)
             policyJson.put("allowDirectPush", request.getAllowDirectPush());
-        // 更新到数据库
+        // 鏇存柊鍒版暟鎹簱
         config.setPolicyJson(policyJson);
-        config.setUpdatedAt(LocalDateTime.now());
+        config.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
 
         branchConfigMapper.updateById(config);
 
-        // 返回更新后的策略配置
+        // 杩斿洖鏇存柊鍚庣殑绛栫暐閰嶇疆
         BranchPolicyDto dto = new BranchPolicyDto();
         dto.setRequirePullRequest(
                 policyJson.containsKey("requirePullRequest") ? (Boolean) policyJson.get("requirePullRequest") : null);
@@ -132,16 +133,16 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 获取指定分支的质量门禁配置（如必须通过的 Testset 列表、代码检查项）。
+     * 鑾峰彇鎸囧畾鍒嗘敮鐨勮川閲忛棬绂侀厤缃紙濡傚繀椤婚€氳繃鐨?Testset 鍒楄〃銆佷唬鐮佹鏌ラ」锛夈€?
      */
     public QualityGateDto getQualityGate(UUID actorId, UUID projectId, UUID repositoryId, String branchName) {
-        // 只有项目成员才能查看质量门禁配置
+        // 鍙湁椤圭洰鎴愬憳鎵嶈兘鏌ョ湅璐ㄩ噺闂ㄧ閰嶇疆
         requireProjectMember(actorId, projectId);
 
-        // 验证仓库绑定关系
+        // 楠岃瘉浠撳簱缁戝畾鍏崇郴
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
 
-        // 获取该分支的配置实体（没有则不落库，直接在内存构造）
+        // 鑾峰彇璇ュ垎鏀殑閰嶇疆瀹炰綋锛堟病鏈夊垯涓嶈惤搴擄紝鐩存帴鍦ㄥ唴瀛樻瀯閫狅級
         RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, false);
 
         QualityGateDto dto = new QualityGateDto();
@@ -162,13 +163,13 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 更新指定分支的质量门禁配置。
-     * 支持全量覆盖现有的必须检查项（Required Checks）和关联的测试集（Testsets）。
+     * 鏇存柊鎸囧畾鍒嗘敮鐨勮川閲忛棬绂侀厤缃€?
+     * 鏀寔鍏ㄩ噺瑕嗙洊鐜版湁鐨勫繀椤绘鏌ラ」锛圧equired Checks锛夊拰鍏宠仈鐨勬祴璇曢泦锛圱estsets锛夈€?
      */
     @Transactional
     public QualityGateDto updateQualityGate(UUID actorId, UUID projectId, UUID repositoryId, String branchName,
                                             UpdateQualityGateRequest request) {
-        // 必须是项目管理员才能修改门禁
+        // 蹇呴』鏄」鐩鐞嗗憳鎵嶈兘淇敼闂ㄧ
         requireProjectAdmin(actorId, projectId);
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
 
@@ -196,9 +197,9 @@ public class RepositoryBranchConfigService {
 
         RepositoryBranchConfigEntity config = getConfig(projectRepo.getId(), branchName, true);
 
-        // 1. 更新主配置表中的 Required Checks 列表
+        // 1. 鏇存柊涓婚厤缃〃涓殑 Required Checks 鍒楄〃
         config.setRequiredChecks(request.getRequiredChecks());
-        config.setUpdatedAt(LocalDateTime.now());
+        config.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         branchConfigMapper.updateById(config);
 
         branchConfigTestsetMapper.delete(new LambdaQueryWrapper<RepositoryBranchConfigTestsetEntity>()
@@ -221,23 +222,23 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 【内部方法】获取分支配置：如果数据库中已经存在该分支的配置，则直接返回；
-     * 否则根据 createIfMissing 决定是否在数据库中初始化，如果不初始化，只在内存中返回一个空配置
+     * 銆愬唴閮ㄦ柟娉曘€戣幏鍙栧垎鏀厤缃細濡傛灉鏁版嵁搴撲腑宸茬粡瀛樺湪璇ュ垎鏀殑閰嶇疆锛屽垯鐩存帴杩斿洖锛?
+     * 鍚﹀垯鏍规嵁 createIfMissing 鍐冲畾鏄惁鍦ㄦ暟鎹簱涓垵濮嬪寲锛屽鏋滀笉鍒濆鍖栵紝鍙湪鍐呭瓨涓繑鍥炰竴涓┖閰嶇疆
      *
-     * @param projectRepositoryId 仓库绑定关系 ID
-     * @param branchName          分支名称
-     * @param createIfMissing     如果不存在，是否要写入数据库
-     * @return 分支配置实体
+     * @param projectRepositoryId 浠撳簱缁戝畾鍏崇郴 ID
+     * @param branchName          鍒嗘敮鍚嶇О
+     * @param createIfMissing     濡傛灉涓嶅瓨鍦紝鏄惁瑕佸啓鍏ユ暟鎹簱
+     * @return 鍒嗘敮閰嶇疆瀹炰綋
      */
     private RepositoryBranchConfigEntity getConfig(UUID projectRepositoryId, String branchName,
                                                    boolean createIfMissing) {
-        // 尝试从数据库查询该分支配置
+        // 灏濊瘯浠庢暟鎹簱鏌ヨ璇ュ垎鏀厤缃?
         RepositoryBranchConfigEntity config = branchConfigMapper
                 .selectOne(new LambdaQueryWrapper<RepositoryBranchConfigEntity>()
                         .eq(RepositoryBranchConfigEntity::getProjectRepositoryId, projectRepositoryId)
                         .eq(RepositoryBranchConfigEntity::getBranchName, branchName));
 
-        // 如果不存在，则进行初始化
+        // 濡傛灉涓嶅瓨鍦紝鍒欒繘琛屽垵濮嬪寲
         if (config == null) {
             config = new RepositoryBranchConfigEntity();
             if (createIfMissing) {
@@ -245,8 +246,8 @@ public class RepositoryBranchConfigService {
             }
             config.setProjectRepositoryId(projectRepositoryId);
             config.setBranchName(branchName);
-            config.setCreatedAt(LocalDateTime.now());
-            config.setUpdatedAt(LocalDateTime.now());
+            config.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
+            config.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
             if (createIfMissing) {
                 branchConfigMapper.insert(config);
             }
@@ -255,8 +256,8 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 【内部方法】根据项目 ID 和 GitHub 仓库 ID 获取绑定关系。
-     * 会同时校验该仓库是否真的被该项目绑定。
+     * 銆愬唴閮ㄦ柟娉曘€戞牴鎹」鐩?ID 鍜?GitHub 浠撳簱 ID 鑾峰彇缁戝畾鍏崇郴銆?
+     * 浼氬悓鏃舵牎楠岃浠撳簱鏄惁鐪熺殑琚椤圭洰缁戝畾銆?
      */
     private ProjectRepositoryEntity getProjectRepository(UUID projectId, UUID repositoryId) {
         ProjectRepositoryEntity projectRepo = projectRepositoryMapper
@@ -271,7 +272,7 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 【内部方法】强制校验用户是否是项目成员（或团队老大）。若校验不通过则抛出 403 异常。
+     * 銆愬唴閮ㄦ柟娉曘€戝己鍒舵牎楠岀敤鎴锋槸鍚︽槸椤圭洰鎴愬憳锛堟垨鍥㈤槦鑰佸ぇ锛夈€傝嫢鏍￠獙涓嶉€氳繃鍒欐姏鍑?403 寮傚父銆?
      */
     private void requireProjectMember(UUID actorId, UUID projectId) {
         if (!hasProjectAccess(projectId, actorId)) {
@@ -280,7 +281,7 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 【内部方法】强制校验用户是否是项目管理员（Project Admin）或团队老大。若校验不通过则抛出 403 异常。
+     * 銆愬唴閮ㄦ柟娉曘€戝己鍒舵牎楠岀敤鎴锋槸鍚︽槸椤圭洰绠＄悊鍛橈紙Project Admin锛夋垨鍥㈤槦鑰佸ぇ銆傝嫢鏍￠獙涓嶉€氳繃鍒欐姏鍑?403 寮傚父銆?
      */
     private void requireProjectAdmin(UUID actorId, UUID projectId) {
         if (!hasProjectAdminAccess(projectId, actorId)) {
@@ -289,8 +290,8 @@ public class RepositoryBranchConfigService {
     }
 
     /**
-     * 【内部方法】判断用户是否拥有该项目的访问权限。
-     * 判断条件：1. 项目存在； 2. 用户是项目的团队老大 (Team Owner) 或 被明确添加到该项目 (Project Member)
+     * 銆愬唴閮ㄦ柟娉曘€戝垽鏂敤鎴锋槸鍚︽嫢鏈夎椤圭洰鐨勮闂潈闄愩€?
+     * 鍒ゆ柇鏉′欢锛?. 椤圭洰瀛樺湪锛?2. 鐢ㄦ埛鏄」鐩殑鍥㈤槦鑰佸ぇ (Team Owner) 鎴?琚槑纭坊鍔犲埌璇ラ」鐩?(Project Member)
      */
     private boolean hasProjectAccess(UUID projectId, UUID actorId) {
         ProjectEntity project = projectMapper.selectById(projectId);
@@ -298,7 +299,7 @@ public class RepositoryBranchConfigService {
                 || projectMemberMapper.selectCount(
                 new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId)
                         .eq(ProjectMemberEntity::getUserId, actorId)) > 0);
-        // 项目是否存在+是团队老大/是普通成员
+        // 椤圭洰鏄惁瀛樺湪+鏄洟闃熻€佸ぇ/鏄櫘閫氭垚鍛?
     }
 
     private boolean hasProjectAdminAccess(UUID projectId, UUID actorId) {
