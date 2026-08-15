@@ -141,7 +141,7 @@ public class RestGitHubAppClient implements GitHubAppClient {
         try {
             while (true) {
                 if (System.nanoTime() > deadlineNanos) {
-                    throw new ApiException(org.springframework.http.HttpStatus.GATEWAY_TIMEOUT,
+                    throw new ApiException(org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR,
                             "GITHUB_REPOSITORY_LIST_TIMEOUT",
                             "GitHub 仓库分页拉取超过总超时，请重试");
                 }

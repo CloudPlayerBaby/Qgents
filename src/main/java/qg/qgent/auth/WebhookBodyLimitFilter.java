@@ -128,6 +128,13 @@ public class WebhookBodyLimitFilter extends OncePerRequestFilter {
         }
 
         @Override
+        public java.io.BufferedReader getReader() {
+            return new java.io.BufferedReader(
+                    new java.io.InputStreamReader(new ByteArrayInputStream(cachedBody),
+                            java.nio.charset.StandardCharsets.UTF_8));
+        }
+
+        @Override
         public int getContentLength() {
             return cachedBody.length;
         }

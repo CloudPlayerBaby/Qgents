@@ -1,9 +1,12 @@
 package qg.qgent.auth;
 
+import jakarta.servlet.ServletContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.RequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import qg.qgent.config.GitHubWebhookProperties;
 import qg.qgent.controller.GitHubWebhookController;
@@ -20,7 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * MockMvc 集成测试：验证 WebhookBodyLimitFilter 在真实 MVC 链中，
- * chunked（无 Content-Length）超限请求返回 413 而非被包装成 400。
+ * chunked（无 Content-Length，getContentLengthLong() == -1）超限请求返回 413 而非被包装成 400。
  */
 class WebhookBodyLimitFilterIntegrationTest {
     private final GitHubWebhookProperties properties = new GitHubWebhookProperties();
@@ -39,15 +42,35 @@ class WebhookBodyLimitFilterIntegrationTest {
     }
 
     /**
-     * 无 Content-Length 的 chunked 请求：11 字节，filter 在进入 Controller 前拦截并返回 413。
+     * 构造真正无 Content-Length 的 chunked 请求（getContentLengthLong() == -1）。
+     */
+    private static RequestBuilder chunkedPost(String body) {
+        byte[] content = body.getBytes(StandardCharsets.UTF_8);
+        return new RequestBuilder() {
+            @Override
+            public MockHttpServletRequest buildRequest(ServletContext servletContext) {
+                MockHttpServletRequest request = new MockHttpServletRequest(servletContext, "POST",
+                        "/api/v1/integrations/github/webhook") {
+                    @Override
+                    public long getContentLengthLong() {
+                        return -1L;
+                    }
+                };
+                request.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                request.addHeader("X-GitHub-Event", "ping");
+                request.addHeader("X-GitHub-Delivery", "d1");
+                request.setContent(content);
+                return request;
+            }
+        };
+    }
+
+    /**
+     * 无 Content-Length 的 chunked 请求：11 字节，filter 在进入 Controller 前走 readLimited() 判定超限并返回 413。
      */
     @Test
     void chunkedBodyOverLimitReturns413BeforeController() throws Exception {
-        mockMvc.perform(post("/api/v1/integrations/github/webhook")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-GitHub-Event", "ping")
-                        .header("X-GitHub-Delivery", "d1")
-                        .content("12345678901".getBytes(StandardCharsets.UTF_8))) // 11 > 10
+        mockMvc.perform(chunkedPost("12345678901")) // 11 > 10，getContentLengthLong() == -1
                 .andExpect(status().isPayloadTooLarge())
                 .andExpect(jsonPath("$.error.code").value("WEBHOOK_BODY_TOO_LARGE"));
         // 超限请求不应进入 Service
@@ -59,12 +82,26 @@ class WebhookBodyLimitFilterIntegrationTest {
      */
     @Test
     void chunkedBodyExactlyAtLimitReachesController() throws Exception {
-        mockMvc.perform(post("/api/v1/integrations/github/webhook")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Hub-Signature-256", "sha256=0000000000000000000000000000000000000000000000000000000000000000")
-                        .header("X-GitHub-Event", "ping")
-                        .header("X-GitHub-Delivery", "d1")
-                        .content("1234567890".getBytes(StandardCharsets.UTF_8))) // 10 == limit
+        RequestBuilder builder = new RequestBuilder() {
+            @Override
+            public MockHttpServletRequest buildRequest(ServletContext servletContext) {
+                MockHttpServletRequest request = new MockHttpServletRequest(servletContext, "POST",
+                        "/api/v1/integrations/github/webhook") {
+                    @Override
+                    public long getContentLengthLong() {
+                        return -1L;
+                    }
+                };
+                request.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                request.addHeader("X-Hub-Signature-256",
+                        "sha256=0000000000000000000000000000000000000000000000000000000000000000");
+                request.addHeader("X-GitHub-Event", "ping");
+                request.addHeader("X-GitHub-Delivery", "d1");
+                request.setContent("1234567890".getBytes(StandardCharsets.UTF_8));
+                return request;
+            }
+        };
+        mockMvc.perform(builder)
                 .andExpect(status().isOk());
         // 恰好上限正常进入 Service
         org.mockito.Mockito.verify(webhookService).handle(any(byte[].class), anyString(), anyString(), anyString());

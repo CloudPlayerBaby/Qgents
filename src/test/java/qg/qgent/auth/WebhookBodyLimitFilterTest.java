@@ -49,6 +49,21 @@ class WebhookBodyLimitFilterTest {
         return request;
     }
 
+    /**
+     * 模拟真正的 chunked 请求：getContentLengthLong() 返回 -1（无 Content-Length），
+     * 但 getInputStream() 仍能读到 body，用于覆盖 readLimited() 超限分支。
+     */
+    private MockHttpServletRequest chunkedRequest(byte[] body) {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/integrations/github/webhook") {
+            @Override
+            public long getContentLengthLong() {
+                return -1L;
+            }
+        };
+        request.setContent(body);
+        return request;
+    }
+
     @Test
     void contentLengthOverLimitReturns413() throws Exception {
         byte[] body = "12345678901".getBytes(StandardCharsets.UTF_8); // 11 > 10
@@ -62,17 +77,17 @@ class WebhookBodyLimitFilterTest {
         // 无 Content-Length 的 chunked 请求：恰好 10 字节，应完整读到并放行
         byte[] body = "1234567890".getBytes(StandardCharsets.UTF_8); // 10 == limit
         BodyReadingFilter downstream = new BodyReadingFilter();
-        filter.doFilter(request(body), response, downstream);
+        filter.doFilter(chunkedRequest(body), response, downstream);
         assertEquals(200, response.getStatus());
         assertArrayEquals(body, downstream.consumed());
     }
 
     @Test
     void chunkedBodyOverLimitReturns413() throws Exception {
-        // 无 Content-Length 的 chunked 请求：11 字节，filter 主动读取判定超限，返回 413
+        // 无 Content-Length 的 chunked 请求：11 字节，filter 走 readLimited() 判定超限，返回 413
         byte[] body = "12345678901".getBytes(StandardCharsets.UTF_8);
         BodyReadingFilter downstream = new BodyReadingFilter();
-        filter.doFilter(request(body), response, downstream);
+        filter.doFilter(chunkedRequest(body), response, downstream);
         assertEquals(413, response.getStatus());
         assertTrue(response.getContentAsString().contains("WEBHOOK_BODY_TOO_LARGE"));
     }
