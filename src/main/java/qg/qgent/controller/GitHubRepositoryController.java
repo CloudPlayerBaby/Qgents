@@ -138,6 +138,8 @@ public class GitHubRepositoryController {
 
     /**
      * 契约 §6：接收 GitHub 安装/授权回调，按客户端类型重定向到对应前端（无需 Qgents JWT）。
+     * 同一 GitHub 账号已绑定其他团队时，携带 conflict 参数重定向回前端展示明确提示，
+     * 避免 409 被网关转成 502，用户看不到具体原因。
      */
     @GetMapping("/integrations/github/callback")
     public ResponseEntity<Void> installationCallback(@RequestParam("installation_id") long installationId,
@@ -145,6 +147,9 @@ public class GitHubRepositoryController {
                                                      @RequestParam(name = "setup_action", required = false) String setupAction) {
         GitHubInstallationState callbackState = service.handleInstallationCallbackDetails(installationId, state);
         String frontendUrl = callbackState.client() == GitHubClient.MOBILE ? frontendUrlMobile : frontendUrlWeb;
+        if (callbackState.conflictCode() != null) {
+            return redirectTo(frontendUrl, callbackState.teamId(), callbackState.conflictCode());
+        }
         return redirectTo(frontendUrl, callbackState.teamId());
     }
 
@@ -153,6 +158,26 @@ public class GitHubRepositoryController {
                 .pathSegment("app", "integrations", "github")
                 .queryParam("teamId", teamId.toString())
                 .queryParam("installed", "1")
+                .build().toUriString();
+        return ResponseEntity.status(org.springframework.http.HttpStatus.FOUND)
+                .header(org.springframework.http.HttpHeaders.LOCATION, redirectUrl)
+                .build();
+    }
+
+    /**
+     * 回调因安装归属冲突未完成同步：重定向回前端，带 conflict 错误码与原因说明。
+     */
+    private ResponseEntity<Void> redirectTo(String frontendUrl, UUID teamId, String conflictCode) {
+        String message = "GITHUB_INSTALLATION_TEAM_CONFLICT".equals(conflictCode)
+                ? "该 GitHub 账号已绑定到其他团队，一个账号只能授权给一个团队。如需更换，请先到原团队解绑或卸载 GitHub App 后重新安装。"
+                : "GitHub 安装未完成，请稍后重试或联系管理员";
+        String redirectUrl = org.springframework.web.util.UriComponentsBuilder.fromUriString(frontendUrl)
+                .pathSegment("app", "integrations", "github")
+                .queryParam("teamId", teamId.toString())
+                .queryParam("installed", "0")
+                .queryParam("conflict", conflictCode)
+                .queryParam("message", org.springframework.web.util.UriUtils.encodeQueryParam(message,
+                        java.nio.charset.StandardCharsets.UTF_8))
                 .build().toUriString();
         return ResponseEntity.status(org.springframework.http.HttpStatus.FOUND)
                 .header(org.springframework.http.HttpHeaders.LOCATION, redirectUrl)
