@@ -24,6 +24,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -202,5 +203,25 @@ class GitHubRepositoryControllerTest {
 
         assertEquals("https://mobile.example.com/app/integrations/github?teamId=" + teamId + "&installed=1",
                 response.getHeaders().getLocation().toString());
+    }
+
+    @Test
+    void installationCallbackConflictRedirectsWithMessageInsteadOf502() {
+        UUID teamId = UUID.randomUUID();
+        long installationId = 12345L;
+        String state = "conflict-state";
+        when(service.handleInstallationCallbackDetails(installationId, state))
+                .thenReturn(new GitHubInstallationState(teamId, GitHubClient.WEB,
+                        "GITHUB_INSTALLATION_TEAM_CONFLICT"));
+
+        ResponseEntity<Void> response = controller.installationCallback(installationId, state, "install");
+
+        assertEquals(302, response.getStatusCode().value());
+        String location = response.getHeaders().getLocation().toString();
+        assertTrue(location.startsWith("https://frontend.com/app/integrations/github?"));
+        assertTrue(location.contains("teamId=" + teamId));
+        assertTrue(location.contains("installed=0"));
+        assertTrue(location.contains("conflict=GITHUB_INSTALLATION_TEAM_CONFLICT"));
+        assertTrue(location.contains("message=")); // 用户可见的中文提示
     }
 }

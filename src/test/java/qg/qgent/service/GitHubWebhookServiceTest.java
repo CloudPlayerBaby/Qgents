@@ -599,6 +599,76 @@ class GitHubWebhookServiceTest {
         assertEquals("OPEN", existing.getStatus());
     }
 
+    @Test
+    void stalePullRequestEventDoesNotOverwriteNewerState() {
+        GitHubRepositoryEntity githubRepo = new GitHubRepositoryEntity();
+        githubRepo.setId(UUID.randomUUID());
+        githubRepo.setProviderRepositoryId(500L);
+        mockMatchingInstallation(githubRepo);
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(UUID.randomUUID());
+        binding.setProjectId(UUID.randomUUID());
+        binding.setRepositoryId(githubRepo.getId());
+        MergeRequestEntity existing = new MergeRequestEntity();
+        existing.setId(UUID.randomUUID());
+        existing.setProjectRepositoryId(binding.getId());
+        existing.setProvider("GITHUB");
+        existing.setProviderNumber(128L);
+        existing.setStatus("CLOSED");
+        // 已存镜像的更新时间比延迟到达的 opened 事件更新
+        existing.setProviderUpdatedAt(java.time.LocalDateTime.parse("2026-08-15T06:00:00"));
+
+        when(repositoryMapper.selectOne(any())).thenReturn(githubRepo);
+        when(projectRepositoryMapper.selectList(any())).thenReturn(List.of(binding));
+        when(mergeRequestMapper.selectOne(any())).thenReturn(existing);
+        when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
+
+        // 乱序投递：opened 事件 updated_at 早于已存镜像，不应把 CLOSED 覆盖回 OPEN
+        String body = "{\"action\":\"opened\",\"installation\":{\"id\":100},\"repository\":{\"id\":500},\"pull_request\":{"
+                + "\"number\":128,\"title\":\"Late opened\",\"merged\":false,"
+                + "\"head\":{\"sha\":\"0123456789abcdef0123456789abcdef01234567\",\"ref\":\"feat/login\"},"
+                + "\"base\":{\"ref\":\"main\"},\"updated_at\":\"2026-08-15T05:00:00Z\"}}";
+        service.handle(bodyBytes(body), sign(SECRET, body), "pull_request", delivery("d1"));
+
+        verify(mergeRequestMapper, never()).updateById(any(MergeRequestEntity.class));
+        verify(eventService, never()).publish(any(), any(), anyString(), anyString(), anyMap());
+        assertEquals("CLOSED", existing.getStatus()); // 未被覆盖回 OPEN
+    }
+
+    @Test
+    void newerPullRequestEventStillUpdatesMirror() {
+        GitHubRepositoryEntity githubRepo = new GitHubRepositoryEntity();
+        githubRepo.setId(UUID.randomUUID());
+        githubRepo.setProviderRepositoryId(500L);
+        mockMatchingInstallation(githubRepo);
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(UUID.randomUUID());
+        binding.setProjectId(UUID.randomUUID());
+        binding.setRepositoryId(githubRepo.getId());
+        MergeRequestEntity existing = new MergeRequestEntity();
+        existing.setId(UUID.randomUUID());
+        existing.setProjectRepositoryId(binding.getId());
+        existing.setProvider("GITHUB");
+        existing.setProviderNumber(128L);
+        existing.setStatus("OPEN");
+        existing.setProviderUpdatedAt(java.time.LocalDateTime.parse("2026-08-15T04:00:00"));
+
+        when(repositoryMapper.selectOne(any())).thenReturn(githubRepo);
+        when(projectRepositoryMapper.selectList(any())).thenReturn(List.of(binding));
+        when(mergeRequestMapper.selectOne(any())).thenReturn(existing);
+        when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
+
+        // 更新的 synchronize 事件（05:00 > 04:00）：正常更新
+        String body = "{\"action\":\"synchronize\",\"installation\":{\"id\":100},\"repository\":{\"id\":500},\"pull_request\":{"
+                + "\"number\":128,\"title\":\"Newer sync\",\"merged\":false,"
+                + "\"head\":{\"sha\":\"abcdef0123456789abcdef0123456789abcdef01\",\"ref\":\"feat/login\"},"
+                + "\"base\":{\"ref\":\"main\"},\"updated_at\":\"2026-08-15T05:00:00Z\"}}";
+        service.handle(bodyBytes(body), sign(SECRET, body), "pull_request", delivery("d1"));
+
+        verify(mergeRequestMapper).updateById(existing);
+        verify(eventService).publish(any(), isNull(), eq("merge-request.updated"), anyString(), anyMap());
+    }
+
     // ---------- helpers ----------
 
     /**

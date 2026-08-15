@@ -329,6 +329,13 @@ public class GitHubRepositoryService {
                 GitHubInstallationState callbackState = gitHubClient.verifyInstallationStateDetails(state);
                 UUID teamId = callbackState.teamId();
 
+                // 同一 GitHub 账号只能绑定一个团队：先做归属校验，冲突时不抛异常，由 Controller 重定向回前端展示明确提示
+                String conflictCode = installationTeamConflict(providerInstallationId, teamId);
+                if (conflictCode != null) {
+                    callbackState = callbackState.withConflictCode(conflictCode);
+                    return callbackState;
+                }
+
                 // Execute the core metadata synchronization while holding the per-installation lock.
                 syncInstallation(teamId, providerInstallationId);
 
@@ -337,6 +344,20 @@ public class GitHubRepositoryService {
                 INSTALLATION_CALLBACK_LOCKS.remove(providerInstallationId, callbackLock);
             }
         }
+    }
+
+    /**
+     * 校验 installation 是否已被其他团队占用：返回 null 表示可绑定，否则返回冲突错误码。
+     * 回调场景使用，避免冲突直接抛异常导致网关把 409 转成 502。
+     */
+    private String installationTeamConflict(long providerInstallationId, UUID teamId) {
+        GitHubInstallationEntity existing = installationMapper.selectOne(
+                new LambdaQueryWrapper<GitHubInstallationEntity>().eq(
+                        GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+        if (existing != null && !existing.getTeamId().equals(teamId)) {
+            return "GITHUB_INSTALLATION_TEAM_CONFLICT";
+        }
+        return null;
     }
 
     /**
