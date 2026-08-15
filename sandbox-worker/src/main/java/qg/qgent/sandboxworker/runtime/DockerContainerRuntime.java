@@ -13,6 +13,9 @@ import qg.qgent.sandboxworker.api.CreateSandboxRequest;
 import qg.qgent.sandboxworker.api.WorkerException;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
 
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
@@ -48,6 +51,12 @@ public class DockerContainerRuntime implements ContainerRuntime {
     private static final String MAX_EXPIRES_AT_LABEL = LABEL_PREFIX + "max-expires-at";
     private static final String EXECUTION_TIMEOUT_LABEL = LABEL_PREFIX + "execution-timeout-seconds";
     private static final String REPOSITORY_LABEL_PREFIX = LABEL_PREFIX + "repository.";
+    /**
+     * 沙箱容器运行用户（与 sandbox-images/java-node Dockerfile 的 USER_ID 一致），
+     * workspace 仓库目录属主需与之一致，非 root 沙箱才能读写 git 检出的文件。
+     */
+    private static final int SANDBOX_UID = 10001;
+    private static final int SANDBOX_GID = 10001;
 
     private final DockerClient docker;
     private final SandboxWorkerProperties properties;
@@ -67,8 +76,9 @@ public class DockerContainerRuntime implements ContainerRuntime {
         }
 
         paths.resolveLocal(request.getWorkspaceStorageKey());
-        allocation.getRepositoryPaths().keySet()
-                .forEach(repositoryId -> paths.resolveRepositoryLocal(allocation, repositoryId));
+        for (UUID repositoryId : allocation.getRepositoryPaths().keySet()) {
+            grantSandboxOwnership(paths.resolveRepositoryLocal(allocation, repositoryId));
+        }
         String image = Optional.ofNullable(properties.getImages().get(request.getImageProfile()))
                 .orElseThrow(() -> new WorkerException(CONFLICT, "IMAGE_PROFILE_NOT_CONFIGURED", "镜像配置尚未映射到镜像"));
         HostConfig hostConfig = HostConfig.newHostConfig()
@@ -99,6 +109,30 @@ public class DockerContainerRuntime implements ContainerRuntime {
         } catch (RuntimeException exception) {
             removeContainerQuietly(containerId);
             throw new WorkerException(BAD_GATEWAY, "DOCKER_CREATE_FAILED", "Docker Engine 创建沙箱失败");
+        }
+    }
+
+    /**
+     * 将仓库目录及其文件属主递归改为沙箱运行用户（uid 10001），保证非 root 沙箱可读写。
+     * worker 以 root 运行 git worktree add 时落盘文件属主为 root，若沙箱保持 10001 运行则无法修改这些文件；
+     * 在宿主机原生文件系统（Linux 服务器）上 chown 真实生效；Docker Desktop 的 Windows 挂载不支持 chown，静默跳过。
+     */
+    private void grantSandboxOwnership(Path repository) {
+        try (var stream = Files.walk(repository)) {
+            int failed = 0;
+            for (Path path : stream.filter(p -> Files.exists(p, LinkOption.NOFOLLOW_LINKS)).toList()) {
+                try {
+                    Files.setAttribute(path, "unix:uid", SANDBOX_UID, LinkOption.NOFOLLOW_LINKS);
+                    Files.setAttribute(path, "unix:gid", SANDBOX_GID, LinkOption.NOFOLLOW_LINKS);
+                } catch (Exception e) {
+                    failed++;
+                }
+            }
+            if (failed > 0) {
+                log.warn("sandbox ownership partially granted for {}, {} paths skipped", repository, failed);
+            }
+        } catch (Exception e) {
+            log.warn("grant sandbox ownership failed for {}: {}", repository, e.getMessage());
         }
     }
 
