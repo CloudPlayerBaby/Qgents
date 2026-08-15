@@ -14,7 +14,9 @@ import java.util.UUID;
  * 由 {@code task.updated}（SUCCEEDED/FAILED）、{@code input-required}/{@code approval-required}、
  * {@code diff.created}、{@code merge-request.updated} 等事件触发写入；SSE 只负责实时提醒，
  * 历史列表与已读状态由本表提供。kind 枚举：TASK_COMPLETED/TASK_FAILED/AGENT_INPUT_REQUIRED/
- * DELIVERABLE_PENDING/MR_PENDING。所有通知的接收人为任务发起人（Task.createdBy）。
+ * DELIVERABLE_PENDING/MR_PENDING/INVITED/TEAM_JOINED/PROJECT_ADDED。
+ * 任务类通知的接收人为任务发起人（Task.createdBy）；INVITED 接收人为被邀请用户，
+ * TEAM_JOINED 接收人为邀请者，PROJECT_ADDED 接收人为被加入项目的成员。
  */
 @Data
 @TableName("notifications")
@@ -42,7 +44,8 @@ public class NotificationEntity {
     private UUID requirementGroupId;
 
     /**
-     * 通知类型枚举：TASK_COMPLETED/TASK_FAILED/AGENT_INPUT_REQUIRED/DELIVERABLE_PENDING/MR_PENDING。
+     * 通知类型枚举：TASK_COMPLETED/TASK_FAILED/AGENT_INPUT_REQUIRED/DELIVERABLE_PENDING/MR_PENDING/
+     * INVITED/TEAM_JOINED/PROJECT_ADDED。
      */
     private String kind;
 

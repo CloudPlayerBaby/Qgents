@@ -42,11 +42,12 @@ public class TeamService {
     private final TokenService tokens;
     private final TeamInvitationMailer invitationMailer;
     private final TeamDisbandService teamDisbandService;
+    private final NotificationService notificationService;
 
     public TeamService(TeamMapper teamMapper, TeamMemberMapper memberMapper,
                        TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, ProjectMapper projectMapper,
                        UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer,
-                       TeamDisbandService teamDisbandService) {
+                       TeamDisbandService teamDisbandService, NotificationService notificationService) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
         this.invitationMapper = invitationMapper;
@@ -56,6 +57,7 @@ public class TeamService {
         this.tokens = tokens;
         this.invitationMailer = invitationMailer;
         this.teamDisbandService = teamDisbandService;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -231,6 +233,13 @@ public class TeamService {
                 invitationMailer.send(email, rawToken);
             }
         });
+        // 被邀请邮箱已注册时，通知被邀请人（未注册用户继续走邮件邀请）
+        if (invitedUser != null) {
+            UserEntity inviter = userMapper.selectById(actor);
+            notificationService.notify(invitedUser.getId(), null, null, "INVITED",
+                    "你被邀请加入团队 " + team.getName(),
+                    inviter == null ? null : "邀请人：" + inviter.getDisplayName(), teamId.toString());
+        }
         return invitation(invitation);
     }
 
@@ -308,6 +317,11 @@ public class TeamService {
         invitation.setAcceptedAt(now());
         invitationMapper.updateById(invitation);
         TeamEntity team = requireTeam(invitation.getTeamId());
+        // 通知邀请者：该用户已加入团队
+        if (invitation.getInvitedBy() != null) {
+            notificationService.notify(invitation.getInvitedBy(), null, null, "TEAM_JOINED",
+                    user.getDisplayName() + " 已加入团队 " + team.getName(), null, team.getId().toString());
+        }
         return memberResponse(actor, team, member.getRole(), user);
     }
 

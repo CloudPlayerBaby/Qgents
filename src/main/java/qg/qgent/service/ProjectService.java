@@ -28,15 +28,18 @@ public class ProjectService {
     private final TeamMemberMapper teamMemberMapper;
     private final ProjectAccessService access;
     private final ApplicationEventPublisher eventPublisher;
+    private final NotificationService notificationService;
 
     public ProjectService(ProjectMapper projectMapper, ProjectMemberMapper memberMapper, TeamMapper teamMapper,
-                          TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher) {
+                          TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher,
+                          NotificationService notificationService) {
         this.projectMapper = projectMapper;
         this.memberMapper = memberMapper;
         this.teamMapper = teamMapper;
         this.teamMemberMapper = teamMemberMapper;
         this.access = access;
         this.eventPublisher = eventPublisher;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -145,6 +148,9 @@ public class ProjectService {
             throw conflict("PROJECT_MEMBER_ALREADY_EXISTS", "用户已是项目成员");
         }
         insertMember(projectId, request.getUserId(), "PROJECT_MEMBER");
+        // 通知被加入项目的成员
+        notificationService.notify(request.getUserId(), projectId, null, "PROJECT_ADDED",
+                "你被加入项目 " + project.getName(), null, projectId.toString());
         return new ProjectMemberResponse(request.getUserId().toString(), "PROJECT_MEMBER");
     }
 
