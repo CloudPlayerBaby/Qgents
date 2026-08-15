@@ -30,8 +30,8 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
- * 绠＄悊 Worker 绉佹湁鍏变韩 bare Git Store 鍙婂叾 linked worktree銆?
- * 鎵€鏈夊懡浠ゅ弬鏁板潎鐢辨湇鍔＄鏋勯€狅紝鎺ュ彛璋冪敤鏂逛笉鑳戒紶鍏ヨ繙绔湴鍧€銆佸嚟璇佹垨浠绘剰 Git 鍙傛暟銆?
+ * 管理 Worker 专属的共享 bare Git Store 及其 linked worktree。
+ * 所有命令参数均由服务端构造，调用方不能传入远程地址、凭据或任意 Git 参数。
  */
 @Component
 public class GitRepositoryManager {
@@ -55,7 +55,7 @@ public class GitRepositoryManager {
         this.restClient = restClient;
     }
 
-    /** 浠庡叡浜?bare store 鍒涘缓 linked worktree锛屽苟杩斿洖鐪熷疄鍩虹嚎鍜?HEAD銆?*/
+    /** 从共享 bare store 创建 linked worktree，并返回实际基线和 HEAD。 */
     public WorktreeResult create(UUID repositoryId, Path target, String baseRef, String sourceBranch) {
         return locked(repositoryId, () -> createLocked(repositoryId, target, baseRef, sourceBranch));
     }
@@ -64,7 +64,7 @@ public class GitRepositoryManager {
         Path store = gitStore(repositoryId);
         requireStore(store);
         if (Files.exists(target)) {
-            throw conflict("REPOSITORY_PATH_EXISTS", "Workspace 浠撳簱鐩綍宸茬粡瀛樺湪");
+            throw conflict("REPOSITORY_PATH_EXISTS", "Workspace 目录已经存在");
         }
         String baseCommit = resolveCommit(store, baseRef);
         if (baseCommit == null) {
@@ -81,7 +81,7 @@ public class GitRepositoryManager {
         CommandResult result = run(command, Map.of());
         if (result.exitCode() != 0) {
             if (result.stderr().contains("already checked out")) {
-                throw conflict("SOURCE_BRANCH_IN_USE", "鍔熻兘鍒嗘敮宸茶鍏朵粬 Workspace 浣跨敤");
+                throw conflict("SOURCE_BRANCH_IN_USE", "功能分支已被其他 Workspace 使用");
             }
             throw invalid("WORKTREE_CREATE_FAILED", "Cannot create linked worktree");
         }
@@ -96,7 +96,7 @@ public class GitRepositoryManager {
         }
     }
 
-    /** 浠?bare store 姝ｇ‘娉ㄩ攢骞舵竻鐞?linked worktree銆?*/
+    /** 从 bare store 正确注销并清理 linked worktree。 */
     public void remove(UUID repositoryId, Path target) {
         locked(repositoryId, () -> {
             Path store = gitStore(repositoryId);
@@ -145,7 +145,7 @@ public class GitRepositoryManager {
         });
     }
 
-    /** 杩斿洖缁撴瀯鍖栧伐浣滄爲鐘舵€併€?*/
+    /** 返回结构化的工作树状态。 */
     public GitStatusResponse status(Path repository) {
         String branch = requireSuccess(
                 run(List.of("git", "-C", repository.toString(), "branch", "--show-current"), Map.of()),
@@ -159,7 +159,7 @@ public class GitRepositoryManager {
         return new GitStatusResponse(branch, head, changes.isEmpty(), changes);
     }
 
-    /** 鐢熸垚鍖呭惈 tracked 涓?untracked 鏂囦欢鐨勫畬鏁翠簩杩涘埗 patch锛屽苟璁＄畻 SHA-256銆?*/
+    /** 生成包含 tracked 和 untracked 文件的完整二进制 patch，并计算 SHA-256。 */
     public GitDiffResponse diff(Path repository) {
         Path index = null;
         try {
@@ -273,7 +273,7 @@ public class GitRepositoryManager {
     private record FileNameStatus(String changeType, String previousPath) {
     }
 
-    /** 鏍￠獙瀹℃煡蹇収鍚庯紝鍦ㄥ唴閮ㄦ墽琛?add -A 涓?commit銆?*/
+    /** 校验审查快照后，在内部执行 add -A 和 commit。 */
     public GitCommitResponse commit(Path repository, GitCommitRequest request) {
         String currentHead = head(repository);
         if (!currentHead.equals(request.getExpectedHeadCommit())) {
@@ -308,7 +308,7 @@ public class GitRepositoryManager {
         return new GitCommitResponse(head(repository));
     }
 
-    /** 鎺ㄩ€?Workspace 鐨?sourceBranch锛屽苟閫氳繃杩滅寮曠敤鏍搁獙鐪熷疄 SHA銆?*/
+    /** 推送 Workspace 的 sourceBranch，并通过远程引用校验实际 SHA。 */
     public GitPushResponse push(UUID repositoryId, Path repository, String sourceBranch, GitPushRequest request) {
         return locked(repositoryId, () -> {
             String currentHead = head(repository);
@@ -390,7 +390,9 @@ public class GitRepositoryManager {
     }
 
     /**
-     * 浠呭湪鍙楁帶 Git 鍛戒护杩愯鏈熼棿鍚?AskPass 鎻愪緵鐭湡鍑嵁銆?     * Token 涓嶄細鍐欏叆纾佺洏锛岃皟鐢ㄧ粨鏉熷悗涓存椂鍚姩鍣ㄧ珛鍗冲垹闄ゃ€?     */
+     * 仅在受控 Git 命令运行期间通过 AskPass 提供短期凭据。
+     * Token 不会写入磁盘，调用结束后临时启动器立即删除。
+     */
     <T> T withCredential(String grantId, String headCommit, String repositoryFullName, String branchName, String purpose,
             java.util.function.Function<Map<String, String>, T> action) {
         String token = exchangeCredential(grantId, headCommit, repositoryFullName, branchName, purpose);
@@ -412,7 +414,7 @@ public class GitRepositoryManager {
         }
     }
 
-    /** 鍒涘缓涓€娆℃€?AskPass 鍚姩鍣紱鐪熷疄 Token 浠呴€氳繃瀛愯繘绋嬬幆澧冨彉閲忔彁渚涳紝涓嶈兘鍐欏叆涓存椂鏂囦欢銆?*/
+    /** 创建一次性 AskPass 启动器；真实 Token 仅通过子进程环境变量提供，不写入临时文件。 */
     Path createAskpassScript() {
         try {
             Path script = Files.createTempFile("git-askpass-", ".sh");
