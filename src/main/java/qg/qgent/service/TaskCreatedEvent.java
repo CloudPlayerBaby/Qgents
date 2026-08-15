@@ -1,7 +1,5 @@
 package qg.qgent.service;
 
-import lombok.AllArgsConstructor;
-
 import java.util.UUID;
 
 /**
@@ -15,7 +13,6 @@ import java.util.UUID;
  * @param projectId 任务所属项目 ID。
  * @param taskId    新建任务 ID。
  */
-@AllArgsConstructor
 public record TaskCreatedEvent(UUID projectId, UUID taskId) {
 
 }

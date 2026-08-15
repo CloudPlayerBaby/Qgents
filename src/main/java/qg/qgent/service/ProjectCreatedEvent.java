@@ -1,7 +1,5 @@
 package qg.qgent.service;
 
-import lombok.AllArgsConstructor;
-
 import java.util.UUID;
 
 /**
@@ -17,7 +15,6 @@ import java.util.UUID;
  * @param projectName   新项目名称，用作主群标题。
  * @param creatorUserId 项目创建者用户 ID（会自动成为 PROJECT_ADMIN）。
  */
-@AllArgsConstructor
 public record ProjectCreatedEvent(UUID projectId, String projectName, UUID creatorUserId) {
 
 }
