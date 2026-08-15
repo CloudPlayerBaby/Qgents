@@ -178,7 +178,13 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 throw upstreamFailure();
             }
             return response.token();
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub installation token request rejected: installationId={}, status={}, body={}",
+                    installationId, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            throw upstreamFailure();
         } catch (RestClientException exception) {
+            log.warn("GitHub installation token request failed before receiving a response: installationId={}, {}",
+                    installationId, exception.getMessage());
             throw upstreamFailure();
         }
     }

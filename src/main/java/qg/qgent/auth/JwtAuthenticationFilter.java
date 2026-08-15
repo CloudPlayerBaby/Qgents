@@ -28,6 +28,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        // 内部服务接口使用 SANDBOX_BACKEND_SERVICE_TOKEN，不是用户 JWT。
+        return request.getServletPath().startsWith("/internal/v1/");
+    }
+
+    @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
             throws ServletException, IOException {
         // 尝试获取响应头

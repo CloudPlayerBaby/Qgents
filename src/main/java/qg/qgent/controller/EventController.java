@@ -1,9 +1,11 @@
 package qg.qgent.controller;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import qg.qgent.api.ApiException;
 import qg.qgent.service.EventService;
 
 import java.util.UUID;
@@ -27,7 +29,10 @@ public class EventController {
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@PathVariable UUID projectId,
                              @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId,
-                             @AuthenticationPrincipal UUID userId) {
+                             Authentication authentication) {
+        if (authentication == null || !(authentication.getPrincipal() instanceof UUID userId)) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "需要登录");
+        }
         return eventService.stream(projectId, userId, lastEventId);
     }
 }

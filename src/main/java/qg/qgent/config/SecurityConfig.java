@@ -84,6 +84,11 @@ public class SecurityConfig {
                                 "/api/v1/auth/password-resets")
                         .permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/integrations/github/callback").permitAll()
+                        // SSE 断线时容器触发 async dispatch 会重走授权链，此时 SecurityContext 已丢失；
+                        // 授权层放行，成员鉴权由 EventController/EventService 的 requireProjectMember 保证。
+                        .requestMatchers(HttpMethod.GET, "/api/v1/projects/*/events").permitAll()
+                        // Worker 内部调用使用独立 service token，由内部 Controller 自行校验。
+                        .requestMatchers("/internal/v1/**").permitAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/error").permitAll().anyRequest()
                         .authenticated())
                 // 配置异常处理
