@@ -11,6 +11,7 @@ import qg.qgent.entity.DiffCommentEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.DiffFileEntity;
 import qg.qgent.entity.TaskEntity;
+import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.*;
 
 import java.time.LocalDateTime;
@@ -36,10 +37,12 @@ public class DiffService {
     private final EventService eventService;
     private final NotificationService notificationService;
     private final DiffDeliveryService deliveryService;
+    private final UserMapper users;
 
     public DiffService(DiffMapper diffs, DiffFileMapper files, DiffCommentMapper comments, TaskMapper tasks,
                        WorkspaceMapper workspaces, ProjectAccessService access, EventService eventService,
-                       NotificationService notificationService, DiffDeliveryService deliveryService) {
+                       NotificationService notificationService, DiffDeliveryService deliveryService,
+                       UserMapper users) {
         this.diffs = diffs;
         this.files = files;
         this.comments = comments;
@@ -49,6 +52,7 @@ public class DiffService {
         this.eventService = eventService;
         this.notificationService = notificationService;
         this.deliveryService = deliveryService;
+        this.users = users;
     }
 
     /**
@@ -148,10 +152,15 @@ public class DiffService {
     public List<DiffCommentResponse> comments(UUID projectId, UUID diffId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         requireDiff(projectId, diffId);
-        return comments.selectList(
-                        Wrappers.<DiffCommentEntity>lambdaQuery().eq(DiffCommentEntity::getDiffId, diffId)
-                                .orderByAsc(DiffCommentEntity::getCreatedAt))
-                .stream().map(this::response).toList();
+        List<DiffCommentEntity> rows = comments.selectList(
+                Wrappers.<DiffCommentEntity>lambdaQuery().eq(DiffCommentEntity::getDiffId, diffId)
+                        .orderByAsc(DiffCommentEntity::getCreatedAt));
+        Set<UUID> authorIds = rows.stream().map(DiffCommentEntity::getAuthorUserId)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        Map<UUID, UserEntity> userById = authorIds.isEmpty() ? Map.of() : users
+                .selectBatchIds(authorIds).stream()
+                .collect(Collectors.toMap(UserEntity::getId, java.util.function.Function.identity()));
+        return rows.stream().map(c -> response(c, userName(userById.get(c.getAuthorUserId())))).toList();
     }
 
     @Transactional
@@ -170,7 +179,8 @@ public class DiffService {
         value.setAuthorUserId(actor);
         value.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         comments.insert(value);
-        return response(value);
+        UserEntity author = users.selectById(actor);
+        return response(value, userName(author));
     }
 
     public DiffResponse decide(UUID projectId, UUID diffId, UUID actor, boolean accepted, String reason) {
@@ -253,11 +263,15 @@ public class DiffService {
                 f.getChangeType(), f.getAdditions(), f.getDeletions(), f.getBinaryFlag(), f.getHunks());
     }
 
-    private DiffCommentResponse response(DiffCommentEntity c) {
+    private DiffCommentResponse response(DiffCommentEntity c, String authorName) {
         return new DiffCommentResponse(id(c.getId()),
                 id(c.getDiffId()), c.getPath(), c.getSide(), c.getLine(), c.getHunkId(),
                 c.getCommitSha(), c.getBody(),
-                id(c.getAuthorUserId()), iso(c.getCreatedAt()));
+                id(c.getAuthorUserId()), authorName, iso(c.getCreatedAt()));
+    }
+
+    private String userName(UserEntity user) {
+        return user == null ? null : user.getDisplayName();
     }
 
     private String id(UUID v) {

@@ -26,6 +26,7 @@ import java.time.ZoneOffset;
 import java.util.*;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.function.Function;
 
 /**
  * MR 镜像、审查与质量门禁服务。
@@ -152,8 +153,10 @@ public class MergeRequestService {
         List<MergeRequestEntity> page = hasMore ? rows.subList(0, size) : rows;
         Map<UUID, List<String>> groupIdsByMr = groupIdsByMr(page);
         Map<UUID, QualityGateResponse> gatesByMr = qualityGates(page);
+        Map<UUID, String> webUrlsByMr = webUrlsByMr(page);
         List<MergeRequestSummaryResponse> items = page.stream()
-                .map(mr -> toSummary(mr, groupIdsByMr.getOrDefault(mr.getId(), List.of()), gatesByMr.get(mr.getId())))
+                .map(mr -> toSummary(mr, groupIdsByMr.getOrDefault(mr.getId(), List.of()),
+                        gatesByMr.get(mr.getId()), webUrlsByMr.get(mr.getId())))
                 .toList();
         PageMeta meta = new PageMeta(hasMore ? items.get(items.size() - 1).getId() : null, hasMore);
         return new ApiPageResponse<>(items, meta, requestId);
@@ -161,12 +164,13 @@ public class MergeRequestService {
 
     /**
      * 查询 MR、关联需求群、检查与审查摘要，并汇总 qualityGate 状态。
+     * 额外返回 webUrl（GitHub 地址）、diffId（关联的已接受 Diff）、description（当前为 null）。
      */
     public MergeRequestDetailResponse detail(UUID projectId, UUID mergeRequestId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         MergeRequestEntity mr = requireMr(projectId, mergeRequestId);
         List<String> groupIds = groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of());
-        return toDetail(mr, groupIds, qualityGate(mr));
+        return toDetail(mr, groupIds, qualityGate(mr), mrWebUrl(mr), acceptedDiffId(mr));
     }
 
     /**
@@ -457,7 +461,8 @@ public class MergeRequestService {
     }
 
     private MergeRequestSummaryResponse summary(MergeRequestEntity mr) {
-        return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr));
+        return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr),
+                mrWebUrl(mr));
     }
 
     private record CreateClaim(TaskEntity task, WorkspaceRepositoryEntity worktree,
@@ -471,14 +476,16 @@ public class MergeRequestService {
     }
 
     /**
-     * 查询门禁检查详情。
+     * 查询门禁检查汇总（契约 §21：包装为 {status, requiredChecks, items[]}）。
      */
-    public List<MergeRequestCheckResponse> checks(UUID projectId, UUID mergeRequestId, UUID userId) {
+    public MergeRequestChecksResponse checks(UUID projectId, UUID mergeRequestId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
-        requireMr(projectId, mergeRequestId);
-        return qualityCheckMapper.selectList(Wrappers.<QualityCheckResultEntity>lambdaQuery()
+        MergeRequestEntity mr = requireMr(projectId, mergeRequestId);
+        List<MergeRequestCheckResponse> items = qualityCheckMapper.selectList(Wrappers.<QualityCheckResultEntity>lambdaQuery()
                 .eq(QualityCheckResultEntity::getMergeRequestId, mergeRequestId)
                 .orderByAsc(QualityCheckResultEntity::getCreatedAt)).stream().map(this::toCheck).toList();
+        QualityGateResponse gate = qualityGate(mr);
+        return new MergeRequestChecksResponse(gate.getStatus(), gate.getRequiredChecks(), items);
     }
 
     /**
@@ -504,7 +511,8 @@ public class MergeRequestService {
                 githubRepository.getOwnerLogin(), githubRepository.getName(), requireProviderNumber(mr));
         mr = inTransaction(() -> persistRemoteState(projectId, mergeRequestId, remote));
         publishUpdated(mr);
-        return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr));
+        return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr),
+                mrWebUrl(mr));
     }
 
     /**
@@ -530,7 +538,8 @@ public class MergeRequestService {
         writeCheck(mr, "CQ_PLUS_ONE", "PASSED", "cq_approval", reason, now);
         refreshQualityGate(mr);
         publishUpdated(mr);
-        return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr));
+        return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr),
+                mrWebUrl(mr));
     }
 
     /**
@@ -548,7 +557,8 @@ public class MergeRequestService {
         writeCheck(mr, "CQ_PLUS_ONE", "FAILED", "cq_rejection", reason, LocalDateTime.now(ZoneOffset.UTC));
         refreshQualityGate(mr);
         publishUpdated(mr);
-        return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr));
+        return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr),
+                mrWebUrl(mr));
     }
 
     /**
@@ -986,19 +996,82 @@ public class MergeRequestService {
                 mr.getStatus(), mr.getId().toString());
     }
 
+    /**
+     * 构造 MR 的 GitHub Web 地址（repo 或 providerNumber 缺失时返回 null，不抛错）。
+     */
+    private String mrWebUrl(MergeRequestEntity mr) {
+        ProjectRepositoryEntity binding = projectRepositoryMapper.selectById(mr.getProjectRepositoryId());
+        if (binding == null || mr.getProviderNumber() == null) {
+            return null;
+        }
+        GitHubRepositoryEntity repo = githubRepositoryMapper.selectById(binding.getRepositoryId());
+        if (repo == null || repo.getOwnerLogin() == null || repo.getName() == null) {
+            return null;
+        }
+        return "https://github.com/" + repo.getOwnerLogin() + "/" + repo.getName() + "/pull/"
+                + mr.getProviderNumber();
+    }
+
+    /**
+     * 批量构造 MR 的 GitHub Web 地址（列表页用，避免逐条查询）。
+     */
+    private Map<UUID, String> webUrlsByMr(List<MergeRequestEntity> rows) {
+        Set<UUID> bindingIds = rows.stream().map(MergeRequestEntity::getProjectRepositoryId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (bindingIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, ProjectRepositoryEntity> bindingById = projectRepositoryMapper
+                .selectBatchIds(bindingIds).stream()
+                .collect(Collectors.toMap(ProjectRepositoryEntity::getId, Function.identity()));
+        Set<UUID> githubIds = bindingById.values().stream().map(ProjectRepositoryEntity::getRepositoryId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<UUID, GitHubRepositoryEntity> githubById = githubIds.isEmpty() ? Collections.emptyMap()
+                : githubRepositoryMapper.selectBatchIds(githubIds).stream()
+                .collect(Collectors.toMap(GitHubRepositoryEntity::getId, Function.identity()));
+        Map<UUID, String> result = new HashMap<>();
+        for (MergeRequestEntity mr : rows) {
+            ProjectRepositoryEntity binding = bindingById.get(mr.getProjectRepositoryId());
+            GitHubRepositoryEntity repo = binding == null ? null : githubById.get(binding.getRepositoryId());
+            if (repo == null || mr.getProviderNumber() == null) {
+                result.put(mr.getId(), null);
+            } else {
+                result.put(mr.getId(), "https://github.com/" + repo.getOwnerLogin() + "/" + repo.getName()
+                        + "/pull/" + mr.getProviderNumber());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 查询 MR 关联的已接受 Diff ID（同任务、同仓库、status=ACCEPTED，取最新）；无则 null。
+     * 供 MR 详情「变更 / 评论」Tab 直接定位 Diff。
+     */
+    private String acceptedDiffId(MergeRequestEntity mr) {
+        if (mr.getTaskId() == null) {
+            return null;
+        }
+        DiffEntity diff = diffMapper.selectOne(Wrappers.<DiffEntity>lambdaQuery()
+                .eq(DiffEntity::getTaskId, mr.getTaskId())
+                .eq(DiffEntity::getProjectRepositoryId, mr.getProjectRepositoryId())
+                .eq(DiffEntity::getStatus, "ACCEPTED")
+                .orderByDesc(DiffEntity::getCreatedAt).last("LIMIT 1"));
+        return diff == null ? null : id(diff.getId());
+    }
+
     private MergeRequestSummaryResponse toSummary(MergeRequestEntity mr, List<String> groupIds,
-                                                  QualityGateResponse gate) {
+                                                  QualityGateResponse gate, String webUrl) {
         return new MergeRequestSummaryResponse(id(mr.getId()), id(mr.getProjectRepositoryId()), groupIds,
                 mr.getProvider(), mr.getProviderNumber(), mr.getSourceBranch(), mr.getTargetBranch(), mr.getStatus(),
-                mr.getHeadCommit(), gate, mr.getTitle(), iso(mr.getCreatedAt()));
+                mr.getHeadCommit(), gate, mr.getTitle(), webUrl, iso(mr.getCreatedAt()));
     }
 
     private MergeRequestDetailResponse toDetail(MergeRequestEntity mr, List<String> groupIds,
-                                                QualityGateResponse gate) {
+                                                QualityGateResponse gate, String webUrl, String diffId) {
         return new MergeRequestDetailResponse(id(mr.getId()), id(mr.getProjectRepositoryId()), groupIds,
                 mr.getProvider(), mr.getProviderNumber(), mr.getSourceBranch(), mr.getTargetBranch(), mr.getStatus(),
-                mr.getHeadCommit(), mr.getTitle(), gate, id(mr.getAuthorUserId()), iso(mr.getSyncedAt()),
-                iso(mr.getCreatedAt()));
+                mr.getHeadCommit(), mr.getTitle(), null, webUrl, diffId, gate, id(mr.getAuthorUserId()),
+                iso(mr.getSyncedAt()), iso(mr.getCreatedAt()));
     }
 
     private MergeRequestCheckResponse toCheck(QualityCheckResultEntity c) {

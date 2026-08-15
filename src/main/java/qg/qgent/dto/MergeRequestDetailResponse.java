@@ -24,6 +24,9 @@ public class MergeRequestDetailResponse {
     private String status;
     private String headCommit;
     private String title;
+    private String description;
+    private String webUrl;
+    private String diffId;
     private QualityGateResponse qualityGate;
     private String authorUserId;
     private String syncedAt;
