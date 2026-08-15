@@ -4,11 +4,16 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import qg.qgent.sandboxworker.api.WorkerException;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.Map;
+import java.util.Set;
 
 import static org.springframework.http.HttpStatus.CONFLICT;
 
@@ -18,6 +23,14 @@ import static org.springframework.http.HttpStatus.CONFLICT;
 @Component
 @RequiredArgsConstructor
 public class FileWriteTool implements SandboxTool {
+    private static final int SANDBOX_UID = 10001;
+    private static final int SANDBOX_GID = 10001;
+    private static final Set<PosixFilePermission> DEFAULT_FILE_PERMISSIONS = Set.of(
+            PosixFilePermission.OWNER_READ,
+            PosixFilePermission.OWNER_WRITE,
+            PosixFilePermission.GROUP_READ,
+            PosixFilePermission.OTHERS_READ);
+
     private final RepositoryFileResolver files;
 
     @Override
@@ -42,11 +55,13 @@ public class FileWriteTool implements SandboxTool {
             if (!actualHash.equalsIgnoreCase(expectedHash)) {
                 throw new WorkerException(CONFLICT, "FILE_HASH_MISMATCH", "文件已经发生变化，请重新读取后再写入");
             }
+            Set<PosixFilePermission> permissions = existingPermissions(target);
             byte[] next = content.getBytes(StandardCharsets.UTF_8);
             Path temporary = Files.createTempFile(target.getParent(), ".qgents-", ".tmp");
             try {
                 Files.write(temporary, next);
                 Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                grantSandboxOwnership(target, permissions);
             } finally {
                 Files.deleteIfExists(temporary);
             }
@@ -57,5 +72,23 @@ public class FileWriteTool implements SandboxTool {
         } catch (Exception exception) {
             throw new IllegalStateException("写入文件失败", exception);
         }
+    }
+    private Set<PosixFilePermission> existingPermissions(Path target) {
+        try {
+            return Files.getPosixFilePermissions(target, LinkOption.NOFOLLOW_LINKS);
+        } catch (UnsupportedOperationException | IOException exception) {
+            return DEFAULT_FILE_PERMISSIONS;
+        }
+    }
+
+    private void grantSandboxOwnership(Path target, Set<PosixFilePermission> permissions) throws IOException {
+        PosixFileAttributeView view = Files.getFileAttributeView(target, PosixFileAttributeView.class,
+                LinkOption.NOFOLLOW_LINKS);
+        if (view == null) {
+            return;
+        }
+        Files.setAttribute(target, "unix:uid", SANDBOX_UID, LinkOption.NOFOLLOW_LINKS);
+        Files.setAttribute(target, "unix:gid", SANDBOX_GID, LinkOption.NOFOLLOW_LINKS);
+        Files.setPosixFilePermissions(target, permissions);
     }
 }
