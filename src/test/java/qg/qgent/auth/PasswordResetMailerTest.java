@@ -11,14 +11,14 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class TeamInvitationMailerTest {
+class PasswordResetMailerTest {
     @Test
-    void mailContainsCopyButtonDomainAndPlainToken() throws Exception {
+    void mailContainsButtonLinkAndResetUrl() throws Exception {
         JavaMailSender sender = mock(JavaMailSender.class);
         MimeMessage message = new jakarta.mail.internet.MimeMessage(
                 jakarta.mail.Session.getInstance(new java.util.Properties()));
         when(sender.createMimeMessage()).thenReturn(message);
-        TeamInvitationMailer mailer = new TeamInvitationMailer(sender, "noreply@example.com",
+        PasswordResetMailer mailer = new PasswordResetMailer(sender, "noreply@example.com",
                 "https://app.example.com");
 
         mailer.send("member@example.com", "opaque-token");
@@ -28,11 +28,8 @@ class TeamInvitationMailerTest {
         Object content = captured.getValue().getContent();
         assertTrue(content instanceof String);
         String html = (String) content;
-        assertTrue(html.contains(">opaque-token<"));
-        assertTrue(html.contains("user-select:all"));
-        assertTrue(html.contains("href=\"https://app.example.com\""));
-        assertFalse(html.contains("https://app.example.com/team-invitations/accept?token=opaque-token"));
-        assertFalse(html.contains("https://app.example.com/register"));
+        assertTrue(html.contains("重置密码"));
+        assertTrue(html.contains("https://app.example.com/reset-password?token=opaque-token"));
         assertFalse(html.contains("<script"));
     }
 }
