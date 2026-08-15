@@ -4,6 +4,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import qg.qgent.entity.MemoryMessageSourceEntity;
 
 import java.util.List;
 import java.util.UUID;
@@ -31,4 +32,16 @@ public interface MemoryMessageSourceMapper {
      */
     @Select("SELECT message_id FROM memory_message_sources WHERE memory_id = #{memoryId}")
     List<UUID> selectMessageIds(UUID memoryId);
+
+    /**
+     * 批量查询多个 Memory 的来源消息关系（DeliveryCenter 聚合用，避免逐 Memory N+1）。
+     *
+     * @param memoryIds Memory ID 列表
+     * @return 来源消息关系行列表
+     */
+    @Select({"<script>",
+            "SELECT memory_id, message_id FROM memory_message_sources WHERE memory_id IN",
+            "<foreach collection='memoryIds' item='mid' open='(' separator=',' close=')'>#{mid}</foreach>",
+            "</script>"})
+    List<MemoryMessageSourceEntity> selectByMemoryIds(@Param("memoryIds") List<UUID> memoryIds);
 }

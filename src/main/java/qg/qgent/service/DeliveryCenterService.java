@@ -44,12 +44,16 @@ public class DeliveryCenterService {
     private final MemoryMapper memories;
     private final SkillMapper skills;
     private final UserMapper users;
+    private final MemoryMessageSourceMapper memorySources;
+    private final MessageMapper messages;
     private final ProjectAccessService access;
 
     public DeliveryCenterService(DiffReviewBatchMapper diffBatches, DiffMapper diffs, MergeRequestMapper mergeRequests,
                                  TaskMapper tasks, RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories,
                                  WorkspaceRepositoryMapper worktrees, GitHubRepositoryMapper githubRepositories,
-                                 MemoryMapper memories, SkillMapper skills, UserMapper users, ProjectAccessService access) {
+                                 MemoryMapper memories, SkillMapper skills, UserMapper users,
+                                 MemoryMessageSourceMapper memorySources, MessageMapper messages,
+                                 ProjectAccessService access) {
         this.diffBatches = diffBatches;
         this.diffs = diffs;
         this.mergeRequests = mergeRequests;
@@ -61,6 +65,8 @@ public class DeliveryCenterService {
         this.memories = memories;
         this.skills = skills;
         this.users = users;
+        this.memorySources = memorySources;
+        this.messages = messages;
         this.access = access;
     }
 
@@ -98,12 +104,16 @@ public class DeliveryCenterService {
 
     /**
      * 交付中心聚合统计：针对完整筛选数据集计算，不由当前分页推导。
+     * 筛选参数与 delivery-items 一致（groupId/type/status/repositoryId/createdBy），
+     * 用户切换筛选后统计同步变化。
      */
-    public DeliverySummaryResponse summary(UUID projectId, UUID actor, String groupId, String repositoryId) {
+    public DeliverySummaryResponse summary(UUID projectId, UUID actor, String groupId, String type,
+                                           String displayStatus, String repositoryId, String createdBy) {
         access.requireProjectMember(projectId, actor);
         UUID groupUuid = optionalUuid(groupId, "INVALID_GROUP_FILTER");
         UUID repositoryUuid = optionalUuid(repositoryId, "INVALID_REPOSITORY_FILTER");
-        List<DeliveryItem> all = collect(projectId, actor, groupUuid, null, null, repositoryUuid, null);
+        UUID creatorUuid = optionalUuid(createdBy, "INVALID_CREATEDBY_FILTER");
+        List<DeliveryItem> all = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid, creatorUuid);
 
         long code = 0, memory = 0, skill = 0;
         long draft = 0, pendingReview = 0, processing = 0, accepted = 0, rejected = 0, delivered = 0,
@@ -130,13 +140,21 @@ public class DeliveryCenterService {
                 pendingForCurrentUser++;
             }
         }
-        return new DeliverySummaryResponse(all.size(),
-                new DeliverySummaryResponse.TypeCounts(code, memory, skill),
-                new DeliverySummaryResponse.StatusCounts(draft, pendingReview, processing, accepted, rejected,
-                        delivered, failed, archived),
-                pendingForCurrentUser,
-                repositorySummaries(all),
-                groupSummaries(all),
+        Map<String, Long> typeCounts = new LinkedHashMap<>();
+        typeCounts.put("CODE", code);
+        typeCounts.put("MEMORY", memory);
+        typeCounts.put("SKILL", skill);
+        Map<String, Long> statusCounts = new LinkedHashMap<>();
+        statusCounts.put("DRAFT", draft);
+        statusCounts.put("PENDING_REVIEW", pendingReview);
+        statusCounts.put("PROCESSING", processing);
+        statusCounts.put("ACCEPTED", accepted);
+        statusCounts.put("REJECTED", rejected);
+        statusCounts.put("DELIVERED", delivered);
+        statusCounts.put("FAILED", failed);
+        statusCounts.put("ARCHIVED", archived);
+        return new DeliverySummaryResponse(all.size(), typeCounts, statusCounts, pendingForCurrentUser,
+                repositorySummaries(all), groupSummaries(all),
                 iso(LocalDateTime.now(ZoneOffset.UTC)));
     }
 
@@ -236,15 +254,30 @@ public class DeliveryCenterService {
 
     private List<DeliveryItem> memoryItems(UUID projectId, UUID actor, UUID groupUuid, String displayStatus,
                                            UUID creatorUuid) {
-        if (groupUuid != null) {
-            // Memory 无需求群来源，按群筛选时不返回 MEMORY 项
+        List<MemoryEntity> all = memories.selectList(Wrappers.<MemoryEntity>lambdaQuery()
+                .eq(MemoryEntity::getProjectId, projectId));
+        if (all.isEmpty()) {
             return List.of();
         }
-        return memories.selectList(Wrappers.<MemoryEntity>lambdaQuery()
-                        .eq(MemoryEntity::getProjectId, projectId))
-                .stream()
+        List<UUID> memoryIds = all.stream().map(MemoryEntity::getId).toList();
+        Map<UUID, List<UUID>> sourceMessageIdsByMemory = memorySources.selectByMemoryIds(memoryIds).stream()
+                .collect(Collectors.groupingBy(MemoryMessageSourceEntity::getMemoryId,
+                        Collectors.mapping(MemoryMessageSourceEntity::getMessageId, Collectors.toList())));
+        Set<UUID> messageIds = sourceMessageIdsByMemory.values().stream().flatMap(List::stream)
+                .collect(Collectors.toSet());
+        Map<UUID, MessageEntity> messageById = messageIds.isEmpty() ? Collections.emptyMap() : messages
+                .selectBatchIds(messageIds).stream().collect(Collectors.toMap(MessageEntity::getId, Function.identity()));
+        Set<UUID> groupIds = messageById.values().stream().map(MessageEntity::getRequirementGroupId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<UUID, RequirementGroupEntity> groupById = groupIds.isEmpty() ? Collections.emptyMap() : groups
+                .selectList(Wrappers.<RequirementGroupEntity>lambdaQuery().in(RequirementGroupEntity::getId, groupIds))
+                .stream().collect(Collectors.toMap(RequirementGroupEntity::getId, Function.identity()));
+        return all.stream()
                 .filter(m -> creatorUuid == null || creatorUuid.equals(m.getCreatedBy()))
-                .map(m -> toMemoryItem(projectId, m, actor))
+                .map(m -> toMemoryItem(projectId, m, actor,
+                        sourceMessageIdsByMemory.getOrDefault(m.getId(), List.of()), messageById, groupById))
+                .filter(i -> groupUuid == null || (i.getRequirementGroup() != null
+                        && groupUuid.toString().equals(i.getRequirementGroup().getId())))
                 .filter(i -> displayStatus == null || displayStatus.equals(i.getDisplayStatus()))
                 .map(i -> (DeliveryItem) i)
                 .toList();
@@ -253,6 +286,7 @@ public class DeliveryCenterService {
     private List<DeliveryItem> skillItems(UUID projectId, UUID actor, UUID groupUuid, String displayStatus,
                                           UUID creatorUuid) {
         if (groupUuid != null) {
+            // Skill 无来源关系，按群筛选时不返回 SKILL 项
             return List.of();
         }
         return skills.selectList(Wrappers.<SkillEntity>lambdaQuery()
@@ -353,7 +387,10 @@ public class DeliveryCenterService {
         return item;
     }
 
-    private MemoryDeliveryItem toMemoryItem(UUID projectId, MemoryEntity memory, UUID actor) {
+    private MemoryDeliveryItem toMemoryItem(UUID projectId, MemoryEntity memory, UUID actor,
+                                            List<UUID> sourceMessageIds,
+                                            Map<UUID, MessageEntity> messageById,
+                                            Map<UUID, RequirementGroupEntity> groupById) {
         MemoryDeliveryItem item = new MemoryDeliveryItem();
         String memoryId = id(memory.getId());
         item.setId(memoryId);
@@ -365,20 +402,34 @@ public class DeliveryCenterService {
         item.setVersion(null);
         item.setResourceStatus(memory.getStatus());
         item.setDisplayStatus(memoryDisplayStatus(memory.getStatus()));
-        item.setRequirementGroup(null);
-        item.setSource(new DeliveryItem.DeliverySource(null, null, null, null, null, null, null));
+        // 需求群来源：由来源消息的 requirement_group_id 派生；无来源时 null
+        MessageEntity firstSource = sourceMessageIds.stream().map(messageById::get)
+                .filter(Objects::nonNull).findFirst().orElse(null);
+        RequirementGroupEntity sourceGroup = firstSource == null ? null
+                : groupById.get(firstSource.getRequirementGroupId());
+        item.setRequirementGroup(sourceGroup == null ? null
+                : new DeliveryItem.RequirementGroupRef(id(sourceGroup.getId()), sourceGroup.getName()));
+        item.setSource(new DeliveryItem.DeliverySource(null, null, null, null, null,
+                firstSource == null ? null : id(firstSource.getId()), null));
         item.setCreator(userSummary(memory.getCreatedBy()));
-        item.setSubmitter(null);
+        item.setSubmitter(userSummary(memory.getSubmittedBy()));
         item.setReviewer(userSummary(memory.getReviewerId()));
         item.setReviewReason(memory.getRejectionReason());
         item.setCreatedAt(iso(memory.getCreatedAt()));
-        item.setSubmittedAt(null);
+        item.setSubmittedAt(iso(memory.getSubmittedAt()));
         item.setReviewedAt(iso(memory.getReviewedAt()));
         item.setUpdatedAt(iso(memory.getUpdatedAt()));
         item.setCategory(memory.getCategory());
         item.setTags(memory.getTags() == null ? List.of() : memory.getTags());
         item.setVisibility("PROJECT_SHARED");
-        item.setSources(List.of());
+        item.setSources(sourceMessageIds.stream().map(messageById::get).filter(Objects::nonNull)
+                .map(message -> {
+                    MemorySourceRef ref = new MemorySourceRef();
+                    ref.setGroupId(message.getRequirementGroupId());
+                    ref.setMessageId(message.getId());
+                    return ref;
+                })
+                .toList());
         item.setContentExcerpt(excerpt(memory.getContent()));
         item.setCapabilities(memoryCapabilities(memory, actor));
         item.setOpenTarget(DeliveryOpenTarget.memory(memoryId));
@@ -400,11 +451,11 @@ public class DeliveryCenterService {
         item.setRequirementGroup(null);
         item.setSource(new DeliveryItem.DeliverySource(null, null, null, null, null, null, null));
         item.setCreator(userSummary(skill.getCreatedBy()));
-        item.setSubmitter(null);
+        item.setSubmitter(userSummary(skill.getSubmittedBy()));
         item.setReviewer(userSummary(skill.getReviewerId()));
         item.setReviewReason(skill.getRejectionReason());
         item.setCreatedAt(iso(skill.getCreatedAt()));
-        item.setSubmittedAt(null);
+        item.setSubmittedAt(iso(skill.getSubmittedAt()));
         item.setReviewedAt(iso(skill.getReviewedAt()));
         item.setUpdatedAt(iso(skill.getUpdatedAt()));
         item.setTags(skill.getTags() == null ? List.of() : skill.getTags());

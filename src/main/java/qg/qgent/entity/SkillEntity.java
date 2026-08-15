@@ -63,6 +63,16 @@ public class SkillEntity {
     private String status;
 
     /**
+     * 最近提交审核用户 ID（UUIDv7，BINARY(16)）；从未提交审核时为空。
+     */
+    private UUID submittedBy;
+
+    /**
+     * 最近提交审核时间（UTC）；从未提交审核时为空。
+     */
+    private LocalDateTime submittedAt;
+
+    /**
      * 最近审核用户 ID（UUIDv7，BINARY(16)）；可为空。
      */
     private UUID reviewerId;

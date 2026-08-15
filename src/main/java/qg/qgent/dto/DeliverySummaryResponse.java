@@ -6,12 +6,15 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 交付中心聚合统计（契约 v1.8.0 §20，成员 B B02）。
  * <p>
  * 统计针对完整筛选数据集计算，不由当前分页推导；
- * countsByType 恒含 CODE/MEMORY/SKILL 三 key（值为 0 也返回）。
+ * countsByType 恒含 CODE/MEMORY/SKILL 三 key（值为 0 也返回）；
+ * countsByStatus 恒含 8 个正式大写枚举 key（DRAFT/PENDING_REVIEW/PROCESSING/ACCEPTED/
+ * REJECTED/DELIVERED/FAILED/ARCHIVED），统计 key 统一遵循正式枚举，不使用小写或 camelCase。
  */
 @Data
 @NoArgsConstructor
@@ -25,16 +28,16 @@ public class DeliverySummaryResponse {
     private long total;
 
     /**
-     * 按资源类型计数（恒含 CODE/MEMORY/SKILL 三 key）。
+     * 按资源类型计数（恒含 CODE/MEMORY/SKILL 三 key，正式大写枚举）。
      */
-    @Schema(description = "按资源类型计数")
-    private TypeCounts countsByType;
+    @Schema(description = "按资源类型计数（正式大写枚举）")
+    private Map<String, Long> countsByType;
 
     /**
-     * 按展示状态计数。
+     * 按展示状态计数（恒含 8 个正式大写枚举 key）。
      */
-    @Schema(description = "按展示状态计数")
-    private StatusCounts countsByStatus;
+    @Schema(description = "按展示状态计数（正式大写枚举）")
+    private Map<String, Long> countsByStatus;
 
     /**
      * 当前用户待处理数量（按 capabilities 派生）。
@@ -59,38 +62,4 @@ public class DeliverySummaryResponse {
      */
     @Schema(description = "统计计算时间")
     private String updatedAt;
-
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class TypeCounts {
-        @Schema(description = "CODE 数量")
-        private long code;
-        @Schema(description = "MEMORY 数量")
-        private long memory;
-        @Schema(description = "SKILL 数量")
-        private long skill;
-    }
-
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class StatusCounts {
-        @Schema(description = "DRAFT 数量")
-        private long draft;
-        @Schema(description = "PENDING_REVIEW 数量")
-        private long pendingReview;
-        @Schema(description = "PROCESSING 数量")
-        private long processing;
-        @Schema(description = "ACCEPTED 数量")
-        private long accepted;
-        @Schema(description = "REJECTED 数量")
-        private long rejected;
-        @Schema(description = "DELIVERED 数量")
-        private long delivered;
-        @Schema(description = "FAILED 数量")
-        private long failed;
-        @Schema(description = "ARCHIVED 数量")
-        private long archived;
-    }
 }
