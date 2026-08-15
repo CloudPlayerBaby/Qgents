@@ -2,6 +2,7 @@ package qg.qgent.orchestration.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
@@ -34,6 +35,7 @@ import java.util.List;
  * </ul>
  * 不修改 Workspace、不 write_file、不调用其他 Agent、不执行 Git commit/push/MR、不访问宿主机。
  */
+@Slf4j
 @Component
 public class ReviewAgent implements Agent {
 
@@ -56,9 +58,12 @@ public class ReviewAgent implements Agent {
 
     @Override
     public AgentRunOutcome run(AgentInput input) {
+        log.info("review agent start phase={} workspaceId={}", input.getPhase(), input.getWorkspaceId());
         try {
             GitDiffResult diff = diffAccess.diff(input.getWorkspaceId());
             if (!diff.ok()) {
+                log.warn("REVIEW_DIFF_UNAVAILABLE phase={} workspaceId={}",
+                        input.getPhase(), input.getWorkspaceId());
                 return infraFailure(input, "git diff unavailable: " + diff.error());
             }
             ReviewResult review = executeReview(input, diff);
@@ -71,8 +76,12 @@ public class ReviewAgent implements Agent {
             outcome.setOutcome(success ? RunOutcome.SUCCEEDED
                     : (review.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
             outcome.setMessage(success ? review.getSummary() : firstFinding(review));
+            log.info("review agent done phase={} workspaceId={} outcome={}",
+                    input.getPhase(), input.getWorkspaceId(), outcome.getOutcome());
             return outcome;
         } catch (RuntimeException e) {
+            log.error("REVIEW_AGENT_FAILED phase={} workspaceId={} category={}",
+                    input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());
             return infraFailure(input, e.getMessage());
         }
     }

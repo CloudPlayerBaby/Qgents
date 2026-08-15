@@ -1,5 +1,6 @@
 package qg.qgent.orchestration.llm;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -9,6 +10,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -20,6 +22,7 @@ import java.util.List;
  * 映射为 Spring AI 消息类型；TOOL 结果在 JSON 协议下以 UserMessage 呈现给模型。
  * 调用失败由上层按 FAILED_INFRASTRUCTURE 处理。
  */
+@Slf4j
 @Component
 public class SpringAiChatLlmClient implements LlmClient {
 
@@ -38,11 +41,25 @@ public class SpringAiChatLlmClient implements LlmClient {
     public String complete(String systemPrompt, List<LlmMessage> messages) {
         List<Message> springMessages = new ArrayList<>();
         springMessages.add(new SystemMessage(systemPrompt));
+        int promptChars = systemPrompt.length();
         for (LlmMessage message : messages) {
             springMessages.add(toSpringMessage(message));
+            promptChars += message.content() == null ? 0 : message.content().length();
         }
-        ChatResponse response = chatModel.call(new Prompt(springMessages));
-        return response.getResult().getOutput().getText();
+        long started = System.nanoTime();
+        try {
+            ChatResponse response = chatModel.call(new Prompt(springMessages));
+            String text = response.getResult().getOutput().getText();
+            log.info("llm complete messages={} promptChars={} responseChars={} durationMs={}",
+                    messages.size(), promptChars, text == null ? 0 : text.length(),
+                    Duration.ofNanos(System.nanoTime() - started).toMillis());
+            return text;
+        } catch (RuntimeException exception) {
+            log.error("LLM_CALL_FAILED messages={} promptChars={} category={} durationMs={}",
+                    messages.size(), promptChars, exception.getClass().getSimpleName(),
+                    Duration.ofNanos(System.nanoTime() - started).toMillis());
+            throw exception;
+        }
     }
 
     private Message toSpringMessage(LlmMessage message) {

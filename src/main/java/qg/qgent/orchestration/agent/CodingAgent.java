@@ -2,6 +2,7 @@ package qg.qgent.orchestration.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
@@ -28,6 +29,7 @@ import java.util.List;
  * 超循环上限等协议失败抛 {@link CodingParseException}，统一转为 FAILED_INFRASTRUCTURE，
  * 由状态机决定同相位重试。只经 {@link WorkspaceCodeWriter} 写工作区，不执行 Git 或沙箱命令。
  */
+@Slf4j
 @Component
 public class CodingAgent implements Agent {
 
@@ -50,6 +52,7 @@ public class CodingAgent implements Agent {
 
     @Override
     public AgentRunOutcome run(AgentInput input) {
+        log.info("coding agent start phase={} workspaceId={}", input.getPhase(), input.getWorkspaceId());
         try {
             CodingResult coding = executeCoding(input);
             AgentRunOutcome outcome = new AgentRunOutcome();
@@ -57,8 +60,12 @@ public class CodingAgent implements Agent {
             outcome.setOutcome(coding.isSuccess() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED);
             outcome.setCodingResult(coding);
             outcome.setMessage(coding.isSuccess() ? coding.getSummary() : firstError(coding));
+            log.info("coding agent done phase={} workspaceId={} outcome={}",
+                    input.getPhase(), input.getWorkspaceId(), outcome.getOutcome());
             return outcome;
         } catch (RuntimeException e) {
+            log.error("CODING_AGENT_FAILED phase={} workspaceId={} category={}",
+                    input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());
             AgentRunOutcome failure = new AgentRunOutcome();
             failure.setPhase(input.getPhase());
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
@@ -72,6 +79,8 @@ public class CodingAgent implements Agent {
      */
     private CodingResult executeCoding(AgentInput input) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
+        log.info("coding agent workspace files phase={} workspaceId={} files={}",
+                input.getPhase(), input.getWorkspaceId(), files.size());
         List<LlmMessage> history = new ArrayList<>();
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem();
@@ -81,11 +90,15 @@ public class CodingAgent implements Agent {
             JsonNode node = toJson(raw);
             JsonNode toolCall = node.get("toolCall");
             if (toolCall != null && toolCall.isObject()) {
+                log.info("coding agent round {} tool={} phase={} workspaceId={}",
+                        round, toolCall.path("name").asText("?"), input.getPhase(), input.getWorkspaceId());
                 history.add(LlmMessage.tool(toolExecutor.execute(input.getWorkspaceId(), toolCall)));
                 continue;
             }
             JsonNode finalResult = node.get("finalResult");
             if (finalResult != null && finalResult.isObject()) {
+                log.info("coding agent round {} finalResult phase={} workspaceId={}",
+                        round, input.getPhase(), input.getWorkspaceId());
                 return parser.parse(finalResult);
             }
             throw new CodingParseException("coding output is neither toolCall nor finalResult");
