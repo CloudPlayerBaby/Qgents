@@ -273,7 +273,7 @@ public class DeliveryCenterService {
                                         Map<UUID, GitHubRepositoryEntity> githubById,
                                         Map<UUID, WorkspaceRepositoryEntity> worktreeByRepo,
                                         List<MergeRequestEntity> taskMrs,
-                                        Map<UUID, MergeRequestEntity> mrByRepoTask, UUID actor) {
+                                        Map<String, MergeRequestEntity> mrByRepoTask, UUID actor) {
         CodeDeliveryItem item = new CodeDeliveryItem();
         String batchId = id(batch.getId());
         item.setId(batchId);
