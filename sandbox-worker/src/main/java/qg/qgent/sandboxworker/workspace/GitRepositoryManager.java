@@ -300,13 +300,14 @@ public class GitRepositoryManager {
      */
     public GitCommitResponse commit(Path repository, GitCommitRequest request) {
         String currentHead = head(repository);
+        // 幂等：先检查当前 HEAD 是否已带本次操作标记，避免 commit 成功后重试时重复校验 diff。
+        String message = requireSuccess(run(List.of("git", "-C", repository.toString(), "log", "-1",
+                        "--format=%B", currentHead), Map.of()), "GIT_COMMIT_READ_FAILED",
+                "Cannot inspect existing commit").stdout();
+        if (message.lines().anyMatch(line -> line.equals("Qgents-Operation-Id: " + request.getOperationId()))) {
+            return new GitCommitResponse(currentHead);
+        }
         if (!currentHead.equals(request.getExpectedHeadCommit())) {
-            String message = requireSuccess(run(List.of("git", "-C", repository.toString(), "log", "-1",
-                            "--format=%B", currentHead), Map.of()), "GIT_COMMIT_READ_FAILED",
-                    "Cannot inspect existing commit").stdout();
-            if (message.lines().anyMatch(line -> line.equals("Qgents-Operation-Id: " + request.getOperationId()))) {
-                return new GitCommitResponse(currentHead);
-            }
             throw conflict("GIT_HEAD_MISMATCH", "Workspace HEAD has changed");
         }
         GitDiffResponse currentDiff = diff(repository);
@@ -655,7 +656,56 @@ public class GitRepositoryManager {
         return run(command, environment, maxStdoutBytes);
     }
 
+    /**
+     * 为针对 worktree（-C <路径>）的 Git 命令注入精确 safe.directory 配置，绕过 Git 的
+     * dubious ownership 安全检查：Worker 容器以 root 运行，而 worktree 文件属主是沙箱用户
+     * 10001，未配置时 Git 会拒绝读取该 worktree（rev-parse/status/log/diff/commit 全部受影响）。
+     * 只处理服务端内部生成的、位于 Workspace 根目录下的 worktree 路径；--git-dir <bare store>
+     * 命令不注入，且不使用 --global 通配、不修改文件属主。
+     */
+    List<String> withSafeDirectory(List<String> command) {
+        if (command.size() < 2 || !"git".equals(command.get(0))) {
+            return command;
+        }
+        String worktree = controlledWorktreePath(command);
+        if (worktree == null) {
+            return command;
+        }
+        List<String> result = new ArrayList<>(command.size() + 2);
+        result.add("git");
+        result.add("-c");
+        result.add("safe.directory=" + worktree);
+        result.addAll(command.subList(1, command.size()));
+        return result;
+    }
+
+    /**
+     * 提取命令中第一个 "-C" 后的路径；仅当它是受控 worktree（位于 Workspace 根目录下、
+     * 且不等于根目录本身）时返回，否则返回 null 表示无需注入。
+     */
+    private String controlledWorktreePath(List<String> command) {
+        for (int i = 1; i < command.size() - 1; i++) {
+            if (!"-C".equals(command.get(i))) {
+                continue;
+            }
+            String candidate = command.get(i + 1);
+            return isControlledWorktree(candidate) ? candidate : null;
+        }
+        return null;
+    }
+
+    private boolean isControlledWorktree(String value) {
+        try {
+            Path root = Path.of(properties.getWorkspaceLocalRoot()).toAbsolutePath().normalize();
+            Path candidate = Path.of(value).toAbsolutePath().normalize();
+            return candidate.startsWith(root) && !candidate.equals(root);
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
     private CommandResult run(List<String> command, Map<String, String> environment, int maxStdoutBytes) {
+        command = withSafeDirectory(command);
         Process process = null;
         Thread out = null;
         Thread err = null;

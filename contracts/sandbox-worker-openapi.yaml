@@ -274,7 +274,23 @@ components:
       properties:
         executionId: {type: string, format: uuid}
         repositoryId: {type: string, format: uuid}
-        tool: {type: string, enum: [process.exec, file.read, file.list, file.search, file.write]}
+        tool: {type: string, enum: [process.exec, file.read, file.list, file.search, file.write, file.patch]}
+    # file.patch 只对已有 UTF-8 文本文件做精确局部修改，严格按声明行号应用统一 Diff，
+    # 禁止模糊匹配/自动偏移/冲突覆盖；失败保证原文件不变。参数与结果见 FilePatchArguments/FilePatchResult。
+    FilePatchArguments:
+      type: object
+      required: [path, expectedHash, patch]
+      properties:
+        path: {type: string, minLength: 1, maxLength: 1024, description: Repository 内相对路径，禁止绝对路径与 .. 越界}
+        expectedHash: {type: string, minLength: 64, maxLength: 64, pattern: '^[0-9a-fA-F]{64}$', description: 目标文件当前内容的 SHA-256，不一致时拒绝应用}
+        patch: {type: string, minLength: 1, maxLength: 1048576, description: 统一 Diff 文本，按声明行号精确应用}
+    FilePatchResult:
+      type: object
+      properties:
+        path: {type: string}
+        sha256: {type: string}
+        bytes: {type: integer}
+        changed: {type: boolean}
         arguments: {type: object, maxProperties: 64}
         timeoutSeconds: {type: integer, minimum: 1, maximum: 3600}
     ToolExecution:

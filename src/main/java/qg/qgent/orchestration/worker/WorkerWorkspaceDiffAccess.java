@@ -1,5 +1,6 @@
 package qg.qgent.orchestration.worker;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
@@ -18,6 +19,7 @@ import java.util.UUID;
  * <p>
  * {@code app.worker.enabled=true} 时作为默认 WorkspaceDiffAccess 启用。
  */
+@Slf4j
 @Component
 @Primary
 @ConditionalOnProperty(name = "app.worker.enabled", havingValue = "true")
@@ -41,6 +43,8 @@ public class WorkerWorkspaceDiffAccess implements WorkspaceDiffAccess {
             for (Map.Entry<String, UUID> entry : session.repositoryByPath().entrySet()) {
                 WorkerGitDiff diff = client.createWorkspaceGitDiff(workspaceId, entry.getValue());
                 if (diff == null) {
+                    log.warn("WORKSPACE_GIT_DIFF_UNAVAILABLE workspaceId={} repositoryId={}",
+                            workspaceId, entry.getValue());
                     return failure("workspace git diff unavailable");
                 }
                 if (baseCommit == null) {
@@ -54,8 +58,12 @@ public class WorkerWorkspaceDiffAccess implements WorkspaceDiffAccess {
                     combined.append("===== ").append(entry.getKey()).append(" =====\n").append(diff.getPatch());
                 }
             }
+            log.info("workspace git diff ok workspaceId={} repos={} patchChars={}",
+                    workspaceId, session.repositoryByPath().size(), combined.length());
             return GitDiffResult.ok(combined.toString(), baseCommit, headCommit);
         } catch (RuntimeException e) {
+            log.error("WORKSPACE_GIT_DIFF_FAILED workspaceId={} category={}",
+                    workspaceId, e.getClass().getSimpleName());
             return failure("workspace git diff failed: " + e.getMessage());
         }
     }

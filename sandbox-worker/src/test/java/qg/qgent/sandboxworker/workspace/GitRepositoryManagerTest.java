@@ -1,10 +1,14 @@
 package qg.qgent.sandboxworker.workspace;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
 
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -13,6 +17,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GitRepositoryManagerTest {
@@ -252,6 +257,102 @@ class GitRepositoryManagerTest {
         } finally {
             blocked.interrupt();
             blocked.join(Duration.ofSeconds(1));
+        }
+    }
+
+    @Test
+    void injectsPreciseSafeDirectoryOnlyForControlledWorktrees() {
+        Path wsRoot = root.resolve("workspaces");
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+        properties.setWorkspaceLocalRoot(wsRoot.toString());
+        GitRepositoryManager manager = new GitRepositoryManager(properties);
+
+        String worktree = wsRoot.resolve("task/repo-1").toString();
+        List<String> base = List.of("git", "-C", worktree, "rev-parse", "HEAD");
+        assertEquals(List.of("git", "-c", "safe.directory=" + worktree,
+                "-C", worktree, "rev-parse", "HEAD"), manager.withSafeDirectory(base));
+
+        // --git-dir bare store 命令不注入
+        String store = root.resolve("stores/repo.git").toString();
+        List<String> storeCommand = List.of("git", "--git-dir", store, "rev-parse", "main");
+        assertEquals(storeCommand, manager.withSafeDirectory(storeCommand));
+
+        // 不在 Workspace 根目录下的路径不注入
+        String elsewhere = root.resolve("other/repo").toString();
+        List<String> elsewhereCommand = List.of("git", "-C", elsewhere, "status");
+        assertEquals(elsewhereCommand, manager.withSafeDirectory(elsewhereCommand));
+
+        // 路径等于 Workspace 根目录本身不注入
+        List<String> rootCommand = List.of("git", "-C", wsRoot.toString(), "status");
+        assertEquals(rootCommand, manager.withSafeDirectory(rootCommand));
+
+        // 路径穿越不能绕过根目录校验
+        String traversal = wsRoot.resolve("..").resolve("escaped").toString();
+        List<String> traversalCommand = List.of("git", "-C", traversal, "status");
+        assertEquals(traversalCommand, manager.withSafeDirectory(traversalCommand));
+    }
+
+    /**
+     * 复现 worker 容器（root）读取 10001 属主 worktree 的 dubious ownership 问题：
+     * 未配置 safe.directory 必须失败；经统一 run 入口注入精确 safe.directory 后能读取 HEAD。
+     * 仅 Linux 且以 root 运行时生效，其他环境自动跳过。
+     */
+    @EnabledOnOs(OS.LINUX)
+    @Test
+    void rootCanReadSandboxOwnedWorktreeAfterPreciseSafeDirectory() throws Exception {
+        Assumptions.assumeTrue(isRoot(), "requires running as root on Linux");
+        Path wsRoot = root.resolve("workspaces");
+        UUID repositoryId = UUID.randomUUID();
+        Path store = root.resolve("store").resolve(repositoryId + ".git");
+        Path seed = root.resolve("seed");
+        Files.createDirectories(store.getParent());
+        run(List.of("git", "init", "-b", "main", seed.toString()), root);
+        Files.writeString(seed.resolve("README.md"), "base\n");
+        run(List.of("git", "-C", seed.toString(), "add", "-A"), root);
+        run(List.of("git", "-C", seed.toString(), "-c", "user.name=Test", "-c",
+                "user.email=test@example.com", "commit", "-m", "base"), root);
+        run(List.of("git", "clone", "--bare", seed.toString(), store.toString()), root);
+
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+        properties.setGitStoreRoot(store.getParent().toString());
+        properties.setWorkspaceLocalRoot(wsRoot.toString());
+        GitRepositoryManager manager = new GitRepositoryManager(properties);
+
+        Path worktree = wsRoot.resolve("task/repo-1");
+        manager.create(repositoryId, worktree, "main", "feat/dubious");
+
+        // 模拟沙箱用户：把 worktree 递归改为 10001:10001（与生产一致，不改回 root）
+        chownRecursively(worktree, 10001, 10001);
+
+        // 未配置 safe.directory 时，root 直接读 HEAD 必须失败（dubious ownership）
+        Process raw = new ProcessBuilder(List.of("git", "-C", worktree.toString(), "rev-parse", "HEAD"))
+                .redirectErrorStream(true).start();
+        String rawOutput = new String(raw.getInputStream().readAllBytes());
+        assertNotEquals(0, raw.waitFor());
+        assertTrue(rawOutput.contains("dubious ownership"), "期望 dubious ownership，实际输出: " + rawOutput);
+
+        // 经统一 run 入口（注入精确 safe.directory）后能读取 HEAD，且 worktree 操作不受影响
+        assertEquals(manager.resolveRef(repositoryId, "main"), manager.head(worktree));
+        assertTrue(manager.status(worktree).isClean());
+        assertTrue(manager.diff(worktree).getPatch().isEmpty());
+
+        manager.remove(repositoryId, worktree);
+    }
+
+    private boolean isRoot() {
+        try {
+            return ((Number) Files.getAttribute(Path.of("/"), "unix:uid", LinkOption.NOFOLLOW_LINKS)).intValue() == 0;
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
+    private void chownRecursively(Path path, int uid, int gid) throws Exception {
+        try (var stream = Files.walk(path)) {
+            for (Path item : stream.toList()) {
+                Files.setAttribute(item, "unix:uid", uid, LinkOption.NOFOLLOW_LINKS);
+                Files.setAttribute(item, "unix:gid", gid, LinkOption.NOFOLLOW_LINKS);
+            }
         }
     }
 

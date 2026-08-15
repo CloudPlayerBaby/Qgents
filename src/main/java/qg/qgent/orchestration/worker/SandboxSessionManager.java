@@ -201,6 +201,7 @@ public class SandboxSessionManager {
         provision.setProjectId(projectId);
         provision.setRepositories(repositories.stream().map(this::toRepositoryRequest).toList());
         WorkerWorkspace provisioned = client.provisionWorkspace(workspaceId, provision);
+        persistProvisionedCommits(repositories, provisioned);
         String storageKey = provisioned != null && provisioned.getStorageKey() != null
                 ? provisioned.getStorageKey() : workspace.getStorageKey();
 
@@ -219,6 +220,29 @@ public class SandboxSessionManager {
         }
         return new SandboxSession(taskId, workspaceId, sandboxId, storageKey,
                 create.getRepositoryIds(), Collections.unmodifiableMap(new LinkedHashMap<>(repositoryByPath)));
+    }
+
+    /**
+     * 用 Worker provision 返回的真实基线/HEAD 提交回填 Workspace repository 持久字段。
+     * 主后端创建 Task 时 baseCommit 记录的是基线引用（如分支名 develop），而最终 Diff 校验
+     * 需要与 Worker 返回的真实 commit SHA 比对，必须在此处固化真实提交。
+     */
+    private void persistProvisionedCommits(List<WorkspaceRepositoryEntity> repositories, WorkerWorkspace provisioned) {
+        if (provisioned == null || provisioned.getRepositories() == null) {
+            return;
+        }
+        for (WorkerWorkspaceRepository provisionedRepo : provisioned.getRepositories()) {
+            for (WorkspaceRepositoryEntity repository : repositories) {
+                if (repository.getProjectRepositoryId().equals(provisionedRepo.getRepositoryId())
+                        && provisionedRepo.getBaseCommit() != null && !provisionedRepo.getBaseCommit().isBlank()) {
+                    repository.setBaseCommit(provisionedRepo.getBaseCommit());
+                    repository.setHeadCommit(provisionedRepo.getHeadCommit());
+                    repositoryMapper.updateCommits(repository.getWorkspaceId(), repository.getProjectRepositoryId(),
+                            provisionedRepo.getBaseCommit(), provisionedRepo.getHeadCommit());
+                    break;
+                }
+            }
+        }
     }
 
     private WorkerWorkspaceRepositoryRequest toRepositoryRequest(WorkspaceRepositoryEntity repository) {
