@@ -2,6 +2,7 @@ package qg.qgent.service;
 
 import com.aliyun.oss.OSS;
 import com.aliyun.oss.HttpMethod;
+import com.aliyun.oss.model.OSSObject;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
@@ -60,5 +61,13 @@ public class AliyunOssAttachmentStorage implements AttachmentStorageStrategy {
     @Override
     public boolean objectExists(String objectKey) {
         return oss.doesObjectExist(properties.getBucketName(), objectKey);
+    }
+
+    @Override
+    public AttachmentContent loadContent(String objectKey, String fileName, String contentType) {
+        OSSObject object = oss.getObject(properties.getBucketName(), objectKey);
+        String resolvedType = contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType;
+        Long size = object.getObjectMetadata() == null ? null : object.getObjectMetadata().getContentLength();
+        return new AttachmentContent(object.getObjectContent(), resolvedType, fileName, size);
     }
 }

@@ -132,6 +132,31 @@ public class AttachmentService {
         return new AttachmentStatusResponse(attachment.getId().toString(), attachment.getStatus());
     }
 
+    /**
+     * 鉴权后流式读取附件内容（内容下载代理，供 content.url 稳定展示）。
+     * <p>
+     * 校验项目成员资格、附件归属与 READY 状态后，从对象存储读取内容流；
+     * 不支持的存储策略（本地开发回退）返回 501。调用方负责关闭流。
+     *
+     * @param actor        当前用户 ID
+     * @param projectId    项目 ID
+     * @param attachmentId 附件 ID
+     * @return 附件内容流与元数据
+     */
+    public AttachmentContent downloadContent(UUID actor, UUID projectId, UUID attachmentId) {
+        access.requireProjectMember(projectId, actor);
+        AttachmentEntity attachment = requireAttachment(projectId, attachmentId);
+        if (!"READY".equals(attachment.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "ATTACHMENT_NOT_READY", "附件尚未上传完成");
+        }
+        try {
+            return storage.loadContent(attachment.getObjectKey(), attachment.getFileName(), attachment.getMediaType());
+        } catch (UnsupportedOperationException e) {
+            throw new ApiException(HttpStatus.NOT_IMPLEMENTED, "ATTACHMENT_CONTENT_UNSUPPORTED",
+                    "当前存储策略暂不支持内容下载（请启用阿里云 OSS）");
+        }
+    }
+
     private AttachmentEntity requireAttachment(UUID projectId, UUID attachmentId) {
         AttachmentEntity attachment = attachmentMapper.selectById(attachmentId);
         if (attachment == null || !projectId.equals(attachment.getProjectId())) {

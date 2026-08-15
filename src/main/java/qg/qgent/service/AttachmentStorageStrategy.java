@@ -52,4 +52,19 @@ public interface AttachmentStorageStrategy {
     default boolean objectExists(String objectKey) {
         return true;
     }
+
+    /**
+     * 鉴权后流式读取对象内容（供内容下载代理使用）。
+     * <p>
+     * 不支持流式读取的策略（如本地开发签名策略）抛 {@link UnsupportedOperationException}，
+     * 调用方据此返回 501。
+     *
+     * @param objectKey   附件对象键
+     * @param fileName    原始文件名（用于响应头）
+     * @param contentType MIME 类型，可空
+     * @return 内容流与元数据
+     */
+    default AttachmentContent loadContent(String objectKey, String fileName, String contentType) {
+        throw new UnsupportedOperationException("当前存储策略不支持流式读取：storage=" + name());
+    }
 }

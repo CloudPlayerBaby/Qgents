@@ -2,7 +2,12 @@ package qg.qgent.controller;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -18,8 +23,10 @@ import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.AttachmentCreateRequest;
 import qg.qgent.dto.AttachmentDownloadUrlResponse;
 import qg.qgent.dto.AttachmentStatusResponse;
+import qg.qgent.service.AttachmentContent;
 import qg.qgent.service.AttachmentService;
 
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 /**
@@ -70,6 +77,31 @@ public class AttachmentController {
             @PathVariable UUID attachmentId, HttpServletRequest request) {
         AttachmentDownloadUrlResponse data = attachmentService.downloadUrl(userId, projectId, attachmentId);
         return ok(data, request);
+    }
+
+    /**
+     * 鉴权后流式返回附件内容（内容下载代理，稳定展示地址）。
+     * <p>
+     * 每次请求都做项目成员与附件归属校验，图片走 inline 渲染，其余走 attachment 下载；
+     * content.url 可直接填本路径（项目内稳定、长期有效）。
+     */
+    @Operation(summary = "获取附件内容（鉴权下载代理）", description = "鉴权后流式返回附件内容，图片 inline 展示、文件可下载；作为 content.url 的稳定地址。")
+    @GetMapping("/projects/{projectId}/attachments/{attachmentId}/content")
+    public ResponseEntity<InputStreamResource> content(@AuthenticationPrincipal UUID userId,
+            @PathVariable UUID projectId, @PathVariable UUID attachmentId) {
+        AttachmentContent content = attachmentService.downloadContent(userId, projectId, attachmentId);
+        String disposition = content.getContentType() != null && content.getContentType().startsWith("image/")
+                ? "inline"
+                : "attachment";
+        ContentDisposition cd = ContentDisposition.builder(disposition)
+                .filename(content.getFileName() == null || content.getFileName().isBlank() ? "attachment"
+                        : content.getFileName(), StandardCharsets.UTF_8)
+                .build();
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(content.getContentType()))
+                .contentLength(content.getSizeBytes() == null ? -1 : content.getSizeBytes())
+                .header(HttpHeaders.CONTENT_DISPOSITION, cd.toString())
+                .body(new InputStreamResource(content.getStream()));
     }
 
     private ApiResponse<?> ok(Object data, HttpServletRequest request) {
