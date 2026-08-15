@@ -17,7 +17,12 @@ public class SandboxWorkerConfiguration {
 
     @Bean
     SandboxWorkerClient sandboxWorkerClient(SandboxWorkerProperties properties, ObjectMapper objectMapper) {
-        RestClient client = RestClient.builder().baseUrl(properties.getBaseUrl()).build();
+        RestClient.Builder builder = RestClient.builder().baseUrl(properties.getBaseUrl());
+        if (properties.isEnabled() && properties.getBackendServiceToken() != null
+                && !properties.getBackendServiceToken().isBlank()) {
+            builder.defaultHeaders(headers -> headers.setBearerAuth(properties.getBackendServiceToken()));
+        }
+        RestClient client = builder.build();
         return new SandboxWorkerClient(client, objectMapper);
     }
 }
