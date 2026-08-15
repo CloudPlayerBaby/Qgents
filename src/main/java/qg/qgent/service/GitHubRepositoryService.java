@@ -236,6 +236,57 @@ public class GitHubRepositoryService {
     }
 
     /**
+     * 创建项目时批量绑定仓库（前端额外清单 §四）。
+     * <p>
+     * 传入 github_repositories.id（授权仓本地 UUID），逐个校验「属于该团队 ACTIVE 安装、
+     * AUTHORIZED、未归档、有默认分支」后创建 project_repositories 绑定记录；
+     * 等价于逐个调用绑定接口，但不要求 installationId（按仓库反查）。
+     * 与创建项目同事务（由调用方 ProjectService.create 的事务传播）。
+     */
+    @Transactional
+    public void bindRepositoriesOnCreate(UUID actorId, UUID teamId, UUID projectId,
+                                         List<UUID> githubRepositoryIds) {
+        if (githubRepositoryIds == null || githubRepositoryIds.isEmpty()) {
+            return;
+        }
+        for (UUID repositoryId : new java.util.LinkedHashSet<>(githubRepositoryIds)) {
+            GitHubRepositoryEntity repository = repositoryMapper.selectById(repositoryId);
+            if (repository == null) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "GITHUB_REPOSITORY_NOT_FOUND",
+                        "GitHub 授权仓库不存在");
+            }
+            GitHubInstallationEntity installation = installationMapper.selectById(repository.getInstallationId());
+            if (installation == null || !teamId.equals(installation.getTeamId())
+                    || !"ACTIVE".equals(installation.getStatus())) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REPOSITORY_NOT_AUTHORIZED_FOR_PROJECT",
+                        "仓库不在该团队的有效安装授权范围内");
+            }
+            if (!"AUTHORIZED".equals(repository.getAuthorizationStatus()) || Boolean.TRUE.equals(repository.getArchived())) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REPOSITORY_NOT_AUTHORIZED_FOR_PROJECT",
+                        "仓库未被授权或已归档");
+            }
+            if (repository.getDefaultBranch() == null || repository.getDefaultBranch().isBlank()) {
+                throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_METADATA_INCOMPLETE",
+                        "仓库默认分支缺失，无法绑定");
+            }
+            if (projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
+                    .eq(ProjectRepositoryEntity::getProjectId, projectId)
+                    .eq(ProjectRepositoryEntity::getRepositoryId, repository.getId())) != null) {
+                throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_ALREADY_BOUND",
+                        "仓库已被该项目绑定");
+            }
+            ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+            binding.setId(UUID.randomUUID());
+            binding.setProjectId(projectId);
+            binding.setRepositoryId(repository.getId());
+            binding.setDefaultBranch(repository.getDefaultBranch());
+            binding.setDisplayName(repository.getName());
+            binding.setBoundAt(LocalDateTime.now(clock));
+            projectRepositoryMapper.insert(binding);
+        }
+    }
+
+    /**
      * 更新项目已绑定的 GitHub 仓库配置（如：默认分支、自定义显示名称）。
      * 只有 Project Admin 才能执行此操作。
      *

@@ -30,10 +30,12 @@ public class ProjectService {
     private final ApplicationEventPublisher eventPublisher;
     private final NotificationService notificationService;
     private final EventService eventService;
+    private final GitHubRepositoryService githubRepositoryService;
 
     public ProjectService(ProjectMapper projectMapper, ProjectMemberMapper memberMapper, TeamMapper teamMapper,
                           TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher,
-                          NotificationService notificationService, EventService eventService) {
+                          NotificationService notificationService, EventService eventService,
+                          GitHubRepositoryService githubRepositoryService) {
         this.projectMapper = projectMapper;
         this.memberMapper = memberMapper;
         this.teamMapper = teamMapper;
@@ -42,6 +44,7 @@ public class ProjectService {
         this.eventPublisher = eventPublisher;
         this.notificationService = notificationService;
         this.eventService = eventService;
+        this.githubRepositoryService = githubRepositoryService;
     }
 
     /**
@@ -74,6 +77,8 @@ public class ProjectService {
             requireTeamMember(teamId, userId);
             insertMember(project.getId(), userId, "PROJECT_MEMBER");
         }
+        // 创建项目时一并绑定 GitHub 授权仓库（前端额外清单 §四；repositoryIds 为 github_repositories.id）
+        githubRepositoryService.bindRepositoriesOnCreate(actor, teamId, project.getId(), request.getRepositoryIds());
         // 触发自动创建唯一 PROJECT_MAIN 群（契约 §7），监听方为 GroupService
         eventPublisher.publishEvent(new ProjectCreatedEvent(project.getId(), project.getName(), actor));
         // 项目创建动态事件：供「团队最近动态」聚合展示，与项目同事务落库

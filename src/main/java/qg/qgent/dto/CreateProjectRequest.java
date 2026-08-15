@@ -17,4 +17,11 @@ public class CreateProjectRequest {
     private String description;
     @Size(max = 100)
     private List<@NotNull UUID> memberIds;
+
+    /**
+     * 创建项目时一并绑定的 GitHub 授权仓库 id 列表（github_repositories.id，授权仓本地 UUID）；
+     * 可空，为空则创建后单独调用绑定接口。
+     */
+    @Size(max = 50)
+    private List<@NotNull UUID> repositoryIds;
 }

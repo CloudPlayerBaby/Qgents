@@ -38,8 +38,9 @@ class ProjectServiceTest {
     private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
     private final NotificationService notificationService = mock(NotificationService.class);
     private final EventService eventService = mock(EventService.class);
+    private final GitHubRepositoryService githubRepositoryService = mock(GitHubRepositoryService.class);
     private final ProjectService service = new ProjectService(projects, members, teams, teamMembers, access,
-            eventPublisher, notificationService, eventService);
+            eventPublisher, notificationService, eventService, githubRepositoryService);
 
     @Test
     void createAddsCreatorAdminAndUniqueInitialMembers() {
