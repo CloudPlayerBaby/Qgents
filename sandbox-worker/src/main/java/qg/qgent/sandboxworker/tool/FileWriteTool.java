@@ -55,16 +55,8 @@ public class FileWriteTool implements SandboxTool {
             if (!actualHash.equalsIgnoreCase(expectedHash)) {
                 throw new WorkerException(CONFLICT, "FILE_HASH_MISMATCH", "文件已经发生变化，请重新读取后再写入");
             }
-            Set<PosixFilePermission> permissions = existingPermissions(target);
             byte[] next = content.getBytes(StandardCharsets.UTF_8);
-            Path temporary = Files.createTempFile(target.getParent(), ".qgents-", ".tmp");
-            try {
-                Files.write(temporary, next);
-                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                grantSandboxOwnership(target, permissions);
-            } finally {
-                Files.deleteIfExists(temporary);
-            }
+            atomicReplace(target, next);
             return ToolResult.value(Map.of("path", relativePath, "sha256", FileReadTool.sha256(next),
                     "bytes", next.length));
         } catch (WorkerException exception) {
@@ -73,7 +65,24 @@ public class FileWriteTool implements SandboxTool {
             throw new IllegalStateException("写入文件失败", exception);
         }
     }
-    private Set<PosixFilePermission> existingPermissions(Path target) {
+    /**
+     * 通过临时文件 + 原子替换写入目标，并保留/修复目标文件的 POSIX 权限与沙箱用户属主；
+     * 任一步骤失败都保证目标文件要么保持原样，要么已被完整替换（不会出现部分写入）。
+     * 与 {@link FilePatchTool} 共享同一写入路径。
+     */
+    static void atomicReplace(Path target, byte[] next) throws IOException {
+        Set<PosixFilePermission> permissions = existingPermissions(target);
+        Path temporary = Files.createTempFile(target.getParent(), ".qgents-", ".tmp");
+        try {
+            Files.write(temporary, next);
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            grantSandboxOwnership(target, permissions);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static Set<PosixFilePermission> existingPermissions(Path target) {
         try {
             return Files.getPosixFilePermissions(target, LinkOption.NOFOLLOW_LINKS);
         } catch (UnsupportedOperationException | IOException exception) {
@@ -81,7 +90,7 @@ public class FileWriteTool implements SandboxTool {
         }
     }
 
-    private void grantSandboxOwnership(Path target, Set<PosixFilePermission> permissions) throws IOException {
+    private static void grantSandboxOwnership(Path target, Set<PosixFilePermission> permissions) throws IOException {
         // 先设置权限（保证 group/others 可读），即使后续 chown 失败，沙箱进程仍能读取文件。
         try {
             Files.setPosixFilePermissions(target, permissions);
