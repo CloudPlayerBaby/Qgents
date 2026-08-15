@@ -55,4 +55,13 @@ public interface WorkspaceRepositoryMapper {
             + "where workspace_id=#{workspaceId} and project_repository_id=#{repositoryId}")
     int updateHeadCommit(@Param("workspaceId") UUID workspaceId, @Param("repositoryId") UUID repositoryId,
                          @Param("headCommit") String headCommit);
+
+    /**
+     * 固化 Worker provision 返回的真实基线/HEAD 提交（base_commit 创建时可能仍是分支名）。
+     */
+    @org.apache.ibatis.annotations.Update("update workspace_repositories set base_commit=#{baseCommit}, "
+            + "head_commit=#{headCommit} "
+            + "where workspace_id=#{workspaceId} and project_repository_id=#{repositoryId}")
+    int updateCommits(@Param("workspaceId") UUID workspaceId, @Param("repositoryId") UUID repositoryId,
+                      @Param("baseCommit") String baseCommit, @Param("headCommit") String headCommit);
 }
