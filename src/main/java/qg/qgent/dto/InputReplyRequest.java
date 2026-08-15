@@ -10,7 +10,9 @@ import java.util.Map;
  */
 @Data
 public class InputReplyRequest {
-    /** 用户回答 JSON。 */
+    /**
+     * 用户回答 JSON。
+     */
     @NotNull
     private Map<String, Object> answer;
 }

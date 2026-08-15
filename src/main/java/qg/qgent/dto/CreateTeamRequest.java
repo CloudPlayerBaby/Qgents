@@ -6,9 +6,12 @@ import lombok.Data;
 
 @Data
 public class CreateTeamRequest {
-    @NotBlank @Size(max = 255)
+    @NotBlank
+    @Size(max = 255)
     private String name;
-    /** 团队简介（可选），最长为 2000 字符。 */
+    /**
+     * 团队简介（可选），最长为 2000 字符。
+     */
     @Size(max = 2000)
     private String description;
 }

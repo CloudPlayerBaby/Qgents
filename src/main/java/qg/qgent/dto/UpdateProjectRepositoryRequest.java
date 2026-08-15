@@ -9,12 +9,16 @@ import lombok.Data;
  */
 @Data
 public class UpdateProjectRepositoryRequest {
-    /** 项目使用的默认分支。 */
+    /**
+     * 项目使用的默认分支。
+     */
     @NotBlank
     @Size(max = 512)
     private String defaultBranch;
 
-    /** 仓库在项目内的显示名称。 */
+    /**
+     * 仓库在项目内的显示名称。
+     */
     @Size(max = 255)
     private String displayName;
 }

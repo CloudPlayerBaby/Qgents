@@ -1,17 +1,13 @@
 package qg.qgent.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Result;
-import org.apache.ibatis.annotations.Results;
-import org.apache.ibatis.annotations.Select;
-import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.*;
 import qg.qgent.dto.TeamMembershipView;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 
-import java.util.UUID;
 import java.util.List;
+import java.util.UUID;
 
 @Mapper
 public interface TeamMapper extends BaseMapper<TeamEntity> {
@@ -26,14 +22,14 @@ public interface TeamMapper extends BaseMapper<TeamEntity> {
     })
     TeamEntity selectByIdForUpdate(UUID teamId);
 
-    @Select({ "<script>",
+    @Select({"<script>",
             "SELECT t.id, t.owner_user_id, t.name, t.description, t.created_at, tm.role,",
             "(SELECT COUNT(*) FROM team_members tc WHERE tc.team_id = t.id) AS member_count",
             "FROM team_members tm INNER JOIN teams t ON t.id = tm.team_id",
             "WHERE tm.user_id = #{userId}",
             "<if test='anchor != null'>AND t.id &gt; #{anchor}</if>",
             "ORDER BY t.id LIMIT #{limit}",
-            "</script>" })
+            "</script>"})
     @Results({
             @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "owner_user_id", property = "ownerUserId", typeHandler = UuidBinaryTypeHandler.class),
@@ -44,5 +40,5 @@ public interface TeamMapper extends BaseMapper<TeamEntity> {
             @Result(column = "member_count", property = "memberCount")
     })
     List<TeamMembershipView> selectMembershipPage(@Param("userId") UUID userId,
-            @Param("anchor") UUID anchor, @Param("limit") int limit);
+                                                  @Param("anchor") UUID anchor, @Param("limit") int limit);
 }

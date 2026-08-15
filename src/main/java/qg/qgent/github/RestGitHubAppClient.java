@@ -1,5 +1,22 @@
 package qg.qgent.github;
 
+import com.auth0.jwt.JWT;
+import com.auth0.jwt.JWTVerifier;
+import com.auth0.jwt.algorithms.Algorithm;
+import com.auth0.jwt.interfaces.DecodedJWT;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
+import org.bouncycastle.openssl.PEMKeyPair;
+import org.bouncycastle.openssl.PEMParser;
+import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.util.UriComponentsBuilder;
+import qg.qgent.api.ApiException;
+import qg.qgent.config.GitHubAppProperties;
+
 import java.io.IOException;
 import java.io.Reader;
 import java.nio.file.Files;
@@ -11,25 +28,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.LongFunction;
-
-import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
-import org.bouncycastle.openssl.PEMKeyPair;
-import org.bouncycastle.openssl.PEMParser;
-import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
-import org.springframework.web.util.UriComponentsBuilder;
-
-import com.auth0.jwt.JWT;
-import com.auth0.jwt.algorithms.Algorithm;
-import com.auth0.jwt.interfaces.DecodedJWT;
-import com.auth0.jwt.JWTVerifier;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
-import qg.qgent.api.ApiException;
-import qg.qgent.config.GitHubAppProperties;
 
 public class RestGitHubAppClient implements GitHubAppClient {
     private static final String GITHUB_ACCEPT = "application/vnd.github+json";
@@ -49,7 +47,7 @@ public class RestGitHubAppClient implements GitHubAppClient {
      * Production callers must use the three-argument constructor so tokens continue to be minted from the App key.
      */
     RestGitHubAppClient(RestClient client, GitHubAppProperties properties, Clock clock,
-            LongFunction<String> installationTokenProvider) {
+                        LongFunction<String> installationTokenProvider) {
         this.client = client;
         this.properties = properties;
         this.clock = clock;
@@ -200,7 +198,7 @@ public class RestGitHubAppClient implements GitHubAppClient {
 
     private RSAPrivateKey readPrivateKey() throws IOException {
         try (Reader reader = Files.newBufferedReader(Path.of(properties.getPrivateKeyPath()));
-                PEMParser parser = new PEMParser(reader)) {
+             PEMParser parser = new PEMParser(reader)) {
             Object parsed = parser.readObject();
             JcaPEMKeyConverter converter = new JcaPEMKeyConverter();
             if (parsed instanceof PEMKeyPair pair) {
@@ -232,13 +230,22 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 "GitHub API is unavailable or rejected the integration credentials");
     }
 
-    private record InstallationResponse(long id, AccountResponse account) { }
-    private record AccountResponse(String login, String type) { }
-    private record InstallationTokenResponse(String token) { }
-    private record RepositoryListResponse(List<RepositoryResponse> repositories) { }
+    private record InstallationResponse(long id, AccountResponse account) {
+    }
+
+    private record AccountResponse(String login, String type) {
+    }
+
+    private record InstallationTokenResponse(String token) {
+    }
+
+    private record RepositoryListResponse(List<RepositoryResponse> repositories) {
+    }
+
     private record RepositoryResponse(long id, AccountResponse owner, String name,
                                       @JsonProperty("default_branch") String defaultBranch,
-                                      String visibility, boolean archived) { }
+                                      String visibility, boolean archived) {
+    }
 
     @Override
     public GitHubPullRequestDetails createPullRequest(long installationId, String owner, String repo, GitHubPullRequestCreateRequest request) {
@@ -258,7 +265,7 @@ public class RestGitHubAppClient implements GitHubAppClient {
 
     @Override
     public GitHubPullRequestDetails findOpenPullRequest(long installationId, String owner, String repo,
-            String sourceBranch, String targetBranch) {
+                                                        String sourceBranch, String targetBranch) {
         requireConfigured();
         try {
             List<PullRequestResponse> responses = client.get()
@@ -270,7 +277,8 @@ public class RestGitHubAppClient implements GitHubAppClient {
                             .build(owner, repo))
                     .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
                     .retrieve()
-                    .body(new org.springframework.core.ParameterizedTypeReference<List<PullRequestResponse>>() { });
+                    .body(new org.springframework.core.ParameterizedTypeReference<List<PullRequestResponse>>() {
+                    });
             return responses == null || responses.isEmpty() ? null : requirePullRequest(responses.get(0));
         } catch (RestClientException exception) {
             throw upstreamFailure();
@@ -355,7 +363,7 @@ public class RestGitHubAppClient implements GitHubAppClient {
 
     @Override
     public GitHubPullRequestMergeResult mergePullRequest(long installationId, String owner, String repo, int pullNumber,
-            GitHubPullRequestMergeRequest request) {
+                                                         GitHubPullRequestMergeRequest request) {
         requireConfigured();
         try {
             MergeResponse response = client.put()
@@ -384,16 +392,34 @@ public class RestGitHubAppClient implements GitHubAppClient {
     }
 
     private record PullRequestResponse(long id, int number, String state, String title,
-            @JsonProperty("html_url") String htmlUrl, PullRequestRef head, PullRequestRef base, Boolean merged) { }
-    private record PullRequestRef(String ref, String sha) { }
-    private record CheckRunsResponse(@JsonProperty("check_runs") List<CheckRunResponse> checkRuns) { }
-    private record CheckRunResponse(long id, String name, String status, String conclusion) { }
+                                       @JsonProperty("html_url") String htmlUrl, PullRequestRef head,
+                                       PullRequestRef base, Boolean merged) {
+    }
+
+    private record PullRequestRef(String ref, String sha) {
+    }
+
+    private record CheckRunsResponse(@JsonProperty("check_runs") List<CheckRunResponse> checkRuns) {
+    }
+
+    private record CheckRunResponse(long id, String name, String status, String conclusion) {
+    }
+
     private record ReviewResponse(long id, String state,
-            @JsonProperty("author_association") String authorAssociation, AccountResponse user) { }
+                                  @JsonProperty("author_association") String authorAssociation, AccountResponse user) {
+    }
+
     private record MergeRequestBody(@JsonProperty("commit_title") String commitTitle,
-            @JsonProperty("commit_message") String commitMessage,
-            @JsonProperty("merge_method") String mergeMethod, String sha) { }
-    private record MergeResponse(boolean merged, String sha, String message) { }
-    private record BranchResponse(String name, CommitResponse commit) { }
-    private record CommitResponse(String sha) { }
+                                    @JsonProperty("commit_message") String commitMessage,
+                                    @JsonProperty("merge_method") String mergeMethod, String sha) {
+    }
+
+    private record MergeResponse(boolean merged, String sha, String message) {
+    }
+
+    private record BranchResponse(String name, CommitResponse commit) {
+    }
+
+    private record CommitResponse(String sha) {
+    }
 }

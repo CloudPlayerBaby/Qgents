@@ -28,7 +28,9 @@ import java.util.UUID;
 @ConditionalOnProperty(name = "app.worker.enabled", havingValue = "false", matchIfMissing = true)
 public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
 
-    /** 单次写入内容的最大字节数。 */
+    /**
+     * 单次写入内容的最大字节数。
+     */
     private static final int MAX_WRITE_BYTES = 256 * 1024;
 
     private final WorkspaceService workspaceService;
@@ -67,13 +69,17 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
         }
     }
 
-    /** 解析 Workspace 根目录；workspace 不存在或不可解析时返回 null（目录允许尚未创建）。 */
+    /**
+     * 解析 Workspace 根目录；workspace 不存在或不可解析时返回 null（目录允许尚未创建）。
+     */
     private Path workspaceRoot(UUID workspaceId) {
         WorkspaceService.WorkspaceResolution resolution = workspaceService.resolve(workspaceId);
         return resolution.found() ? resolution.root() : null;
     }
 
-    /** 路径归一化并校验仍在根目录内，拒绝绝对路径与目录穿越。 */
+    /**
+     * 路径归一化并校验仍在根目录内，拒绝绝对路径与目录穿越。
+     */
     private Path resolveSafe(Path root, String path) {
         Path candidate = Path.of(path);
         if (candidate.isAbsolute()) {

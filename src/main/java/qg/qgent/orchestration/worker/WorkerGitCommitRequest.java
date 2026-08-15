@@ -3,7 +3,9 @@ package qg.qgent.orchestration.worker;
 import lombok.Data;
 import lombok.experimental.Accessors;
 
-/** Worker request to commit exactly one reviewed worktree snapshot. */
+/**
+ * Worker request to commit exactly one reviewed worktree snapshot.
+ */
 @Data
 @Accessors(chain = true)
 public class WorkerGitCommitRequest {

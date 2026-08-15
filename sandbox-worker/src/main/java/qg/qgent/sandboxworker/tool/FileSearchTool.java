@@ -9,7 +9,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/** 使用镜像中的 ripgrep 搜索仓库文本。 */
+/**
+ * 使用镜像中的 ripgrep 搜索仓库文本。
+ */
 @Component
 @RequiredArgsConstructor
 public class FileSearchTool implements SandboxTool {

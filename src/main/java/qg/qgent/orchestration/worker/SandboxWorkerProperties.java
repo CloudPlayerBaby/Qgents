@@ -18,22 +18,34 @@ import java.time.Duration;
 @ConfigurationProperties(prefix = "app.worker")
 public class SandboxWorkerProperties {
 
-    /** Worker 服务根地址，例如 http://localhost:8091。 */
+    /**
+     * Worker 服务根地址，例如 http://localhost:8091。
+     */
     private String baseUrl = "http://localhost:8091";
 
-    /** 是否启用 Worker 端口实现；false 时保留本地端口，true 时改走 Worker HTTP API。 */
+    /**
+     * 是否启用 Worker 端口实现；false 时保留本地端口，true 时改走 Worker HTTP API。
+     */
     private boolean enabled = false;
 
-    /** 创建 Sandbox 使用的镜像配置名，必须命中 Worker 白名单（默认 java-node）。 */
+    /**
+     * 创建 Sandbox 使用的镜像配置名，必须命中 Worker 白名单（默认 java-node）。
+     */
     private String imageProfile = "java-node";
 
-    /** 轮询工具执行结果的间隔。 */
+    /**
+     * 轮询工具执行结果的间隔。
+     */
     private Duration pollInterval = Duration.ofMillis(250);
 
-    /** 等待一次工具执行进入终态的最大时长。 */
+    /**
+     * 等待一次工具执行进入终态的最大时长。
+     */
     private Duration pollTimeout = Duration.ofMinutes(15);
 
-    /** 定时续租 Sandbox 空闲租约的间隔。 */
+    /**
+     * 定时续租 Sandbox 空闲租约的间隔。
+     */
     private Duration leaseRenewInterval = Duration.ofSeconds(10);
 
     /**
@@ -44,7 +56,9 @@ public class SandboxWorkerProperties {
         leaseRenewInterval();
     }
 
-    /** 返回已校验的续租间隔，供非 Spring 单元测试和运行时调用共同使用。 */
+    /**
+     * 返回已校验的续租间隔，供非 Spring 单元测试和运行时调用共同使用。
+     */
     public Duration leaseRenewInterval() {
         if (leaseRenewInterval == null || leaseRenewInterval.isZero() || leaseRenewInterval.isNegative()) {
             throw new IllegalStateException("app.worker.lease-renew-interval must be greater than zero");

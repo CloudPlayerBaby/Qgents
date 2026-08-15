@@ -12,18 +12,28 @@ import java.util.UUID;
 @Data
 public class WorkerToolExecutionRequest {
 
-    /** 由控制层生成的执行唯一编号；重复编号返回冲突。 */
+    /**
+     * 由控制层生成的执行唯一编号；重复编号返回冲突。
+     */
     private UUID executionId;
 
-    /** 目标仓库编号；process.exec 等不需要仓库的工具可为 null。 */
+    /**
+     * 目标仓库编号；process.exec 等不需要仓库的工具可为 null。
+     */
     private UUID repositoryId;
 
-    /** 工具名，形如 {@code file.read} / {@code process.exec}。 */
+    /**
+     * 工具名，形如 {@code file.read} / {@code process.exec}。
+     */
     private String tool;
 
-    /** 工具参数。 */
+    /**
+     * 工具参数。
+     */
     private Map<String, Object> arguments;
 
-    /** 单次执行超时秒数（可选）。 */
+    /**
+     * 单次执行超时秒数（可选）。
+     */
     private Long timeoutSeconds;
 }

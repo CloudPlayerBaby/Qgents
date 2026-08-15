@@ -23,7 +23,9 @@ import java.util.concurrent.TimeUnit;
  */
 class SandboxProcessRunner {
 
-    /** 单流 stdout/stderr 捕获上限（字节）。 */
+    /**
+     * 单流 stdout/stderr 捕获上限（字节）。
+     */
     private static final int MAX_OUTPUT_BYTES = 1024 * 1024;
 
     /**
@@ -33,7 +35,7 @@ class SandboxProcessRunner {
      * @param command 完整启动 argv（端口已完成白名单校验与平台包装）。
      * @param timeout 执行超时；超时后进程被强制销毁。
      * @return 执行结果：正常结束 ok=true + 真实 exitCode/stdout/stderr；启动失败或超时
-     *         ok=false + exitCode=-1 + 明确 error。
+     * ok=false + exitCode=-1 + 明确 error。
      */
     ExecutionResult run(Path cwd, List<String> command, Duration timeout) {
         ProcessBuilder builder = new ProcessBuilder(command);
@@ -71,7 +73,9 @@ class SandboxProcessRunner {
         }
     }
 
-    /** 启动一个守护线程把流读到上限为止，返回该线程供调用方 join。 */
+    /**
+     * 启动一个守护线程把流读到上限为止，返回该线程供调用方 join。
+     */
     private static Thread pump(InputStream stream, StringBuffer buffer, String label) {
         Thread thread = new Thread(() -> read(stream, buffer), "sandbox-output-" + label);
         thread.setDaemon(true);
@@ -79,7 +83,9 @@ class SandboxProcessRunner {
         return thread;
     }
 
-    /** 流读取：UTF-8 分块解码并追加到缓冲区，字节数到达上限后停止并关闭流。 */
+    /**
+     * 流读取：UTF-8 分块解码并追加到缓冲区，字节数到达上限后停止并关闭流。
+     */
     private static void read(InputStream stream, StringBuffer buffer) {
         byte[] chunk = new byte[4096];
         int appendedBytes = 0;

@@ -12,15 +12,23 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class WorkerExecutionLogEntry {
 
-    /** 执行内递增序号，用于游标分页。 */
+    /**
+     * 执行内递增序号，用于游标分页。
+     */
     private long sequence;
 
-    /** 流：SYSTEM / STDOUT / STDERR。 */
+    /**
+     * 流：SYSTEM / STDOUT / STDERR。
+     */
     private String stream;
 
-    /** 单条日志内容（已脱敏、截断）。 */
+    /**
+     * 单条日志内容（已脱敏、截断）。
+     */
     private String content;
 
-    /** 产生时间（ISO-8601 字符串）。 */
+    /**
+     * 产生时间（ISO-8601 字符串）。
+     */
     private String timestamp;
 }

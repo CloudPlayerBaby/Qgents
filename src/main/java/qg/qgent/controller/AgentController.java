@@ -29,7 +29,9 @@ public class AgentController {
         this.currentActor = currentActor;
     }
 
-    /** 契约 §11.1：查询指定 Team 下的 Agent 列表。 */
+    /**
+     * 契约 §11.1：查询指定 Team 下的 Agent 列表。
+     */
     @GetMapping("/teams/{teamId}/agents")
     public ApiResponse<List<AgentResponse>> list(@PathVariable UUID teamId, HttpServletRequest request) {
         return ApiResponse.ok(service.list(currentActor.currentUserId(), teamId),

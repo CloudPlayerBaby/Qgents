@@ -16,15 +16,21 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class ArtifactResource {
 
-    /** 资源类型。 */
+    /**
+     * 资源类型。
+     */
     @Schema(description = "资源类型")
     private String resourceType;
 
-    /** 内部资源 ID（受权限保护）。 */
+    /**
+     * 内部资源 ID（受权限保护）。
+     */
     @Schema(description = "内部资源 ID")
     private String resourceId;
 
-    /** 展示标题，如“查看测试报告”。 */
+    /**
+     * 展示标题，如“查看测试报告”。
+     */
     @Schema(description = "展示标题")
     private String title;
 }

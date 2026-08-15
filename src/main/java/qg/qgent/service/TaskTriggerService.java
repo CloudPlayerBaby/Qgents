@@ -49,8 +49,8 @@ public class TaskTriggerService {
     private final ObjectMapper mapper;
 
     public TaskTriggerService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
-            RequirementGroupRepositoryMapper groupRepoMapper, TaskMapper taskMapper, TaskService taskService,
-            ProjectAccessService access, ObjectMapper mapper) {
+                              RequirementGroupRepositoryMapper groupRepoMapper, TaskMapper taskMapper, TaskService taskService,
+                              ProjectAccessService access, ObjectMapper mapper) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupRepoMapper = groupRepoMapper;
@@ -98,7 +98,7 @@ public class TaskTriggerService {
      */
     @Transactional
     public TaskResponse triggerFromMention(UUID actor, UUID projectId, UUID groupId, MessageEntity message,
-            List<Mention> mentions) {
+                                           List<Mention> mentions) {
         if (mentions == null || mentions.stream().noneMatch(m -> "AGENT".equals(m.getType()))) {
             return null;
         }
@@ -126,7 +126,7 @@ public class TaskTriggerService {
     }
 
     private TaskCreateRequest assembleRequest(UUID actor, UUID projectId, RequirementGroupEntity group,
-            MessageEntity message, String title, String requirement, List<UUID> repositoryIds, String baseRef) {
+                                              MessageEntity message, String title, String requirement, List<UUID> repositoryIds, String baseRef) {
         TaskCreateRequest request = new TaskCreateRequest();
         request.setRequirementGroupId(group.getId());
         request.setTriggerMessageId(message.getId());
@@ -139,7 +139,9 @@ public class TaskTriggerService {
         return request;
     }
 
-    /** 缺省需求描述：触发消息文本，否则群描述，再否则群标题。 */
+    /**
+     * 缺省需求描述：触发消息文本，否则群描述，再否则群标题。
+     */
     private String defaultRequirement(RequirementGroupEntity group, MessageEntity message) {
         String text = messageText(message.getContent());
         if (text != null && !text.isBlank()) {
@@ -171,7 +173,9 @@ public class TaskTriggerService {
         return value == null || value.length() <= max ? value : value.substring(0, max);
     }
 
-    /** 从消息 content JSON 提取可读文本（TEXT 取 $.text，其余类型返回原始 JSON 截断）。 */
+    /**
+     * 从消息 content JSON 提取可读文本（TEXT 取 $.text，其余类型返回原始 JSON 截断）。
+     */
     private String messageText(String contentJson) {
         if (contentJson == null || contentJson.isBlank()) {
             return "";

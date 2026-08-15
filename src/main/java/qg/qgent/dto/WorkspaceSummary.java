@@ -18,15 +18,21 @@ import java.util.List;
 @AllArgsConstructor
 public class WorkspaceSummary {
 
-    /** Workspace ID（UUIDv7，字符串形式）。 */
+    /**
+     * Workspace ID（UUIDv7，字符串形式）。
+     */
     @Schema(description = "Workspace ID")
     private String id;
 
-    /** Workspace 生命周期状态。 */
+    /**
+     * Workspace 生命周期状态。
+     */
     @Schema(description = "Workspace 状态")
     private String status;
 
-    /** Workspace 内仓库摘要列表。 */
+    /**
+     * Workspace 内仓库摘要列表。
+     */
     @Schema(description = "Workspace 内仓库摘要")
     private List<RepositorySummary> repositories;
 }

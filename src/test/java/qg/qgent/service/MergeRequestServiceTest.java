@@ -10,11 +10,6 @@ import qg.qgent.github.GitHubAppClient;
 import qg.qgent.github.GitHubPullRequestCreateRequest;
 import qg.qgent.github.GitHubPullRequestDetails;
 import qg.qgent.github.GitHubPullRequestMergeRequest;
-import qg.qgent.entity.*;
-import qg.qgent.github.GitHubAppClient;
-import qg.qgent.github.GitHubPullRequestCreateRequest;
-import qg.qgent.github.GitHubPullRequestDetails;
-import qg.qgent.github.GitHubPullRequestMergeRequest;
 import qg.qgent.github.GitHubPullRequestMergeResult;
 import qg.qgent.mapper.*;
 import org.springframework.transaction.support.TransactionCallback;
@@ -855,7 +850,7 @@ class MergeRequestServiceTest {
         when(projectRepositoryMapper.selectList(any())).thenReturn(java.util.List.of());
 
         qg.qgent.dto.ApiPageResponse<MergeRequestSummaryResponse> response = service.list(projectId, userId, null, null, null, null, 10, "req-1");
-        assertTrue(response.getData().isEmpty());
+        assertTrue(response.data().isEmpty());
     }
 
     @Test

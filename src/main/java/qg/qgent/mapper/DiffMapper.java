@@ -2,8 +2,8 @@ package qg.qgent.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import qg.qgent.entity.DiffEntity;
 
 @Mapper
@@ -20,6 +20,6 @@ public interface DiffMapper extends BaseMapper<DiffEntity> {
             + "('DELIVERING','PARTIALLY_DELIVERED','DELIVERED','FAILED'))) "
             + "order by d.created_at desc limit 1 for update")
     DiffEntity selectAcceptedCommittedForMr(@Param("taskId") java.util.UUID taskId,
-            @Param("projectId") java.util.UUID projectId, @Param("workspaceId") java.util.UUID workspaceId,
-            @Param("repositoryId") java.util.UUID repositoryId, @Param("headCommit") String headCommit);
+                                            @Param("projectId") java.util.UUID projectId, @Param("workspaceId") java.util.UUID workspaceId,
+                                            @Param("repositoryId") java.util.UUID repositoryId, @Param("headCommit") String headCommit);
 }

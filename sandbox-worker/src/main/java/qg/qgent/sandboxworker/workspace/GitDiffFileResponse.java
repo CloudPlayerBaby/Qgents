@@ -7,7 +7,9 @@ import lombok.Data;
 import java.util.List;
 import java.util.Map;
 
-/** Structured file metadata accompanying an immutable Git patch snapshot. */
+/**
+ * Structured file metadata accompanying an immutable Git patch snapshot.
+ */
 @Data
 @AllArgsConstructor
 @Schema(description = "Git Diff file summary")

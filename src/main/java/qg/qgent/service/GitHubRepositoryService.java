@@ -1,7 +1,17 @@
 package qg.qgent.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import qg.qgent.api.ApiException;
+import qg.qgent.dto.*;
+import qg.qgent.entity.*;
+import qg.qgent.github.*;
+import qg.qgent.mapper.*;
+
 import java.time.Clock;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -9,41 +19,6 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-
-import org.springframework.http.HttpStatus;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
-import lombok.extern.slf4j.Slf4j;
-
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-
-import qg.qgent.api.ApiException;
-import qg.qgent.dto.BindProjectRepositoryRequest;
-import qg.qgent.dto.GitHubInstallationResponse;
-import qg.qgent.dto.GitHubInstallationUrlResponse;
-import qg.qgent.dto.GitHubRepositoryResponse;
-import qg.qgent.dto.ProjectRepositoryResponse;
-import qg.qgent.dto.UpdateProjectRepositoryRequest;
-import qg.qgent.entity.GitHubInstallationEntity;
-import qg.qgent.entity.GitHubRepositoryEntity;
-import qg.qgent.entity.ProjectEntity;
-import qg.qgent.entity.ProjectMemberEntity;
-import qg.qgent.entity.ProjectRepositoryEntity;
-import qg.qgent.entity.RepositoryBranchConfigEntity;
-import qg.qgent.entity.TeamMemberEntity;
-import qg.qgent.github.GitHubAppClient;
-import qg.qgent.github.GitHubClient;
-import qg.qgent.github.GitHubInstallationDetails;
-import qg.qgent.github.GitHubInstallationState;
-import qg.qgent.github.GitHubRepositoryDetails;
-import qg.qgent.mapper.GitHubInstallationMapper;
-import qg.qgent.mapper.GitHubRepositoryMapper;
-import qg.qgent.mapper.ProjectMapper;
-import qg.qgent.mapper.ProjectMemberMapper;
-import qg.qgent.mapper.ProjectRepositoryMapper;
-import qg.qgent.mapper.RepositoryBranchConfigMapper;
-import qg.qgent.mapper.TeamMemberMapper;
 
 /**
  * GitHub 仓库与团队/项目授权绑定服务。
@@ -64,10 +39,10 @@ public class GitHubRepositoryService {
     private final Clock clock;
 
     public GitHubRepositoryService(GitHubInstallationMapper installationMapper, GitHubRepositoryMapper repositoryMapper,
-            ProjectRepositoryMapper projectRepositoryMapper,
-            ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
-            TeamMemberMapper teamMemberMapper, RepositoryBranchConfigMapper branchConfigMapper,
-            GitHubAppClient gitHubClient, Clock clock) {
+                                   ProjectRepositoryMapper projectRepositoryMapper,
+                                   ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
+                                   TeamMemberMapper teamMemberMapper, RepositoryBranchConfigMapper branchConfigMapper,
+                                   GitHubAppClient gitHubClient, Clock clock) {
         this.installationMapper = installationMapper;
         this.repositoryMapper = repositoryMapper;
         this.projectRepositoryMapper = projectRepositoryMapper;
@@ -106,7 +81,7 @@ public class GitHubRepositoryService {
     /**
      * 列出指定团队已安装的 GitHub App 授权记录。
      * 只有 Team Owner 才能执行此操作。
-     * 
+     *
      * @param actorId 操作人的用户 ID
      * @param teamId  团队 ID
      * @return 包含该团队所有有效安装记录的响应列表
@@ -118,8 +93,8 @@ public class GitHubRepositoryService {
         requireTeamOwner(actorId, teamId);
         // 返回团队的所有安装
         return installationMapper.selectList(new LambdaQueryWrapper<GitHubInstallationEntity>()
-                .eq(GitHubInstallationEntity::getTeamId, teamId)
-                .orderByDesc(GitHubInstallationEntity::getUpdatedAt))
+                        .eq(GitHubInstallationEntity::getTeamId, teamId)
+                        .orderByDesc(GitHubInstallationEntity::getUpdatedAt))
                 .stream().map(this::toInstallationResponse).toList();
     }
 
@@ -135,7 +110,7 @@ public class GitHubRepositoryService {
     public void removeInstallation(UUID actorId, UUID teamId, UUID installationId) {
         // 需要是团队所有者
         requireTeamOwner(actorId, teamId);
-        
+
         // 查找属于该团队的这条安装记录
         GitHubInstallationEntity installation = installationMapper.selectOne(new LambdaQueryWrapper<GitHubInstallationEntity>()
                 .eq(GitHubInstallationEntity::getId, installationId)
@@ -143,20 +118,20 @@ public class GitHubRepositoryService {
         if (installation == null) {
             throw notFound("GitHub installation does not exist");
         }
-        
+
         // 查询该安装记录下同步过来的所有仓库 ID
         List<UUID> repositoryIds = repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
-                .eq(GitHubRepositoryEntity::getInstallationId, installationId)
-                .select(GitHubRepositoryEntity::getId))
+                        .eq(GitHubRepositoryEntity::getInstallationId, installationId)
+                        .select(GitHubRepositoryEntity::getId))
                 .stream().map(GitHubRepositoryEntity::getId).toList();
-                
+
         // 如果有仓库，并且这些仓库有任何一个正在被某个项目绑定使用，就抛出冲突异常
         if (!repositoryIds.isEmpty() && projectRepositoryMapper.selectCount(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .in(ProjectRepositoryEntity::getRepositoryId, repositoryIds)) > 0) {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_IN_USE",
                     "Unbind project repositories before removing this GitHub installation");
         }
-        
+
         // 只有所有仓库都没被项目引用时，才允许物理删除这条安装记录
         installationMapper.deleteById(installationId);
     }
@@ -164,7 +139,7 @@ public class GitHubRepositoryService {
     /**
      * 列出团队可访问的所有已同步的 GitHub 仓库。
      * 调用者需要是 Team Owner 或者该团队下任一项目的 Project Admin。
-     * 
+     *
      * @param actorId 操作人的用户 ID
      * @param teamId  团队 ID
      * @return 该团队下所有处于 ACTIVE 状态的安装记录所关联的仓库列表
@@ -181,7 +156,7 @@ public class GitHubRepositoryService {
     /**
      * 列出某个具体项目所绑定的所有 GitHub 仓库。
      * 调用者只需具备该项目的 Project Member 权限即可查看。
-     * 
+     *
      * @param actorId   操作人的用户 ID
      * @param projectId 项目 ID
      * @return 该项目已绑定的仓库详情列表（含绑定记录及底层仓库数据）
@@ -192,16 +167,16 @@ public class GitHubRepositoryService {
         List<ProjectRepositoryEntity> bindings = projectRepositoryMapper.selectList(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .eq(ProjectRepositoryEntity::getProjectId, projectId)
                 .orderByDesc(ProjectRepositoryEntity::getBoundAt));
-                
+
         if (bindings.isEmpty()) {
             return List.of();
         }
-        
+
         List<UUID> repoIds = bindings.stream().map(ProjectRepositoryEntity::getRepositoryId).toList();
         java.util.Map<UUID, GitHubRepositoryEntity> repoMap = repositoryMapper.selectList(
-                new LambdaQueryWrapper<GitHubRepositoryEntity>().in(GitHubRepositoryEntity::getId, repoIds))
+                        new LambdaQueryWrapper<GitHubRepositoryEntity>().in(GitHubRepositoryEntity::getId, repoIds))
                 .stream().collect(java.util.stream.Collectors.toMap(GitHubRepositoryEntity::getId, r -> r));
-                
+
         return bindings.stream()
                 .map(binding -> toProjectRepositoryResponse(binding, repoMap.get(binding.getRepositoryId())))
                 .toList();
@@ -216,12 +191,12 @@ public class GitHubRepositoryService {
      */
     @Transactional
     public ProjectRepositoryResponse bindProjectRepository(UUID actorId, UUID projectId,
-            BindProjectRepositoryRequest request) {
+                                                           BindProjectRepositoryRequest request) {
         log.info("Binding GitHub repository (ID: {}) to projectId: {} by actorId: {}", request.getRepositoryId(),
                 projectId, actorId);
         // 需要是项目管理员
         requireProjectAdmin(actorId, projectId);
-        
+
         // 查找该团队激活状态的安装记录里，是否包含要绑定的这个仓库
         GitHubRepositoryEntity repository = findActiveRepositoryForProject(request.getInstallationId(),
                 request.getRepositoryId(), projectId);
@@ -235,7 +210,7 @@ public class GitHubRepositoryService {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_METADATA_INCOMPLETE",
                     "Repository default branch is missing from metadata");
         }
-        
+
         // 防止重复绑定：如果该仓库已经被当前项目绑定过，抛出冲突
         if (projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .eq(ProjectRepositoryEntity::getProjectId, projectId)
@@ -243,7 +218,7 @@ public class GitHubRepositoryService {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_ALREADY_BOUND",
                     "Repository is already bound to this project");
         }
-        
+
         // 创建项目与仓库的绑定关系记录 (ProjectRepositoryEntity)
         ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
         binding.setId(UUID.randomUUID());
@@ -253,7 +228,7 @@ public class GitHubRepositoryService {
         binding.setDefaultBranch(repository.getDefaultBranch());
         binding.setDisplayName(request.getDisplayName());
         binding.setBoundAt(LocalDateTime.now(clock));
-        
+
         projectRepositoryMapper.insert(binding);
         return toProjectRepositoryResponse(binding, repository);
     }
@@ -261,7 +236,7 @@ public class GitHubRepositoryService {
     /**
      * 更新项目已绑定的 GitHub 仓库配置（如：默认分支、自定义显示名称）。
      * 只有 Project Admin 才能执行此操作。
-     * 
+     *
      * @param actorId             操作人的用户 ID
      * @param projectId           项目 ID
      * @param projectRepositoryId Qgents 内部的项目与仓库绑定关系 ID
@@ -270,7 +245,7 @@ public class GitHubRepositoryService {
      */
     @Transactional
     public ProjectRepositoryResponse updateProjectRepository(UUID actorId, UUID projectId, UUID projectRepositoryId,
-            UpdateProjectRepositoryRequest request) {
+                                                             UpdateProjectRepositoryRequest request) {
         // 权限校验：必须是项目管理员
         requireProjectAdmin(actorId, projectId);
         // 根据绑定 ID 查找当前的绑定记录
@@ -283,7 +258,7 @@ public class GitHubRepositoryService {
         current.setDefaultBranch(request.getDefaultBranch());
         current.setDisplayName(request.getDisplayName());
         projectRepositoryMapper.updateById(current);
-        
+
         GitHubRepositoryEntity repository = repositoryMapper.selectById(current.getRepositoryId());
         return toProjectRepositoryResponse(current, repository);
     }
@@ -291,7 +266,7 @@ public class GitHubRepositoryService {
     /**
      * 解除项目与某个 GitHub 仓库的绑定关系。
      * 若该绑定已被应用于流水线分支配置，则拒绝解绑（需先删除分支配置）。
-     * 
+     *
      * @param actorId             操作人的用户 ID
      * @param projectId           项目 ID
      * @param projectRepositoryId Qgents 内部的项目与仓库绑定关系 ID
@@ -338,21 +313,23 @@ public class GitHubRepositoryService {
         }
     }
 
-    /** Verifies state, synchronizes the installation, and preserves the initiating client for redirect routing. */
+    /**
+     * Verifies state, synchronizes the installation, and preserves the initiating client for redirect routing.
+     */
     @Transactional
     public GitHubInstallationState handleInstallationCallbackDetails(long providerInstallationId, String state) {
         log.info("Handling GitHub App installation callback. providerInstallationId: {}", providerInstallationId);
-        
+
         // 1. 验证 state 签名，并从中解析出真正发起授权的团队 ID
         Object callbackLock = INSTALLATION_CALLBACK_LOCKS.computeIfAbsent(providerInstallationId, ignored -> new Object());
         synchronized (callbackLock) {
             try {
                 GitHubInstallationState callbackState = gitHubClient.verifyInstallationStateDetails(state);
                 UUID teamId = callbackState.teamId();
-        
+
                 // Execute the core metadata synchronization while holding the per-installation lock.
                 syncInstallation(teamId, providerInstallationId);
-        
+
                 return callbackState;
             } finally {
                 INSTALLATION_CALLBACK_LOCKS.remove(providerInstallationId, callbackLock);
@@ -384,58 +361,58 @@ public class GitHubRepositoryService {
         // 先读取 GitHub Installation 详情和完整 Repository 集合
         GitHubInstallationDetails installation = gitHubClient.getInstallation(providerInstallationId);
         List<GitHubRepositoryDetails> providerRepositories = gitHubClient.listRepositories(providerInstallationId);
-        
+
         // 在本地库查找这条安装记录
         GitHubInstallationEntity installationEntity = installationMapper.selectOne(
                 new LambdaQueryWrapper<GitHubInstallationEntity>().eq(
                         GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
-                        
+
         boolean newInstallation = installationEntity == null;
-        
+
         if (!newInstallation && !installationEntity.getTeamId().equals(teamId)) {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_TEAM_CONFLICT",
                     "This GitHub installation is already bound to another team");
         }
-        
+
         if (newInstallation) {
             installationEntity = new GitHubInstallationEntity();
             installationEntity.setId(UUID.randomUUID());
             installationEntity.setTeamId(teamId);
         }
-        
+
         installationEntity.setProviderInstallationId(installation.getInstallationId());
         installationEntity.setAccountLogin(installation.getAccountLogin());
         installationEntity.setAccountType(normalizeEnum(installation.getAccountType()));
         installationEntity.setStatus("ACTIVE");
-        
+
         if (newInstallation) {
             installationMapper.insert(installationEntity);
         } else {
             installationMapper.updateById(installationEntity);
         }
-        
+
         LocalDateTime now = LocalDateTime.now(clock);
         List<Long> returnedProviderRepoIds = providerRepositories.stream()
                 .map(GitHubRepositoryDetails::getRepositoryId).toList();
-                
+
         // 批量查询本地已存在的仓库避免 N+1
         List<GitHubRepositoryEntity> existingRepos = newInstallation ? List.of() :
                 repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
                         .eq(GitHubRepositoryEntity::getInstallationId, installationEntity.getId()));
-                        
+
         java.util.Map<Long, GitHubRepositoryEntity> existingRepoMap = existingRepos.stream()
                 .collect(java.util.stream.Collectors.toMap(GitHubRepositoryEntity::getProviderRepositoryId, r -> r));
-                
+
         for (GitHubRepositoryDetails repository : providerRepositories) {
             GitHubRepositoryEntity repositoryEntity = existingRepoMap.get(repository.getRepositoryId());
-                            
+
             boolean newRepository = repositoryEntity == null;
             if (newRepository) {
                 repositoryEntity = new GitHubRepositoryEntity();
                 repositoryEntity.setId(UUID.randomUUID());
                 repositoryEntity.setInstallationId(installationEntity.getId());
             }
-            
+
             repositoryEntity.setProviderRepositoryId(repository.getRepositoryId());
             repositoryEntity.setOwnerLogin(repository.getOwnerLogin());
             repositoryEntity.setName(repository.getName());
@@ -444,18 +421,18 @@ public class GitHubRepositoryService {
             repositoryEntity.setArchived(repository.isArchived());
             repositoryEntity.setAuthorizationStatus("AUTHORIZED");
             repositoryEntity.setSyncedAt(now);
-            
+
             if (newRepository) {
                 repositoryMapper.insert(repositoryEntity);
             } else {
                 repositoryMapper.updateById(repositoryEntity);
             }
         }
-        
+
         // 把不再返回的仓库标记为撤销授权
         if (!newInstallation) {
             for (GitHubRepositoryEntity existingRepo : existingRepos) {
-                if ("AUTHORIZED".equals(existingRepo.getAuthorizationStatus()) && 
+                if ("AUTHORIZED".equals(existingRepo.getAuthorizationStatus()) &&
                         !returnedProviderRepoIds.contains(existingRepo.getProviderRepositoryId())) {
                     existingRepo.setAuthorizationStatus("REVOKED");
                     existingRepo.setSyncedAt(now);
@@ -463,7 +440,7 @@ public class GitHubRepositoryService {
                 }
             }
         }
-        
+
         return toInstallationResponse(installationEntity);
     }
 
@@ -489,16 +466,16 @@ public class GitHubRepositoryService {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
                 || projectMemberMapper.selectCount(
-                        new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId)
-                                .eq(ProjectMemberEntity::getUserId, actorId)) > 0);
+                new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId)
+                        .eq(ProjectMemberEntity::getUserId, actorId)) > 0);
     }
 
     private boolean hasProjectAdminAccess(UUID projectId, UUID actorId) {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
                 || projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>()
-                        .eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId)
-                        .eq(ProjectMemberEntity::getRole, "PROJECT_ADMIN")) > 0);
+                .eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId)
+                .eq(ProjectMemberEntity::getRole, "PROJECT_ADMIN")) > 0);
     }
 
     private boolean isTeamOwner(UUID teamId, UUID actorId) {
@@ -512,8 +489,8 @@ public class GitHubRepositoryService {
             return true;
         }
         List<UUID> projectIds = projectMapper.selectList(new LambdaQueryWrapper<ProjectEntity>()
-                .eq(ProjectEntity::getTeamId, teamId)
-                .select(ProjectEntity::getId))
+                        .eq(ProjectEntity::getTeamId, teamId)
+                        .select(ProjectEntity::getId))
                 .stream().map(ProjectEntity::getId).toList();
         return projectIds.stream()
                 .anyMatch(projectId -> projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>()
@@ -522,7 +499,7 @@ public class GitHubRepositoryService {
     }
 
     private GitHubRepositoryEntity findActiveRepositoryForProject(UUID installationId, UUID repositoryId,
-            UUID projectId) {
+                                                                  UUID projectId) {
         ProjectEntity project = projectMapper.selectById(projectId);
         if (project == null) {
             return null;
@@ -530,25 +507,25 @@ public class GitHubRepositoryService {
         List<UUID> installationIds = activeInstallationIdsForTeam(project.getTeamId());
         return !installationIds.contains(installationId) ? null
                 : repositoryMapper.selectOne(new LambdaQueryWrapper<GitHubRepositoryEntity>()
-                        .eq(GitHubRepositoryEntity::getId, repositoryId)
-                        .eq(GitHubRepositoryEntity::getInstallationId, installationId)
-                        .eq(GitHubRepositoryEntity::getArchived, false)
-                        .eq(GitHubRepositoryEntity::getAuthorizationStatus, "AUTHORIZED"));
+                .eq(GitHubRepositoryEntity::getId, repositoryId)
+                .eq(GitHubRepositoryEntity::getInstallationId, installationId)
+                .eq(GitHubRepositoryEntity::getArchived, false)
+                .eq(GitHubRepositoryEntity::getAuthorizationStatus, "AUTHORIZED"));
     }
 
     private List<GitHubRepositoryEntity> findActiveRepositoriesByTeam(UUID teamId) {
         List<UUID> installationIds = activeInstallationIdsForTeam(teamId);
         return installationIds.isEmpty() ? List.of()
                 : repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
-                        .in(GitHubRepositoryEntity::getInstallationId, installationIds)
-                        .orderByAsc(GitHubRepositoryEntity::getOwnerLogin, GitHubRepositoryEntity::getName));
+                .in(GitHubRepositoryEntity::getInstallationId, installationIds)
+                .orderByAsc(GitHubRepositoryEntity::getOwnerLogin, GitHubRepositoryEntity::getName));
     }
 
     private List<UUID> activeInstallationIdsForTeam(UUID teamId) {
         return installationMapper.selectList(new LambdaQueryWrapper<GitHubInstallationEntity>()
-                .eq(GitHubInstallationEntity::getTeamId, teamId)
-                .eq(GitHubInstallationEntity::getStatus, "ACTIVE")
-                .select(GitHubInstallationEntity::getId))
+                        .eq(GitHubInstallationEntity::getTeamId, teamId)
+                        .eq(GitHubInstallationEntity::getStatus, "ACTIVE")
+                        .select(GitHubInstallationEntity::getId))
                 .stream().map(GitHubInstallationEntity::getId).toList();
     }
 
@@ -563,10 +540,10 @@ public class GitHubRepositoryService {
         String githubUrl = org.springframework.web.util.UriComponentsBuilder.newInstance()
                 .scheme("https").host("github.com").pathSegment(repository.getOwnerLogin(), repository.getName())
                 .build().toUriString();
-        return new GitHubRepositoryResponse(repository.getId(), repository.getInstallationId(), 
+        return new GitHubRepositoryResponse(repository.getId(), repository.getInstallationId(),
                 repository.getProviderRepositoryId(), fullName, githubUrl,
                 repository.getDefaultBranch(), repository.getVisibility(),
-                Boolean.TRUE.equals(repository.getArchived()), repository.getAuthorizationStatus(), 
+                Boolean.TRUE.equals(repository.getArchived()), repository.getAuthorizationStatus(),
                 repository.getSyncedAt());
     }
 

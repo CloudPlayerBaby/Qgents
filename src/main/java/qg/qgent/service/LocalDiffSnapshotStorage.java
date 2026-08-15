@@ -9,7 +9,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
 
-/** Configured local fallback for controlled Diff snapshot storage. */
+/**
+ * Configured local fallback for controlled Diff snapshot storage.
+ */
 @Service
 public class LocalDiffSnapshotStorage implements DiffSnapshotStorage {
     private final Path root;

@@ -4,7 +4,9 @@ import lombok.Data;
 
 import java.util.List;
 
-/** Worker 只读合并预演结果。 */
+/**
+ * Worker 只读合并预演结果。
+ */
 @Data
 public class WorkerMergePreviewResponse {
     private String resolvedHeadCommit;

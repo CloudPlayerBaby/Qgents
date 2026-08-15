@@ -12,12 +12,16 @@ import java.util.UUID;
 @Data
 public class MemorySourceRef {
 
-    /** 消息所属需求群 ID。 */
+    /**
+     * 消息所属需求群 ID。
+     */
     @NotNull
     @Schema(description = "消息所属需求群 ID", requiredMode = Schema.RequiredMode.REQUIRED)
     private UUID groupId;
 
-    /** 消息 ID。 */
+    /**
+     * 消息 ID。
+     */
     @NotNull
     @Schema(description = "消息 ID", requiredMode = Schema.RequiredMode.REQUIRED)
     private UUID messageId;

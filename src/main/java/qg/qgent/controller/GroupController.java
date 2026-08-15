@@ -4,14 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.GroupCreateRequest;
@@ -41,7 +34,7 @@ public class GroupController {
      */
     @GetMapping("/projects/{projectId}/groups")
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            HttpServletRequest request) {
+                               HttpServletRequest request) {
         return ok(groupService.list(userId, projectId), request);
     }
 
@@ -51,7 +44,7 @@ public class GroupController {
     @PostMapping("/projects/{projectId}/groups")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<?> create(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @Valid @RequestBody GroupCreateRequest body, HttpServletRequest request) {
+                                 @Valid @RequestBody GroupCreateRequest body, HttpServletRequest request) {
         return ok(groupService.create(userId, projectId, body), request);
     }
 
@@ -60,7 +53,7 @@ public class GroupController {
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}")
     public ApiResponse<?> get(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, HttpServletRequest request) {
+                              @PathVariable UUID groupId, HttpServletRequest request) {
         return ok(groupService.get(userId, projectId, groupId), request);
     }
 
@@ -69,7 +62,7 @@ public class GroupController {
      */
     @PatchMapping("/projects/{projectId}/groups/{groupId}")
     public ApiResponse<?> update(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, @Valid @RequestBody GroupUpdateRequest body, HttpServletRequest request) {
+                                 @PathVariable UUID groupId, @Valid @RequestBody GroupUpdateRequest body, HttpServletRequest request) {
         return ok(groupService.update(userId, projectId, groupId, body), request);
     }
 
@@ -78,7 +71,7 @@ public class GroupController {
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/archive")
     public ApiResponse<?> archive(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, HttpServletRequest request) {
+                                  @PathVariable UUID groupId, HttpServletRequest request) {
         return ok(groupService.archive(userId, projectId, groupId), request);
     }
 
@@ -87,7 +80,7 @@ public class GroupController {
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}/members")
     public ApiResponse<?> members(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, HttpServletRequest request) {
+                                  @PathVariable UUID groupId, HttpServletRequest request) {
         return ok(groupService.members(userId, projectId, groupId), request);
     }
 
@@ -96,7 +89,7 @@ public class GroupController {
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/leave")
     public ApiResponse<?> leave(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, HttpServletRequest request) {
+                                @PathVariable UUID groupId, HttpServletRequest request) {
         groupService.leave(userId, projectId, groupId);
         return ok(Map.of(), request);
     }

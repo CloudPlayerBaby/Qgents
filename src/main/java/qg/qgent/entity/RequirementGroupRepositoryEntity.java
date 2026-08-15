@@ -14,9 +14,13 @@ import java.util.UUID;
 @TableName("requirement_group_repositories")
 public class RequirementGroupRepositoryEntity {
 
-    /** 需求群 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 需求群 ID（UUIDv7，BINARY(16)）。
+     */
     private UUID requirementGroupId;
 
-    /** 项目仓库绑定 ID（UUIDv7，BINARY(16)），指向 project_repositories 表。 */
+    /**
+     * 项目仓库绑定 ID（UUIDv7，BINARY(16)），指向 project_repositories 表。
+     */
     private UUID projectRepositoryId;
 }

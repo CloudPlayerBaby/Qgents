@@ -17,13 +17,21 @@ import java.util.UUID;
 public class ProjectRepositoryEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
-    /** 所属项目ID。 */
+    /**
+     * 所属项目ID。
+     */
     private UUID projectId;
-    /** GitHub 仓库镜像ID。 */
+    /**
+     * GitHub 仓库镜像ID。
+     */
     private UUID repositoryId;
-    /** 该项目使用的默认分支，可覆盖 GitHub 仓库默认值。 */
+    /**
+     * 该项目使用的默认分支，可覆盖 GitHub 仓库默认值。
+     */
     private String defaultBranch;
-    /** 仓库在项目内的显示名称。 */
+    /**
+     * 仓库在项目内的显示名称。
+     */
     private String displayName;
     private LocalDateTime boundAt;
 }

@@ -4,7 +4,6 @@ import jakarta.servlet.http.HttpServletRequest;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.springframework.http.ResponseEntity;
@@ -62,7 +61,7 @@ class GitHubRepositoryControllerTest {
         ApiResponse<GitHubInstallationUrlResponse> response = controller.createInstallationUrl(teamId, request);
 
         assertNotNull(response);
-        assertEquals("https://github.com/apps/test-app/installations/new", response.getData().getInstallationUrl());
+        assertEquals("https://github.com/apps/test-app/installations/new", response.data().getInstallationUrl());
     }
 
     @Test
@@ -79,8 +78,8 @@ class GitHubRepositoryControllerTest {
         ApiResponse<List<GitHubInstallationResponse>> response = controller.listInstallations(teamId, request);
 
         assertNotNull(response);
-        assertEquals(1, response.getData().size());
-        assertEquals("test-account", response.getData().get(0).getAccountLogin());
+        assertEquals(1, response.data().size());
+        assertEquals("test-account", response.data().get(0).getAccountLogin());
     }
 
     @Test
@@ -111,8 +110,8 @@ class GitHubRepositoryControllerTest {
         ApiResponse<List<GitHubRepositoryResponse>> response = controller.listTeamRepositories(teamId, request);
 
         assertNotNull(response);
-        assertEquals(1, response.getData().size());
-        assertEquals("owner/repo", response.getData().get(0).getFullName());
+        assertEquals(1, response.data().size());
+        assertEquals("owner/repo", response.data().get(0).getFullName());
     }
 
     @Test
@@ -134,7 +133,7 @@ class GitHubRepositoryControllerTest {
         ApiResponse<ProjectRepositoryResponse> response = controller.bindProjectRepository(projectId, req, request);
 
         assertNotNull(response);
-        assertEquals("owner/repo", response.getData().getFullName());
+        assertEquals("owner/repo", response.data().getFullName());
     }
 
     @Test
@@ -151,8 +150,8 @@ class GitHubRepositoryControllerTest {
         ApiResponse<List<ProjectRepositoryResponse>> response = controller.listProjectRepositories(projectId, request);
 
         assertNotNull(response);
-        assertEquals(1, response.getData().size());
-        assertEquals("owner/repo", response.getData().get(0).getFullName());
+        assertEquals(1, response.data().size());
+        assertEquals("owner/repo", response.data().get(0).getFullName());
     }
 
     @Test

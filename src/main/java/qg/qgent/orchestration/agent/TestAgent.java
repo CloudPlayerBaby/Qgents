@@ -74,7 +74,9 @@ public class TestAgent implements Agent {
         }
     }
 
-    /** 由 LLM 分析真实输出；分析失败或非法时退回基于真实执行的结果，不伪造分析。 */
+    /**
+     * 由 LLM 分析真实输出；分析失败或非法时退回基于真实执行的结果，不伪造分析。
+     */
     private TestResult analyze(AgentInput input, List<String> command, ExecutionResult exec) {
         try {
             String raw = llm.complete(promptBuilder.buildSystem(),

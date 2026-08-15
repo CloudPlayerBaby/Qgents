@@ -14,23 +14,33 @@ import java.util.List;
 @AllArgsConstructor
 public class WorkerGitDiff {
 
-    /** Compatibility constructor for the original Worker response shape. */
+    /**
+     * Compatibility constructor for the original Worker response shape.
+     */
     public WorkerGitDiff(String headCommit, String diffHash, String patch) {
         this.headCommit = headCommit;
         this.diffHash = diffHash;
         this.patch = patch;
     }
 
-    /** Immutable base commit selected when the Workspace repository was created. */
+    /**
+     * Immutable base commit selected when the Workspace repository was created.
+     */
     private String baseCommit;
 
-    /** 生成 Diff 时的 HEAD 提交。 */
+    /**
+     * 生成 Diff 时的 HEAD 提交。
+     */
     private String headCommit;
 
-    /** 包含未跟踪文件的完整 patch 摘要哈希。 */
+    /**
+     * 包含未跟踪文件的完整 patch 摘要哈希。
+     */
     private String diffHash;
 
-    /** 完整 patch 文本。 */
+    /**
+     * 完整 patch 文本。
+     */
     private String patch;
 
     private List<WorkerGitDiffFile> files;

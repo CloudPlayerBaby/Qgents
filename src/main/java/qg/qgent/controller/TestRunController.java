@@ -4,20 +4,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
-import qg.qgent.dto.DryRunCreateRequest;
-import qg.qgent.dto.DryRunReportResponse;
-import qg.qgent.dto.DryRunResponse;
-import qg.qgent.dto.TestRunCreateRequest;
-import qg.qgent.dto.TestRunResponse;
+import qg.qgent.dto.*;
 import qg.qgent.service.TestRunService;
 
 import java.util.UUID;
@@ -35,36 +25,44 @@ public class TestRunController {
         this.testRunService = testRunService;
     }
 
-    /** 契约 §12.4：对指定提交或 Task 发起已启用 Testset 的受控运行。 */
+    /**
+     * 契约 §12.4：对指定提交或 Task 发起已启用 Testset 的受控运行。
+     */
     @PostMapping("/test-runs")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> createTestRun(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
-            @Valid @RequestBody TestRunCreateRequest body, HttpServletRequest request) {
+                                        @Valid @RequestBody TestRunCreateRequest body, HttpServletRequest request) {
         TestRunResponse data = testRunService.createTestRun(projectId, userId, body);
         return ok(data, request);
     }
 
-    /** 契约 §12.4：获取测试运行状态、用例摘要和产物引用。 */
+    /**
+     * 契约 §12.4：获取测试运行状态、用例摘要和产物引用。
+     */
     @GetMapping("/test-runs/{testRunId}")
     public ApiResponse<?> testRun(@PathVariable UUID projectId, @PathVariable UUID testRunId,
-            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+                                  @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         TestRunResponse data = testRunService.testRun(projectId, testRunId, userId);
         return ok(data, request);
     }
 
-    /** 契约 §12.4：针对源分支和目标分支发起合并前试运行。 */
+    /**
+     * 契约 §12.4：针对源分支和目标分支发起合并前试运行。
+     */
     @PostMapping("/dry-runs")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> createDryRun(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
-            @Valid @RequestBody DryRunCreateRequest body, HttpServletRequest request) {
+                                       @Valid @RequestBody DryRunCreateRequest body, HttpServletRequest request) {
         DryRunResponse data = testRunService.createDryRun(projectId, userId, body);
         return ok(data, request);
     }
 
-    /** 契约 §12.4：获取试运行报告和冲突、测试摘要。 */
+    /**
+     * 契约 §12.4：获取试运行报告和冲突、测试摘要。
+     */
     @GetMapping("/dry-runs/{dryRunId}/report")
     public ApiResponse<?> dryRunReport(@PathVariable UUID projectId, @PathVariable UUID dryRunId,
-            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+                                       @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         DryRunReportResponse data = testRunService.dryRunReport(projectId, dryRunId, userId);
         return ok(data, request);
     }

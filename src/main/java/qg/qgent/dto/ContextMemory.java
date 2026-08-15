@@ -13,15 +13,21 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class ContextMemory {
 
-    /** Memory 标题。 */
+    /**
+     * Memory 标题。
+     */
     @Schema(description = "Memory 标题")
     private String title;
 
-    /** 知识正文。 */
+    /**
+     * 知识正文。
+     */
     @Schema(description = "知识正文")
     private String content;
 
-    /** 知识分类标识。 */
+    /**
+     * 知识分类标识。
+     */
     @Schema(description = "知识分类标识")
     private String category;
 }

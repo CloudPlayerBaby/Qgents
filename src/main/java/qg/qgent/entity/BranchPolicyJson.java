@@ -11,12 +11,12 @@ public class BranchPolicyJson {
      * Whether pull requests are required.
      */
     private Boolean requirePullRequest;
-    
+
     /**
      * Minimum number of human approvals required.
      */
     private Integer minimumHumanApprovals;
-    
+
     /**
      * Whether direct push is allowed.
      */

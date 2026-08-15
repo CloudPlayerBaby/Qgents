@@ -11,7 +11,7 @@ import java.time.LocalDateTime;
 
 @Mapper
 public interface GitCredentialGrantMapper extends BaseMapper<GitCredentialGrant> {
-    
+
     /**
      * 尝试兑换授权记录：将其标记为已使用，利用行级锁保证只能被兑换一次。
      *
@@ -28,8 +28,8 @@ public interface GitCredentialGrantMapper extends BaseMapper<GitCredentialGrant>
             "AND purpose = #{purpose} " +
             "AND is_used = 0 " +
             "AND expires_at > #{now}")
-    int exchangeGrant(@Param("hash") String hash, 
-                      @Param("expectedHeadCommit") String expectedHeadCommit, 
+    int exchangeGrant(@Param("hash") String hash,
+                      @Param("expectedHeadCommit") String expectedHeadCommit,
                       @Param("repositoryFullName") String repositoryFullName,
                       @Param("branchName") String branchName,
                       @Param("purpose") GitCredentialPurpose purpose,

@@ -5,7 +5,9 @@ import lombok.Data;
 
 import java.time.Instant;
 
-/** 一条带递增序号的脱敏执行日志。 */
+/**
+ * 一条带递增序号的脱敏执行日志。
+ */
 @Data
 @AllArgsConstructor
 public class ExecutionLogEntryResponse {

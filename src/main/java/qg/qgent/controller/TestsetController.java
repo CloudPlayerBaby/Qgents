@@ -3,16 +3,7 @@ package qg.qgent.controller;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.TestsetCreateRequest;
@@ -39,51 +30,65 @@ public class TestsetController {
         this.actor = actor;
     }
 
-    /** 契约 §10：按项目、仓库与状态筛选查询 Testset 列表。 */
+    /**
+     * 契约 §10：按项目、仓库与状态筛选查询 Testset 列表。
+     */
     @GetMapping
     public ApiResponse<List<TestsetResponse>> list(@PathVariable UUID projectId,
-            @RequestParam(required = false) UUID repositoryId, @RequestParam(required = false) String status,
-            HttpServletRequest request) {
+                                                   @RequestParam(required = false) UUID repositoryId, @RequestParam(required = false) String status,
+                                                   HttpServletRequest request) {
         return ok(service.list(projectId, actor.currentUserId(), repositoryId, status), request);
     }
 
-    /** 契约 §10：创建 Testset 配置。 */
+    /**
+     * 契约 §10：创建 Testset 配置。
+     */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<TestsetResponse> create(@PathVariable UUID projectId,
-            @Valid @RequestBody TestsetCreateRequest body, HttpServletRequest request) {
+                                               @Valid @RequestBody TestsetCreateRequest body, HttpServletRequest request) {
         return ok(service.create(projectId, actor.currentUserId(), body), request);
     }
 
-    /** 契约 §10：获取单个 Testset 配置详情。 */
+    /**
+     * 契约 §10：获取单个 Testset 配置详情。
+     */
     @GetMapping("/{testsetId}")
     public ApiResponse<TestsetResponse> get(@PathVariable UUID projectId, @PathVariable UUID testsetId,
-            HttpServletRequest request) {
+                                            HttpServletRequest request) {
         return ok(service.get(projectId, testsetId, actor.currentUserId()), request);
     }
 
-    /** 契约 §10：更新 Testset 配置。 */
+    /**
+     * 契约 §10：更新 Testset 配置。
+     */
     @PatchMapping("/{testsetId}")
     public ApiResponse<TestsetResponse> update(@PathVariable UUID projectId, @PathVariable UUID testsetId,
-            @Valid @RequestBody TestsetUpdateRequest body, HttpServletRequest request) {
+                                               @Valid @RequestBody TestsetUpdateRequest body, HttpServletRequest request) {
         return ok(service.update(projectId, testsetId, actor.currentUserId(), body), request);
     }
 
-    /** 契约 §10：启用 Testset。 */
+    /**
+     * 契约 §10：启用 Testset。
+     */
     @PostMapping("/{testsetId}/enable")
     public ApiResponse<TestsetResponse> enable(@PathVariable UUID projectId, @PathVariable UUID testsetId,
-            HttpServletRequest request) {
+                                               HttpServletRequest request) {
         return ok(service.setEnabled(projectId, testsetId, actor.currentUserId(), true), request);
     }
 
-    /** 契约 §10：停用 Testset。 */
+    /**
+     * 契约 §10：停用 Testset。
+     */
     @PostMapping("/{testsetId}/disable")
     public ApiResponse<TestsetResponse> disable(@PathVariable UUID projectId, @PathVariable UUID testsetId,
-            HttpServletRequest request) {
+                                                HttpServletRequest request) {
         return ok(service.setEnabled(projectId, testsetId, actor.currentUserId(), false), request);
     }
 
-    /** 契约 §10：删除 Testset。 */
+    /**
+     * 契约 §10：删除 Testset。
+     */
     @DeleteMapping("/{testsetId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID projectId, @PathVariable UUID testsetId) {

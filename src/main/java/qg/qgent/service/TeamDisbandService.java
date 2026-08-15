@@ -3,47 +3,8 @@ package qg.qgent.service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import qg.qgent.entity.AgentEntity;
-import qg.qgent.entity.AttachmentEntity;
-import qg.qgent.entity.DiffEntity;
-import qg.qgent.entity.DiffReviewBatchEntity;
-import qg.qgent.entity.DryRunEntity;
-import qg.qgent.entity.EventEntity;
-import qg.qgent.entity.GitHubInstallationEntity;
-import qg.qgent.entity.MemoryEntity;
-import qg.qgent.entity.MergeRequestEntity;
-import qg.qgent.entity.MessageEntity;
-import qg.qgent.entity.NotificationEntity;
-import qg.qgent.entity.ProjectEntity;
-import qg.qgent.entity.ProjectRepositoryEntity;
-import qg.qgent.entity.RequirementGroupEntity;
-import qg.qgent.entity.SkillEntity;
-import qg.qgent.entity.TaskEntity;
-import qg.qgent.entity.TaskRunEntity;
-import qg.qgent.entity.TestRunEntity;
-import qg.qgent.entity.TestsetEntity;
-import qg.qgent.entity.WorkspaceEntity;
-import qg.qgent.mapper.AgentMapper;
-import qg.qgent.mapper.AttachmentMapper;
-import qg.qgent.mapper.DiffMapper;
-import qg.qgent.mapper.DiffReviewBatchMapper;
-import qg.qgent.mapper.DryRunMapper;
-import qg.qgent.mapper.EventMapper;
-import qg.qgent.mapper.GitHubInstallationMapper;
-import qg.qgent.mapper.MemoryMapper;
-import qg.qgent.mapper.MergeRequestMapper;
-import qg.qgent.mapper.MessageMapper;
-import qg.qgent.mapper.NotificationMapper;
-import qg.qgent.mapper.ProjectMapper;
-import qg.qgent.mapper.ProjectRepositoryMapper;
-import qg.qgent.mapper.RequirementGroupMapper;
-import qg.qgent.mapper.SkillMapper;
-import qg.qgent.mapper.TaskMapper;
-import qg.qgent.mapper.TaskRunMapper;
-import qg.qgent.mapper.TeamMapper;
-import qg.qgent.mapper.TestRunMapper;
-import qg.qgent.mapper.TestsetMapper;
-import qg.qgent.mapper.WorkspaceMapper;
+import qg.qgent.entity.*;
+import qg.qgent.mapper.*;
 
 import java.util.List;
 import java.util.UUID;
@@ -79,13 +40,13 @@ public class TeamDisbandService {
     private final TeamMapper teamMapper;
 
     public TeamDisbandService(ProjectMapper projectMapper, NotificationMapper notificationMapper,
-            EventMapper eventMapper, RequirementGroupMapper requirementGroupMapper, MessageMapper messageMapper,
-            DiffMapper diffMapper, DiffReviewBatchMapper diffReviewBatchMapper, MemoryMapper memoryMapper,
-            ProjectRepositoryMapper projectRepositoryMapper, MergeRequestMapper mergeRequestMapper,
-            TaskRunMapper taskRunMapper, TestRunMapper testRunMapper, DryRunMapper dryRunMapper, TaskMapper taskMapper,
-            WorkspaceMapper workspaceMapper, TestsetMapper testsetMapper, SkillMapper skillMapper,
-            AttachmentMapper attachmentMapper, GitHubInstallationMapper githubInstallationMapper,
-            AgentMapper agentMapper, TeamMapper teamMapper) {
+                              EventMapper eventMapper, RequirementGroupMapper requirementGroupMapper, MessageMapper messageMapper,
+                              DiffMapper diffMapper, DiffReviewBatchMapper diffReviewBatchMapper, MemoryMapper memoryMapper,
+                              ProjectRepositoryMapper projectRepositoryMapper, MergeRequestMapper mergeRequestMapper,
+                              TaskRunMapper taskRunMapper, TestRunMapper testRunMapper, DryRunMapper dryRunMapper, TaskMapper taskMapper,
+                              WorkspaceMapper workspaceMapper, TestsetMapper testsetMapper, SkillMapper skillMapper,
+                              AttachmentMapper attachmentMapper, GitHubInstallationMapper githubInstallationMapper,
+                              AgentMapper agentMapper, TeamMapper teamMapper) {
         this.projectMapper = projectMapper;
         this.notificationMapper = notificationMapper;
         this.eventMapper = eventMapper;
@@ -144,7 +105,7 @@ public class TeamDisbandService {
         eventMapper.delete(Wrappers.<EventEntity>lambdaQuery().eq(EventEntity::getProjectId, projectId));
 
         List<UUID> groupIds = requirementGroupMapper.selectList(Wrappers.<RequirementGroupEntity>lambdaQuery()
-                .eq(RequirementGroupEntity::getProjectId, projectId)).stream().map(RequirementGroupEntity::getId)
+                        .eq(RequirementGroupEntity::getProjectId, projectId)).stream().map(RequirementGroupEntity::getId)
                 .toList();
         // messages 引用 agents，须在团队级删 agents 前清理；亦在 requirement_groups 之前
         if (!groupIds.isEmpty()) {
@@ -163,7 +124,7 @@ public class TeamDisbandService {
         // merge_requests 引用 project_repositories/tasks/workspaces，须在三者之前删除
         // （merge_request_groups/reviews、quality_check_results 由 merge_requests 外键级联）
         List<UUID> repoIds = projectRepositoryMapper.selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
-                .eq(ProjectRepositoryEntity::getProjectId, projectId)).stream().map(ProjectRepositoryEntity::getId)
+                        .eq(ProjectRepositoryEntity::getProjectId, projectId)).stream().map(ProjectRepositoryEntity::getId)
                 .toList();
         if (!repoIds.isEmpty()) {
             mergeRequestMapper.delete(Wrappers.<MergeRequestEntity>lambdaQuery()

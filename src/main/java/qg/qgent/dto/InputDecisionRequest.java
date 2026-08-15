@@ -7,6 +7,8 @@ import lombok.Data;
  */
 @Data
 public class InputDecisionRequest {
-    /** 审批或拒绝理由，可为空。 */
+    /**
+     * 审批或拒绝理由，可为空。
+     */
     private String reason;
 }

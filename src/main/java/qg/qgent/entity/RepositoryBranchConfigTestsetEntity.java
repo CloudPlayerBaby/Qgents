@@ -12,8 +12,12 @@ import java.util.UUID;
 @Data
 @TableName("repository_branch_config_testsets")
 public class RepositoryBranchConfigTestsetEntity {
-    /** 仓库分支配置ID。 */
+    /**
+     * 仓库分支配置ID。
+     */
     private UUID branchConfigId;
-    /** 该分支门禁强制执行的测试集ID。 */
+    /**
+     * 该分支门禁强制执行的测试集ID。
+     */
     private UUID testsetId;
 }

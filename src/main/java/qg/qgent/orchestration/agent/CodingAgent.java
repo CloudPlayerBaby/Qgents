@@ -67,7 +67,9 @@ public class CodingAgent implements Agent {
         }
     }
 
-    /** 多轮工具调用循环：工具结果持续回灌上下文，直到模型输出 finalResult 或达到上限。 */
+    /**
+     * 多轮工具调用循环：工具结果持续回灌上下文，直到模型输出 finalResult 或达到上限。
+     */
     private CodingResult executeCoding(AgentInput input) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         List<LlmMessage> history = new ArrayList<>();
@@ -106,7 +108,9 @@ public class CodingAgent implements Agent {
         return coding.getSummary() == null ? "coding incomplete" : coding.getSummary();
     }
 
-    /** 去掉常见的 ```json / ``` 围栏包裹。 */
+    /**
+     * 去掉常见的 ```json / ``` 围栏包裹。
+     */
     private String stripFences(String raw) {
         String trimmed = raw.trim();
         if (trimmed.startsWith("```")) {

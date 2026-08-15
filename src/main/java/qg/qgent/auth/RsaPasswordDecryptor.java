@@ -1,10 +1,10 @@
 package qg.qgent.auth;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import javax.crypto.Cipher;
 import java.nio.charset.StandardCharsets;
@@ -26,7 +26,7 @@ public class RsaPasswordDecryptor {
 
     // 构造函数，加载RSA私钥和密钥ID
     public RsaPasswordDecryptor(@Value("${app.rsa-private-key}") Resource resource,
-            @Value("${app.rsa-key-id}") String keyId) {
+                                @Value("${app.rsa-key-id}") String keyId) {
         this.keyId = keyId;
         try {
             String pem = new String(resource.getInputStream().readAllBytes(), StandardCharsets.US_ASCII)

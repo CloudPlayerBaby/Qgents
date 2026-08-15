@@ -60,7 +60,7 @@ public class GitCredentialService {
      */
     @Transactional
     public String generateGrant(UUID teamId, UUID projectId, Long providerInstallationId,
-            String repositoryFullName, String branchName, String expectedHeadCommit, GitCredentialPurpose purpose) {
+                                String repositoryFullName, String branchName, String expectedHeadCommit, GitCredentialPurpose purpose) {
         String grantId = UUID.randomUUID().toString();
         String hash = sha256(grantId);
 
@@ -73,7 +73,7 @@ public class GitCredentialService {
         grant.setBranchName(branchName);
         grant.setExpectedHeadCommit(expectedHeadCommit);
         grant.setPurpose(purpose);
-        
+
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         grant.setCreatedAt(now);
         grant.setExpiresAt(now.plusSeconds(60)); // 60秒过期
@@ -93,7 +93,7 @@ public class GitCredentialService {
      */
     @Transactional
     public String exchangeGrant(String grantId, String expectedHeadCommit, String repositoryFullName,
-            String branchName, GitCredentialPurpose purpose) {
+                                String branchName, GitCredentialPurpose purpose) {
         String hash = sha256(grantId);
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
 
@@ -119,7 +119,7 @@ public class GitCredentialService {
                 com.baomidou.mybatisplus.core.toolkit.Wrappers.<qg.qgent.entity.GitHubInstallationEntity>lambdaQuery()
                         .eq(qg.qgent.entity.GitHubInstallationEntity::getProviderInstallationId, grant.getInstallationId())
         );
-        
+
         if (installation == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GITHUB_INSTALLATION_NOT_FOUND", "GitHub App 安装未找到");
         }
@@ -143,7 +143,7 @@ public class GitCredentialService {
                         .eq(qg.qgent.entity.GitHubRepositoryEntity::getOwnerLogin, ownerLogin)
                         .eq(qg.qgent.entity.GitHubRepositoryEntity::getName, repoName)
         );
-        
+
         if (repository == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GITHUB_REPOSITORY_NOT_FOUND", "GitHub 仓库镜像未找到");
         }
@@ -160,7 +160,7 @@ public class GitCredentialService {
                         .eq(qg.qgent.entity.ProjectRepositoryEntity::getProjectId, grant.getProjectId())
                         .eq(qg.qgent.entity.ProjectRepositoryEntity::getRepositoryId, repository.getId())
         );
-        
+
         if (projectRepo == null) {
             throw new ApiException(HttpStatus.FORBIDDEN, "PROJECT_REPOSITORY_NOT_BOUND", "项目与仓库的绑定已被解除");
         }

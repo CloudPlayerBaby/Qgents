@@ -11,22 +11,38 @@ import java.util.List;
  */
 @Data
 public class CodingResult {
-    /** 是否成功完成修改。 */
+    /**
+     * 是否成功完成修改。
+     */
     private boolean success;
-    /** 实际写入 Workspace 的修改文件相对路径列表。 */
+    /**
+     * 实际写入 Workspace 的修改文件相对路径列表。
+     */
     private List<String> modifiedFiles = new ArrayList<>();
-    /** 指向 DiffService 产出的真实 Diff 引用，Phase 1 为占位。 */
+    /**
+     * 指向 DiffService 产出的真实 Diff 引用，Phase 1 为占位。
+     */
     private String diffReference;
-    /** 修改摘要。 */
+    /**
+     * 修改摘要。
+     */
     private String summary;
-    /** 结构化变更描述（每条可对应一个文件或一种改动）。 */
+    /**
+     * 结构化变更描述（每条可对应一个文件或一种改动）。
+     */
     private List<String> changes = new ArrayList<>();
-    /** 编译/构建自检结果。 */
+    /**
+     * 编译/构建自检结果。
+     */
     private List<SelfCheck> selfChecks = new ArrayList<>();
-    /** 错误列表（success=false 时给出原因），不代表验收结果。 */
+    /**
+     * 错误列表（success=false 时给出原因），不代表验收结果。
+     */
     private List<String> errors = new ArrayList<>();
 
-    /** 单次自检。 */
+    /**
+     * 单次自检。
+     */
     @Data
     public static class SelfCheck {
         private String command;

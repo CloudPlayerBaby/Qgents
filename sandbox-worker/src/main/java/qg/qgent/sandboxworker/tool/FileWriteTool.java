@@ -12,7 +12,9 @@ import java.util.Map;
 
 import static org.springframework.http.HttpStatus.CONFLICT;
 
-/** 使用旧内容哈希校验和原子替换写入 UTF-8 文本文件。 */
+/**
+ * 使用旧内容哈希校验和原子替换写入 UTF-8 文本文件。
+ */
 @Component
 @RequiredArgsConstructor
 public class FileWriteTool implements SandboxTool {

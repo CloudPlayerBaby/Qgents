@@ -36,7 +36,7 @@ public class DockerCommandExecutor implements CommandExecutor {
      */
     @Override
     public CommandExecutionResult execute(SandboxAllocation sandbox, String workingDirectory, List<String> command,
-            Duration timeout)
+                                          Duration timeout)
             throws InterruptedException {
         if (sandbox.getRuntimeHandle() == null) {
             throw new IllegalStateException("沙箱缺少底层容器编号");
@@ -56,7 +56,7 @@ public class DockerCommandExecutor implements CommandExecutor {
      * 取消或超时需要重启容器，因此同一 Sandbox 内的容器命令必须串行，避免误杀其他正在运行的命令。
      */
     private CommandExecutionResult executeLocked(SandboxAllocation sandbox, String workingDirectory,
-            List<String> command, Duration timeout) throws InterruptedException {
+                                                 List<String> command, Duration timeout) throws InterruptedException {
         String execId = docker.execCreateCmd(sandbox.getRuntimeHandle())
                 .withAttachStdout(true)
                 .withAttachStderr(true)

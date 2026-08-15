@@ -7,7 +7,9 @@ import lombok.NoArgsConstructor;
 
 import java.util.List;
 
-/** Public Agent card returned by team Agent endpoints. */
+/**
+ * Public Agent card returned by team Agent endpoints.
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

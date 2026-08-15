@@ -4,7 +4,9 @@ import lombok.Data;
 
 import java.util.UUID;
 
-/** Worker 只读合并预演请求。 */
+/**
+ * Worker 只读合并预演请求。
+ */
 @Data
 public class WorkerMergePreviewRequest {
     private UUID repositoryId;

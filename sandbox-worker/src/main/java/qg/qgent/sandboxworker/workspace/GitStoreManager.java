@@ -39,17 +39,17 @@ public class GitStoreManager {
     }
 
     private GitStoreSyncResponse syncLocked(UUID repositoryId, GitStoreSyncRequest request, String repositoryUrl,
-            String repositoryFullName) {
+                                            String repositoryFullName) {
         Path store = repositories.gitStore(repositoryId);
         boolean created = ensureBareStore(store);
 
         repositories.withCredential(request.getCredentialGrantId(), request.getExpectedHeadCommit(), repositoryFullName,
                 request.getRemoteBranch(), "FETCH", environment -> {
                     repositories.requireSuccess(repositories.run(List.of("git", "--git-dir", store.toString(), "fetch",
-                            "--no-tags", repositoryUrl,
-                            "+refs/heads/" + request.getRemoteBranch() + ":refs/heads/"
-                                    + request.getRemoteBranch()),
-                            environment),
+                                            "--no-tags", repositoryUrl,
+                                            "+refs/heads/" + request.getRemoteBranch() + ":refs/heads/"
+                                                    + request.getRemoteBranch()),
+                                    environment),
                             "GIT_STORE_FETCH_FAILED", "无法同步远程 Git Store");
                     return null;
                 });
@@ -100,12 +100,12 @@ public class GitStoreManager {
                 List.of("git", "--git-dir", store.toString(), "remote", "get-url", "origin"), Map.of());
         if (result.exitCode() == 0) {
             repositories.requireSuccess(repositories.run(List.of("git", "--git-dir", store.toString(), "remote",
-                    "set-url", "origin", repositoryUrl), Map.of()),
+                            "set-url", "origin", repositoryUrl), Map.of()),
                     "GIT_ORIGIN_CONFIG_FAILED", "无法更新受控 Git origin");
             return;
         }
         repositories.requireSuccess(repositories.run(List.of("git", "--git-dir", store.toString(), "remote", "add",
-                "origin", repositoryUrl), Map.of()),
+                        "origin", repositoryUrl), Map.of()),
                 "GIT_ORIGIN_CONFIG_FAILED", "无法配置受控 Git origin");
     }
 

@@ -16,23 +16,33 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class MergeRequestBrief {
 
-    /** MR 镜像 ID（UUIDv7，字符串形式）。 */
+    /**
+     * MR 镜像 ID（UUIDv7，字符串形式）。
+     */
     @Schema(description = "MR ID")
     private String id;
 
-    /** Git 提供方真实编号。 */
+    /**
+     * Git 提供方真实编号。
+     */
     @Schema(description = "MR 编号")
     private Long number;
 
-    /** MR 标题。 */
+    /**
+     * MR 标题。
+     */
     @Schema(description = "MR 标题")
     private String title;
 
-    /** MR 状态：OPEN/MERGED/CLOSED。 */
+    /**
+     * MR 状态：OPEN/MERGED/CLOSED。
+     */
     @Schema(description = "MR 状态")
     private String status;
 
-    /** MR 外部链接，可为 null。 */
+    /**
+     * MR 外部链接，可为 null。
+     */
     @Schema(description = "MR 外部链接")
     private String webUrl;
 }

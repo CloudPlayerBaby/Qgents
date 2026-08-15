@@ -1,11 +1,17 @@
 package qg.qgent.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
-import jakarta.validation.constraints.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
-import java.util.*;
 
-/** Request to create one task from an active requirement-group conversation. */
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Request to create one task from an active requirement-group conversation.
+ */
 @Data
 public class TaskCreateRequest {
     @NotNull
@@ -34,7 +40,7 @@ public class TaskCreateRequest {
 
     @Schema(description = "Previous task continued by this task; required with workspaceId")
     private UUID continuationOfTaskId;
-    
+
     @Size(max = 512)
     @Schema(description = "Optional common base ref")
     private String baseRef;

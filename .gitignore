@@ -36,6 +36,7 @@ replay_pid*
 
 # ai files
 .omc/
+.claude/
 
 # ai doc files
 /docs/

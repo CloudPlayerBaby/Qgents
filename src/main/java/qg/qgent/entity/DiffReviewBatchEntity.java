@@ -8,7 +8,9 @@ import lombok.Data;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
-/** Task-level, multi-repository Diff review and delivery state. */
+/**
+ * Task-level, multi-repository Diff review and delivery state.
+ */
 @Data
 @TableName("diff_review_batches")
 public class DiffReviewBatchEntity {
@@ -21,7 +23,9 @@ public class DiffReviewBatchEntity {
     private String reviewStatus;
     private String deliveryStatus;
     private String deliveryOperationId;
-    /** 每次领取批次交付时重新生成的 fencing token。 */
+    /**
+     * 每次领取批次交付时重新生成的 fencing token。
+     */
     private String deliveryClaimToken;
     private LocalDateTime deliveryLeaseExpiresAt;
     private String aggregateHash;

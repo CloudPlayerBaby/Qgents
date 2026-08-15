@@ -1,11 +1,13 @@
 package qg.qgent.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import io.swagger.v3.oas.annotations.media.Schema;
 
-/** 总 Diff 响应中的真实 MR 摘要。 */
+/**
+ * 总 Diff 响应中的真实 MR 摘要。
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

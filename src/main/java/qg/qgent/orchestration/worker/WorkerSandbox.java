@@ -14,27 +14,43 @@ import java.util.UUID;
 @AllArgsConstructor
 public class WorkerSandbox {
 
-    /** Sandbox 编号。 */
+    /**
+     * Sandbox 编号。
+     */
     private UUID id;
 
-    /** 关联的任务运行编号。 */
+    /**
+     * 关联的任务运行编号。
+     */
     private UUID taskRunId;
 
-    /** 生命周期状态。 */
+    /**
+     * 生命周期状态。
+     */
     private String status;
 
-    /** 运行时实现类型（fake / docker）。 */
+    /**
+     * 运行时实现类型（fake / docker）。
+     */
     private String runtimeKind;
 
-    /** 创建时间（ISO-8601 字符串）。 */
+    /**
+     * 创建时间（ISO-8601 字符串）。
+     */
     private String createdAt;
 
-    /** 最近活跃时间（ISO-8601 字符串）。 */
+    /**
+     * 最近活跃时间（ISO-8601 字符串）。
+     */
     private String lastActiveAt;
 
-    /** 空闲租约到期时间（ISO-8601 字符串）。 */
+    /**
+     * 空闲租约到期时间（ISO-8601 字符串）。
+     */
     private String expiresAt;
 
-    /** 生命周期硬上限时间（ISO-8601 字符串）。 */
+    /**
+     * 生命周期硬上限时间（ISO-8601 字符串）。
+     */
     private String maxExpiresAt;
 }

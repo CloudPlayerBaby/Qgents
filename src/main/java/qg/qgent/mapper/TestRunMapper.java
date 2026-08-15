@@ -9,23 +9,25 @@ import qg.qgent.entity.TestRunEntity;
 
 @Mapper
 public interface TestRunMapper extends BaseMapper<TestRunEntity> {
-    /** 多实例下原子领取一个待执行或租约已过期的运行。 */
+    /**
+     * 多实例下原子领取一个待执行或租约已过期的运行。
+     */
     @Update("update test_runs set status='RUNNING',claim_token=#{token},lease_expires_at=#{leaseExpiresAt},"
             + "attempt_count=attempt_count+1 where id=#{id} and "
             + "(status='QUEUED' or (status='RUNNING' and lease_expires_at < #{now}))")
     int claim(@Param("id") java.util.UUID id, @Param("token") String token,
-            @Param("now") java.time.LocalDateTime now,
-            @Param("leaseExpiresAt") java.time.LocalDateTime leaseExpiresAt);
+              @Param("now") java.time.LocalDateTime now,
+              @Param("leaseExpiresAt") java.time.LocalDateTime leaseExpiresAt);
 
     @Select("select id from test_runs where status='QUEUED' or (status='RUNNING' and lease_expires_at < #{now}) "
             + "order by created_at limit #{limit}")
     java.util.List<java.util.UUID> selectRecoverable(@Param("now") java.time.LocalDateTime now,
-            @Param("limit") int limit);
+                                                     @Param("limit") int limit);
 
     @Update("update test_runs set status=#{status},summary=#{summary,typeHandler=com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler},"
             + "claim_token=null,lease_expires_at=null where id=#{id} and claim_token=#{token}")
     int complete(@Param("id") java.util.UUID id, @Param("token") String token,
-            @Param("status") String status, @Param("summary") java.util.Map<String,Object> summary);
+                 @Param("status") String status, @Param("summary") java.util.Map<String, Object> summary);
 
     @Select("select id from test_runs where status in ('PASSED','FAILED','CANCELLED') "
             + "and execution_workspace_id is not null order by updated_at limit #{limit}")

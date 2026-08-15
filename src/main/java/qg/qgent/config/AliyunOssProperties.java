@@ -11,22 +11,34 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties("aliyun.oss")
 public class AliyunOssProperties {
 
-    /** 是否启用阿里云 OSS 存储；false 时使用本地签名开发策略。 */
+    /**
+     * 是否启用阿里云 OSS 存储；false 时使用本地签名开发策略。
+     */
     private boolean enabled = false;
 
-    /** OSS Endpoint，如 https://oss-cn-guangzhou.aliyuncs.com。 */
+    /**
+     * OSS Endpoint，如 https://oss-cn-guangzhou.aliyuncs.com。
+     */
     private String endpoint = "";
 
-    /** 存储桶名称。 */
+    /**
+     * 存储桶名称。
+     */
     private String bucketName = "";
 
-    /** AccessKey ID（环境变量注入）。 */
+    /**
+     * AccessKey ID（环境变量注入）。
+     */
     private String accessKeyId = "";
 
-    /** AccessKey Secret（环境变量注入）。 */
+    /**
+     * AccessKey Secret（环境变量注入）。
+     */
     private String accessKeySecret = "";
 
-    /** 预签名 URL 有效期（秒），默认 900（15 分钟）。 */
+    /**
+     * 预签名 URL 有效期（秒），默认 900（15 分钟）。
+     */
     private long presignExpirySeconds = 900;
 
     public boolean configured() {

@@ -15,13 +15,17 @@ import java.util.List;
 @Data
 public class MemoryDraftRequest {
 
-    /** 作为知识依据的来源消息列表（至少 1 条）。 */
+    /**
+     * 作为知识依据的来源消息列表（至少 1 条）。
+     */
     @Valid
     @NotEmpty
     @Schema(description = "来源消息列表（至少 1 条）", requiredMode = Schema.RequiredMode.REQUIRED)
     private List<MemorySourceRef> sourceMessages;
 
-    /** 沉淀指令，如「沉淀为项目认证安全约定」。 */
+    /**
+     * 沉淀指令，如「沉淀为项目认证安全约定」。
+     */
     @NotBlank
     @Size(max = 2048)
     @Schema(description = "沉淀指令，如「沉淀为项目认证安全约定」", maxLength = 2048,

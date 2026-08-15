@@ -9,7 +9,9 @@ import java.util.UUID;
 
 @Mapper
 public interface DiffReviewBatchMapper extends BaseMapper<DiffReviewBatchEntity> {
-    /** Locks an existing review batch before changing its review or delivery state. */
+    /**
+     * Locks an existing review batch before changing its review or delivery state.
+     */
     @Select("select * from diff_review_batches where id=#{batchId} for update")
     DiffReviewBatchEntity selectByIdForUpdate(UUID batchId);
 }

@@ -6,15 +6,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.AddProjectMemberRequest;
-import qg.qgent.dto.CreateProjectRequest;
-import qg.qgent.dto.PageInfo;
-import qg.qgent.dto.PageSlice;
-import qg.qgent.dto.ProjectMemberResponse;
-import qg.qgent.dto.ProjectMembershipView;
-import qg.qgent.dto.ProjectResponse;
-import qg.qgent.dto.UpdateProjectMemberRequest;
-import qg.qgent.dto.UpdateProjectRequest;
+import qg.qgent.dto.*;
 import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.TeamEntity;
@@ -25,11 +17,7 @@ import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.function.Function;
 
 @Service
@@ -42,7 +30,7 @@ public class ProjectService {
     private final ApplicationEventPublisher eventPublisher;
 
     public ProjectService(ProjectMapper projectMapper, ProjectMemberMapper memberMapper, TeamMapper teamMapper,
-            TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher) {
+                          TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher) {
         this.projectMapper = projectMapper;
         this.memberMapper = memberMapper;
         this.teamMapper = teamMapper;
@@ -53,6 +41,7 @@ public class ProjectService {
 
     /**
      * 创建项目并初始化项目成员关系。
+     *
      * @param actor
      * @param teamId
      * @param request
@@ -161,7 +150,7 @@ public class ProjectService {
 
     @Transactional
     public ProjectMemberResponse updateMember(UUID actor, UUID projectId, UUID userId,
-            UpdateProjectMemberRequest request) {
+                                              UpdateProjectMemberRequest request) {
         ProjectEntity project = lockTeamThenProject(projectId);
         access.requireProjectAdminAnyState(project, actor);
         requireActive(project);
@@ -329,7 +318,7 @@ public class ProjectService {
     }
 
     private <S, T> PageSlice<T> keysetPage(List<S> rows, int size, String scope, Function<S, UUID> id,
-            Function<S, T> mapper) {
+                                           Function<S, T> mapper) {
         boolean hasMore = rows.size() > size;
         List<S> visible = hasMore ? rows.subList(0, size) : rows;
         List<T> data = new ArrayList<>(visible.size());

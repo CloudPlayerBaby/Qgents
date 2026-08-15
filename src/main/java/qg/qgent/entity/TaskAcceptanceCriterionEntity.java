@@ -19,28 +19,44 @@ import java.util.UUID;
 @TableName("task_acceptance_criteria")
 public class TaskAcceptanceCriterionEntity {
 
-    /** 验收标准 UUIDv7（BINARY(16)）。 */
+    /**
+     * 验收标准 UUIDv7（BINARY(16)）。
+     */
     @TableId(type = IdType.INPUT)
     private UUID id;
 
-    /** 所属任务 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 所属任务 ID（UUIDv7，BINARY(16)）。
+     */
     private UUID taskId;
 
-    /** 任务内验收标准序号，从 1 开始，(task_id, sequence_no) 唯一。 */
+    /**
+     * 任务内验收标准序号，从 1 开始，(task_id, sequence_no) 唯一。
+     */
     private Integer sequenceNo;
 
-    /** 验收标准标题。 */
+    /**
+     * 验收标准标题。
+     */
     private String title;
 
-    /** 验收标准补充说明，可为空。 */
+    /**
+     * 验收标准补充说明，可为空。
+     */
     private String description;
 
-    /** 验收状态枚举：PENDING/SATISFIED/UNSATISFIED/NOT_APPLICABLE。 */
+    /**
+     * 验收状态枚举：PENDING/SATISFIED/UNSATISFIED/NOT_APPLICABLE。
+     */
     private String status;
 
-    /** 创建时间（UTC）。 */
+    /**
+     * 创建时间（UTC）。
+     */
     private LocalDateTime createdAt;
 
-    /** 更新时间（UTC）。 */
+    /**
+     * 更新时间（UTC）。
+     */
     private LocalDateTime updatedAt;
 }

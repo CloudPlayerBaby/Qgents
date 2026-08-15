@@ -17,31 +17,45 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class DiffReviewSummary {
 
-    /** 是否存在可展示的总 Diff 批次。 */
+    /**
+     * 是否存在可展示的总 Diff 批次。
+     */
     @Schema(description = "是否存在总 Diff 批次")
     private boolean available;
 
-    /** 总 Diff 审核状态。 */
+    /**
+     * 总 Diff 审核状态。
+     */
     @Schema(description = "总 Diff 审核状态")
     private String reviewStatus;
 
-    /** 总 Diff 交付状态。 */
+    /**
+     * 总 Diff 交付状态。
+     */
     @Schema(description = "总 Diff 交付状态")
     private String deliveryStatus;
 
-    /** 涉及仓库数。 */
+    /**
+     * 涉及仓库数。
+     */
     @Schema(description = "涉及仓库数")
     private int repositoryCount;
 
-    /** 变更文件总数。 */
+    /**
+     * 变更文件总数。
+     */
     @Schema(description = "变更文件总数")
     private int filesChanged;
 
-    /** 新增行总数。 */
+    /**
+     * 新增行总数。
+     */
     @Schema(description = "新增行总数")
     private int additions;
 
-    /** 删除行总数。 */
+    /**
+     * 删除行总数。
+     */
     @Schema(description = "删除行总数")
     private int deletions;
 }

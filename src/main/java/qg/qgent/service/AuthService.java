@@ -7,31 +7,10 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
-import qg.qgent.auth.PasswordResetMailer;
-import qg.qgent.auth.RateLimiter;
-import qg.qgent.auth.RsaPasswordDecryptor;
-import qg.qgent.auth.TokenService;
-import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.AuthTokensResponse;
-import qg.qgent.dto.LoginRequest;
-import qg.qgent.dto.MeResponse;
-import qg.qgent.dto.ProjectResponse;
-import qg.qgent.dto.RegisterRequest;
-import qg.qgent.dto.ResetPasswordRequest;
-import qg.qgent.dto.TeamResponse;
-import qg.qgent.dto.UpdateMeRequest;
-import qg.qgent.dto.UserResponse;
-import qg.qgent.entity.PasswordResetTokenEntity;
-import qg.qgent.entity.RefreshTokenEntity;
-import qg.qgent.entity.TeamEntity;
-import qg.qgent.entity.TeamMemberEntity;
-import qg.qgent.entity.UserEntity;
-import qg.qgent.mapper.PasswordResetTokenMapper;
-import qg.qgent.mapper.ProjectMapper;
-import qg.qgent.mapper.RefreshTokenMapper;
-import qg.qgent.mapper.TeamMapper;
-import qg.qgent.mapper.TeamMemberMapper;
-import qg.qgent.mapper.UserMapper;
+import qg.qgent.auth.*;
+import qg.qgent.dto.*;
+import qg.qgent.entity.*;
+import qg.qgent.mapper.*;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -39,11 +18,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.Collections;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -63,9 +38,9 @@ public class AuthService {
     private final String dummyPasswordHash;
 
     public AuthService(UserMapper userMapper, RefreshTokenMapper refreshTokenMapper,
-            PasswordResetTokenMapper resetTokenMapper, TeamMapper teamMapper, TeamMemberMapper teamMemberMapper,
-            ProjectMapper projectMapper, RsaPasswordDecryptor rsa,
-            PasswordEncoder passwords, TokenService tokens, PasswordResetMailer mailer, RateLimiter limiter) {
+                       PasswordResetTokenMapper resetTokenMapper, TeamMapper teamMapper, TeamMemberMapper teamMemberMapper,
+                       ProjectMapper projectMapper, RsaPasswordDecryptor rsa,
+                       PasswordEncoder passwords, TokenService tokens, PasswordResetMailer mailer, RateLimiter limiter) {
         this.userMapper = userMapper;
         this.refreshTokenMapper = refreshTokenMapper;
         this.resetTokenMapper = resetTokenMapper;
@@ -276,7 +251,7 @@ public class AuthService {
             return Collections.emptyList();
         }
         Map<UUID, TeamEntity> teams = teamMapper.selectBatchIds(
-                members.stream().map(TeamMemberEntity::getTeamId).toList()).stream()
+                        members.stream().map(TeamMemberEntity::getTeamId).toList()).stream()
                 .filter(team -> "ACTIVE".equals(team.getStatus()))
                 .collect(Collectors.toMap(TeamEntity::getId, Function.identity()));
         return members.stream().filter(member -> teams.containsKey(member.getTeamId()))

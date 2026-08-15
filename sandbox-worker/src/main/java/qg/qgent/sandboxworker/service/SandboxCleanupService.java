@@ -4,7 +4,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-/** 定期取消过期执行并回收沙箱，作为控制层主动销毁之外的安全兜底。 */
+/**
+ * 定期取消过期执行并回收沙箱，作为控制层主动销毁之外的安全兜底。
+ */
 @Service
 @RequiredArgsConstructor
 public class SandboxCleanupService {

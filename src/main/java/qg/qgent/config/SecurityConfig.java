@@ -40,7 +40,7 @@ public class SecurityConfig {
 
     /**
      * 加密密码
-     * 
+     *
      * @return BCryptPasswordEncoder
      */
     @Bean
@@ -68,7 +68,7 @@ public class SecurityConfig {
      */
     @Bean
     SecurityFilterChain security(HttpSecurity http, JwtAuthenticationFilter jwt, IdempotencyFilter idempotency,
-            ObjectMapper mapper, @Qualifier("cors") CorsConfigurationSource corsConfigurationSource) throws Exception {
+                                 ObjectMapper mapper, @Qualifier("cors") CorsConfigurationSource corsConfigurationSource) throws Exception {
         return http
                 // 不启用 CSRF
                 .csrf(c -> c.disable())
@@ -104,7 +104,7 @@ public class SecurityConfig {
 
     /**
      * 跨域配置
-     * 
+     *
      * @param origins
      * @return
      */

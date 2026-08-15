@@ -27,9 +27,9 @@ public class TokenService {
     private final SecureRandom random = new SecureRandom();
 
     public TokenService(@Value("${app.jwt-secret}") String secret,
-            @Value("${app.access-token-minutes:15}") long accessMinutes,
-            @Value("${app.refresh-token-days:30}") long refreshDays,
-            @Value("${app.reset-token-minutes:30}") long resetMinutes) {
+                        @Value("${app.access-token-minutes:15}") long accessMinutes,
+                        @Value("${app.refresh-token-days:30}") long refreshDays,
+                        @Value("${app.reset-token-minutes:30}") long resetMinutes) {
         if (secret.getBytes(StandardCharsets.UTF_8).length < 32)
             throw new IllegalStateException("JWT_SECRET至少需要32字节");
         algorithm = Algorithm.HMAC256(secret);

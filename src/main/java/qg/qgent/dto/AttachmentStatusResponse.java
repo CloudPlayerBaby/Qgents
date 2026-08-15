@@ -13,11 +13,15 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class AttachmentStatusResponse {
 
-    /** 附件 ID（UUIDv7，字符串形式）。 */
+    /**
+     * 附件 ID（UUIDv7，字符串形式）。
+     */
     @Schema(description = "附件 ID")
     private String attachmentId;
 
-    /** 附件状态：PENDING/READY/FAILED/DELETED。 */
+    /**
+     * 附件状态：PENDING/READY/FAILED/DELETED。
+     */
     @Schema(description = "附件状态")
     private String status;
 }

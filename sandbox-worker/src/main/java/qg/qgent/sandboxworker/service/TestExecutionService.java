@@ -25,7 +25,9 @@ import java.util.List;
 import java.util.UUID;
 import java.nio.charset.StandardCharsets;
 
-/** 在受控 Sandbox 中同步执行一组 Testset，并始终清理本次 Sandbox。 */
+/**
+ * 在受控 Sandbox 中同步执行一组 Testset，并始终清理本次 Sandbox。
+ */
 @Service
 @RequiredArgsConstructor
 public class TestExecutionService {
@@ -85,10 +87,15 @@ public class TestExecutionService {
             String status = results.stream().allMatch(item -> "PASSED".equals(item.getStatus())) ? "PASSED" : "FAILED";
             return new TestExecutionResponse(request.getExecutionId(), status, resolvedHead, List.copyOf(results));
         } finally {
-            try { sandboxes.destroy(sandboxId); } catch (RuntimeException ignored) { }
+            try {
+                sandboxes.destroy(sandboxId);
+            } catch (RuntimeException ignored) {
+            }
             if (temporary) {
-                try { workspaces.cleanupTemporary(workspaceId, request.getRepositoryId(), temporaryBranch); }
-                catch (RuntimeException ignored) { }
+                try {
+                    workspaces.cleanupTemporary(workspaceId, request.getRepositoryId(), temporaryBranch);
+                } catch (RuntimeException ignored) {
+                }
             }
         }
     }
@@ -106,7 +113,7 @@ public class TestExecutionService {
     }
 
     private TestExecutionItemResponse run(SandboxAllocation allocation, UUID repositoryId,
-            TestExecutionItemRequest testset) {
+                                          TestExecutionItemRequest testset) {
         long started = System.nanoTime();
         try {
             List<String> command = splitCommand(testset.getCommand());
@@ -127,7 +134,9 @@ public class TestExecutionService {
         }
     }
 
-    /** 支持普通空格、单引号和双引号；拒绝未闭合引号，不经 shell。 */
+    /**
+     * 支持普通空格、单引号和双引号；拒绝未闭合引号，不经 shell。
+     */
     static List<String> splitCommand(String value) {
         List<String> result = new ArrayList<>();
         StringBuilder token = new StringBuilder();
@@ -135,16 +144,21 @@ public class TestExecutionService {
         for (int index = 0; index < value.length(); index++) {
             char current = value.charAt(index);
             if (quote != 0) {
-                if (current == quote) quote = 0; else token.append(current);
+                if (current == quote) quote = 0;
+                else token.append(current);
             } else if (current == '\'' || current == '"') {
                 quote = current;
             } else if (Character.isWhitespace(current)) {
-                if (!token.isEmpty()) { result.add(token.toString()); token.setLength(0); }
+                if (!token.isEmpty()) {
+                    result.add(token.toString());
+                    token.setLength(0);
+                }
             } else {
                 token.append(current);
             }
         }
-        if (quote != 0) throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, "TEST_COMMAND_INVALID", "测试命令引号未闭合");
+        if (quote != 0)
+            throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, "TEST_COMMAND_INVALID", "测试命令引号未闭合");
         if (!token.isEmpty()) result.add(token.toString());
         if (result.isEmpty() || result.size() > 64) {
             throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, "TEST_COMMAND_INVALID", "测试命令参数数量无效");
@@ -152,5 +166,7 @@ public class TestExecutionService {
         return List.copyOf(result);
     }
 
-    private long elapsed(long started) { return Duration.ofNanos(System.nanoTime() - started).toMillis(); }
+    private long elapsed(long started) {
+        return Duration.ofNanos(System.nanoTime() - started).toMillis();
+    }
 }

@@ -17,7 +17,9 @@ import org.springframework.context.annotation.Configuration;
 @EnableConfigurationProperties(AliyunOssProperties.class)
 public class AliyunOssConfiguration {
 
-    /** 创建全局单例 OSSClient（线程安全、连接池内部复用）。 */
+    /**
+     * 创建全局单例 OSSClient（线程安全、连接池内部复用）。
+     */
     @Bean
     @ConditionalOnProperty(prefix = "aliyun.oss", name = "enabled", havingValue = "true")
     public OSS aliyunOssClient(AliyunOssProperties properties) {

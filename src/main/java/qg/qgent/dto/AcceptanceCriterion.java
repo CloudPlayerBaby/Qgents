@@ -16,19 +16,27 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class AcceptanceCriterion {
 
-    /** 验收标准 ID（UUIDv7，字符串形式）。 */
+    /**
+     * 验收标准 ID（UUIDv7，字符串形式）。
+     */
     @Schema(description = "验收标准 ID")
     private String id;
 
-    /** 验收标准标题。 */
+    /**
+     * 验收标准标题。
+     */
     @Schema(description = "验收标准标题")
     private String title;
 
-    /** 验收标准补充说明，可为 null。 */
+    /**
+     * 验收标准补充说明，可为 null。
+     */
     @Schema(description = "验收标准补充说明")
     private String description;
 
-    /** 验收状态：PENDING/SATISFIED/UNSATISFIED/NOT_APPLICABLE。 */
+    /**
+     * 验收状态：PENDING/SATISFIED/UNSATISFIED/NOT_APPLICABLE。
+     */
     @Schema(description = "验收状态")
     private String status;
 }

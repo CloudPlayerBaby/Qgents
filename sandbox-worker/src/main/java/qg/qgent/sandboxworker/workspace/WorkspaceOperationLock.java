@@ -16,14 +16,18 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.locks.ReentrantLock;
 
-/** 使用 JVM keyed lock 与共享文件锁串行化 Workspace 操作。 */
+/**
+ * 使用 JVM keyed lock 与共享文件锁串行化 Workspace 操作。
+ */
 @Component
 @RequiredArgsConstructor
 public class WorkspaceOperationLock {
     private final SandboxWorkerProperties properties;
     private final ConcurrentMap<UUID, ReentrantLock> localLocks = new ConcurrentHashMap<>();
 
-    /** 同 JVM 先串行，再获取跨进程文件锁，避免 OverlappingFileLockException。 */
+    /**
+     * 同 JVM 先串行，再获取跨进程文件锁，避免 OverlappingFileLockException。
+     */
     public <T> T execute(String storageKey, LockedOperation<T> operation) {
         UUID workspaceId = parseWorkspaceId(storageKey);
         ReentrantLock localLock = localLocks.computeIfAbsent(workspaceId, ignored -> new ReentrantLock());
@@ -54,5 +58,7 @@ public class WorkspaceOperationLock {
     }
 
     @FunctionalInterface
-    public interface LockedOperation<T> { T run(); }
+    public interface LockedOperation<T> {
+        T run();
+    }
 }

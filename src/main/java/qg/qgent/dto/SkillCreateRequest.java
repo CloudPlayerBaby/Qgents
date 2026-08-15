@@ -13,22 +13,30 @@ import java.util.List;
 @Data
 public class SkillCreateRequest {
 
-    /** Skill 名称（必填，≤255）。 */
+    /**
+     * Skill 名称（必填，≤255）。
+     */
     @NotBlank
     @Size(max = 255)
     @Schema(description = "Skill 名称（必填）", maxLength = 255, requiredMode = Schema.RequiredMode.REQUIRED)
     private String name;
 
-    /** 可复用操作规范正文（必填）。 */
+    /**
+     * 可复用操作规范正文（必填）。
+     */
     @NotBlank
     @Schema(description = "可复用操作规范正文（必填）", requiredMode = Schema.RequiredMode.REQUIRED)
     private String content;
 
-    /** 标签列表（可空）。 */
+    /**
+     * 标签列表（可空）。
+     */
     @Schema(description = "标签列表")
     private List<String> tags;
 
-    /** 可见性：PRIVATE / PROJECT_SHARED；默认 PRIVATE。 */
+    /**
+     * 可见性：PRIVATE / PROJECT_SHARED；默认 PRIVATE。
+     */
     @Size(max = 32)
     @Schema(description = "可见性：PRIVATE / PROJECT_SHARED，默认 PRIVATE", maxLength = 32)
     private String visibility;

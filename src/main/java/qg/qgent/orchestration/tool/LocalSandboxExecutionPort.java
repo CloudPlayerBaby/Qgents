@@ -40,7 +40,9 @@ public class LocalSandboxExecutionPort implements ExecutionPort {
         this(workspaceService, new SandboxProcessRunner());
     }
 
-    /** 测试用构造：可注入 Runner 桩，白名单仍为真实策略。 */
+    /**
+     * 测试用构造：可注入 Runner 桩，白名单仍为真实策略。
+     */
     LocalSandboxExecutionPort(WorkspaceService workspaceService, SandboxProcessRunner processRunner) {
         this.workspaceService = workspaceService;
         this.processRunner = processRunner;

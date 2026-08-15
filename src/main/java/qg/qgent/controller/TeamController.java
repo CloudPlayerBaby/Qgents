@@ -4,28 +4,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.PagedApiResponse;
 import qg.qgent.api.RequestIdFilter;
-import qg.qgent.dto.CreateTeamRequest;
-import qg.qgent.dto.InviteTeamMemberRequest;
-import qg.qgent.dto.PageSlice;
-import qg.qgent.dto.TeamInvitationResponse;
-import qg.qgent.dto.TeamMemberResponse;
-import qg.qgent.dto.TeamResponse;
-import qg.qgent.dto.UpdateTeamMemberRequest;
-import qg.qgent.dto.UpdateTeamRequest;
+import qg.qgent.dto.*;
 import qg.qgent.service.IdempotencyService;
 import qg.qgent.service.TeamService;
 
@@ -53,8 +36,8 @@ public class TeamController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<TeamResponse> create(@AuthenticationPrincipal UUID actor,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key,
-            @Valid @RequestBody CreateTeamRequest body, HttpServletRequest request) {
+                                            @RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                            @Valid @RequestBody CreateTeamRequest body, HttpServletRequest request) {
         TeamResponse result = idempotency.execute(actor, "POST:/teams", key, body, 201, TeamResponse.class,
                 () -> teams.create(actor, body));
         return ok(result, request);
@@ -65,8 +48,8 @@ public class TeamController {
      */
     @GetMapping
     public PagedApiResponse<TeamResponse> list(@AuthenticationPrincipal UUID actor,
-            @RequestParam(required = false) String cursor, @RequestParam(required = false) Integer limit,
-            HttpServletRequest request) {
+                                               @RequestParam(required = false) String cursor, @RequestParam(required = false) Integer limit,
+                                               HttpServletRequest request) {
         return page(teams.list(actor, cursor, limit), request);
     }
 
@@ -75,7 +58,7 @@ public class TeamController {
      */
     @GetMapping("/{teamId}")
     public ApiResponse<TeamResponse> get(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
-            HttpServletRequest request) {
+                                         HttpServletRequest request) {
         return ok(teams.get(actor, teamId), request);
     }
 
@@ -84,8 +67,8 @@ public class TeamController {
      */
     @PatchMapping("/{teamId}")
     public ApiResponse<TeamResponse> update(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key,
-            @Valid @RequestBody UpdateTeamRequest body, HttpServletRequest request) {
+                                            @RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                            @Valid @RequestBody UpdateTeamRequest body, HttpServletRequest request) {
         TeamResponse result = idempotency.execute(actor, "PATCH:/teams/{teamId}", key,
                 Map.of("teamId", teamId, "body", body), 200, TeamResponse.class,
                 () -> teams.update(actor, teamId, body));
@@ -98,7 +81,7 @@ public class TeamController {
      */
     @DeleteMapping("/{teamId}")
     public ApiResponse<TeamResponse> disband(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+                                             @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
         TeamResponse result = idempotency.execute(actor, "DELETE:/teams/{teamId}", key,
                 Map.of("teamId", teamId), 200, TeamResponse.class,
                 () -> teams.disband(actor, teamId));
@@ -110,8 +93,8 @@ public class TeamController {
      */
     @GetMapping("/{teamId}/members")
     public PagedApiResponse<TeamMemberResponse> members(@AuthenticationPrincipal UUID actor,
-            @PathVariable UUID teamId, @RequestParam(required = false) String cursor,
-            @RequestParam(required = false) Integer limit, HttpServletRequest request) {
+                                                        @PathVariable UUID teamId, @RequestParam(required = false) String cursor,
+                                                        @RequestParam(required = false) Integer limit, HttpServletRequest request) {
         return page(teams.members(actor, teamId, cursor, limit), request);
     }
 
@@ -121,8 +104,8 @@ public class TeamController {
     @PostMapping("/{teamId}/invitations")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<TeamInvitationResponse> invite(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key,
-            @Valid @RequestBody InviteTeamMemberRequest body, HttpServletRequest request) {
+                                                      @RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                                      @Valid @RequestBody InviteTeamMemberRequest body, HttpServletRequest request) {
         TeamInvitationResponse result = idempotency.execute(actor, "POST:/teams/{teamId}/invitations", key,
                 Map.of("teamId", teamId, "body", body), 201, TeamInvitationResponse.class,
                 () -> teams.invite(actor, teamId, body));
@@ -134,8 +117,8 @@ public class TeamController {
      */
     @GetMapping("/{teamId}/invitations")
     public PagedApiResponse<TeamInvitationResponse> invitations(@AuthenticationPrincipal UUID actor,
-            @PathVariable UUID teamId, @RequestParam(required = false) String cursor,
-            @RequestParam(required = false) Integer limit, HttpServletRequest request) {
+                                                                @PathVariable UUID teamId, @RequestParam(required = false) String cursor,
+                                                                @RequestParam(required = false) Integer limit, HttpServletRequest request) {
         return page(teams.invitations(actor, teamId, cursor, limit), request);
     }
 
@@ -144,8 +127,8 @@ public class TeamController {
      */
     @DeleteMapping("/{teamId}/invitations/{invitationId}")
     public ApiResponse<TeamInvitationResponse> revoke(@AuthenticationPrincipal UUID actor,
-            @PathVariable UUID teamId, @PathVariable UUID invitationId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+                                                      @PathVariable UUID teamId, @PathVariable UUID invitationId,
+                                                      @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
         TeamInvitationResponse result = idempotency.execute(actor,
                 "DELETE:/teams/{teamId}/invitations/{invitationId}", key,
                 Map.of("teamId", teamId, "invitationId", invitationId), 200, TeamInvitationResponse.class,
@@ -158,9 +141,9 @@ public class TeamController {
      */
     @PatchMapping("/{teamId}/members/{userId}")
     public ApiResponse<TeamMemberResponse> updateMember(@AuthenticationPrincipal UUID actor,
-            @PathVariable UUID teamId, @PathVariable UUID userId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key,
-            @Valid @RequestBody UpdateTeamMemberRequest body, HttpServletRequest request) {
+                                                        @PathVariable UUID teamId, @PathVariable UUID userId,
+                                                        @RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                                        @Valid @RequestBody UpdateTeamMemberRequest body, HttpServletRequest request) {
         TeamMemberResponse result = idempotency.execute(actor, "PATCH:/teams/{teamId}/members/{userId}", key,
                 Map.of("teamId", teamId, "userId", userId, "body", body), 200, TeamMemberResponse.class,
                 () -> teams.updateMember(actor, teamId, userId, body));
@@ -172,8 +155,8 @@ public class TeamController {
      */
     @DeleteMapping("/{teamId}/members/{userId}")
     public ApiResponse<TeamMemberResponse> removeMember(@AuthenticationPrincipal UUID actor,
-            @PathVariable UUID teamId, @PathVariable UUID userId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+                                                        @PathVariable UUID teamId, @PathVariable UUID userId,
+                                                        @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
         TeamMemberResponse result = idempotency.execute(actor, "DELETE:/teams/{teamId}/members/{userId}", key,
                 Map.of("teamId", teamId, "userId", userId), 200, TeamMemberResponse.class,
                 () -> teams.removeMember(actor, teamId, userId));

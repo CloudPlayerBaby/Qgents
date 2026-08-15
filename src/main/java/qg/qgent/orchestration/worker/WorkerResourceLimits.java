@@ -9,12 +9,18 @@ import lombok.Data;
 @Data
 public class WorkerResourceLimits {
 
-    /** 空闲存活秒数。 */
+    /**
+     * 空闲存活秒数。
+     */
     private Long idleTtlSeconds;
 
-    /** 最大生命周期秒数。 */
+    /**
+     * 最大生命周期秒数。
+     */
     private Long maxLifetimeSeconds;
 
-    /** 单次执行超时秒数。 */
+    /**
+     * 单次执行超时秒数。
+     */
     private Long executionTimeoutSeconds;
 }

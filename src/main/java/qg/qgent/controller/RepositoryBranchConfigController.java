@@ -1,17 +1,8 @@
 package qg.qgent.controller;
 
-import java.util.UUID;
-
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.BranchPolicyDto;
@@ -20,6 +11,8 @@ import qg.qgent.dto.UpdateBranchPolicyRequest;
 import qg.qgent.dto.UpdateQualityGateRequest;
 import qg.qgent.security.CurrentActorProvider;
 import qg.qgent.service.RepositoryBranchConfigService;
+
+import java.util.UUID;
 
 /**
  * 仓库分支策略与质量门禁接口

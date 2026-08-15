@@ -2,11 +2,7 @@ package qg.qgent.controller;
 
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.service.NotificationService;
@@ -33,7 +29,7 @@ public class NotificationController {
      */
     @GetMapping
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId,
-            HttpServletRequest request) {
+                               HttpServletRequest request) {
         return ok(notificationService.list(userId), request);
     }
 
@@ -42,7 +38,7 @@ public class NotificationController {
      */
     @PostMapping("/{notificationId}/read")
     public ApiResponse<?> markRead(@AuthenticationPrincipal UUID userId,
-            @PathVariable UUID notificationId, HttpServletRequest request) {
+                                   @PathVariable UUID notificationId, HttpServletRequest request) {
         notificationService.markRead(userId, notificationId);
         return ok(Map.of(), request);
     }

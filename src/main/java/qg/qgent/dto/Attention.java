@@ -17,27 +17,39 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class Attention {
 
-    /** 待处理事项类型。 */
+    /**
+     * 待处理事项类型。
+     */
     @Schema(description = "待处理事项类型")
     private String kind;
 
-    /** 一行标题，如“等待补充验收说明”。 */
+    /**
+     * 一行标题，如“等待补充验收说明”。
+     */
     @Schema(description = "一行标题")
     private String title;
 
-    /** 脱敏摘要文本，说明需要用户做什么。 */
+    /**
+     * 脱敏摘要文本，说明需要用户做什么。
+     */
     @Schema(description = "脱敏摘要")
     private String summary;
 
-    /** 关联的任务运行 ID，可为 null。 */
+    /**
+     * 关联的任务运行 ID，可为 null。
+     */
     @Schema(description = "关联任务运行 ID")
     private String taskRunId;
 
-    /** 关联的输入/审批请求 ID，可为 null。 */
+    /**
+     * 关联的输入/审批请求 ID，可为 null。
+     */
     @Schema(description = "关联输入/审批请求 ID")
     private String inputRequestId;
 
-    /** 待处理事项发生时间（UTC）。 */
+    /**
+     * 待处理事项发生时间（UTC）。
+     */
     @Schema(description = "待处理事项发生时间")
     private String createdAt;
 }

@@ -1,12 +1,12 @@
 package qg.qgent.auth;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.SimpleMailMessage;
-import org.springframework.mail.MailException;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.mail.MailException;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.stereotype.Component;
 
 @Component
 public class TeamInvitationMailer {
@@ -17,8 +17,8 @@ public class TeamInvitationMailer {
     private final String registrationUrl;
 
     public TeamInvitationMailer(JavaMailSender sender, @Value("${spring.mail.username}") String from,
-            @Value("${app.invitation-url}") String invitationUrl,
-            @Value("${app.registration-url}") String registrationUrl) {
+                                @Value("${app.invitation-url}") String invitationUrl,
+                                @Value("${app.registration-url}") String registrationUrl) {
         this.sender = sender;
         this.from = from;
         this.invitationUrl = invitationUrl;

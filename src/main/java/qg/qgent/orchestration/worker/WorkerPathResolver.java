@@ -20,7 +20,7 @@ final class WorkerPathResolver {
         int slash = path.indexOf('/');
         if (slash > 0) {
             String first = path.substring(0, slash);
-            UUID repositoryId = session.getRepositoryByPath().get(first);
+            UUID repositoryId = session.repositoryByPath().get(first);
             if (repositoryId != null) {
                 return new Target(repositoryId, path.substring(slash + 1));
             }
@@ -29,7 +29,9 @@ final class WorkerPathResolver {
         return single == null ? null : new Target(single, path);
     }
 
-    /** 解析结果：目标仓库编号 + 仓库内相对路径。 */
+    /**
+     * 解析结果：目标仓库编号 + 仓库内相对路径。
+     */
     record Target(UUID repositoryId, String relativePath) {
     }
 }

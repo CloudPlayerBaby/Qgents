@@ -24,15 +24,15 @@ public interface SkillMapper extends BaseMapper<SkillEntity> {
      * @param tag       标签过滤，可为空
      * @return Skill 列表
      */
-    @Select({ "<script>",
+    @Select({"<script>",
             "SELECT * FROM skills WHERE project_id = #{projectId}",
             "AND (visibility = 'PROJECT_SHARED' OR created_by = #{actor})",
             "<if test='status != null'>AND status = #{status}</if>",
             "<if test='tag != null'>AND JSON_CONTAINS(tags, JSON_QUOTE(#{tag}))</if>",
             "ORDER BY updated_at DESC",
-            "</script>" })
+            "</script>"})
     List<SkillEntity> listSkills(@Param("projectId") UUID projectId, @Param("actor") UUID actor,
-            @Param("status") String status, @Param("tag") String tag);
+                                 @Param("status") String status, @Param("tag") String tag);
 
     /**
      * 按关键字检索项目内可用的已发布 Skill（点6 上下文检索）。
@@ -46,14 +46,14 @@ public interface SkillMapper extends BaseMapper<SkillEntity> {
      * @param q         关键字，可为空（为空时退化为全部已发布）
      * @return 匹配的 Skill 实体列表，按更新时间倒序
      */
-    @Select({ "<script>",
+    @Select({"<script>",
             "SELECT * FROM skills WHERE project_id = #{projectId}",
             "AND (visibility = 'PROJECT_SHARED' OR created_by = #{actor})",
             "AND status = 'PUBLISHED'",
             "<if test='tag != null'>AND JSON_CONTAINS(tags, JSON_QUOTE(#{tag}))</if>",
             "<if test='q != null'>AND (name LIKE CONCAT('%', #{q}, '%') OR content LIKE CONCAT('%', #{q}, '%'))</if>",
             "ORDER BY updated_at DESC",
-            "</script>" })
+            "</script>"})
     List<SkillEntity> searchByQuery(@Param("projectId") UUID projectId, @Param("actor") UUID actor,
-            @Param("tag") String tag, @Param("q") String q);
+                                    @Param("tag") String tag, @Param("q") String q);
 }

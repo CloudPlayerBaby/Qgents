@@ -8,12 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.MemoryCreateRequest;
-import qg.qgent.dto.MemoryDraftRequest;
-import qg.qgent.dto.MemoryResponse;
-import qg.qgent.dto.MemorySourceRef;
-import qg.qgent.dto.MemoryUpdateRequest;
-import qg.qgent.dto.UserSummary;
+import qg.qgent.dto.*;
 import qg.qgent.entity.MemoryEntity;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.entity.UserEntity;
@@ -24,11 +19,7 @@ import qg.qgent.mapper.UserMapper;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * Memory 业务：手动/ AI 草稿创建、编辑、审核批准/拒绝、归档（契约 §9）。
@@ -53,8 +44,8 @@ public class MemoryService {
     private final ObjectMapper mapper;
 
     public MemoryService(MemoryMapper memoryMapper, MemoryMessageSourceMapper sourceMapper,
-            MessageMapper messageMapper, ProjectAccessService access, UserMapper userMapper,
-            ChatClient.Builder chatClientBuilder, ObjectMapper mapper) {
+                         MessageMapper messageMapper, ProjectAccessService access, UserMapper userMapper,
+                         ChatClient.Builder chatClientBuilder, ObjectMapper mapper) {
         this.memoryMapper = memoryMapper;
         this.sourceMapper = sourceMapper;
         this.messageMapper = messageMapper;
@@ -319,7 +310,9 @@ public class MemoryService {
         }
     }
 
-    /** AI 草稿解析结果（LLM 输出 JSON 的目标结构）。 */
+    /**
+     * AI 草稿解析结果（LLM 输出 JSON 的目标结构）。
+     */
     @Data
     private static class AiDraft {
         private String title;

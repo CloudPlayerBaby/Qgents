@@ -14,9 +14,13 @@ import java.util.UUID;
 @TableName("memory_message_sources")
 public class MemoryMessageSourceEntity {
 
-    /** Memory ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * Memory ID（UUIDv7，BINARY(16)）。
+     */
     private UUID memoryId;
 
-    /** 作为知识依据的消息 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 作为知识依据的消息 ID（UUIDv7，BINARY(16)）。
+     */
     private UUID messageId;
 }

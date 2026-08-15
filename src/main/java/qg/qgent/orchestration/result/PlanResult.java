@@ -11,18 +11,30 @@ import java.util.List;
  */
 @Data
 public class PlanResult {
-    /** 任务理解。 */
+    /**
+     * 任务理解。
+     */
     private String taskUnderstanding;
-    /** 修改目标列表。 */
+    /**
+     * 修改目标列表。
+     */
     private List<String> objectives = new ArrayList<>();
-    /** 实现步骤。 */
+    /**
+     * 实现步骤。
+     */
     private List<ImplementationStep> implementationSteps = new ArrayList<>();
-    /** 测试计划。 */
+    /**
+     * 测试计划。
+     */
     private String testPlan;
-    /** 风险列表。 */
+    /**
+     * 风险列表。
+     */
     private List<String> risks = new ArrayList<>();
 
-    /** 单个实现步骤。 */
+    /**
+     * 单个实现步骤。
+     */
     @Data
     public static class ImplementationStep {
         private String title;

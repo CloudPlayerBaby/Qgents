@@ -24,7 +24,9 @@ import java.util.stream.Stream;
 @ConditionalOnProperty(name = "app.worker.enabled", havingValue = "false", matchIfMissing = true)
 public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
 
-    /** 单文件检索/读取的最大字节数，防止把超大文件塞进 Agent 上下文。 */
+    /**
+     * 单文件检索/读取的最大字节数，防止把超大文件塞进 Agent 上下文。
+     */
     private static final long MAX_READ_BYTES = 64 * 1024;
 
     private final WorkspaceService workspaceService;
@@ -88,18 +90,24 @@ public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
         }
     }
 
-    /** 统一为 forward-slash 相对路径，保证跨平台往返一致（LLM 回传的路径可被任何平台解析）。 */
+    /**
+     * 统一为 forward-slash 相对路径，保证跨平台往返一致（LLM 回传的路径可被任何平台解析）。
+     */
     private static String toPortablePath(Path relative) {
         return relative.toString().replace('\\', '/');
     }
 
-    /** 解析 Workspace 根目录；workspace 不可解析或目录未就绪时返回 null。 */
+    /**
+     * 解析 Workspace 根目录；workspace 不可解析或目录未就绪时返回 null。
+     */
     private Path workspaceRoot(UUID workspaceId) {
         WorkspaceService.WorkspaceResolution resolution = workspaceService.resolve(workspaceId);
         return resolution.ready() ? resolution.root() : null;
     }
 
-    /** 路径归一化并校验仍在根目录内，防止目录穿越。 */
+    /**
+     * 路径归一化并校验仍在根目录内，防止目录穿越。
+     */
     private Path resolveSafe(Path root, String path) {
         if (root == null || path == null || path.isBlank()) {
             return null;

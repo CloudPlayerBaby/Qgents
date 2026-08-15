@@ -6,11 +6,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.AttachmentCreateRequest;
-import qg.qgent.dto.AttachmentDownloadUrlResponse;
-import qg.qgent.dto.AttachmentStatusResponse;
-import qg.qgent.dto.AttachmentUploadCredentialResponse;
-import qg.qgent.dto.UploadCredential;
+import qg.qgent.dto.*;
 import qg.qgent.entity.AttachmentEntity;
 import qg.qgent.mapper.AttachmentMapper;
 
@@ -34,9 +30,9 @@ public class AttachmentService {
     private final long downloadExpirySeconds;
 
     public AttachmentService(AttachmentMapper attachmentMapper, AttachmentStorageStrategy storage,
-            ProjectAccessService access,
-            @Value("${app.attachment-max-size-bytes:52428800}") long maxSizeBytes,
-            @Value("${app.attachment-download-expiry-seconds:900}") long downloadExpirySeconds) {
+                             ProjectAccessService access,
+                             @Value("${app.attachment-max-size-bytes:52428800}") long maxSizeBytes,
+                             @Value("${app.attachment-download-expiry-seconds:900}") long downloadExpirySeconds) {
         this.attachmentMapper = attachmentMapper;
         this.storage = storage;
         this.access = access;
@@ -57,7 +53,7 @@ public class AttachmentService {
      */
     @Transactional
     public AttachmentUploadCredentialResponse createCredential(UUID actor, UUID projectId,
-            AttachmentCreateRequest body) {
+                                                               AttachmentCreateRequest body) {
         access.requireProjectMember(projectId, actor);
         long sizeBytes = body.getSizeBytes();
         if (sizeBytes <= 0) {

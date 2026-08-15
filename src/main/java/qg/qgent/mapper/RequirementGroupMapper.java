@@ -12,7 +12,9 @@ import java.util.UUID;
 @Mapper
 public interface RequirementGroupMapper extends BaseMapper<RequirementGroupEntity> {
 
-    /** 项目全部群（含主群与已归档），按最近活跃排序；从未发言的群以创建时间兜底。 */
+    /**
+     * 项目全部群（含主群与已归档），按最近活跃排序；从未发言的群以创建时间兜底。
+     */
     @Select("select * from requirement_groups where project_id=#{projectId}"
             + " order by coalesce(last_message_at, created_at) desc")
     List<RequirementGroupEntity> listByProject(@Param("projectId") UUID projectId);

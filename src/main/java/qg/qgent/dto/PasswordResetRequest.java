@@ -7,6 +7,8 @@ import lombok.Data;
 
 @Data
 public class PasswordResetRequest {
-    @NotBlank @Email @Size(max = 320)
+    @NotBlank
+    @Email
+    @Size(max = 320)
     private String email;
 }

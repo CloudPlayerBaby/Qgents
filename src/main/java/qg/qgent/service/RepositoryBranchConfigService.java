@@ -1,36 +1,22 @@
 package qg.qgent.service;
 
-import java.time.LocalDateTime;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-import java.util.stream.Collectors;
-
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.BranchPolicyDto;
 import qg.qgent.dto.QualityGateDto;
 import qg.qgent.dto.UpdateBranchPolicyRequest;
 import qg.qgent.dto.UpdateQualityGateRequest;
-import qg.qgent.entity.ProjectEntity;
-import qg.qgent.entity.ProjectMemberEntity;
-import qg.qgent.entity.ProjectRepositoryEntity;
-import qg.qgent.entity.RepositoryBranchConfigEntity;
-import qg.qgent.entity.RepositoryBranchConfigTestsetEntity;
-import qg.qgent.entity.TeamMemberEntity;
-import qg.qgent.entity.TestsetEntity;
-import qg.qgent.mapper.ProjectMapper;
-import qg.qgent.mapper.ProjectMemberMapper;
-import qg.qgent.mapper.ProjectRepositoryMapper;
-import qg.qgent.mapper.RepositoryBranchConfigMapper;
-import qg.qgent.mapper.RepositoryBranchConfigTestsetMapper;
-import qg.qgent.mapper.TeamMemberMapper;
-import qg.qgent.mapper.TestsetMapper;
+import qg.qgent.entity.*;
+import qg.qgent.mapper.*;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * 6.1 分支策略与质量门禁服务。
@@ -48,12 +34,12 @@ public class RepositoryBranchConfigService {
     private final TestsetMapper testsetMapper;
 
     public RepositoryBranchConfigService(RepositoryBranchConfigMapper branchConfigMapper,
-            RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper,
-            ProjectRepositoryMapper projectRepositoryMapper,
-            ProjectMapper projectMapper,
-            ProjectMemberMapper projectMemberMapper,
-            TeamMemberMapper teamMemberMapper,
-            TestsetMapper testsetMapper) {
+                                         RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper,
+                                         ProjectRepositoryMapper projectRepositoryMapper,
+                                         ProjectMapper projectMapper,
+                                         ProjectMemberMapper projectMemberMapper,
+                                         TeamMemberMapper teamMemberMapper,
+                                         TestsetMapper testsetMapper) {
         this.branchConfigMapper = branchConfigMapper;
         this.branchConfigTestsetMapper = branchConfigTestsetMapper;
         this.projectRepositoryMapper = projectRepositoryMapper;
@@ -106,7 +92,7 @@ public class RepositoryBranchConfigService {
      */
     @Transactional // 开启事务，保证更新过程中发生异常时数据能够回滚
     public BranchPolicyDto updateBranchPolicy(UUID actorId, UUID projectId, UUID repositoryId, String branchName,
-            UpdateBranchPolicyRequest request) {
+                                              UpdateBranchPolicyRequest request) {
         // 权限校验：修改分支策略属于高危操作，必须是项目管理员 (Project Admin) 才能执行
         requireProjectAdmin(actorId, projectId);
 
@@ -181,7 +167,7 @@ public class RepositoryBranchConfigService {
      */
     @Transactional
     public QualityGateDto updateQualityGate(UUID actorId, UUID projectId, UUID repositoryId, String branchName,
-            UpdateQualityGateRequest request) {
+                                            UpdateQualityGateRequest request) {
         // 必须是项目管理员才能修改门禁
         requireProjectAdmin(actorId, projectId);
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
@@ -244,7 +230,7 @@ public class RepositoryBranchConfigService {
      * @return 分支配置实体
      */
     private RepositoryBranchConfigEntity getConfig(UUID projectRepositoryId, String branchName,
-            boolean createIfMissing) {
+                                                   boolean createIfMissing) {
         // 尝试从数据库查询该分支配置
         RepositoryBranchConfigEntity config = branchConfigMapper
                 .selectOne(new LambdaQueryWrapper<RepositoryBranchConfigEntity>()
@@ -310,8 +296,8 @@ public class RepositoryBranchConfigService {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
                 || projectMemberMapper.selectCount(
-                        new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId)
-                                .eq(ProjectMemberEntity::getUserId, actorId)) > 0);
+                new LambdaQueryWrapper<ProjectMemberEntity>().eq(ProjectMemberEntity::getProjectId, projectId)
+                        .eq(ProjectMemberEntity::getUserId, actorId)) > 0);
         // 项目是否存在+是团队老大/是普通成员
     }
 
@@ -319,8 +305,8 @@ public class RepositoryBranchConfigService {
         ProjectEntity project = projectMapper.selectById(projectId);
         return project != null && (isTeamOwner(project.getTeamId(), actorId)
                 || projectMemberMapper.selectCount(new LambdaQueryWrapper<ProjectMemberEntity>()
-                        .eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId)
-                        .eq(ProjectMemberEntity::getRole, "PROJECT_ADMIN")) > 0);
+                .eq(ProjectMemberEntity::getProjectId, projectId).eq(ProjectMemberEntity::getUserId, actorId)
+                .eq(ProjectMemberEntity::getRole, "PROJECT_ADMIN")) > 0);
     }
 
     private boolean isTeamOwner(UUID teamId, UUID actorId) {

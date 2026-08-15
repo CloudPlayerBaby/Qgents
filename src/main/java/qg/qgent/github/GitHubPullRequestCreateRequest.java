@@ -1,6 +1,8 @@
 package qg.qgent.github;
 
-/** Server-side payload for GitHub's Pull Request creation endpoint. */
+/**
+ * Server-side payload for GitHub's Pull Request creation endpoint.
+ */
 public record GitHubPullRequestCreateRequest(
         /* Pull Request title shown in GitHub. */
         String title,
@@ -10,4 +12,5 @@ public record GitHubPullRequestCreateRequest(
         String head,
         /* Target branch configured for the project repository. */
         String base
-) {}
+) {
+}

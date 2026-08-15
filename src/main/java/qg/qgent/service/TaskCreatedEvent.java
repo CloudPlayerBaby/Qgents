@@ -1,7 +1,6 @@
 package qg.qgent.service;
 
 import lombok.AllArgsConstructor;
-import lombok.Getter;
 
 import java.util.UUID;
 
@@ -12,14 +11,11 @@ import java.util.UUID;
  * 后端1 的编排触发监听器（{@code qg.qgent.orchestration.TaskExecutionListener}）在事务
  * 提交后异步驱动编排执行。区别于 {@link EventService} 的 SSE 项目级事件（面向前端刷新），
  * 本事件用于进程内触发后端逻辑。
+ *
+ * @param projectId 任务所属项目 ID。
+ * @param taskId    新建任务 ID。
  */
-@Getter
 @AllArgsConstructor
-public class TaskCreatedEvent {
+public record TaskCreatedEvent(UUID projectId, UUID taskId) {
 
-    /** 任务所属项目 ID。 */
-    private final UUID projectId;
-
-    /** 新建任务 ID。 */
-    private final UUID taskId;
 }

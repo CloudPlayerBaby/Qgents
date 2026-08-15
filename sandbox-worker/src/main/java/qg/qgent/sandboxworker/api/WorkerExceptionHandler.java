@@ -6,7 +6,9 @@ import jakarta.validation.ConstraintViolationException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-/** 将工作节点异常转换为稳定且不泄露内部信息的响应。 */
+/**
+ * 将工作节点异常转换为稳定且不泄露内部信息的响应。
+ */
 @RestControllerAdvice
 public class WorkerExceptionHandler {
     @ExceptionHandler(WorkerException.class)

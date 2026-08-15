@@ -12,9 +12,13 @@ import java.util.UUID;
 @Data
 public class WorkerWorkspaceProvisionRequest {
 
-    /** Workspace 所属项目编号。 */
+    /**
+     * Workspace 所属项目编号。
+     */
     private UUID projectId;
 
-    /** Workspace 下需要准备的独立仓库副本。 */
+    /**
+     * Workspace 下需要准备的独立仓库副本。
+     */
     private List<WorkerWorkspaceRepositoryRequest> repositories;
 }

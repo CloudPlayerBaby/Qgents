@@ -12,7 +12,6 @@ import qg.qgent.dto.InputRequestResponse;
 import qg.qgent.dto.LogEntryResponse;
 import qg.qgent.dto.TaskRunDetailResponse;
 import qg.qgent.dto.TaskRunListItemResponse;
-import qg.qgent.dto.TaskRunSummaryResponse;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.ExecutionLogEntity;
@@ -114,14 +113,14 @@ class TaskRunServiceTest {
         ApiPageResponse<TaskRunListItemResponse> page = service.listByTask(projectId, run.getTaskId(),
                 UUID.randomUUID(), null, 20, "req");
 
-        TaskRunListItemResponse item = page.getData().getFirst();
+        TaskRunListItemResponse item = page.data().getFirst();
         assertEquals(runId.toString(), item.getId());
         assertEquals(run.getStatus(), item.getStatus());
         assertEquals(run.getTaskId().toString(), item.getTaskId());
         assertEquals("执行成功", item.getStatusSummary());
         assertNull(item.getStatusReason());
-        assertFalse(page.getPage().getHasMore());
-        assertNull(page.getPage().getNextCursor());
+        assertFalse(page.page().getHasMore());
+        assertNull(page.page().getNextCursor());
     }
 
     @Test
@@ -141,7 +140,7 @@ class TaskRunServiceTest {
 
         ApiPageResponse<TaskRunListItemResponse> page = service.listByTask(projectId, run.getTaskId(),
                 UUID.randomUUID(), null, 20, "req");
-        TaskRunListItemResponse item = page.getData().getFirst();
+        TaskRunListItemResponse item = page.data().getFirst();
 
         assertEquals("等待用户补充输入", item.getStatusSummary());
         assertEquals("INPUT_REQUIRED", item.getStatusReason().getCode());
@@ -159,13 +158,13 @@ class TaskRunServiceTest {
 
         ApiPageResponse<LogEntryResponse> page = service.logs(projectId, runId, UUID.randomUUID(), null, 20, "req");
 
-        LogEntryResponse firstItem = page.getData().getFirst();
+        LogEntryResponse firstItem = page.data().getFirst();
         assertEquals(1L, firstItem.getSequence());
         assertEquals("sandbox", firstItem.getNode());
         assertEquals("provisioning", firstItem.getContent());
-        assertEquals(2, page.getData().size());
-        assertFalse(page.getPage().getHasMore());
-        assertNull(page.getPage().getNextCursor());
+        assertEquals(2, page.data().size());
+        assertFalse(page.page().getHasMore());
+        assertNull(page.page().getNextCursor());
     }
 
     @Test

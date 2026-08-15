@@ -2,7 +2,6 @@ package qg.qgent.orchestration.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
@@ -52,7 +51,9 @@ public class SandboxWorkerClient {
         this.objectMapper = objectMapper;
     }
 
-    /** 幂等准备一个多仓库 Workspace，返回真实 HEAD 与 storageKey。 */
+    /**
+     * 幂等准备一个多仓库 Workspace，返回真实 HEAD 与 storageKey。
+     */
     public WorkerWorkspace provisionWorkspace(UUID workspaceId, WorkerWorkspaceProvisionRequest request) {
         return execute(() -> client.put()
                 .uri(WORKSPACES, workspaceId)
@@ -61,7 +62,9 @@ public class SandboxWorkerClient {
                 .body(WorkerWorkspace.class));
     }
 
-    /** 查询 Workspace 与各仓库当前 HEAD。 */
+    /**
+     * 查询 Workspace 与各仓库当前 HEAD。
+     */
     public WorkerWorkspace getWorkspace(UUID workspaceId) {
         return execute(() -> client.get()
                 .uri(WORKSPACES, workspaceId)
@@ -69,7 +72,9 @@ public class SandboxWorkerClient {
                 .body(WorkerWorkspace.class));
     }
 
-    /** 移除 Workspace 独立仓库，不删除共享 Git Store。 */
+    /**
+     * 移除 Workspace 独立仓库，不删除共享 Git Store。
+     */
     public void deleteWorkspace(UUID workspaceId) {
         execute(() -> {
             client.delete().uri(WORKSPACES, workspaceId).retrieve().toBodilessEntity();
@@ -77,7 +82,9 @@ public class SandboxWorkerClient {
         });
     }
 
-    /** 查询仓库当前分支、HEAD 与结构化变更。 */
+    /**
+     * 查询仓库当前分支、HEAD 与结构化变更。
+     */
     public WorkerGitStatus getWorkspaceGitStatus(UUID workspaceId, UUID repositoryId) {
         return execute(() -> client.get()
                 .uri(GIT_STATUS, workspaceId, repositoryId)
@@ -85,7 +92,9 @@ public class SandboxWorkerClient {
                 .body(WorkerGitStatus.class));
     }
 
-    /** 同步受控 Git Store */
+    /**
+     * 同步受控 Git Store
+     */
     public WorkerGitStoreSyncResponse syncGitStore(UUID repositoryId, WorkerGitStoreSyncRequest request) {
         return execute(() -> client.post()
                 .uri(GIT_STORE_SYNC, repositoryId)
@@ -94,7 +103,9 @@ public class SandboxWorkerClient {
                 .body(WorkerGitStoreSyncResponse.class));
     }
 
-    /** 生成包含未跟踪文件的完整 Diff。 */
+    /**
+     * 生成包含未跟踪文件的完整 Diff。
+     */
     public WorkerGitDiff createWorkspaceGitDiff(UUID workspaceId, UUID repositoryId) {
         return execute(() -> client.post()
                 .uri(GIT_DIFF, workspaceId, repositoryId)
@@ -102,9 +113,11 @@ public class SandboxWorkerClient {
                 .body(WorkerGitDiff.class));
     }
 
-    /** Commits the exact Worker snapshot identified by its head and patch hash. */
+    /**
+     * Commits the exact Worker snapshot identified by its head and patch hash.
+     */
     public WorkerGitCommitResponse commitWorkspaceDiff(UUID workspaceId, UUID repositoryId,
-            WorkerGitCommitRequest request) {
+                                                       WorkerGitCommitRequest request) {
         return execute(() -> client.post()
                 .uri(GIT_COMMIT, workspaceId, repositoryId)
                 .body(request)
@@ -112,7 +125,9 @@ public class SandboxWorkerClient {
                 .body(WorkerGitCommitResponse.class));
     }
 
-    /** 校验 expectedHeadCommit 并带凭证发起推送。 */
+    /**
+     * 校验 expectedHeadCommit 并带凭证发起推送。
+     */
     public WorkerGitPushResponse pushWorkspaceBranch(UUID workspaceId, UUID repositoryId, WorkerGitPushRequest request) {
         return execute(() -> client.post()
                 .uri(GIT_PUSH, workspaceId, repositoryId)
@@ -121,7 +136,9 @@ public class SandboxWorkerClient {
                 .body(WorkerGitPushResponse.class));
     }
 
-    /** 创建 Sandbox 并应用 Worker 本地资源上限。 */
+    /**
+     * 创建 Sandbox 并应用 Worker 本地资源上限。
+     */
     public WorkerSandbox createSandbox(WorkerCreateSandboxRequest request) {
         return execute(() -> client.post()
                 .uri(SANDBOXES)
@@ -130,7 +147,9 @@ public class SandboxWorkerClient {
                 .body(WorkerSandbox.class));
     }
 
-    /** 查询 Sandbox 当前状态与租约期限。 */
+    /**
+     * 查询 Sandbox 当前状态与租约期限。
+     */
     public WorkerSandbox getSandbox(UUID sandboxId) {
         return execute(() -> client.get()
                 .uri(SANDBOX, sandboxId)
@@ -138,7 +157,9 @@ public class SandboxWorkerClient {
                 .body(WorkerSandbox.class));
     }
 
-    /** 延长 Sandbox 空闲租约；ttlSeconds 为空时使用 Worker 本地默认配置。 */
+    /**
+     * 延长 Sandbox 空闲租约；ttlSeconds 为空时使用 Worker 本地默认配置。
+     */
     public WorkerSandbox renewSandbox(UUID sandboxId, Long ttlSeconds) {
         return execute(() -> client.post()
                 .uri(uriBuilder -> {
@@ -152,12 +173,16 @@ public class SandboxWorkerClient {
                 .body(WorkerSandbox.class));
     }
 
-    /** 延长 Sandbox 空闲租约，使用 Worker 本地默认配置。 */
+    /**
+     * 延长 Sandbox 空闲租约，使用 Worker 本地默认配置。
+     */
     public WorkerSandbox renewSandbox(UUID sandboxId) {
         return renewSandbox(sandboxId, null);
     }
 
-    /** 取消活跃工具执行并销毁临时容器；持久 Workspace 不随 Sandbox 删除。 */
+    /**
+     * 取消活跃工具执行并销毁临时容器；持久 Workspace 不随 Sandbox 删除。
+     */
     public void destroySandbox(UUID sandboxId) {
         execute(() -> {
             client.delete().uri(SANDBOX, sandboxId).retrieve().toBodilessEntity();
@@ -165,7 +190,9 @@ public class SandboxWorkerClient {
         });
     }
 
-    /** 提交结构化工具执行，返回 202 入队结果。 */
+    /**
+     * 提交结构化工具执行，返回 202 入队结果。
+     */
     public WorkerToolExecution submitToolExecution(UUID sandboxId, WorkerToolExecutionRequest request) {
         return execute(() -> client.post()
                 .uri(TOOL_EXECUTIONS, sandboxId)
@@ -174,7 +201,9 @@ public class SandboxWorkerClient {
                 .body(WorkerToolExecution.class));
     }
 
-    /** 查询持久化工具执行记录与终态结果。 */
+    /**
+     * 查询持久化工具执行记录与终态结果。
+     */
     public WorkerToolExecution getToolExecution(UUID executionId) {
         return execute(() -> client.get()
                 .uri(TOOL_EXECUTION, executionId)
@@ -182,7 +211,9 @@ public class SandboxWorkerClient {
                 .body(WorkerToolExecution.class));
     }
 
-    /** 按递增游标查询工具执行日志。 */
+    /**
+     * 按递增游标查询工具执行日志。
+     */
     public WorkerExecutionLogs getToolExecutionLogs(UUID executionId, long after, int limit) {
         return execute(() -> client.get()
                 .uri(uri -> uri.path(TOOL_EXECUTION_LOGS)
@@ -193,34 +224,44 @@ public class SandboxWorkerClient {
                 .body(WorkerExecutionLogs.class));
     }
 
-    /** 在 Worker 内固化当前未提交工作树，不读取或传输宿主机路径。 */
+    /**
+     * 在 Worker 内固化当前未提交工作树，不读取或传输宿主机路径。
+     */
     public WorkerWorkspace createTestSnapshot(UUID workspaceId, UUID repositoryId,
-            UUID snapshotWorkspaceId, UUID projectId) {
+                                              UUID snapshotWorkspaceId, UUID projectId) {
         return execute(() -> client.post()
                 .uri(uri -> uri.path(TEST_SNAPSHOT).queryParam("projectId", projectId)
                         .build(workspaceId, repositoryId, snapshotWorkspaceId))
                 .retrieve().body(WorkerWorkspace.class));
     }
 
-    /** 同步执行已由主后端校验的 Testset 定义。 */
+    /**
+     * 同步执行已由主后端校验的 Testset 定义。
+     */
     public WorkerTestExecutionResponse executeTests(WorkerTestExecutionRequest request) {
         return execute(() -> client.post().uri(TEST_EXECUTIONS).body(request).retrieve()
                 .body(WorkerTestExecutionResponse.class));
     }
 
-    /** 解析真实 Git 引用并执行只读合并预演。 */
+    /**
+     * 解析真实 Git 引用并执行只读合并预演。
+     */
     public WorkerMergePreviewResponse mergePreview(WorkerMergePreviewRequest request) {
         return execute(() -> client.post().uri(MERGE_PREVIEWS).body(request).retrieve()
                 .body(WorkerMergePreviewResponse.class));
     }
 
-    /** 在受控 Worker 中把 Git 引用解析为固定 commit SHA。 */
+    /**
+     * 在受控 Worker 中把 Git 引用解析为固定 commit SHA。
+     */
     public WorkerGitResolveResponse resolveGitRef(WorkerGitResolveRequest request) {
         return execute(() -> client.post().uri(GIT_RESOLUTIONS).body(request).retrieve()
                 .body(WorkerGitResolveResponse.class));
     }
 
-    /** 统一执行调用并做错误映射，不让 RestClient 原始异常泄漏到上层。 */
+    /**
+     * 统一执行调用并做错误映射，不让 RestClient 原始异常泄漏到上层。
+     */
     private <T> T execute(Supplier<T> call) {
         try {
             return call.get();
@@ -232,7 +273,9 @@ public class SandboxWorkerClient {
         }
     }
 
-    /** 把 Worker 非 2xx 响应映射为携带业务错误码的 ApiException；解析失败时退回通用错误。 */
+    /**
+     * 把 Worker 非 2xx 响应映射为携带业务错误码的 ApiException；解析失败时退回通用错误。
+     */
     private ApiException workerError(RestClientResponseException exception) {
         String code = "SANDBOX_WORKER_ERROR";
         String message = exception.getMessage();

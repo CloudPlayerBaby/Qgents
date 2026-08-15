@@ -4,15 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.MemoryCreateRequest;
@@ -42,8 +34,8 @@ public class MemoryController {
      */
     @GetMapping("/projects/{projectId}/memories")
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @RequestParam(value = "status", required = false) String status,
-            @RequestParam(value = "tag", required = false) String tag, HttpServletRequest request) {
+                               @RequestParam(value = "status", required = false) String status,
+                               @RequestParam(value = "tag", required = false) String tag, HttpServletRequest request) {
         return ok(memoryService.list(userId, projectId, status, tag), request);
     }
 
@@ -53,7 +45,7 @@ public class MemoryController {
     @PostMapping("/projects/{projectId}/memories")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<?> create(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @Valid @RequestBody MemoryCreateRequest body, HttpServletRequest request) {
+                                 @Valid @RequestBody MemoryCreateRequest body, HttpServletRequest request) {
         return ok(memoryService.create(userId, projectId, body), request);
     }
 
@@ -63,7 +55,7 @@ public class MemoryController {
     @PostMapping("/projects/{projectId}/memories/drafts")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<?> createAiDraft(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @Valid @RequestBody MemoryDraftRequest body, HttpServletRequest request) {
+                                        @Valid @RequestBody MemoryDraftRequest body, HttpServletRequest request) {
         return ok(memoryService.createAiDraft(userId, projectId, body), request);
     }
 
@@ -72,7 +64,7 @@ public class MemoryController {
      */
     @GetMapping("/projects/{projectId}/memories/{memoryId}")
     public ApiResponse<?> get(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID memoryId, HttpServletRequest request) {
+                              @PathVariable UUID memoryId, HttpServletRequest request) {
         return ok(memoryService.get(userId, projectId, memoryId), request);
     }
 
@@ -81,7 +73,7 @@ public class MemoryController {
      */
     @PatchMapping("/projects/{projectId}/memories/{memoryId}")
     public ApiResponse<?> update(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID memoryId, @Valid @RequestBody MemoryUpdateRequest body, HttpServletRequest request) {
+                                 @PathVariable UUID memoryId, @Valid @RequestBody MemoryUpdateRequest body, HttpServletRequest request) {
         return ok(memoryService.update(userId, projectId, memoryId, body), request);
     }
 
@@ -90,7 +82,7 @@ public class MemoryController {
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/submit-review")
     public ApiResponse<?> submitReview(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID memoryId, HttpServletRequest request) {
+                                       @PathVariable UUID memoryId, HttpServletRequest request) {
         return ok(memoryService.submitReview(userId, projectId, memoryId), request);
     }
 
@@ -99,7 +91,7 @@ public class MemoryController {
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/approve")
     public ApiResponse<?> approve(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID memoryId, HttpServletRequest request) {
+                                  @PathVariable UUID memoryId, HttpServletRequest request) {
         return ok(memoryService.approve(userId, projectId, memoryId), request);
     }
 
@@ -108,7 +100,7 @@ public class MemoryController {
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/reject")
     public ApiResponse<?> reject(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID memoryId, @Valid @RequestBody RejectRequest body, HttpServletRequest request) {
+                                 @PathVariable UUID memoryId, @Valid @RequestBody RejectRequest body, HttpServletRequest request) {
         return ok(memoryService.reject(userId, projectId, memoryId, body.getReason()), request);
     }
 
@@ -117,7 +109,7 @@ public class MemoryController {
      */
     @PostMapping("/projects/{projectId}/memories/{memoryId}/archive")
     public ApiResponse<?> archive(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID memoryId, HttpServletRequest request) {
+                                  @PathVariable UUID memoryId, HttpServletRequest request) {
         return ok(memoryService.archive(userId, projectId, memoryId), request);
     }
 

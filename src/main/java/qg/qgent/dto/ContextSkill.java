@@ -13,11 +13,15 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class ContextSkill {
 
-    /** Skill 名称。 */
+    /**
+     * Skill 名称。
+     */
     @Schema(description = "Skill 名称")
     private String name;
 
-    /** 可复用操作规范正文。 */
+    /**
+     * 可复用操作规范正文。
+     */
     @Schema(description = "可复用操作规范正文")
     private String content;
 }

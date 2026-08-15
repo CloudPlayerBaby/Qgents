@@ -11,35 +11,20 @@ import qg.qgent.api.PersistedApiException;
 import qg.qgent.auth.TeamInvitationMailer;
 import qg.qgent.auth.TokenService;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.CreateTeamRequest;
-import qg.qgent.dto.InviteTeamMemberRequest;
-import qg.qgent.dto.PageInfo;
-import qg.qgent.dto.PageSlice;
-import qg.qgent.dto.TeamInvitationResponse;
-import qg.qgent.dto.TeamMemberResponse;
-import qg.qgent.dto.TeamMemberView;
-import qg.qgent.dto.TeamMembershipView;
-import qg.qgent.dto.TeamResponse;
-import qg.qgent.dto.UpdateTeamMemberRequest;
-import qg.qgent.dto.UpdateTeamRequest;
+import qg.qgent.dto.*;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamInvitationEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.entity.UserEntity;
-import qg.qgent.mapper.ProjectMemberMapper;
-import qg.qgent.mapper.ProjectMapper;
-import qg.qgent.mapper.TeamInvitationMapper;
-import qg.qgent.mapper.TeamMapper;
-import qg.qgent.mapper.TeamMemberMapper;
-import qg.qgent.mapper.UserMapper;
+import qg.qgent.mapper.*;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.Base64;
-import java.nio.charset.StandardCharsets;
 import java.util.function.Function;
 
 /**
@@ -59,9 +44,9 @@ public class TeamService {
     private final TeamDisbandService teamDisbandService;
 
     public TeamService(TeamMapper teamMapper, TeamMemberMapper memberMapper,
-            TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, ProjectMapper projectMapper,
-            UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer,
-            TeamDisbandService teamDisbandService) {
+                       TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, ProjectMapper projectMapper,
+                       UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer,
+                       TeamDisbandService teamDisbandService) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
         this.invitationMapper = invitationMapper;
@@ -75,7 +60,7 @@ public class TeamService {
 
     /**
      * 创建团队
-     * 
+     *
      * @param actor
      * @param request
      * @return
@@ -102,7 +87,7 @@ public class TeamService {
 
     /**
      * 获取团队列表
-     * 
+     *
      * @param actor
      * @param cursor
      * @param limit
@@ -128,7 +113,7 @@ public class TeamService {
 
     /**
      * 获取团队详情
-     * 
+     *
      * @param actor
      * @param teamId
      * @return
@@ -142,7 +127,7 @@ public class TeamService {
 
     /**
      * 更新团队信息
-     * 
+     *
      * @param actor
      * @param teamId
      * @param request
@@ -165,7 +150,7 @@ public class TeamService {
 
     /**
      * 获取团队成员列表
-     * 
+     *
      * @param actor
      * @param teamId
      * @param cursor
@@ -192,7 +177,7 @@ public class TeamService {
 
     /**
      * 邀请成员加入团队
-     * 
+     *
      * @param actor
      * @param teamId
      * @param request
@@ -251,7 +236,7 @@ public class TeamService {
 
     /**
      * 获取团队邀请列表
-     * 
+     *
      * @param actor
      * @param teamId
      * @param cursor
@@ -270,7 +255,7 @@ public class TeamService {
 
     /**
      * 接受团队邀请
-     * 
+     *
      * @param actor
      * @param rawToken
      * @return
@@ -328,7 +313,7 @@ public class TeamService {
 
     /**
      * 撤销团队邀请
-     * 
+     *
      * @param actor
      * @param teamId
      * @param invitationId
@@ -365,7 +350,7 @@ public class TeamService {
 
     /**
      * 更新团队成员角色
-     * 
+     *
      * @param actor
      * @param teamId
      * @param userId
@@ -393,7 +378,7 @@ public class TeamService {
 
     /**
      * 移除团队成员
-     * 
+     *
      * @param actor
      * @param teamId
      * @param userId
@@ -521,7 +506,7 @@ public class TeamService {
 
     // 构建分页响应
     private <R, T> PageSlice<T> keysetPage(List<R> rows, int pageSize, String scope,
-            Function<R, UUID> id, Function<R, T> convert) {
+                                           Function<R, UUID> id, Function<R, T> convert) {
         boolean hasMore = rows.size() > pageSize;
         List<R> visible = hasMore ? rows.subList(0, pageSize) : rows;
         String nextCursor = hasMore && !visible.isEmpty()

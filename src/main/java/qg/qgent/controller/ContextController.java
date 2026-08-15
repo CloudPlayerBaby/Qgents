@@ -2,11 +2,7 @@ package qg.qgent.controller;
 
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.service.ContextService;
@@ -32,8 +28,8 @@ public class ContextController {
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}/context")
     public ApiResponse<?> getContext(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, @RequestParam(value = "limit", required = false) Integer limit,
-            HttpServletRequest request) {
+                                     @PathVariable UUID groupId, @RequestParam(value = "limit", required = false) Integer limit,
+                                     HttpServletRequest request) {
         return ApiResponse.ok(contextService.buildForGroup(userId, projectId, groupId, limit),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
@@ -43,11 +39,11 @@ public class ContextController {
      */
     @GetMapping("/projects/{projectId}/context/search")
     public ApiResponse<?> search(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @RequestParam(value = "q", required = false) String q,
-            @RequestParam(value = "tag", required = false) String tag,
-            @RequestParam(value = "groupId", required = false) UUID groupId,
-            @RequestParam(value = "limit", required = false) Integer limit,
-            HttpServletRequest request) {
+                                 @RequestParam(value = "q", required = false) String q,
+                                 @RequestParam(value = "tag", required = false) String tag,
+                                 @RequestParam(value = "groupId", required = false) UUID groupId,
+                                 @RequestParam(value = "limit", required = false) Integer limit,
+                                 HttpServletRequest request) {
         return ApiResponse.ok(contextService.search(userId, projectId, q, tag, groupId, limit),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }

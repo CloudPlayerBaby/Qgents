@@ -7,7 +7,9 @@ import lombok.NoArgsConstructor;
 import java.util.List;
 import java.util.UUID;
 
-/** Workspace Manager 返回的持久开发现场状态。 */
+/**
+ * Workspace Manager 返回的持久开发现场状态。
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

@@ -1,9 +1,9 @@
 package qg.qgent.dto;
 
+import lombok.Data;
+
 import java.util.List;
 import java.util.UUID;
-
-import lombok.Data;
 
 /**
  * Data transfer object for quality gates configuration.

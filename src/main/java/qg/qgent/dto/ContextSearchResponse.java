@@ -18,15 +18,21 @@ import java.util.List;
 @AllArgsConstructor
 public class ContextSearchResponse {
 
-    /** 匹配的已发布 Skill（项目共享或本人）。 */
+    /**
+     * 匹配的已发布 Skill（项目共享或本人）。
+     */
     @Schema(description = "匹配的已发布 Skill（项目共享或本人）")
     private List<ContextSkill> skills;
 
-    /** 匹配的已批准 Memory。 */
+    /**
+     * 匹配的已批准 Memory。
+     */
     @Schema(description = "匹配的已批准 Memory")
     private List<ContextMemory> memories;
 
-    /** 匹配的消息（仅当关键字非空时查询，可选限定群）。 */
+    /**
+     * 匹配的消息（仅当关键字非空时查询，可选限定群）。
+     */
     @Schema(description = "匹配的消息（仅当关键字非空时查询）")
     private List<ContextMessage> messages;
 }

@@ -4,27 +4,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.PagedApiResponse;
 import qg.qgent.api.RequestIdFilter;
-import qg.qgent.dto.AddProjectMemberRequest;
-import qg.qgent.dto.CreateProjectRequest;
-import qg.qgent.dto.PageSlice;
-import qg.qgent.dto.ProjectMemberResponse;
-import qg.qgent.dto.ProjectResponse;
-import qg.qgent.dto.UpdateProjectMemberRequest;
-import qg.qgent.dto.UpdateProjectRequest;
+import qg.qgent.dto.*;
 import qg.qgent.service.IdempotencyService;
 import qg.qgent.service.ProjectService;
 
@@ -52,8 +36,8 @@ public class ProjectController {
     @PostMapping("/teams/{teamId}/projects")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<ProjectResponse> create(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key,
-            @Valid @RequestBody CreateProjectRequest body, HttpServletRequest request) {
+                                               @RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                               @Valid @RequestBody CreateProjectRequest body, HttpServletRequest request) {
         ProjectResponse value = idempotency.execute(actor, "POST:/teams/{teamId}/projects", key,
                 Map.of("teamId", teamId, "body", body), 201, ProjectResponse.class,
                 () -> projects.create(actor, teamId, body));
@@ -65,8 +49,8 @@ public class ProjectController {
      */
     @GetMapping("/teams/{teamId}/projects")
     public PagedApiResponse<ProjectResponse> list(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
-            @RequestParam(required = false) String cursor, @RequestParam(required = false) Integer limit,
-            HttpServletRequest request) {
+                                                  @RequestParam(required = false) String cursor, @RequestParam(required = false) Integer limit,
+                                                  HttpServletRequest request) {
         return page(projects.list(actor, teamId, cursor, limit), request);
     }
 
@@ -75,7 +59,7 @@ public class ProjectController {
      */
     @GetMapping("/projects/{projectId}")
     public ApiResponse<ProjectResponse> get(@AuthenticationPrincipal UUID actor, @PathVariable UUID projectId,
-            HttpServletRequest request) {
+                                            HttpServletRequest request) {
         return ok(projects.get(actor, projectId), request);
     }
 
@@ -84,8 +68,8 @@ public class ProjectController {
      */
     @PatchMapping("/projects/{projectId}")
     public ApiResponse<ProjectResponse> update(@AuthenticationPrincipal UUID actor, @PathVariable UUID projectId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key,
-            @Valid @RequestBody UpdateProjectRequest body, HttpServletRequest request) {
+                                               @RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                               @Valid @RequestBody UpdateProjectRequest body, HttpServletRequest request) {
         ProjectResponse value = idempotency.execute(actor, "PATCH:/projects/{projectId}", key,
                 Map.of("projectId", projectId, "body", body), 200, ProjectResponse.class,
                 () -> projects.update(actor, projectId, body));
@@ -97,7 +81,7 @@ public class ProjectController {
      */
     @PostMapping("/projects/{projectId}/archive")
     public ApiResponse<ProjectResponse> archive(@AuthenticationPrincipal UUID actor, @PathVariable UUID projectId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+                                                @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
         ProjectResponse value = idempotency.execute(actor, "POST:/projects/{projectId}/archive", key,
                 Map.of("projectId", projectId), 200, ProjectResponse.class,
                 () -> projects.archive(actor, projectId));
@@ -109,7 +93,7 @@ public class ProjectController {
      */
     @PostMapping("/projects/{projectId}/restore")
     public ApiResponse<ProjectResponse> restore(@AuthenticationPrincipal UUID actor, @PathVariable UUID projectId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+                                                @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
         ProjectResponse value = idempotency.execute(actor, "POST:/projects/{projectId}/restore", key,
                 Map.of("projectId", projectId), 200, ProjectResponse.class,
                 () -> projects.restore(actor, projectId));
@@ -121,8 +105,8 @@ public class ProjectController {
      */
     @GetMapping("/projects/{projectId}/members")
     public PagedApiResponse<ProjectMemberResponse> members(@AuthenticationPrincipal UUID actor,
-            @PathVariable UUID projectId, @RequestParam(required = false) String cursor,
-            @RequestParam(required = false) Integer limit, HttpServletRequest request) {
+                                                           @PathVariable UUID projectId, @RequestParam(required = false) String cursor,
+                                                           @RequestParam(required = false) Integer limit, HttpServletRequest request) {
         return page(projects.members(actor, projectId, cursor, limit), request);
     }
 
@@ -132,8 +116,8 @@ public class ProjectController {
     @PostMapping("/projects/{projectId}/members")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<ProjectMemberResponse> addMember(@AuthenticationPrincipal UUID actor,
-            @PathVariable UUID projectId, @RequestHeader(value = "Idempotency-Key", required = false) String key,
-            @Valid @RequestBody AddProjectMemberRequest body, HttpServletRequest request) {
+                                                        @PathVariable UUID projectId, @RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                                        @Valid @RequestBody AddProjectMemberRequest body, HttpServletRequest request) {
         ProjectMemberResponse value = idempotency.execute(actor, "POST:/projects/{projectId}/members", key,
                 Map.of("projectId", projectId, "body", body), 201, ProjectMemberResponse.class,
                 () -> projects.addMember(actor, projectId, body));
@@ -145,9 +129,9 @@ public class ProjectController {
      */
     @PatchMapping("/projects/{projectId}/members/{userId}")
     public ApiResponse<ProjectMemberResponse> updateMember(@AuthenticationPrincipal UUID actor,
-            @PathVariable UUID projectId, @PathVariable UUID userId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key,
-            @Valid @RequestBody UpdateProjectMemberRequest body, HttpServletRequest request) {
+                                                           @PathVariable UUID projectId, @PathVariable UUID userId,
+                                                           @RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                                           @Valid @RequestBody UpdateProjectMemberRequest body, HttpServletRequest request) {
         ProjectMemberResponse value = idempotency.execute(actor,
                 "PATCH:/projects/{projectId}/members/{userId}", key,
                 Map.of("projectId", projectId, "userId", userId, "body", body), 200,
@@ -160,8 +144,8 @@ public class ProjectController {
      */
     @DeleteMapping("/projects/{projectId}/members/{userId}")
     public ApiResponse<ProjectMemberResponse> removeMember(@AuthenticationPrincipal UUID actor,
-            @PathVariable UUID projectId, @PathVariable UUID userId,
-            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+                                                           @PathVariable UUID projectId, @PathVariable UUID userId,
+                                                           @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
         ProjectMemberResponse value = idempotency.execute(actor,
                 "DELETE:/projects/{projectId}/members/{userId}", key,
                 Map.of("projectId", projectId, "userId", userId), 200, ProjectMemberResponse.class,

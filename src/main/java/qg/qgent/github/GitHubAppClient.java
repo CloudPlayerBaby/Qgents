@@ -10,13 +10,15 @@ public interface GitHubAppClient {
     /**
      * 为指定团队生成短时有效的 GitHub App 安装跳转地址。
      *
-     * @param teamId 接收 GitHub App 授权的团队 ID
+     * @param teamId  接收 GitHub App 授权的团队 ID
      * @param actorId 发起授权的已认证用户 ID
      * @return 包含签名 state 的 GitHub App 安装地址
      */
     String createInstallationUrl(UUID teamId, UUID actorId);
 
-    /** Creates an installation URL while recording the initiating client in the signed state. */
+    /**
+     * Creates an installation URL while recording the initiating client in the signed state.
+     */
     default String createInstallationUrl(UUID teamId, UUID actorId, GitHubClient client) {
         return createInstallationUrl(teamId, actorId);
     }
@@ -29,7 +31,9 @@ public interface GitHubAppClient {
      */
     UUID verifyInstallationState(String state);
 
-    /** Verifies state and returns its team/client context. Legacy states are treated as WEB. */
+    /**
+     * Verifies state and returns its team/client context. Legacy states are treated as WEB.
+     */
     default GitHubInstallationState verifyInstallationStateDetails(String state) {
         return new GitHubInstallationState(verifyInstallationState(state), GitHubClient.WEB);
     }
@@ -44,7 +48,7 @@ public interface GitHubAppClient {
 
     /**
      * 生成短期有效的 GitHub App Installation Token。
-     * 
+     *
      * @param installationId GitHub 提供的安装数字 ID
      * @return Installation Token
      */
@@ -69,9 +73,11 @@ public interface GitHubAppClient {
      */
     GitHubPullRequestDetails createPullRequest(long installationId, String owner, String repo, GitHubPullRequestCreateRequest request);
 
-    /** Finds an existing open Pull Request for the exact source and target branches. */
+    /**
+     * Finds an existing open Pull Request for the exact source and target branches.
+     */
     GitHubPullRequestDetails findOpenPullRequest(long installationId, String owner, String repo,
-            String sourceBranch, String targetBranch);
+                                                 String sourceBranch, String targetBranch);
 
     /**
      * Gets branch details from GitHub, including the current HEAD SHA.
@@ -104,5 +110,5 @@ public interface GitHubAppClient {
      * {@link GitHubPullRequestMergeResult#merged()} is false.
      */
     GitHubPullRequestMergeResult mergePullRequest(long installationId, String owner, String repo, int pullNumber,
-            GitHubPullRequestMergeRequest request);
+                                                  GitHubPullRequestMergeRequest request);
 }

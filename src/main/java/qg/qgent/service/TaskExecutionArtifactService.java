@@ -6,7 +6,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.ArtifactResource;
 import qg.qgent.dto.TaskExecutionArtifactResponse;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskExecutionArtifactEntity;
@@ -17,13 +16,11 @@ import qg.qgent.mapper.TaskMapper;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
-/** Persists user-visible, non-delivery timeline summaries for a Task. */
+/**
+ * Persists user-visible, non-delivery timeline summaries for a Task.
+ */
 @Service
 public class TaskExecutionArtifactService {
     private static final int MAX_SUMMARY_DEPTH = 4;
@@ -35,7 +32,7 @@ public class TaskExecutionArtifactService {
     private final EventService events;
 
     public TaskExecutionArtifactService(TaskExecutionArtifactMapper artifacts, TaskMapper tasks,
-            ProjectAccessService access, EventService events) {
+                                        ProjectAccessService access, EventService events) {
         this.artifacts = artifacts;
         this.tasks = tasks;
         this.access = access;
@@ -49,7 +46,7 @@ public class TaskExecutionArtifactService {
 
     @Transactional
     public TaskExecutionArtifactEntity createRunArtifact(TaskEntity task, TaskRunEntity run, TaskStepEntity step,
-            String type, Map<String, Object> summary) {
+                                                         String type, Map<String, Object> summary) {
         if (run == null || step == null || !task.getId().equals(run.getTaskId()) || !task.getId().equals(step.getTaskId())
                 || !step.getId().equals(run.getTaskStepId())) {
             throw new IllegalArgumentException("Task artifact ownership is inconsistent");
@@ -61,20 +58,20 @@ public class TaskExecutionArtifactService {
         access.requireProjectMember(projectId, actor);
         TaskEntity task = requireTask(projectId, taskId);
         return artifacts.selectList(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
-                .eq(TaskExecutionArtifactEntity::getTaskId, task.getId())
-                .orderByAsc(TaskExecutionArtifactEntity::getSequenceNo))
+                        .eq(TaskExecutionArtifactEntity::getTaskId, task.getId())
+                        .orderByAsc(TaskExecutionArtifactEntity::getSequenceNo))
                 .stream().map(this::response).toList();
     }
 
     private TaskExecutionArtifactEntity create(TaskEntity task, TaskRunEntity run, TaskStepEntity step, String type,
-            Map<String, Object> summary) {
+                                               Map<String, Object> summary) {
         TaskEntity locked = tasks.selectByIdForUpdate(task.getId());
         if (locked == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "Task does not exist");
         }
         int next = artifacts.selectList(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
-                .eq(TaskExecutionArtifactEntity::getTaskId, task.getId())
-                .orderByDesc(TaskExecutionArtifactEntity::getSequenceNo).last("LIMIT 1"))
+                        .eq(TaskExecutionArtifactEntity::getTaskId, task.getId())
+                        .orderByDesc(TaskExecutionArtifactEntity::getSequenceNo).last("LIMIT 1"))
                 .stream().findFirst().map(value -> value.getSequenceNo() + 1).orElse(1);
         TaskExecutionArtifactEntity artifact = new TaskExecutionArtifactEntity();
         artifact.setId(UuidV7.next());
@@ -102,7 +99,9 @@ public class TaskExecutionArtifactService {
         return value;
     }
 
-    /** 用户可见执行卡片仅保留有限的结构化摘要，阻断敏感字段、绝对宿主机路径和原始命令文本。 */
+    /**
+     * 用户可见执行卡片仅保留有限的结构化摘要，阻断敏感字段、绝对宿主机路径和原始命令文本。
+     */
     private Map<String, Object> sanitizeSummary(Map<String, Object> summary) {
         Map<String, Object> result = new LinkedHashMap<>();
         if (summary == null) {
@@ -183,7 +182,9 @@ public class TaskExecutionArtifactService {
                 value.getCreatedAt().toInstant(ZoneOffset.UTC).toString());
     }
 
-    /** 由产物类型派生稳定展示标题，不虚构业务标题。 */
+    /**
+     * 由产物类型派生稳定展示标题，不虚构业务标题。
+     */
     private String displayTitle(String artifactType) {
         if (artifactType == null) {
             return null;
@@ -197,7 +198,9 @@ public class TaskExecutionArtifactService {
         };
     }
 
-    /** 由执行结果 outcome 派生状态：SUCCEEDED → SUCCEEDED，其余终态 → FAILED，无 outcome 时 null。 */
+    /**
+     * 由执行结果 outcome 派生状态：SUCCEEDED → SUCCEEDED，其余终态 → FAILED，无 outcome 时 null。
+     */
     private String displayStatus(Map<String, Object> summary) {
         Object outcome = summary.get("outcome");
         if (outcome == null) {
@@ -206,7 +209,9 @@ public class TaskExecutionArtifactService {
         return "SUCCEEDED".equals(outcome.toString()) ? "SUCCEEDED" : "FAILED";
     }
 
-    /** 提取产物摘要中的脱敏说明（优先 coding 的 summary，其次 plan 的任务理解），截断到 200 字符。 */
+    /**
+     * 提取产物摘要中的脱敏说明（优先 coding 的 summary，其次 plan 的任务理解），截断到 200 字符。
+     */
     private String displayDescription(Map<String, Object> summary) {
         Object value = summary.get("summary");
         if (!(value instanceof String s) || s.isBlank()) {

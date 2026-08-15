@@ -1,18 +1,11 @@
 package qg.qgent.controller;
 
+import io.swagger.v3.oas.annotations.Operation;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.AttachmentCreateRequest;
@@ -45,7 +38,7 @@ public class AttachmentController {
     @PostMapping("/projects/{projectId}/attachments")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<?> createCredential(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @Valid @RequestBody AttachmentCreateRequest body, HttpServletRequest request) {
+                                           @Valid @RequestBody AttachmentCreateRequest body, HttpServletRequest request) {
         return ok(attachmentService.createCredential(userId, projectId, body), request);
     }
 
@@ -55,7 +48,7 @@ public class AttachmentController {
     @Operation(summary = "确认附件上传完成", description = "客户端将文件上传到对象存储后调用，服务端校验对象存在并置 READY。")
     @PostMapping("/projects/{projectId}/attachments/{attachmentId}/confirm")
     public ApiResponse<?> confirm(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID attachmentId, HttpServletRequest request) {
+                                  @PathVariable UUID attachmentId, HttpServletRequest request) {
         AttachmentStatusResponse data = attachmentService.confirmUpload(userId, projectId, attachmentId);
         return ok(data, request);
     }
@@ -66,7 +59,7 @@ public class AttachmentController {
     @Operation(summary = "获取附件临时下载地址", description = "返回短期有效的预签名 GET 地址，客户端据此下载/预览文件；过期需重新签发。")
     @GetMapping("/projects/{projectId}/attachments/{attachmentId}/download-url")
     public ApiResponse<?> downloadUrl(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID attachmentId, HttpServletRequest request) {
+                                      @PathVariable UUID attachmentId, HttpServletRequest request) {
         AttachmentDownloadUrlResponse data = attachmentService.downloadUrl(userId, projectId, attachmentId);
         return ok(data, request);
     }

@@ -15,24 +15,42 @@ import java.util.List;
  */
 @Data
 public class TestResult {
-    /** 是否通过验收，基于真实 exit code。 */
+    /**
+     * 是否通过验收，基于真实 exit code。
+     */
     private boolean success;
-    /** 真实 exit code；-1 表示未产生可用的执行结果。 */
+    /**
+     * 真实 exit code；-1 表示未产生可用的执行结果。
+     */
     private int exitCode;
-    /** 实际执行的测试命令（白名单解析结果）。 */
+    /**
+     * 实际执行的测试命令（白名单解析结果）。
+     */
     private String command;
-    /** 已脱敏的 stdout。 */
+    /**
+     * 已脱敏的 stdout。
+     */
     private String stdout;
-    /** 已脱敏的 stderr。 */
+    /**
+     * 已脱敏的 stderr。
+     */
     private String stderr;
-    /** 分析摘要。 */
+    /**
+     * 分析摘要。
+     */
     private String summary;
-    /** 失败项列表。 */
+    /**
+     * 失败项列表。
+     */
     private List<Failure> failures = new ArrayList<>();
-    /** 是否需要 Coding Agent 修复；false 且未通过时不可自动修复。 */
+    /**
+     * 是否需要 Coding Agent 修复；false 且未通过时不可自动修复。
+     */
     private boolean needsCodingFix;
 
-    /** 单个失败项。 */
+    /**
+     * 单个失败项。
+     */
     @Data
     public static class Failure {
         private String name;

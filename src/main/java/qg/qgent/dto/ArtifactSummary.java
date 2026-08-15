@@ -17,11 +17,15 @@ import java.util.Map;
 @AllArgsConstructor
 public class ArtifactSummary {
 
-    /** 产物总数。 */
+    /**
+     * 产物总数。
+     */
     @Schema(description = "产物总数")
     private int total;
 
-    /** 按产物类型分类的数量统计。 */
+    /**
+     * 按产物类型分类的数量统计。
+     */
     @Schema(description = "按类型统计数量")
     private Map<String, Integer> byType;
 }

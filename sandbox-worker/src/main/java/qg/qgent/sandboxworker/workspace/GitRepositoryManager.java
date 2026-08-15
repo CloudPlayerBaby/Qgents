@@ -55,7 +55,9 @@ public class GitRepositoryManager {
         this.restClient = restClient;
     }
 
-    /** 从共享 bare store 创建 linked worktree，并返回实际基线和 HEAD。 */
+    /**
+     * 从共享 bare store 创建 linked worktree，并返回实际基线和 HEAD。
+     */
     public WorktreeResult create(UUID repositoryId, Path target, String baseRef, String sourceBranch) {
         return locked(repositoryId, () -> createLocked(repositoryId, target, baseRef, sourceBranch));
     }
@@ -96,7 +98,9 @@ public class GitRepositoryManager {
         }
     }
 
-    /** 从 bare store 正确注销并清理 linked worktree。 */
+    /**
+     * 从 bare store 正确注销并清理 linked worktree。
+     */
     public void remove(UUID repositoryId, Path target) {
         locked(repositoryId, () -> {
             Path store = gitStore(repositoryId);
@@ -108,12 +112,14 @@ public class GitRepositoryManager {
                         "WORKTREE_REMOVE_FAILED", "无法注销 linked worktree");
             }
             requireSuccess(run(List.of("git", "--git-dir", store.toString(), "worktree", "prune"), Map.of()),
-                "WORKTREE_PRUNE_FAILED", "Cannot prune linked worktree metadata");
+                    "WORKTREE_PRUNE_FAILED", "Cannot prune linked worktree metadata");
             return null;
         });
     }
 
-    /** 把源 worktree 的完整未提交 patch 应用到相同 HEAD 的隔离 worktree，并校验快照哈希。 */
+    /**
+     * 把源 worktree 的完整未提交 patch 应用到相同 HEAD 的隔离 worktree，并校验快照哈希。
+     */
     public void copyWorkingTreeSnapshot(UUID repositoryId, Path source, Path target) {
         locked(repositoryId, () -> {
             if (!head(source).equals(head(target))) {
@@ -140,12 +146,17 @@ public class GitRepositoryManager {
                 throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "TEST_SNAPSHOT_CREATE_FAILED",
                         "无法创建隔离工作树快照");
             } finally {
-                if (patch != null) try { Files.deleteIfExists(patch); } catch (Exception ignored) { }
+                if (patch != null) try {
+                    Files.deleteIfExists(patch);
+                } catch (Exception ignored) {
+                }
             }
         });
     }
 
-    /** 返回结构化的工作树状态。 */
+    /**
+     * 返回结构化的工作树状态。
+     */
     public GitStatusResponse status(Path repository) {
         String branch = requireSuccess(
                 run(List.of("git", "-C", repository.toString(), "branch", "--show-current"), Map.of()),
@@ -159,7 +170,9 @@ public class GitRepositoryManager {
         return new GitStatusResponse(branch, head, changes.isEmpty(), changes);
     }
 
-    /** 生成包含 tracked 和 untracked 文件的完整二进制 patch，并计算 SHA-256。 */
+    /**
+     * 生成包含 tracked 和 untracked 文件的完整二进制 patch，并计算 SHA-256。
+     */
     public GitDiffResponse diff(Path repository) {
         Path index = null;
         try {
@@ -191,14 +204,16 @@ public class GitRepositoryManager {
         }
     }
 
-    /** Read file statistics from Git's machine-readable numstat output, never from patch text. */
+    /**
+     * Read file statistics from Git's machine-readable numstat output, never from patch text.
+     */
     private List<GitDiffFileResponse> diffFiles(Path repository, Map<String, String> environment) {
         CommandResult names = requireSuccess(run(List.of("git", "-C", repository.toString(), "diff", "--cached",
-                "--name-status", "-z", "--find-renames", "--no-ext-diff", "HEAD"), environment),
+                        "--name-status", "-z", "--find-renames", "--no-ext-diff", "HEAD"), environment),
                 "GIT_DIFF_FAILED", "Cannot read Git diff file names");
         Map<String, FileNameStatus> statusByPath = parseNameStatus(names.stdout());
         CommandResult numstat = requireSuccess(run(List.of("git", "-C", repository.toString(), "diff", "--cached",
-                "--numstat", "-z", "--no-ext-diff", "HEAD"), environment), "GIT_DIFF_FAILED",
+                        "--numstat", "-z", "--no-ext-diff", "HEAD"), environment), "GIT_DIFF_FAILED",
                 "Cannot read Git diff file statistics");
         List<GitDiffFileResponse> files = new ArrayList<>();
         String[] entries = numstat.stdout().split("\u0000", -1);
@@ -232,7 +247,9 @@ public class GitRepositoryManager {
         return files;
     }
 
-    /** Parses Git's NUL-delimited name-status format, including two-path rename records. */
+    /**
+     * Parses Git's NUL-delimited name-status format, including two-path rename records.
+     */
     private Map<String, FileNameStatus> parseNameStatus(String raw) {
         Map<String, FileNameStatus> result = new LinkedHashMap<>();
         String[] entries = raw.split("\u0000", -1);
@@ -273,12 +290,14 @@ public class GitRepositoryManager {
     private record FileNameStatus(String changeType, String previousPath) {
     }
 
-    /** 校验审查快照后，在内部执行 add -A 和 commit。 */
+    /**
+     * 校验审查快照后，在内部执行 add -A 和 commit。
+     */
     public GitCommitResponse commit(Path repository, GitCommitRequest request) {
         String currentHead = head(repository);
         if (!currentHead.equals(request.getExpectedHeadCommit())) {
             String message = requireSuccess(run(List.of("git", "-C", repository.toString(), "log", "-1",
-                    "--format=%B", currentHead), Map.of()), "GIT_COMMIT_READ_FAILED",
+                            "--format=%B", currentHead), Map.of()), "GIT_COMMIT_READ_FAILED",
                     "Cannot inspect existing commit").stdout();
             if (message.lines().anyMatch(line -> line.equals("Qgents-Operation-Id: " + request.getOperationId()))) {
                 return new GitCommitResponse(currentHead);
@@ -295,7 +314,7 @@ public class GitRepositoryManager {
         requireSuccess(run(List.of("git", "-C", repository.toString(), "add", "-A"), Map.of()),
                 "GIT_COMMIT_FAILED", "Cannot stage Workspace changes");
         CommandResult staged = requireSuccess(runLimited(List.of("git", "-C", repository.toString(), "diff", "--cached",
-                "--binary", "--no-ext-diff", "--no-color", "HEAD"), Map.of(), MAX_DIFF_BYTES),
+                        "--binary", "--no-ext-diff", "--no-color", "HEAD"), Map.of(), MAX_DIFF_BYTES),
                 "GIT_COMMIT_FAILED", "Cannot verify staged snapshot");
         String stagedHash = sha256(staged.stdout().getBytes(StandardCharsets.UTF_8));
         if (!stagedHash.equals(request.getExpectedDiffHash())) {
@@ -308,7 +327,9 @@ public class GitRepositoryManager {
         return new GitCommitResponse(head(repository));
     }
 
-    /** 推送 Workspace 的 sourceBranch，并通过远程引用校验实际 SHA。 */
+    /**
+     * 推送 Workspace 的 sourceBranch，并通过远程引用校验实际 SHA。
+     */
     public GitPushResponse push(UUID repositoryId, Path repository, String sourceBranch, GitPushRequest request) {
         return locked(repositoryId, () -> {
             String currentHead = head(repository);
@@ -321,7 +342,7 @@ public class GitRepositoryManager {
             if (origin.exitCode() != 0) {
                 throw invalid("GIT_ORIGIN_NOT_CONFIGURED", "Controlled Git origin is not configured");
             }
-            
+
             String repositoryFullName = repositoryFullNameFromOrigin(origin.stdout().trim());
             String token = exchangeCredential(request.getCredentialGrantId(), currentHead, repositoryFullName, sourceBranch, "PUSH");
             Path askpassScript = null;
@@ -334,7 +355,7 @@ public class GitRepositoryManager {
                 );
 
                 requireSuccess(run(List.of("git", "--git-dir", store.toString(), "push", "origin",
-                        "refs/heads/" + sourceBranch + ":refs/heads/" + sourceBranch), env),
+                                "refs/heads/" + sourceBranch + ":refs/heads/" + sourceBranch), env),
                         "GIT_PUSH_FAILED", "Git push failed");
                 CommandResult remote = requireSuccess(run(List.of("git", "--git-dir", store.toString(), "ls-remote",
                         "origin", "refs/heads/" + sourceBranch), env), "GIT_REMOTE_VERIFY_FAILED", "Remote verify failed");
@@ -346,7 +367,8 @@ public class GitRepositoryManager {
                 if (askpassScript != null) {
                     try {
                         Files.deleteIfExists(askpassScript);
-                    } catch (Exception ignored) {}
+                    } catch (Exception ignored) {
+                    }
                 }
                 token = null;
             }
@@ -365,7 +387,7 @@ public class GitRepositoryManager {
                     "branchName", branchName,
                     "purpose", purpose
             );
-            
+
             String url = properties.getBackendUrl();
             if (!url.endsWith("/")) url += "/";
             url += "internal/v1/git-credentials/exchange";
@@ -377,7 +399,7 @@ public class GitRepositoryManager {
                     .body(body)
                     .retrieve()
                     .body(Map.class);
-            
+
             if (response == null || !response.containsKey("token")) {
                 throw invalid("CREDENTIAL_EXCHANGE_FAILED", "Credential exchange did not return a token");
             }
@@ -394,7 +416,7 @@ public class GitRepositoryManager {
      * Token 不会写入磁盘，调用结束后临时启动器立即删除。
      */
     <T> T withCredential(String grantId, String headCommit, String repositoryFullName, String branchName, String purpose,
-            java.util.function.Function<Map<String, String>, T> action) {
+                         java.util.function.Function<Map<String, String>, T> action) {
         String token = exchangeCredential(grantId, headCommit, repositoryFullName, branchName, purpose);
         Path askpassScript = null;
         try {
@@ -414,13 +436,15 @@ public class GitRepositoryManager {
         }
     }
 
-    /** 创建一次性 AskPass 启动器；真实 Token 仅通过子进程环境变量提供，不写入临时文件。 */
+    /**
+     * 创建一次性 AskPass 启动器；真实 Token 仅通过子进程环境变量提供，不写入临时文件。
+     */
     Path createAskpassScript() {
         try {
             Path script = Files.createTempFile("git-askpass-", ".sh");
             String content = "#!/bin/sh\ncase \"$1\" in\n  *Username*) printf '%s\\n' 'x-access-token' ;;\n  *) printf '%s\\n' \"${QGENTS_GIT_TOKEN:-}\" ;;\nesac\n";
             Files.writeString(script, content, StandardOpenOption.TRUNCATE_EXISTING);
-            
+
             // chmod 700
             java.nio.file.attribute.PosixFilePermission ownerRead = java.nio.file.attribute.PosixFilePermission.OWNER_READ;
             java.nio.file.attribute.PosixFilePermission ownerWrite = java.nio.file.attribute.PosixFilePermission.OWNER_WRITE;
@@ -433,7 +457,7 @@ public class GitRepositoryManager {
                 script.toFile().setReadable(true, true);
                 script.toFile().setWritable(true, true);
             }
-            
+
             return script;
         } catch (Exception e) {
             throw new WorkerException(HttpStatus.INTERNAL_SERVER_ERROR, "ASKPASS_CREATION_FAILED", "Cannot create GIT_ASKPASS script");
@@ -445,7 +469,9 @@ public class GitRepositoryManager {
                 "REPOSITORY_INVALID", "Cannot read Workspace repository HEAD").stdout().trim();
     }
 
-    /** 使用 git merge-tree 做只读预演，并只返回结构化冲突路径。 */
+    /**
+     * 使用 git merge-tree 做只读预演，并只返回结构化冲突路径。
+     */
     public MergePreviewResponse mergePreview(UUID repositoryId, String sourceRef, String targetBranch) {
         return locked(repositoryId, () -> {
             Path store = gitStore(repositoryId);
@@ -467,7 +493,9 @@ public class GitRepositoryManager {
         });
     }
 
-    /** 在共享 Git Store 中解析引用并固定为 commit SHA。 */
+    /**
+     * 在共享 Git Store 中解析引用并固定为 commit SHA。
+     */
     public String resolveRef(UUID repositoryId, String reference) {
         return locked(repositoryId, () -> {
             Path store = gitStore(repositoryId);
@@ -478,7 +506,9 @@ public class GitRepositoryManager {
         });
     }
 
-    /** 在一次性 worktree 中合并受控源引用，供 DryRun 在真实合并树上执行门禁。 */
+    /**
+     * 在一次性 worktree 中合并受控源引用，供 DryRun 在真实合并树上执行门禁。
+     */
     public String mergeForTest(UUID repositoryId, Path repository, String sourceRef) {
         return locked(repositoryId, () -> {
             Path store = gitStore(repositoryId);
@@ -495,7 +525,9 @@ public class GitRepositoryManager {
         });
     }
 
-    /** 删除已经移除 worktree 的内部临时测试分支。 */
+    /**
+     * 删除已经移除 worktree 的内部临时测试分支。
+     */
     public void deleteTemporaryBranch(UUID repositoryId, String branch) {
         if (branch == null || !branch.matches("qgents-test-[0-9a-fA-F-]{36}")) {
             throw invalid("TEMPORARY_BRANCH_INVALID", "Temporary branch name is invalid");
@@ -672,7 +704,7 @@ public class GitRepositoryManager {
     }
 
     private void transfer(java.io.InputStream input, ByteArrayOutputStream output, int limit,
-            AtomicBoolean exceeded, Process process) {
+                          AtomicBoolean exceeded, Process process) {
         try (input; output) {
             byte[] buffer = new byte[8192];
             int read;

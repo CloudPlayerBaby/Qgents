@@ -10,10 +10,10 @@ import lombok.Data;
 public class UpdateBranchPolicyRequest {
     @NotNull
     private Boolean requirePullRequest;
-    
+
     @NotNull
     private Integer minimumHumanApprovals;
-    
+
     @NotNull
     private Boolean allowDirectPush;
 }

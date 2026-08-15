@@ -14,7 +14,9 @@ import lombok.NoArgsConstructor;
 public class LogEntryResponse {
     private String id;
     private Long sequence;
-    /** 产生日志的节点名，可为空。 */
+    /**
+     * 产生日志的节点名，可为空。
+     */
     private String node;
     private String content;
     private String timestamp;

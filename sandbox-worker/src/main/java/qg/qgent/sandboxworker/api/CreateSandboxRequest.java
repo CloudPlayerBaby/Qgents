@@ -17,27 +17,37 @@ import java.util.UUID;
 @Data
 public class CreateSandboxRequest {
 
-    /** 由控制层生成的 Sandbox 唯一编号；重复编号会被拒绝。 */
+    /**
+     * 由控制层生成的 Sandbox 唯一编号；重复编号会被拒绝。
+     */
     @NotNull
     private UUID sandboxId;
 
-    /** 使用该沙箱的任务运行编号。 */
+    /**
+     * 使用该沙箱的任务运行编号。
+     */
     @NotNull
     private UUID taskRunId;
 
-    /** Workspace 的不透明存储键，由 Worker 解析为受控根目录下的实际路径。 */
+    /**
+     * Workspace 的不透明存储键，由 Worker 解析为受控根目录下的实际路径。
+     */
     @NotBlank
     @Size(max = 512)
     @Pattern(regexp = "workspaces/[0-9a-fA-F-]{36}")
     private String workspaceStorageKey;
 
-    /** Worker 白名单中的镜像配置名称，例如 java-node。 */
+    /**
+     * Worker 白名单中的镜像配置名称，例如 java-node。
+     */
     @NotBlank
     @Size(max = 64)
     @Pattern(regexp = "[a-z0-9][a-z0-9-]*")
     private String imageProfile;
 
-    /** 可选的资源限制；Worker 会再次按本地上限收紧。 */
+    /**
+     * 可选的资源限制；Worker 会再次按本地上限收紧。
+     */
     @Valid
     private ResourceLimitsRequest limits;
 

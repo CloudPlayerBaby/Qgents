@@ -8,7 +8,9 @@ import lombok.NoArgsConstructor;
 import java.util.List;
 import java.util.UUID;
 
-/** Testset 的稳定公开响应，不暴露内部 JSON 存储结构。 */
+/**
+ * Testset 的稳定公开响应，不暴露内部 JSON 存储结构。
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

@@ -11,7 +11,9 @@ import lombok.Data;
 @Data
 public class RejectRequest {
 
-    /** 驳回原因（必填）。 */
+    /**
+     * 驳回原因（必填）。
+     */
     @NotBlank
     @Size(max = 2048)
     @Schema(description = "驳回原因（必填）", maxLength = 2048, requiredMode = Schema.RequiredMode.REQUIRED)

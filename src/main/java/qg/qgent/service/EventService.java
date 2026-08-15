@@ -35,15 +35,25 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class EventService {
     private static final Logger log = LoggerFactory.getLogger(EventService.class);
 
-    /** SSE 连接保活心跳间隔（秒），契约约定每 15 秒一次。 */
+    /**
+     * SSE 连接保活心跳间隔（秒），契约约定每 15 秒一次。
+     */
     private static final long HEARTBEAT_SECONDS = 15;
-    /** 增量事件轮询间隔（毫秒）。 */
+    /**
+     * 增量事件轮询间隔（毫秒）。
+     */
     private static final long POLL_INTERVAL_MS = 2000;
-    /** 单次轮询批量拉取上限。 */
+    /**
+     * 单次轮询批量拉取上限。
+     */
     private static final int BATCH_SIZE = 100;
-    /** 事件保留时长（小时），过期事件不再可续传。 */
+    /**
+     * 事件保留时长（小时），过期事件不再可续传。
+     */
     private static final int RETENTION_HOURS = 24;
-    /** 单连接空闲超时（毫秒）：心跳会保活，超时后线程退出、客户端按 Last-Event-ID 重连。 */
+    /**
+     * 单连接空闲超时（毫秒）：心跳会保活，超时后线程退出、客户端按 Last-Event-ID 重连。
+     */
     private static final long SSE_TIMEOUT_MS = 30 * 60 * 1000L;
 
     private final EventMapper eventMapper;
@@ -75,7 +85,7 @@ public class EventService {
      * @param payload    脱敏事件载荷 JSON
      */
     public void publish(UUID projectId, UUID groupId, String eventType, String resourceId,
-            Map<String, Object> payload) {
+                        Map<String, Object> payload) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         EventEntity event = new EventEntity();
         event.setId(UuidV7.next());
@@ -121,7 +131,7 @@ public class EventService {
             }
         }
         long cursor = lastEventId != null ? lastEventId : eventMapper.maxSequence(projectId);
-        
+
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
 
         emitter.onTimeout(() -> log.info("SSE timeout, projectId={}, cursor={}", projectId, cursor));

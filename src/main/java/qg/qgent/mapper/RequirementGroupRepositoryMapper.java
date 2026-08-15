@@ -1,10 +1,6 @@
 package qg.qgent.mapper;
 
-import org.apache.ibatis.annotations.Delete;
-import org.apache.ibatis.annotations.Insert;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.*;
 
 import java.util.List;
 import java.util.UUID;
@@ -27,8 +23,8 @@ public interface RequirementGroupRepositoryMapper {
     /**
      * 新增一条群与仓库关联；重复关联由复合主键去重。
      *
-     * @param groupId        需求群 ID
-     * @param repositoryId   项目仓库绑定 ID
+     * @param groupId      需求群 ID
+     * @param repositoryId 项目仓库绑定 ID
      */
     @Insert("insert into requirement_group_repositories(requirement_group_id, project_repository_id)"
             + " values(#{groupId}, #{repositoryId})")

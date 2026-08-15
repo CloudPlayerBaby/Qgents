@@ -7,7 +7,6 @@ import qg.qgent.dto.DiffListItemResponse;
 import qg.qgent.dto.DiffResponse;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.TaskEntity;
-import qg.qgent.entity.WorkspaceEntity;
 import qg.qgent.mapper.*;
 
 import java.util.List;
@@ -74,11 +73,11 @@ class DiffServiceTest {
 
         ApiPageResponse<DiffListItemResponse> page = service.list(projectId, taskId, actor, null, 20, "req");
 
-        assertEquals(1, page.getData().size());
-        assertEquals(diff.getId().toString(), page.getData().getFirst().getId());
-        assertEquals(groupId.toString(), page.getData().getFirst().getRequirementGroupId());
-        assertEquals(diff.getSourceBranch(), page.getData().getFirst().getSourceBranch());
-        assertFalse(page.getPage().getHasMore());
+        assertEquals(1, page.data().size());
+        assertEquals(diff.getId().toString(), page.data().getFirst().getId());
+        assertEquals(groupId.toString(), page.data().getFirst().getRequirementGroupId());
+        assertEquals(diff.getSourceBranch(), page.data().getFirst().getSourceBranch());
+        assertFalse(page.page().getHasMore());
     }
 
     @Test

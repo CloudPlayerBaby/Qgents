@@ -4,21 +4,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
-import qg.qgent.dto.LoginRequest;
-import qg.qgent.dto.PasswordResetRequest;
-import qg.qgent.dto.RefreshTokenRequest;
-import qg.qgent.dto.RegisterRequest;
-import qg.qgent.dto.ResetPasswordRequest;
-import qg.qgent.dto.UpdateMeRequest;
+import qg.qgent.dto.*;
 import qg.qgent.service.AuthService;
 
 import java.util.Map;
@@ -67,7 +56,7 @@ public class AuthController {
      */
     @PostMapping("/auth/logout")
     public ApiResponse<?> logout(@AuthenticationPrincipal UUID userId,
-            @Valid @RequestBody RefreshTokenRequest body, HttpServletRequest request) {
+                                 @Valid @RequestBody RefreshTokenRequest body, HttpServletRequest request) {
         authService.logout(userId, body.getRefreshToken());
         return ok(Map.of(), request);
     }
@@ -78,7 +67,7 @@ public class AuthController {
     @PostMapping("/auth/password-reset-requests")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> requestReset(@Valid @RequestBody PasswordResetRequest body,
-            HttpServletRequest request) {
+                                       HttpServletRequest request) {
         authService.requestReset(body.getEmail(), fingerprint(request));
         return ok(Map.of("message", "如果邮箱已注册，重置邮件将很快发送"), request);
     }
@@ -105,7 +94,7 @@ public class AuthController {
      */
     @PatchMapping("/me")
     public ApiResponse<?> updateMe(@AuthenticationPrincipal UUID userId, @Valid @RequestBody UpdateMeRequest body,
-            HttpServletRequest request) {
+                                   HttpServletRequest request) {
         return ok(authService.updateMe(userId, body), request);
     }
 

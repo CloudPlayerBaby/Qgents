@@ -20,16 +20,18 @@ public class StepScheduler {
         this.stepMapper = stepMapper;
     }
 
-    /** 返回任务中与相位角色匹配的步骤；找不到时抛 IllegalStateException。 */
+    /**
+     * 返回任务中与相位角色匹配的步骤；找不到时抛 IllegalStateException。
+     */
     public TaskStepEntity findStepForPhase(UUID taskId, OrchestrationPhase phase) {
         String role = phase.role();
         if (role == null) {
             throw new IllegalStateException("Phase " + phase + " has no task step to run");
         }
         return stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
-                .eq(TaskStepEntity::getTaskId, taskId)
-                .eq(TaskStepEntity::getRole, role)
-                .orderByAsc(TaskStepEntity::getSequenceNo))
+                        .eq(TaskStepEntity::getTaskId, taskId)
+                        .eq(TaskStepEntity::getRole, role)
+                        .orderByAsc(TaskStepEntity::getSequenceNo))
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("No " + role + " step for task " + taskId));

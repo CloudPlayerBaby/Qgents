@@ -13,11 +13,13 @@ import java.util.Map;
  */
 public class PlanPromptBuilder {
 
-    /** 第一轮系统提示：只输出要读取的文件路径 JSON。 */
+    /**
+     * 第一轮系统提示：只输出要读取的文件路径 JSON。
+     */
     public String buildSelectFilesSystem() {
         return """
                 你是一个代码规划助手。你会收到一个开发任务和一个工作区文件树。请判断哪些文件对制定实现计划最有帮助，输出需要读取的文件相对路径。
-
+                
                 要求：
                 - 只输出 JSON，格式：{"readRequests": ["path1", "path2"]}
                 - 最多选择 8 个文件，按重要性排序
@@ -27,17 +29,21 @@ public class PlanPromptBuilder {
                 """;
     }
 
-    /** 第一轮用户提示：任务 + 文件树。 */
+    /**
+     * 第一轮用户提示：任务 + 文件树。
+     */
     public String buildSelectFilesUser(AgentInput input, List<String> files) {
         return "任务标题：%s\n任务描述：%s\n计划指令：%s\n\n工作区文件树：\n%s"
                 .formatted(input.getTaskTitle(), input.getRequirement(), input.getInstruction(), renderTree(files));
     }
 
-    /** 第二轮系统提示：PLANNER 角色、输出约束与 JSON 结构。 */
+    /**
+     * 第二轮系统提示：PLANNER 角色、输出约束与 JSON 结构。
+     */
     public String buildPlanSystem() {
         return """
                 你是多智能体协作平台中的 PLANNER。请基于开发任务与工作区代码，制定一份可执行、可被后续 Coding Agent 直接消费的实现计划。
-
+                
                 约束：
                 - 你只做规划，绝不修改、创建或删除任何文件，不调用其他 Agent。
                 - 只输出 JSON，不要输出任何多余文本或代码围栏。
@@ -55,7 +61,9 @@ public class PlanPromptBuilder {
                 """;
     }
 
-    /** 第二轮用户提示：任务 + 文件树 + 按需读取的文件内容。 */
+    /**
+     * 第二轮用户提示：任务 + 文件树 + 按需读取的文件内容。
+     */
     public String buildPlanUser(AgentInput input, List<String> files, Map<String, String> fileContents) {
         StringBuilder sb = new StringBuilder();
         sb.append("任务标题：%s\n任务描述：%s\n计划指令：%s\n\n工作区文件树：\n%s"

@@ -13,31 +13,35 @@ import java.util.List;
  */
 public class CodingPromptBuilder {
 
-    /** 系统提示：DEVELOPER 角色、白名单工具与 JSON 输出契约。 */
+    /**
+     * 系统提示：DEVELOPER 角色、白名单工具与 JSON 输出契约。
+     */
     public String buildSystem() {
         return """
                 你是多智能体协作平台中的 DEVELOPER。你会收到一个开发任务、一份实现计划和工作区文件树。请按需读取代码，通过工具真正修改工作区代码，最后输出 finalResult。
-
+                
                 可用工具（只能调用以下工具）：
                 - list_files：列出工作区所有代码文件，无参数。
                 - read_file：读取文件，参数 {"path": "相对路径"}。
                 - search_code：在代码中检索关键字，参数 {"query": "关键字"}。
                 - write_file：覆盖写入文件，参数 {"path": "相对路径", "content": "文件内容"}；父目录不存在时自动创建。
-
+                
                 工作方式：
                 - 先读取与任务相关的文件，理解现状后再修改；只读取需要的文件，不要把整个工作区一次性塞进上下文。
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
                 - 需要调用工具时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
                 - 修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
-
+                
                 约束：
                 - 只能修改工作区内的文件；路径必须为相对路径，禁止绝对路径、.. 或指向工作区外的路径。
                 - finalResult 的 summary 不得为空。
                 """;
     }
 
-    /** 初始用户消息：任务上下文 + 结构化计划 + 工作区文件树。 */
+    /**
+     * 初始用户消息：任务上下文 + 结构化计划 + 工作区文件树。
+     */
     public String buildUser(AgentInput input, List<String> files) {
         StringBuilder sb = new StringBuilder();
         sb.append("任务标题：").append(nullToBlank(input.getTaskTitle()));

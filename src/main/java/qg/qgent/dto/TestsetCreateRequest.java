@@ -2,17 +2,15 @@ package qg.qgent.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.*;
 import lombok.Data;
 
 import java.util.List;
 import java.util.UUID;
 
-/** 创建项目 Testset 的请求。 */
+/**
+ * 创建项目 Testset 的请求。
+ */
 @Data
 public class TestsetCreateRequest {
     @NotBlank

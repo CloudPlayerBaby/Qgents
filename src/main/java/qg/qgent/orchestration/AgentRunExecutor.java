@@ -17,7 +17,7 @@ public class AgentRunExecutor {
     private final Map<OrchestrationPhase, Agent> agents;
 
     public AgentRunExecutor(PlanAgent planAgent, CodingAgent codingAgent, TestAgent testAgent,
-            ReviewAgent reviewAgent) {
+                            ReviewAgent reviewAgent) {
         this.agents = Map.of(
                 OrchestrationPhase.PLAN, planAgent,
                 OrchestrationPhase.CODING, codingAgent,
@@ -25,7 +25,9 @@ public class AgentRunExecutor {
                 OrchestrationPhase.REVIEWING, reviewAgent);
     }
 
-    /** 执行指定相位对应的 Agent。 */
+    /**
+     * 执行指定相位对应的 Agent。
+     */
     public AgentRunOutcome execute(OrchestrationPhase phase, AgentInput input) {
         Agent agent = agents.get(phase);
         if (agent == null) {

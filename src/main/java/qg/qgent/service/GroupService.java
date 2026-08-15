@@ -7,21 +7,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.GroupCreateRequest;
-import qg.qgent.dto.GroupLatestMessage;
-import qg.qgent.dto.GroupLatestMessageRow;
-import qg.qgent.dto.GroupMemberResponse;
-import qg.qgent.dto.GroupResponse;
-import qg.qgent.dto.GroupUpdateRequest;
+import qg.qgent.dto.*;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.RequirementGroupEntity;
-import qg.qgent.mapper.AgentMapper;
-import qg.qgent.mapper.GroupAgentMapper;
-import qg.qgent.mapper.MessageMapper;
-import qg.qgent.mapper.ProjectMemberMapper;
-import qg.qgent.mapper.RequirementGroupMapper;
-import qg.qgent.mapper.RequirementGroupRepositoryMapper;
+import qg.qgent.mapper.*;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,9 +36,9 @@ public class GroupService {
     private final ProjectAccessService access;
 
     public GroupService(RequirementGroupMapper groupMapper,
-            RequirementGroupRepositoryMapper groupRepositoryMapper, ProjectMemberMapper projectMemberMapper,
-            GroupAgentMapper groupAgentMapper, AgentMapper agentMapper, MessageMapper messageMapper,
-            ProjectAccessService access) {
+                        RequirementGroupRepositoryMapper groupRepositoryMapper, ProjectMemberMapper projectMemberMapper,
+                        GroupAgentMapper groupAgentMapper, AgentMapper agentMapper, MessageMapper messageMapper,
+                        ProjectAccessService access) {
         this.groupMapper = groupMapper;
         this.groupRepositoryMapper = groupRepositoryMapper;
         this.projectMemberMapper = projectMemberMapper;
@@ -66,7 +56,7 @@ public class GroupService {
     @EventListener
     @Transactional
     public void onProjectCreated(ProjectCreatedEvent event) {
-        ensureProjectMainGroup(event.getProjectId(), event.getCreatorUserId(), event.getProjectName());
+        ensureProjectMainGroup(event.projectId(), event.creatorUserId(), event.projectName());
     }
 
     /**

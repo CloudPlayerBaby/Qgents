@@ -5,20 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import qg.qgent.api.ApiException;
-import qg.qgent.dto.ContextMemory;
-import qg.qgent.dto.ContextMessage;
-import qg.qgent.dto.ContextSearchResponse;
-import qg.qgent.dto.ContextSkill;
-import qg.qgent.dto.GroupContext;
-import qg.qgent.entity.MemoryEntity;
+import qg.qgent.dto.*;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.entity.RequirementGroupEntity;
-import qg.qgent.entity.SkillEntity;
-import qg.qgent.mapper.MemoryMapper;
-import qg.qgent.mapper.MessageMapper;
-import qg.qgent.mapper.RequirementGroupMapper;
-import qg.qgent.mapper.RequirementGroupRepositoryMapper;
-import qg.qgent.mapper.SkillMapper;
+import qg.qgent.mapper.*;
 
 import java.util.Collections;
 import java.util.List;
@@ -45,8 +35,8 @@ public class ContextService {
     private final ObjectMapper mapper;
 
     public ContextService(RequirementGroupMapper groupMapper, MessageMapper messageMapper, SkillMapper skillMapper,
-            MemoryMapper memoryMapper, RequirementGroupRepositoryMapper groupRepoMapper, ProjectAccessService access,
-            ObjectMapper mapper) {
+                          MemoryMapper memoryMapper, RequirementGroupRepositoryMapper groupRepoMapper, ProjectAccessService access,
+                          ObjectMapper mapper) {
         this.groupMapper = groupMapper;
         this.messageMapper = messageMapper;
         this.skillMapper = skillMapper;
@@ -111,7 +101,7 @@ public class ContextService {
      * @return 检索结果（Skill + Memory + 消息）
      */
     public ContextSearchResponse search(UUID actor, UUID projectId, String q, String tag, UUID groupId,
-            Integer limit) {
+                                        Integer limit) {
         access.requireProjectMember(projectId, actor);
         boolean isAdmin = "PROJECT_ADMIN".equals(access.requireProjectMember(projectId, actor));
         int messageLimit = Math.min(Math.max(limit == null ? DEFAULT_MESSAGE_LIMIT : limit, 1), MAX_MESSAGE_LIMIT);
@@ -122,9 +112,9 @@ public class ContextService {
                 .map(m -> new ContextMemory(m.getTitle(), m.getContent(), m.getCategory())).toList();
         List<ContextMessage> messages = q == null || q.isBlank() ? List.of()
                 : messageMapper.searchByQuery(projectId, groupId, q.trim(), messageLimit).stream()
-                        .map(m -> new ContextMessage(m.getSequenceNo(), m.getMessageType(),
-                                senderType(m), senderId(m), messageText(m.getContent())))
-                        .toList();
+                .map(m -> new ContextMessage(m.getSequenceNo(), m.getMessageType(),
+                        senderType(m), senderId(m), messageText(m.getContent())))
+                .toList();
         return new ContextSearchResponse(skills, memories, messages);
     }
 
@@ -142,7 +132,9 @@ public class ContextService {
         return m.getAuthorUserId() == null ? null : m.getAuthorUserId().toString();
     }
 
-    /** 从结构化 content 提取可读文本（TEXT 取 text；其余类型返回原始 JSON）。 */
+    /**
+     * 从结构化 content 提取可读文本（TEXT 取 text；其余类型返回原始 JSON）。
+     */
     private String messageText(String contentJson) {
         if (contentJson == null || contentJson.isBlank()) {
             return "";

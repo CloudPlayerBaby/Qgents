@@ -17,23 +17,33 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class TaskStatusReason {
 
-    /** 原因码。 */
+    /**
+     * 原因码。
+     */
     @Schema(description = "原因码")
     private String code;
 
-    /** 一行标题，如“等待用户输入”。 */
+    /**
+     * 一行标题，如“等待用户输入”。
+     */
     @Schema(description = "一行标题")
     private String title;
 
-    /** 脱敏用户可见摘要。 */
+    /**
+     * 脱敏用户可见摘要。
+     */
     @Schema(description = "脱敏摘要")
     private String summary;
 
-    /** 当前是否可重试。 */
+    /**
+     * 当前是否可重试。
+     */
     @Schema(description = "当前是否可重试")
     private boolean retryable;
 
-    /** 原因发生时间（UTC），可为 null。 */
+    /**
+     * 原因发生时间（UTC），可为 null。
+     */
     @Schema(description = "原因发生时间")
     private String occurredAt;
 }

@@ -4,7 +4,9 @@ import lombok.Data;
 
 import java.util.UUID;
 
-/** Worker 返回的单个 Testset 结果。 */
+/**
+ * Worker 返回的单个 Testset 结果。
+ */
 @Data
 public class WorkerTestExecutionItemResponse {
     private UUID testsetId;

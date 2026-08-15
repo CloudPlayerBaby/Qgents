@@ -22,13 +22,17 @@ import java.util.regex.Pattern;
  */
 final class GitDiffCommandBuilder {
 
-    /** 保守的 ref 字符模式：字母/数字开头，后续只允许字母、数字、{@code _ - . /}。 */
+    /**
+     * 保守的 ref 字符模式：字母/数字开头，后续只允许字母、数字、{@code _ - . /}。
+     */
     private static final Pattern SAFE_REF = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._/-]*");
 
     private GitDiffCommandBuilder() {
     }
 
-    /** base ref 是否可作为 git diff / rev-parse 的位置参数安全使用。 */
+    /**
+     * base ref 是否可作为 git diff / rev-parse 的位置参数安全使用。
+     */
     static boolean isValidBase(String base) {
         if (base == null || base.isBlank()) {
             return false;

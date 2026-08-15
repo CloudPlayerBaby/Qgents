@@ -30,7 +30,7 @@ public class TaskExecutionArtifactController {
      */
     @GetMapping
     public ApiResponse<?> list(@PathVariable UUID projectId, @PathVariable UUID taskId,
-            @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
+                               @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
         return ApiResponse.ok(artifacts.list(projectId, taskId, actor),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }

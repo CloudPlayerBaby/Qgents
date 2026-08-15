@@ -13,15 +13,21 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class UserSummary {
 
-    /** 用户 ID。 */
+    /**
+     * 用户 ID。
+     */
     @Schema(description = "用户 ID")
     private String id;
 
-    /** 昵称。 */
+    /**
+     * 昵称。
+     */
     @Schema(description = "昵称")
     private String displayName;
 
-    /** 头像 URL，可为空。 */
+    /**
+     * 头像 URL，可为空。
+     */
     @Schema(description = "头像 URL")
     private String avatarUrl;
 }

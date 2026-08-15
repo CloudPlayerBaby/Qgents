@@ -10,10 +10,10 @@ import java.util.List;
 public interface CommandExecutor {
 
     /**
-     * @param sandbox 目标沙箱
+     * @param sandbox          目标沙箱
      * @param workingDirectory 容器内受控工作目录
-     * @param command 可执行文件和参数组成的数组
-     * @param timeout 最大执行时间
+     * @param command          可执行文件和参数组成的数组
+     * @param timeout          最大执行时间
      * @return 退出码以及受大小限制的标准输出和错误输出
      * @throws InterruptedException 命令超时或执行线程被取消时抛出
      */

@@ -18,34 +18,58 @@ import java.util.UUID;
 public class MergeRequestEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
-    /** 所属项目仓库绑定ID。 */
+    /**
+     * 所属项目仓库绑定ID。
+     */
     private UUID projectRepositoryId;
     private UUID taskId;
     private UUID workspaceId;
-    /** 代码托管提供方枚举：GITHUB。 */
+    /**
+     * 代码托管提供方枚举：GITHUB。
+     */
     private String provider;
-    /** GitHub Pull Request真实编号。 */
+    /**
+     * GitHub Pull Request真实编号。
+     */
     private Long providerNumber;
-    /** 源分支名。 */
+    /**
+     * 源分支名。
+     */
     private String sourceBranch;
-    /** 目标分支名。 */
+    /**
+     * 目标分支名。
+     */
     private String targetBranch;
-    /** 当前 MR 头提交 SHA。 */
+    /**
+     * 当前 MR 头提交 SHA。
+     */
     private String headCommit;
-    /** MR 标题。 */
+    /**
+     * MR 标题。
+     */
     private String title;
-    /** MR 状态，取值见类注释。 */
+    /**
+     * MR 状态，取值见类注释。
+     */
     private String status;
-    /** 门禁汇总状态，取值见类注释。 */
+    /**
+     * 门禁汇总状态，取值见类注释。
+     */
     private String qualityGateStatus;
     private String mergeOperationId;
     private String mergeOperationStatus;
     private LocalDateTime mergeLeaseExpiresAt;
-    /** GitHub 侧更新时间（UTC）。 */
+    /**
+     * GitHub 侧更新时间（UTC）。
+     */
     private LocalDateTime providerUpdatedAt;
-    /** 本地最近同步时间（UTC）。 */
+    /**
+     * 本地最近同步时间（UTC）。
+     */
     private LocalDateTime syncedAt;
-    /** MR 作者用户ID，用于 CQ 权限校验。 */
+    /**
+     * MR 作者用户ID，用于 CQ 权限校验。
+     */
     private UUID authorUserId;
     private LocalDateTime createdAt;
 }

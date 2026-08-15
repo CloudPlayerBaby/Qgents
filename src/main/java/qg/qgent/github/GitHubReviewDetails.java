@@ -1,6 +1,8 @@
 package qg.qgent.github;
 
-/** Minimal GitHub Pull Request review summary for later CQ mapping. */
+/**
+ * Minimal GitHub Pull Request review summary for later CQ mapping.
+ */
 public record GitHubReviewDetails(
         /* GitHub review identifier. */
         long id,
@@ -10,4 +12,5 @@ public record GitHubReviewDetails(
         String authorAssociation,
         /* GitHub login of the reviewer. */
         String userLogin
-) {}
+) {
+}

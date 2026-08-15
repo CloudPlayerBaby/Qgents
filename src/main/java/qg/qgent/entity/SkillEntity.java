@@ -20,44 +20,70 @@ import java.util.UUID;
 @TableName(value = "skills", autoResultMap = true)
 public class SkillEntity {
 
-    /** Skill ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * Skill ID（UUIDv7，BINARY(16)）。
+     */
     @TableId(type = IdType.INPUT)
     private UUID id;
 
-    /** 所属项目 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 所属项目 ID（UUIDv7，BINARY(16)）。
+     */
     private UUID projectId;
 
-    /** 创建用户 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 创建用户 ID（UUIDv7，BINARY(16)）。
+     */
     private UUID createdBy;
 
-    /** Skill 名称。 */
+    /**
+     * Skill 名称。
+     */
     private String name;
 
-    /** 可复用操作规范正文（MEDIUMTEXT）。 */
+    /**
+     * 可复用操作规范正文（MEDIUMTEXT）。
+     */
     private String content;
 
-    /** 标签 JSON 数组。 */
+    /**
+     * 标签 JSON 数组。
+     */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<String> tags;
 
-    /** 可见性枚举：PRIVATE / PROJECT_SHARED。 */
+    /**
+     * 可见性枚举：PRIVATE / PROJECT_SHARED。
+     */
     private String visibility;
 
-    /** 状态枚举：DRAFT / PENDING_REVIEW / PUBLISHED / REJECTED / ARCHIVED。 */
+    /**
+     * 状态枚举：DRAFT / PENDING_REVIEW / PUBLISHED / REJECTED / ARCHIVED。
+     */
     private String status;
 
-    /** 最近审核用户 ID（UUIDv7，BINARY(16)）；可为空。 */
+    /**
+     * 最近审核用户 ID（UUIDv7，BINARY(16)）；可为空。
+     */
     private UUID reviewerId;
 
-    /** 最近驳回原因；可为空。 */
+    /**
+     * 最近驳回原因；可为空。
+     */
     private String rejectionReason;
 
-    /** 最近审核时间（UTC）；可为空。 */
+    /**
+     * 最近审核时间（UTC）；可为空。
+     */
     private LocalDateTime reviewedAt;
 
-    /** 创建时间（UTC）。 */
+    /**
+     * 创建时间（UTC）。
+     */
     private LocalDateTime createdAt;
 
-    /** 更新时间（UTC）。 */
+    /**
+     * 更新时间（UTC）。
+     */
     private LocalDateTime updatedAt;
 }
