@@ -143,6 +143,8 @@ public class SkillService {
             throw stateConflict(skill.getStatus());
         }
         skill.setStatus("PENDING_REVIEW");
+        skill.setSubmittedBy(actor);
+        skill.setSubmittedAt(LocalDateTime.now(ZoneOffset.UTC));
         skillMapper.updateById(skill);
         eventService.publish(projectId, null, "skill.submit-review", id(skillId),
                 deliveryPayload(projectId, skillId));

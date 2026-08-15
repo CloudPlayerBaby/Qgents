@@ -51,14 +51,17 @@ public class DeliveryCenterController {
     }
 
     /**
-     * 契约 v1.8.0 §20：交付中心聚合统计（针对完整筛选数据集）。
+     * 契约 v1.8.0 §20：交付中心聚合统计（筛选参数与 delivery-items 一致，针对完整筛选数据集）。
      */
     @GetMapping("/projects/{projectId}/delivery-summary")
     public DeliverySummaryResponse summary(@PathVariable UUID projectId,
                                            @AuthenticationPrincipal UUID userId,
                                            @RequestParam(required = false) String groupId,
+                                           @RequestParam(required = false) String type,
+                                           @RequestParam(required = false) String status,
                                            @RequestParam(required = false) String repositoryId,
+                                           @RequestParam(required = false) String createdBy,
                                            HttpServletRequest request) {
-        return deliveryCenter.summary(projectId, userId, groupId, repositoryId);
+        return deliveryCenter.summary(projectId, userId, groupId, type, status, repositoryId, createdBy);
     }
 }

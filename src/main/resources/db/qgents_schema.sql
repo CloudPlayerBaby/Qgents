@@ -282,6 +282,8 @@ CREATE TABLE IF NOT EXISTS
         tags JSON NULL COMMENT '标签JSON字符串数组',
         visibility VARCHAR(32) NOT NULL DEFAULT 'PRIVATE' COMMENT '可见性枚举：PRIVATE/PROJECT_SHARED',
         status VARCHAR(32) NOT NULL DEFAULT 'DRAFT' COMMENT '状态枚举：DRAFT/PENDING_REVIEW/PUBLISHED/REJECTED/ARCHIVED',
+        submitted_by BINARY(16) NULL COMMENT '最近提交审核用户ID',
+        submitted_at DATETIME (6) NULL COMMENT '最近提交审核时间（UTC）',
         reviewer_id BINARY(16) NULL COMMENT '最近审核用户ID',
         rejection_reason TEXT NULL COMMENT '最近驳回原因',
         reviewed_at DATETIME (6) NULL COMMENT '最近审核时间（UTC）',
@@ -292,7 +294,8 @@ CREATE TABLE IF NOT EXISTS
         KEY idx_skill_reviewer (reviewer_id),
         CONSTRAINT fk_skill_project FOREIGN KEY (project_id) REFERENCES projects (id),
         CONSTRAINT fk_skill_creator FOREIGN KEY (created_by) REFERENCES users (id),
-        CONSTRAINT fk_skill_reviewer FOREIGN KEY (reviewer_id) REFERENCES users (id)
+        CONSTRAINT fk_skill_reviewer FOREIGN KEY (reviewer_id) REFERENCES users (id),
+        CONSTRAINT fk_skill_submitter FOREIGN KEY (submitted_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目Skill，MVP标签内嵌JSON';
 
 CREATE TABLE IF NOT EXISTS
@@ -305,6 +308,8 @@ CREATE TABLE IF NOT EXISTS
         category VARCHAR(64) NOT NULL COMMENT '知识分类标识',
         tags JSON NULL COMMENT '标签JSON字符串数组',
         status VARCHAR(32) NOT NULL DEFAULT 'DRAFT' COMMENT '状态枚举：DRAFT/PENDING_REVIEW/APPROVED/REJECTED/ARCHIVED',
+        submitted_by BINARY(16) NULL COMMENT '最近提交审核用户ID',
+        submitted_at DATETIME (6) NULL COMMENT '最近提交审核时间（UTC）',
         reviewer_id BINARY(16) NULL COMMENT '最近审核用户ID',
         rejection_reason TEXT NULL COMMENT '最近驳回原因',
         reviewed_at DATETIME (6) NULL COMMENT '最近审核时间（UTC）',
@@ -315,7 +320,8 @@ CREATE TABLE IF NOT EXISTS
         KEY idx_memory_reviewer (reviewer_id),
         CONSTRAINT fk_memory_project FOREIGN KEY (project_id) REFERENCES projects (id),
         CONSTRAINT fk_memory_creator FOREIGN KEY (created_by) REFERENCES users (id),
-        CONSTRAINT fk_memory_reviewer FOREIGN KEY (reviewer_id) REFERENCES users (id)
+        CONSTRAINT fk_memory_reviewer FOREIGN KEY (reviewer_id) REFERENCES users (id),
+        CONSTRAINT fk_memory_submitter FOREIGN KEY (submitted_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目确认知识，MVP标签内嵌JSON';
 
 CREATE TABLE IF NOT EXISTS

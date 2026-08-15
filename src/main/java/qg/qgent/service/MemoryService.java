@@ -195,6 +195,8 @@ public class MemoryService {
             throw stateConflict(memory.getStatus());
         }
         memory.setStatus("PENDING_REVIEW");
+        memory.setSubmittedBy(actor);
+        memory.setSubmittedAt(LocalDateTime.now(ZoneOffset.UTC));
         memoryMapper.updateById(memory);
         eventService.publish(projectId, null, "memory.submit-review", id(memoryId),
                 deliveryPayload(projectId, memoryId));
