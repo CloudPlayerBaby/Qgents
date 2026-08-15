@@ -300,13 +300,14 @@ public class GitRepositoryManager {
      */
     public GitCommitResponse commit(Path repository, GitCommitRequest request) {
         String currentHead = head(repository);
+        // 幂等：先检查当前 HEAD 是否已带本次操作标记，避免 commit 成功后重试时重复校验 diff。
+        String message = requireSuccess(run(List.of("git", "-C", repository.toString(), "log", "-1",
+                        "--format=%B", currentHead), Map.of()), "GIT_COMMIT_READ_FAILED",
+                "Cannot inspect existing commit").stdout();
+        if (message.lines().anyMatch(line -> line.equals("Qgents-Operation-Id: " + request.getOperationId()))) {
+            return new GitCommitResponse(currentHead);
+        }
         if (!currentHead.equals(request.getExpectedHeadCommit())) {
-            String message = requireSuccess(run(List.of("git", "-C", repository.toString(), "log", "-1",
-                            "--format=%B", currentHead), Map.of()), "GIT_COMMIT_READ_FAILED",
-                    "Cannot inspect existing commit").stdout();
-            if (message.lines().anyMatch(line -> line.equals("Qgents-Operation-Id: " + request.getOperationId()))) {
-                return new GitCommitResponse(currentHead);
-            }
             throw conflict("GIT_HEAD_MISMATCH", "Workspace HEAD has changed");
         }
         GitDiffResponse currentDiff = diff(repository);

@@ -50,9 +50,10 @@ public class SpringAiChatLlmClient implements LlmClient {
         try {
             ChatResponse response = chatModel.call(new Prompt(springMessages));
             String text = response.getResult().getOutput().getText();
-            log.info("llm complete messages={} promptChars={} responseChars={} durationMs={}",
+            log.info("llm complete messages={} promptChars={} responseChars={} durationMs={} finish={} tail={}",
                     messages.size(), promptChars, text == null ? 0 : text.length(),
-                    Duration.ofNanos(System.nanoTime() - started).toMillis());
+                    Duration.ofNanos(System.nanoTime() - started).toMillis(),
+                    finishReasonOf(response), redactTail(text));
             return text;
         } catch (RuntimeException exception) {
             log.error("LLM_CALL_FAILED messages={} promptChars={} category={} durationMs={}",
@@ -60,6 +61,28 @@ public class SpringAiChatLlmClient implements LlmClient {
                     Duration.ofNanos(System.nanoTime() - started).toMillis());
             throw exception;
         }
+    }
+
+    /**
+     * 返回模型响应携带的结束原因（stop/length/null）；缺失时返回 null，用于判断输出是否被上限截断。
+     */
+    private String finishReasonOf(ChatResponse response) {
+        if (response.getResult() != null && response.getResult().getMetadata() != null) {
+            return response.getResult().getMetadata().getFinishReason();
+        }
+        return null;
+    }
+
+    /**
+     * 取输出末尾一小段用于定位截断位置；内容为空时返回占位。片段很短，避免泄露完整输出。
+     */
+    private String redactTail(String text) {
+        if (text == null || text.isBlank()) {
+            return "(empty)";
+        }
+        String trimmed = text.trim();
+        int tail = Math.min(trimmed.length(), 80);
+        return trimmed.substring(trimmed.length() - tail);
     }
 
     private Message toSpringMessage(LlmMessage message) {
