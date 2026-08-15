@@ -528,7 +528,7 @@ public class TeamService {
         Map<UUID, TaskEntity> tasks = loadTasks(rows);
         Map<UUID, MergeRequestEntity> mergeRequests = loadMergeRequests(rows);
         Map<UUID, ProjectEntity> projects = loadProjects(rows);
-        Map<UUID, String> userNames = loadActivityUserNames(tasks);
+        Map<UUID, String> userNames = loadActivityUserNames(rows, tasks);
         return keysetPage(rows, pageSize, scope, EventEntity::getId,
                 event -> activity(event, tasks, mergeRequests, projects, userNames));
     }
@@ -537,9 +537,14 @@ public class TeamService {
 
     /**
      * 动态类型 → SQL 过滤片段白名单（event_type 与 payload.status 的 JSON 取值约束）。
+     * TASK_CREATED 复用创建任务时已发布的 task.updated(PLANNING)：PLANNING 仅出现在任务创建态，
+     * 后续状态转移不会回到 PLANNING，故可安全代表「任务已创建」，无需新增独立事件发布源。
      * 仅由服务端常量引用，绝不拼接用户输入；{@link #activityFragments} 只挑选其中子集。
      */
     private static final Map<String, String> ACTIVITY_FRAGMENTS = Map.ofEntries(
+            Map.entry("GROUP_CREATED", "e.event_type='project.created'"),
+            Map.entry("TASK_CREATED", "e.event_type='task.updated' AND "
+                    + "JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.status'))='PLANNING'"),
             Map.entry("TASK_COMPLETED", "e.event_type='task.updated' AND "
                     + "JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.status'))='SUCCEEDED'"),
             Map.entry("TASK_FAILED", "e.event_type='task.updated' AND "
@@ -583,11 +588,25 @@ public class TeamService {
         String targetTitle;
         String title;
         switch (type) {
-            case "TASK_COMPLETED", "TASK_FAILED" -> {
+            case "GROUP_CREATED" -> {
+                UUID groupProjectId = uuidOf(event.getPayload() == null ? null : event.getPayload().get("projectId"));
+                ProjectEntity project = groupProjectId == null ? null : projects.get(groupProjectId);
+                String projectName = project == null ? null : project.getName();
+                targetType = "PROJECT";
+                targetId = groupProjectId == null ? null : groupProjectId.toString();
+                targetTitle = projectName;
+                title = "项目「" + safe(projectName) + "」已创建";
+                actorId = payloadString(event, "createdBy");
+            }
+            case "TASK_CREATED", "TASK_COMPLETED", "TASK_FAILED" -> {
                 targetType = "TASK";
                 targetId = taskId.toString();
                 targetTitle = taskTitle;
-                title = "任务「" + safe(taskTitle) + "」" + ("TASK_COMPLETED".equals(type) ? "已完成" : "已失败");
+                title = "任务「" + safe(taskTitle) + "」" + switch (type) {
+                    case "TASK_CREATED" -> "已创建";
+                    case "TASK_COMPLETED" -> "已完成";
+                    default -> "已失败";
+                };
             }
             case "DIFF_CREATED" -> {
                 UUID diffId = uuidOf(event.getPayload() == null ? null : event.getPayload().get("diffId"));
@@ -641,10 +660,12 @@ public class TeamService {
         String status = payloadString(event, "status");
         return switch (eventType) {
             case "task.updated" -> switch (status) {
+                case "PLANNING" -> "TASK_CREATED";
                 case "SUCCEEDED" -> "TASK_COMPLETED";
                 case "FAILED" -> "TASK_FAILED";
                 default -> null;
             };
+            case "project.created" -> "GROUP_CREATED";
             case "diff.created" -> "DIFF_CREATED";
             case "merge-request.updated" -> switch (status) {
                 case "OPEN" -> "MR_CREATED";
@@ -718,9 +739,18 @@ public class TeamService {
         return projectMapper.selectBatchIds(projectIds).stream().collect(Collectors.toMap(ProjectEntity::getId, p -> p));
     }
 
-    private Map<UUID, String> loadActivityUserNames(Map<UUID, TaskEntity> tasks) {
+    private Map<UUID, String> loadActivityUserNames(List<EventEntity> rows, Map<UUID, TaskEntity> tasks) {
         Set<UUID> userIds = tasks.values().stream().map(TaskEntity::getCreatedBy).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
+        // 项目创建动态的发起人取自 project.created 载荷，而非任务关联
+        for (EventEntity row : rows) {
+            if ("project.created".equals(row.getEventType())) {
+                UUID creator = uuidOf(row.getPayload() == null ? null : row.getPayload().get("createdBy"));
+                if (creator != null) {
+                    userIds.add(creator);
+                }
+            }
+        }
         if (userIds.isEmpty()) {
             return Map.of();
         }
