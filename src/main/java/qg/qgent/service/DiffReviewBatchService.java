@@ -51,12 +51,14 @@ public class DiffReviewBatchService {
     private final DiffDeliveryService deliveryService;
     private final MergeRequestMapper mergeRequestMapper;
     private final GitHubRepositoryMapper githubRepositories;
+    private final NotificationService notificationService;
 
     public DiffReviewBatchService(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
             ProjectRepositoryMapper repositories, SandboxWorkerClient worker,
             MergeRequestService mergeRequests, ProjectAccessService access, EventService events,
             TransactionTemplate transactions, DiffSnapshotStorage snapshots, DiffDeliveryService deliveryService,
-            MergeRequestMapper mergeRequestMapper, GitHubRepositoryMapper githubRepositories) {
+            MergeRequestMapper mergeRequestMapper, GitHubRepositoryMapper githubRepositories,
+            NotificationService notificationService) {
         this.batches = batches;
         this.diffs = diffs;
         this.tasks = tasks;
@@ -70,6 +72,7 @@ public class DiffReviewBatchService {
         this.deliveryService = deliveryService;
         this.mergeRequestMapper = mergeRequestMapper;
         this.githubRepositories = githubRepositories;
+        this.notificationService = notificationService;
     }
 
     public DiffReviewBatchResponse get(UUID projectId, UUID taskId, UUID actor) {
@@ -100,7 +103,11 @@ public class DiffReviewBatchService {
         try {
             preflight(task, values);
         } catch (RuntimeException failure) {
-            restoreAfterPreflightFailure(batch.getId(), batch.getDeliveryClaimToken());
+            if (isStaleSnapshot(failure)) {
+                failStaleReview(task, batch, values, failure);
+            } else {
+                restoreAfterPreflightFailure(batch.getId(), batch.getDeliveryClaimToken());
+            }
             throw failure;
         }
         transactions.execute(status -> {
@@ -302,25 +309,88 @@ public class DiffReviewBatchService {
     }
 
     private void finish(TaskEntity task, UUID batchId, String claimToken) {
-        transactions.execute(status -> {
+        FinishResult result = transactions.execute(status -> {
             DiffReviewBatchEntity batch = batches.selectByIdForUpdate(batchId);
             requireBatchClaim(batch, claimToken);
             List<DiffEntity> values = diffs(batchId);
             boolean allDelivered = values.stream().allMatch(value -> "MR_CREATED".equals(value.getDeliveryStatus()));
             boolean anyDelivered = values.stream().anyMatch(value -> "MR_CREATED".equals(value.getDeliveryStatus()));
+            String previousTaskStatus = task.getStatus();
+            String nextTaskStatus = allDelivered ? "SUCCEEDED" : "DELIVERY_FAILED";
             batch.setDeliveryStatus(allDelivered ? "DELIVERED" : anyDelivered ? "PARTIALLY_DELIVERED" : "FAILED");
             batch.setDeliveryClaimToken(null);
             batch.setDeliveryLeaseExpiresAt(null);
             batch.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
             batches.updateById(batch);
-            task.setStatus(allDelivered ? "SUCCEEDED" : "DELIVERY_FAILED");
+            task.setStatus(nextTaskStatus);
             task.setUpdatedAt(batch.getUpdatedAt());
             tasks.updateById(task);
             events.publish(task.getProjectId(), task.getRequirementGroupId(), allDelivered ? "delivery.completed" : "delivery.failed",
                     batchId.toString(), Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
                             "reviewBatchId", batchId, "deliveryStatus", batch.getDeliveryStatus()));
+            return new FinishResult(allDelivered, !nextTaskStatus.equals(previousTaskStatus));
+        });
+        if (result != null && result.statusChanged() && notificationService != null) {
+            String kind = result.allDelivered() ? "TASK_COMPLETED" : "TASK_FAILED";
+            notificationService.notify(task.getCreatedBy(), task.getProjectId(), task.getRequirementGroupId(), kind,
+                    (result.allDelivered() ? "任务完成：" : "任务交付失败：") + task.getTitle(),
+                    result.allDelivered() ? task.getRequirement() : "Diff 交付未全部完成，请查看交付失败详情",
+                    task.getId().toString());
+        }
+    }
+
+    private boolean isStaleSnapshot(RuntimeException failure) {
+        return failure instanceof ApiException api && "DIFF_SNAPSHOT_STALE".equals(api.code());
+    }
+
+    /** 快照已失效时终止本次交付，避免任务无限停留在待确认状态。 */
+    private void failStaleReview(TaskEntity task, DiffReviewBatchEntity batch, List<DiffEntity> values,
+            RuntimeException failure) {
+        transactions.execute(status -> {
+            DiffReviewBatchEntity currentBatch = batches.selectByIdForUpdate(batch.getId());
+            if (!ownsBatchClaim(currentBatch, batch.getDeliveryClaimToken())) {
+                return null;
+            }
+            LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+            currentBatch.setDeliveryStatus("FAILED");
+            currentBatch.setDeliveryClaimToken(null);
+            currentBatch.setDeliveryLeaseExpiresAt(null);
+            currentBatch.setUpdatedAt(now);
+            batches.updateById(currentBatch);
+            for (DiffEntity diff : values) {
+                diff.setDeliveryStatus("FAILED");
+                diff.setDeliveryFailureCode("DIFF_SNAPSHOT_STALE");
+                diff.setDeliveryFailureReason(failure.getMessage());
+                diff.setUpdatedAt(now);
+                diffs.updateById(diff);
+            }
+            task.setStatus("DELIVERY_FAILED");
+            task.setUpdatedAt(now);
+            tasks.updateById(task);
+            events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.diff-review.failed",
+                    currentBatch.getId().toString(),
+                    Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
+                            "reviewBatchId", currentBatch.getId(), "reason", "DIFF_SNAPSHOT_STALE"));
             return null;
         });
+    }
+
+    private static final class FinishResult {
+        private final boolean allDelivered;
+        private final boolean statusChanged;
+
+        private FinishResult(boolean allDelivered, boolean statusChanged) {
+            this.allDelivered = allDelivered;
+            this.statusChanged = statusChanged;
+        }
+
+        private boolean allDelivered() {
+            return allDelivered;
+        }
+
+        private boolean statusChanged() {
+            return statusChanged;
+        }
     }
 
     private void restoreAfterPreflightFailure(UUID batchId, String claimToken) {
