@@ -14,7 +14,9 @@ import java.util.UUID;
  */
 public interface AttachmentStorageStrategy {
 
-    /** 策略标识，如 {@code ALIYUN_OSS_PRESIGNED} / {@code LOCAL_SIGNED}。 */
+    /**
+     * 策略标识，如 {@code ALIYUN_OSS_PRESIGNED} / {@code LOCAL_SIGNED}。
+     */
     String name();
 
     /**
@@ -28,7 +30,7 @@ public interface AttachmentStorageStrategy {
      * @return 直传凭证
      */
     UploadCredential createCredential(UUID attachmentId, String objectKey, String fileName, String mediaType,
-            Long sizeBytes);
+                                      Long sizeBytes);
 
     /**
      * 为已上传附件签发临时下载（预签名 GET）地址。

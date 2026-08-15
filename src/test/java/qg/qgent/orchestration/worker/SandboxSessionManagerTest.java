@@ -161,9 +161,9 @@ class SandboxSessionManagerTest {
         assertThat(create.getRepositoryIds()).containsExactly(REPO);
         assertThat(create.getImageProfile()).isEqualTo("java-node");
 
-        assertThat(session.getSandboxId()).isNotNull();
+        assertThat(session.sandboxId()).isNotNull();
         assertThat(session.singleRepository()).isEqualTo(REPO);
-        assertThat(session.getRepositoryByPath()).containsEntry("repo-1", REPO);
+        assertThat(session.repositoryByPath()).containsEntry("repo-1", REPO);
     }
 
     @Test
@@ -250,7 +250,7 @@ class SandboxSessionManagerTest {
         
         verify(githubAppClient).getBranch(12345L, "owner", "repo", "main");
         verify(credentialService).generateGrant(any(UUID.class), any(UUID.class), eq(12345L), eq("owner/repo"), eq("main"), eq("fetched-sha"), eq(qg.qgent.entity.GitCredentialPurpose.FETCH));
-        assertEquals("workspaces/" + WORKSPACE, session.getStorageKey());
+        assertEquals("workspaces/" + WORKSPACE, session.storageKey());
     }
 
     @Test
@@ -274,7 +274,7 @@ class SandboxSessionManagerTest {
 
         manager.release(WORKSPACE);
 
-        verify(client).destroySandbox(session.getSandboxId());
+        verify(client).destroySandbox(session.sandboxId());
         assertThatThrownBy(() -> manager.require(WORKSPACE))
                 .isInstanceOf(IllegalStateException.class);
     }
@@ -290,7 +290,7 @@ class SandboxSessionManagerTest {
 
         manager.renewActiveLeases();
 
-        verify(client).renewSandbox(session.getSandboxId());
+        verify(client).renewSandbox(session.sandboxId());
     }
 
     @Test
@@ -305,6 +305,6 @@ class SandboxSessionManagerTest {
 
         manager.renewActiveLeases();
 
-        verify(client, never()).renewSandbox(session.getSandboxId());
+        verify(client, never()).renewSandbox(session.sandboxId());
     }
 }

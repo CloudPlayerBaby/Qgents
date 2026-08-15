@@ -17,37 +17,59 @@ import java.util.UUID;
 @TableName("messages")
 public class MessageEntity {
 
-    /** 消息 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 消息 ID（UUIDv7，BINARY(16)）。
+     */
     @TableId(type = IdType.INPUT)
     private UUID id;
 
-    /** 所属需求群 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 所属需求群 ID（UUIDv7，BINARY(16)）。
+     */
     private UUID requirementGroupId;
 
-    /** 群内单调递增消息序号（BIGINT），(requirement_group_id, sequence_no) 唯一。 */
+    /**
+     * 群内单调递增消息序号（BIGINT），(requirement_group_id, sequence_no) 唯一。
+     */
     private Long sequenceNo;
 
-    /** 发送用户 ID（UUIDv7，BINARY(16)）；Agent/系统消息时为空。 */
+    /**
+     * 发送用户 ID（UUIDv7，BINARY(16)）；Agent/系统消息时为空。
+     */
     private UUID authorUserId;
 
-    /** 发送 Agent ID（UUIDv7，BINARY(16)）；用户/系统消息时为空（与 author_user_id 二选一，表 CHECK）。 */
+    /**
+     * 发送 Agent ID（UUIDv7，BINARY(16)）；用户/系统消息时为空（与 author_user_id 二选一，表 CHECK）。
+     */
     private UUID agentId;
 
-    /** 客户端幂等 ID（群内唯一），断线重试命中时返回原消息；可为空表示不启用客户端幂等。 */
+    /**
+     * 客户端幂等 ID（群内唯一），断线重试命中时返回原消息；可为空表示不启用客户端幂等。
+     */
     private String clientMessageId;
 
-    /** 消息类型枚举：TEXT/CODE/IMAGE/FILE/SYSTEM/QUOTE。 */
+    /**
+     * 消息类型枚举：TEXT/CODE/IMAGE/FILE/SYSTEM/QUOTE。
+     */
     private String messageType;
 
-    /** 结构化内容 JSON 文本（JSON 列），如 {"text":"..."}，按类型校验。 */
+    /**
+     * 结构化内容 JSON 文本（JSON 列），如 {"text":"..."}，按类型校验。
+     */
     private String content;
 
-    /** 提及对象 JSON 文本（JSON 列），元素含 type(USER/AGENT) 与 id；可为空。 */
+    /**
+     * 提及对象 JSON 文本（JSON 列），元素含 type(USER/AGENT) 与 id；可为空。
+     */
     private String mentions;
 
-    /** 回复或引用的原消息 ID（UUIDv7，BINARY(16)）；可为空。 */
+    /**
+     * 回复或引用的原消息 ID（UUIDv7，BINARY(16)）；可为空。
+     */
     private UUID replyToMessageId;
 
-    /** 发送时间（UTC，数据库默认值）。 */
+    /**
+     * 发送时间（UTC，数据库默认值）。
+     */
     private LocalDateTime createdAt;
 }

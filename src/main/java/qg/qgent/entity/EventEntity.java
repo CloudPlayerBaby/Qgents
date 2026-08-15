@@ -21,17 +21,29 @@ import java.util.UUID;
 public class EventEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
-    /** 所属项目ID。 */
+    /**
+     * 所属项目ID。
+     */
     private UUID projectId;
-    /** 可选关联需求群ID。 */
+    /**
+     * 可选关联需求群ID。
+     */
     private UUID requirementGroupId;
-    /** 项目内单调递增事件序号，作为 SSE 游标。 */
+    /**
+     * 项目内单调递增事件序号，作为 SSE 游标。
+     */
     private Long sequenceNo;
-    /** 事件类型，如 task-run.updated / diff.created / merge-request.updated。 */
+    /**
+     * 事件类型，如 task-run.updated / diff.created / merge-request.updated。
+     */
     private String eventType;
-    /** 关联资源ID字符串，如 taskRunId。 */
+    /**
+     * 关联资源ID字符串，如 taskRunId。
+     */
     private String resourceId;
-    /** 脱敏事件载荷 JSON。 */
+    /**
+     * 脱敏事件载荷 JSON。
+     */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> payload;
     private LocalDateTime createdAt;

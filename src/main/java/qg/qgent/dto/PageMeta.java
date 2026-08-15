@@ -12,8 +12,12 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class PageMeta {
-    /** 下一页游标，末页为空。 */
+    /**
+     * 下一页游标，末页为空。
+     */
     private String nextCursor;
-    /** 是否还有更多数据。 */
+    /**
+     * 是否还有更多数据。
+     */
     private Boolean hasMore;
 }

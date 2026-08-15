@@ -14,29 +14,51 @@ import java.util.List;
  */
 @Data
 public class ReviewResult {
-    /** 是否通过审查，由严重度策略判定。 */
+    /**
+     * 是否通过审查，由严重度策略判定。
+     */
     private boolean success;
-    /** 审查摘要。 */
+    /**
+     * 审查摘要。
+     */
     private String summary;
-    /** 审查发现列表。 */
+    /**
+     * 审查发现列表。
+     */
     private List<Finding> findings = new ArrayList<>();
-    /** 整体改进建议。 */
+    /**
+     * 整体改进建议。
+     */
     private List<String> suggestions = new ArrayList<>();
-    /** 是否需要 Coding Agent 修复；false 且未通过时不可自动修复。 */
+    /**
+     * 是否需要 Coding Agent 修复；false 且未通过时不可自动修复。
+     */
     private boolean needsCodingFix;
 
-    /** 单个审查发现。 */
+    /**
+     * 单个审查发现。
+     */
     @Data
     public static class Finding {
-        /** 严重程度：BLOCKER/MAJOR/MINOR/INFO。 */
+        /**
+         * 严重程度：BLOCKER/MAJOR/MINOR/INFO。
+         */
         private String severity;
-        /** 定位文件（相对路径）。 */
+        /**
+         * 定位文件（相对路径）。
+         */
         private String file;
-        /** 定位行号，无法确定时为 null。 */
+        /**
+         * 定位行号，无法确定时为 null。
+         */
         private Integer line;
-        /** 问题描述。 */
+        /**
+         * 问题描述。
+         */
         private String issue;
-        /** 建议修改。 */
+        /**
+         * 建议修改。
+         */
         private String suggestion;
     }
 }

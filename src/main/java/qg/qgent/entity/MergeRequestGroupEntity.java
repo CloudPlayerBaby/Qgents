@@ -12,8 +12,12 @@ import java.util.UUID;
 @Data
 @TableName("merge_request_groups")
 public class MergeRequestGroupEntity {
-    /** MR 镜像ID。 */
+    /**
+     * MR 镜像ID。
+     */
     private UUID mergeRequestId;
-    /** 关联的需求群ID。 */
+    /**
+     * 关联的需求群ID。
+     */
     private UUID requirementGroupId;
 }

@@ -4,7 +4,9 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
-/** Reason supplied when a Task-level final Diff review is rejected. */
+/**
+ * Reason supplied when a Task-level final Diff review is rejected.
+ */
 @Data
 public class DiffReviewRejectRequest {
     @NotBlank

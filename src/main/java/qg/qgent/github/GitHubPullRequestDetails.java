@@ -1,6 +1,8 @@
 package qg.qgent.github;
 
-/** GitHub Pull Request data required to mirror a repository-scoped Qgents MR. */
+/**
+ * GitHub Pull Request data required to mirror a repository-scoped Qgents MR.
+ */
 public record GitHubPullRequestDetails(
         /* GitHub's immutable Pull Request database identifier. */
         long id,
@@ -20,4 +22,5 @@ public record GitHubPullRequestDetails(
         boolean merged,
         /* GitHub page URL. */
         String htmlUrl
-) {}
+) {
+}

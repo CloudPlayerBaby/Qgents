@@ -8,7 +8,9 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.UUID;
 
-/** 工具执行时使用的受控上下文。 */
+/**
+ * 工具执行时使用的受控上下文。
+ */
 @Data
 @AllArgsConstructor
 public class ToolContext {

@@ -12,7 +12,9 @@ import java.util.regex.Pattern;
 
 import static org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY;
 
-/** 将 Workspace 存储标识和受控仓库映射解析为安全路径。 */
+/**
+ * 将 Workspace 存储标识和受控仓库映射解析为安全路径。
+ */
 @Component
 public class WorkspacePathResolver {
     public static final String GIT_MARKER = ".qgents-sandbox-git-marker";
@@ -35,8 +37,11 @@ public class WorkspacePathResolver {
             Path realCandidate = candidate.toRealPath();
             requireInside(realCandidate, realRoot);
             return realCandidate;
-        } catch (WorkerException exception) { throw exception; }
-        catch (Exception exception) { throw invalid("无法解析 Workspace 目录"); }
+        } catch (WorkerException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw invalid("无法解析 Workspace 目录");
+        }
     }
 
     public Path resolveDockerHost(String storageKey) {
@@ -56,8 +61,11 @@ public class WorkspacePathResolver {
             Path realRepository = repository.toRealPath();
             requireInside(realRepository, workspace);
             return realRepository;
-        } catch (WorkerException exception) { throw exception; }
-        catch (Exception exception) { throw invalid("无法解析 Workspace 仓库目录"); }
+        } catch (WorkerException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw invalid("无法解析 Workspace 仓库目录");
+        }
     }
 
     public Path resolveRepositoryDockerHost(SandboxAllocation allocation, UUID repositoryId) {
@@ -67,7 +75,9 @@ public class WorkspacePathResolver {
         return repository;
     }
 
-    /** 返回用于覆盖容器内 .git 指针的 Worker 受控空文件。 */
+    /**
+     * 返回用于覆盖容器内 .git 指针的 Worker 受控空文件。
+     */
     public Path resolveGitMarkerLocal(SandboxAllocation allocation) {
         Path workspace = resolveLocal(allocation.getWorkspaceStorageKey());
         Path marker = workspace.resolve(GIT_MARKER).normalize();
@@ -78,8 +88,11 @@ public class WorkspacePathResolver {
             Path real = marker.toRealPath();
             requireInside(real, workspace);
             return real;
-        } catch (WorkerException exception) { throw exception; }
-        catch (Exception exception) { throw invalid("无法解析 Workspace Git 隔离 marker"); }
+        } catch (WorkerException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw invalid("无法解析 Workspace Git 隔离 marker");
+        }
     }
 
     public Path resolveGitMarkerDockerHost(SandboxAllocation allocation) {
@@ -98,10 +111,19 @@ public class WorkspacePathResolver {
         return relativePath;
     }
 
-    private Path relative(String storageKey) { return Path.of(storageKey.substring("workspaces/".length())); }
+    private Path relative(String storageKey) {
+        return Path.of(storageKey.substring("workspaces/".length()));
+    }
+
     private void validateStorageKey(String storageKey) {
         if (storageKey == null || !STORAGE_KEY.matcher(storageKey).matches()) throw invalid("Workspace 存储标识不合法");
     }
-    private void requireInside(Path candidate, Path root) { if (!candidate.startsWith(root)) throw invalid("Workspace 路径越界"); }
-    private WorkerException invalid(String message) { return new WorkerException(UNPROCESSABLE_ENTITY, "WORKSPACE_PATH_INVALID", message); }
+
+    private void requireInside(Path candidate, Path root) {
+        if (!candidate.startsWith(root)) throw invalid("Workspace 路径越界");
+    }
+
+    private WorkerException invalid(String message) {
+        return new WorkerException(UNPROCESSABLE_ENTITY, "WORKSPACE_PATH_INVALID", message);
+    }
 }

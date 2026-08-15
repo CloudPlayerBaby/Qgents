@@ -39,7 +39,9 @@ public class IdempotencyFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(IdempotencyFilter.class);
     private static final String HEADER = "Idempotency-Key";
     private static final String UUID_PATTERN = "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-    /** 请求体缓存上限（字节）：超过上限的部分不参与幂等哈希，需保证不小于常见写请求体。 */
+    /**
+     * 请求体缓存上限（字节）：超过上限的部分不参与幂等哈希，需保证不小于常见写请求体。
+     */
     private static final int BODY_CACHE_LIMIT = 1024 * 1024;
 
     private final IdempotencyService idempotency;
@@ -53,27 +55,23 @@ public class IdempotencyFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String method = request.getMethod();
-        if (!("POST".equalsIgnoreCase(method) || "PUT".equalsIgnoreCase(method) 
+        if (!("POST".equalsIgnoreCase(method) || "PUT".equalsIgnoreCase(method)
                 || "PATCH".equalsIgnoreCase(method) || "DELETE".equalsIgnoreCase(method))) {
             return true;
         }
         String path = request.getRequestURI();
-        
+
         // GitHub Installations: POST, DELETE, POST /sync
         boolean isGitHubInstallApi = path.matches("^/api/v1/teams/[^/]+/integrations/github/installations(?:/[^/]+(?:/sync)?)?$");
-        
+
         // GitHub Project Repositories: POST, PATCH, DELETE
         boolean isGitHubRepoApi = path.matches("^/api/v1/projects/[^/]+/repositories(?:/[^/]+)?$");
 
         // Task final Diff review: confirmation, rejection and delivery retry are state-changing operations.
         boolean isTaskDiffReviewApi = path.matches(
                 "^/api/v1/projects/[^/]+/tasks/[^/]+/diff-review/(?:confirm|reject|retry-delivery)$");
-        
-        if (isGitHubInstallApi || isGitHubRepoApi || isTaskDiffReviewApi) {
-            return false;
-        }
-        
-        return true;
+
+        return !isGitHubInstallApi && !isGitHubRepoApi && !isTaskDiffReviewApi;
     }
 
     @Override
@@ -85,7 +83,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
             writeError(request, response, 400, "IDEMPOTENCY_KEY_REQUIRED", "缺少 Idempotency-Key");
             return;
         }
-        
+
         // 获取当前操作用户的安全上下文
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         UUID userId = auth != null && auth.getPrincipal() instanceof UUID u ? u : null;
@@ -116,7 +114,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         // 包装请求和响应，使其后续可重复读取 Body 进行缓存
         ContentCachingRequestWrapper cachedRequest = new ContentCachingRequestWrapper(request, BODY_CACHE_LIMIT);
         ContentCachingResponseWrapper cachedResponse = new ContentCachingResponseWrapper(response);
-        
+
         try {
             // 继续执行下游的过滤器和业务控制器逻辑
             chain.doFilter(cachedRequest, cachedResponse);
@@ -125,14 +123,15 @@ public class IdempotencyFilter extends OncePerRequestFilter {
             byte[] requestHash = hash(cachedRequest.getContentAsByteArray());
             int status = cachedResponse.getStatus();
             byte[] body = cachedResponse.getContentAsByteArray();
-            
+
             // 仅当业务处理成功（状态码在 200~299 之间）时，进行响应的持久化缓存
             if (status >= 200 && status < 300) {
                 try {
                     // 若无响应体（例如 204），保存一个空 Map，以避免 null 造成缓存被识别为待处理中
                     Map<String, Object> redacted = Map.of();
                     if (body.length > 0) {
-                        redacted = mapper.readValue(body, new TypeReference<>() {});
+                        redacted = mapper.readValue(body, new TypeReference<>() {
+                        });
                     }
                     // 保存成功响应记录到数据库，供相同幂等键的下一次请求回放使用
                     idempotency.save(userId, fingerprint, scope, key, requestHash, status, redacted, null);
@@ -169,7 +168,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
     }
 
     private void writeError(HttpServletRequest request, HttpServletResponse response, int status, String code,
-            String message) throws IOException {
+                            String message) throws IOException {
         response.setStatus(status);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);

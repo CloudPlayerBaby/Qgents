@@ -1,11 +1,7 @@
 package qg.qgent.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Result;
-import org.apache.ibatis.annotations.Results;
-import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.*;
 import qg.qgent.entity.TeamInvitationEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 
@@ -14,12 +10,12 @@ import java.util.UUID;
 
 @Mapper
 public interface TeamInvitationMapper extends BaseMapper<TeamInvitationEntity> {
-    @Select({ "<script>",
+    @Select({"<script>",
             "SELECT id, team_id, invited_by, email_normalized, token_hash, status, expires_at, accepted_at",
             "FROM team_invitations WHERE team_id = #{teamId}",
             "<if test='anchor != null'>AND id &gt; #{anchor}</if>",
             "ORDER BY id LIMIT #{limit}",
-            "</script>" })
+            "</script>"})
     @Results({
             @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class),
@@ -31,5 +27,5 @@ public interface TeamInvitationMapper extends BaseMapper<TeamInvitationEntity> {
             @Result(column = "accepted_at", property = "acceptedAt")
     })
     List<TeamInvitationEntity> selectInvitationPage(@Param("teamId") UUID teamId,
-            @Param("anchor") UUID anchor, @Param("limit") int limit);
+                                                    @Param("anchor") UUID anchor, @Param("limit") int limit);
 }

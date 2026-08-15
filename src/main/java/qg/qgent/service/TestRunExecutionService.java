@@ -5,24 +5,17 @@ import qg.qgent.entity.DryRunEntity;
 import qg.qgent.entity.TestRunEntity;
 import qg.qgent.mapper.DryRunMapper;
 import qg.qgent.mapper.TestRunMapper;
-import qg.qgent.orchestration.worker.SandboxWorkerClient;
-import qg.qgent.orchestration.worker.WorkerMergePreviewRequest;
-import qg.qgent.orchestration.worker.WorkerMergePreviewResponse;
-import qg.qgent.orchestration.worker.WorkerTestExecutionItemRequest;
-import qg.qgent.orchestration.worker.WorkerTestExecutionRequest;
-import qg.qgent.orchestration.worker.WorkerTestExecutionResponse;
+import qg.qgent.orchestration.worker.*;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
-/** 通过数据库租约领取 TestRun/DryRun，支持多实例并发与进程重启恢复。 */
+/**
+ * 通过数据库租约领取 TestRun/DryRun，支持多实例并发与进程重启恢复。
+ */
 @Service
 public class TestRunExecutionService {
     private static final Duration LEASE_MARGIN = Duration.ofMinutes(10);
@@ -32,14 +25,16 @@ public class TestRunExecutionService {
     private final EventService events;
 
     public TestRunExecutionService(TestRunMapper testRuns, DryRunMapper dryRuns,
-            SandboxWorkerClient worker, EventService events) {
+                                   SandboxWorkerClient worker, EventService events) {
         this.testRuns = testRuns;
         this.dryRuns = dryRuns;
         this.worker = worker;
         this.events = events;
     }
 
-    /** 创建事务提交后的快速触发；真正的互斥由数据库 claim 保证。 */
+    /**
+     * 创建事务提交后的快速触发；真正的互斥由数据库 claim 保证。
+     */
     public void executeTestRun(UUID runId) {
         TestRunEntity candidate = testRuns.selectById(runId);
         if (candidate == null) return;
@@ -57,7 +52,9 @@ public class TestRunExecutionService {
         }
     }
 
-    /** DryRun 先预演合并；无冲突时再在临时 checkout 的合并结果上执行目标分支门禁 Testset。 */
+    /**
+     * DryRun 先预演合并；无冲突时再在临时 checkout 的合并结果上执行目标分支门禁 Testset。
+     */
     public void executeDryRun(UUID runId) {
         DryRunEntity candidate = dryRuns.selectById(runId);
         if (candidate == null) return;
@@ -146,14 +143,14 @@ public class TestRunExecutionService {
         summary.put("resolvedHeadCommit", response == null ? null : response.getResolvedHeadCommit());
         summary.put("results", response == null || response.getResults() == null ? List.of()
                 : response.getResults().stream().map(result -> {
-                    Map<String, Object> item = new LinkedHashMap<>();
-                    item.put("testsetId", result.getTestsetId());
-                    item.put("status", result.getStatus());
-                    item.put("exitCode", result.getExitCode());
-                    item.put("durationMs", result.getDurationMs());
-                    item.put("failureCode", result.getFailureCode());
-                    return item;
-                }).toList());
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("testsetId", result.getTestsetId());
+            item.put("status", result.getStatus());
+            item.put("exitCode", result.getExitCode());
+            item.put("durationMs", result.getDurationMs());
+            item.put("failureCode", result.getFailureCode());
+            return item;
+        }).toList());
         return summary;
     }
 
@@ -176,14 +173,17 @@ public class TestRunExecutionService {
     }
 
     private void completeDry(DryRunEntity run, String token, String status, Map<String, Object> report, String head) {
-        if (dryRuns.complete(run.getId(), token, status, report, head) == 1) publishDry(dryRuns.selectById(run.getId()));
+        if (dryRuns.complete(run.getId(), token, status, report, head) == 1)
+            publishDry(dryRuns.selectById(run.getId()));
     }
 
     private void publishTest(TestRunEntity run) {
         if (run == null) return;
         Map<String, Object> payload = new HashMap<>();
-        payload.put("projectId", run.getProjectId()); payload.put("testRunId", run.getId());
-        payload.put("repositoryId", run.getProjectRepositoryId()); payload.put("status", run.getStatus());
+        payload.put("projectId", run.getProjectId());
+        payload.put("testRunId", run.getId());
+        payload.put("repositoryId", run.getProjectRepositoryId());
+        payload.put("status", run.getStatus());
         if (run.getTaskId() != null) payload.put("taskId", run.getTaskId());
         payload.put("timestamp", Instant.now().toString());
         events.publish(run.getProjectId(), null, "test-run.updated", run.getId().toString(), payload);
@@ -192,8 +192,10 @@ public class TestRunExecutionService {
     private void publishDry(DryRunEntity run) {
         if (run == null) return;
         Map<String, Object> payload = new HashMap<>();
-        payload.put("projectId", run.getProjectId()); payload.put("dryRunId", run.getId());
-        payload.put("repositoryId", run.getProjectRepositoryId()); payload.put("status", run.getStatus());
+        payload.put("projectId", run.getProjectId());
+        payload.put("dryRunId", run.getId());
+        payload.put("repositoryId", run.getProjectRepositoryId());
+        payload.put("status", run.getStatus());
         if (run.getTaskId() != null) payload.put("taskId", run.getTaskId());
         payload.put("timestamp", Instant.now().toString());
         events.publish(run.getProjectId(), null, "dry-run.updated", run.getId().toString(), payload);

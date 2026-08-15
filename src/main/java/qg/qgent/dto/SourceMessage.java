@@ -16,19 +16,27 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class SourceMessage {
 
-    /** 消息 ID（UUIDv7，字符串形式）。 */
+    /**
+     * 消息 ID（UUIDv7，字符串形式）。
+     */
     @Schema(description = "消息 ID")
     private String id;
 
-    /** 发送人摘要（用户或 Agent）。 */
+    /**
+     * 发送人摘要（用户或 Agent）。
+     */
     @Schema(description = "发送人摘要")
     private UserSummary sender;
 
-    /** 脱敏文本摘要（截断）。 */
+    /**
+     * 脱敏文本摘要（截断）。
+     */
     @Schema(description = "脱敏文本摘要")
     private String textExcerpt;
 
-    /** 消息发送时间（UTC）。 */
+    /**
+     * 消息发送时间（UTC）。
+     */
     @Schema(description = "消息发送时间")
     private String createdAt;
 }

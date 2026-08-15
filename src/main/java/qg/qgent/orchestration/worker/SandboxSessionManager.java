@@ -3,26 +3,13 @@ package qg.qgent.orchestration.worker;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.entity.ProjectRepositoryEntity;
-import qg.qgent.entity.WorkspaceEntity;
-import qg.qgent.entity.WorkspaceRepositoryEntity;
-import qg.qgent.mapper.ProjectRepositoryMapper;
-import qg.qgent.mapper.WorkspaceMapper;
-import qg.qgent.mapper.WorkspaceRepositoryMapper;
-import qg.qgent.mapper.GitHubRepositoryMapper;
-import qg.qgent.mapper.GitHubInstallationMapper;
-import qg.qgent.service.GitCredentialService;
-import qg.qgent.entity.GitHubRepositoryEntity;
-import qg.qgent.entity.GitHubInstallationEntity;
-import qg.qgent.entity.GitCredentialPurpose;
+import qg.qgent.entity.*;
 import qg.qgent.github.GitHubAppClient;
 import qg.qgent.github.GitHubBranchDetails;
+import qg.qgent.mapper.*;
+import qg.qgent.service.GitCredentialService;
 
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -56,10 +43,10 @@ public class SandboxSessionManager {
     private final Map<UUID, SandboxSession> sessions = new ConcurrentHashMap<>();
 
     public SandboxSessionManager(SandboxWorkerClient client, SandboxWorkerProperties properties,
-            WorkspaceMapper workspaceMapper, WorkspaceRepositoryMapper repositoryMapper,
-            ProjectRepositoryMapper projectRepositoryMapper, GitHubRepositoryMapper gitHubRepositoryMapper,
-            GitHubInstallationMapper installationMapper, GitCredentialService credentialService,
-            GitHubAppClient githubAppClient) {
+                                 WorkspaceMapper workspaceMapper, WorkspaceRepositoryMapper repositoryMapper,
+                                 ProjectRepositoryMapper projectRepositoryMapper, GitHubRepositoryMapper gitHubRepositoryMapper,
+                                 GitHubInstallationMapper installationMapper, GitCredentialService credentialService,
+                                 GitHubAppClient githubAppClient) {
         this.client = client;
         this.properties = properties;
         this.workspaceMapper = workspaceMapper;
@@ -90,7 +77,9 @@ public class SandboxSessionManager {
         }
     }
 
-    /** 返回指定 Workspace 的当前会话；不存在时抛错，供 Worker 端口在调用工具前断言。 */
+    /**
+     * 返回指定 Workspace 的当前会话；不存在时抛错，供 Worker 端口在调用工具前断言。
+     */
     public SandboxSession require(UUID workspaceId) {
         SandboxSession session = sessions.get(workspaceId);
         if (session == null) {
@@ -99,14 +88,16 @@ public class SandboxSessionManager {
         return session;
     }
 
-    /** 销毁会话对应的 Sandbox 并移除记录；Workspace 保留。销毁失败不吞结果，仅不阻断任务收尾。 */
+    /**
+     * 销毁会话对应的 Sandbox 并移除记录；Workspace 保留。销毁失败不吞结果，仅不阻断任务收尾。
+     */
     public void release(UUID workspaceId) {
         SandboxSession session = sessions.remove(workspaceId);
         if (session == null) {
             return;
         }
         try {
-            client.destroySandbox(session.getSandboxId());
+            client.destroySandbox(session.sandboxId());
         } catch (RuntimeException ignored) {
             // 销毁失败由 Worker 的清理任务兜底，不阻断任务结果返回。
         }
@@ -126,7 +117,7 @@ public class SandboxSessionManager {
                 return;
             }
             try {
-                client.renewSandbox(session.getSandboxId());
+                client.renewSandbox(session.sandboxId());
             } catch (RuntimeException ignored) {
                 // 当前工具调用会传播 Worker 错误；心跳不应阻塞其他活跃 Sandbox 的续租。
             }
@@ -173,26 +164,26 @@ public class SandboxSessionManager {
                 throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.FORBIDDEN, "GITHUB_REPOSITORY_REVOKED",
                         "GitHub repository authorization has been revoked");
             }
-            
+
             String expectedHeadCommit = repository.getBaseCommit();
             if (expectedHeadCommit == null || expectedHeadCommit.isBlank()) {
                 GitHubBranchDetails branchDetails = githubAppClient.getBranch(
                         installation.getProviderInstallationId(), ghRepo.getOwnerLogin(), ghRepo.getName(), remoteBranch);
                 expectedHeadCommit = branchDetails.commitSha();
             }
-            
+
             String fullName = ghRepo.getOwnerLogin() + "/" + ghRepo.getName();
             String githubUrl = "https://github.com/" + fullName + ".git";
-            
+
             String grantId = credentialService.generateGrant(installation.getTeamId(), projectId, installation.getProviderInstallationId(),
                     fullName, remoteBranch, expectedHeadCommit, GitCredentialPurpose.FETCH);
-            
+
             WorkerGitStoreSyncRequest syncReq = new WorkerGitStoreSyncRequest()
                     .setRepositoryUrl(githubUrl)
                     .setRemoteBranch(remoteBranch)
                     .setExpectedHeadCommit(expectedHeadCommit)
                     .setCredentialGrantId(grantId);
-            
+
             client.syncGitStore(projectRepo.getId(), syncReq);
         }
 

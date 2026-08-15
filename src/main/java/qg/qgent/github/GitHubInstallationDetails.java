@@ -11,12 +11,18 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class GitHubInstallationDetails {
-    /** GitHub 提供的安装数字 ID。 */
+    /**
+     * GitHub 提供的安装数字 ID。
+     */
     private long installationId;
 
-    /** 授权账号登录名。 */
+    /**
+     * 授权账号登录名。
+     */
     private String accountLogin;
 
-    /** 授权账号类型。 */
+    /**
+     * 授权账号类型。
+     */
     private String accountType;
 }

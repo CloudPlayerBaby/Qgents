@@ -18,21 +18,37 @@ import java.util.UUID;
 public class DiffCommentEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
-    /** 所属 Diff ID。 */
+    /**
+     * 所属 Diff ID。
+     */
     private UUID diffId;
-    /** 评论指向的文件路径。 */
+    /**
+     * 评论指向的文件路径。
+     */
     private String path;
-    /** 变更侧枚举：LEFT/RIGHT，可为空。 */
+    /**
+     * 变更侧枚举：LEFT/RIGHT，可为空。
+     */
     private String side;
-    /** 行号，行级评论必填。 */
+    /**
+     * 行号，行级评论必填。
+     */
     private Integer line;
-    /** hunk 标识，hunk 级评论使用。 */
+    /**
+     * hunk 标识，hunk 级评论使用。
+     */
     private String hunkId;
-    /** 评论绑定的提交SHA。 */
+    /**
+     * 评论绑定的提交SHA。
+     */
     private String commitSha;
-    /** 审查意见正文。 */
+    /**
+     * 审查意见正文。
+     */
     private String body;
-    /** 评论作者用户ID。 */
+    /**
+     * 评论作者用户ID。
+     */
     private UUID authorUserId;
     private LocalDateTime createdAt;
 }

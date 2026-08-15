@@ -22,26 +22,46 @@ import java.util.UUID;
 public class QualityCheckResultEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
-    /** 所属 MR ID。 */
+    /**
+     * 所属 MR ID。
+     */
     private UUID mergeRequestId;
-    /** 检查类型，取值见类注释。 */
+    /**
+     * 检查类型，取值见类注释。
+     */
     private String checkType;
-    /** 相同提交和检查类型的执行序号，从 1 开始。 */
+    /**
+     * 相同提交和检查类型的执行序号，从 1 开始。
+     */
     private Integer attemptNo;
-    /** 执行状态，取值见类注释。 */
+    /**
+     * 执行状态，取值见类注释。
+     */
     private String status;
-    /** TESTSET 检查使用的测试集ID。 */
+    /**
+     * TESTSET 检查使用的测试集ID。
+     */
     private UUID testsetId;
-    /** 检查对应的 Git 提交 SHA。 */
+    /**
+     * 检查对应的 Git 提交 SHA。
+     */
     private String commitSha;
-    /** 结果来源服务标识。 */
+    /**
+     * 结果来源服务标识。
+     */
     private String source;
-    /** 检查摘要 JSON，包含统计、失败项和脱敏日志引用。 */
+    /**
+     * 检查摘要 JSON，包含统计、失败项和脱敏日志引用。
+     */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> summary;
-    /** 开始执行时间（UTC）。 */
+    /**
+     * 开始执行时间（UTC）。
+     */
     private LocalDateTime startedAt;
-    /** 完成执行时间（UTC）。 */
+    /**
+     * 完成执行时间（UTC）。
+     */
     private LocalDateTime completedAt;
     private LocalDateTime createdAt;
 }

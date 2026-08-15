@@ -6,8 +6,12 @@ import lombok.NoArgsConstructor;
 
 import java.util.UUID;
 
-/** 单个 Testset 的脱敏执行结果。 */
-@Data @NoArgsConstructor @AllArgsConstructor
+/**
+ * 单个 Testset 的脱敏执行结果。
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
 public class TestExecutionItemResponse {
     private UUID testsetId;
     private String status;

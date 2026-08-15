@@ -1,17 +1,12 @@
 package qg.qgent.mapper;
 
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Result;
-import org.apache.ibatis.annotations.Results;
-import org.apache.ibatis.annotations.Select;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.*;
 import qg.qgent.entity.RepositoryBranchConfigTestsetEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 
 import java.util.List;
 import java.util.UUID;
-
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 
 /**
  * 分支质量门禁与强制测试集关系访问。复合主键关联表，使用专用 Mapper 方法。
@@ -27,7 +22,9 @@ public interface RepositoryBranchConfigTestsetMapper extends BaseMapper<Reposito
     })
     List<RepositoryBranchConfigTestsetEntity> selectByBranchConfigId(@Param("branchConfigId") UUID branchConfigId);
 
-    /** 返回引用指定 Testset 的门禁数量，用于阻止删除仍在使用的配置。 */
+    /**
+     * 返回引用指定 Testset 的门禁数量，用于阻止删除仍在使用的配置。
+     */
     @Select("SELECT COUNT(*) FROM repository_branch_config_testsets WHERE testset_id = #{testsetId}")
     long countByTestsetId(@Param("testsetId") UUID testsetId);
 

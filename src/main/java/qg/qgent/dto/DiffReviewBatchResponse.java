@@ -6,7 +6,9 @@ import lombok.NoArgsConstructor;
 
 import java.util.List;
 
-/** Task-level multi-repository Diff review summary. */
+/**
+ * Task-level multi-repository Diff review summary.
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

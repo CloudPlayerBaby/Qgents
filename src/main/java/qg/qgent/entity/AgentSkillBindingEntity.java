@@ -17,18 +17,28 @@ import java.util.UUID;
 @TableName("agent_skill_bindings")
 public class AgentSkillBindingEntity {
 
-    /** 所属项目 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 所属项目 ID（UUIDv7，BINARY(16)）。
+     */
     private UUID projectId;
 
-    /** Team 级 Agent ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * Team 级 Agent ID（UUIDv7，BINARY(16)）。
+     */
     private UUID agentId;
 
-    /** 项目内 Skill ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 项目内 Skill ID（UUIDv7，BINARY(16)）。
+     */
     private UUID skillId;
 
-    /** 绑定发起用户 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 绑定发起用户 ID（UUIDv7，BINARY(16)）。
+     */
     private UUID createdBy;
 
-    /** 绑定时间（UTC）。 */
+    /**
+     * 绑定时间（UTC）。
+     */
     private LocalDateTime createdAt;
 }

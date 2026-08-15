@@ -30,13 +30,17 @@ public class AgentPreseedInitializer implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(AgentPreseedInitializer.class);
 
-    /** 角色 → 默认展示名。 */
+    /**
+     * 角色 → 默认展示名。
+     */
     private static final Map<String, String> DEFAULT_NAMES = Map.of(
             "DEVELOPER", "开发 Agent",
             "TESTER", "测试 Agent",
             "REVIEWER", "审查 Agent");
 
-    /** 角色 → 默认能力标签。 */
+    /**
+     * 角色 → 默认能力标签。
+     */
     private static final Map<String, List<String>> DEFAULT_CAPABILITIES = Map.of(
             "DEVELOPER", List.of("coding", "implementation"),
             "TESTER", List.of("testing", "verification"),
@@ -61,7 +65,9 @@ public class AgentPreseedInitializer implements ApplicationRunner {
         }
     }
 
-    /** 团队内已存在该角色 ACTIVE Agent 则跳过，否则创建一个 TEAM 可见的默认 Agent。 */
+    /**
+     * 团队内已存在该角色 ACTIVE Agent 则跳过，否则创建一个 TEAM 可见的默认 Agent。
+     */
     private void ensureRoleAgent(TeamEntity team, String role) {
         boolean exists = agentMapper.selectCount(Wrappers.<AgentEntity>lambdaQuery()
                 .eq(AgentEntity::getTeamId, team.getId())

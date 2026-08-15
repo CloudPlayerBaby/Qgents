@@ -6,18 +6,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.entity.DiffEntity;
-import qg.qgent.entity.DiffFileEntity;
-import qg.qgent.entity.DiffReviewBatchEntity;
-import qg.qgent.entity.TaskEntity;
-import qg.qgent.entity.TaskRunEntity;
-import qg.qgent.entity.WorkspaceRepositoryEntity;
-import qg.qgent.mapper.DiffFileMapper;
-import qg.qgent.mapper.DiffMapper;
-import qg.qgent.mapper.DiffReviewBatchMapper;
-import qg.qgent.mapper.TaskMapper;
-import qg.qgent.mapper.TaskRunMapper;
-import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.entity.*;
+import qg.qgent.mapper.*;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitDiff;
 import qg.qgent.orchestration.worker.WorkerGitDiffFile;
@@ -26,15 +16,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HexFormat;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
-/** Creates immutable, Task-level multi-repository Diff review batches. */
+/**
+ * Creates immutable, Task-level multi-repository Diff review batches.
+ */
 @Service
 public class FinalDiffBundleService {
     private final TaskMapper tasks;
@@ -49,8 +35,8 @@ public class FinalDiffBundleService {
     private final TransactionTemplate transactions;
 
     public FinalDiffBundleService(TaskMapper tasks, TaskRunMapper runs, WorkspaceRepositoryMapper worktrees,
-            DiffReviewBatchMapper batches, DiffMapper diffs, DiffFileMapper files, SandboxWorkerClient worker,
-            DiffSnapshotStorage snapshots, EventService events, TransactionTemplate transactions) {
+                                  DiffReviewBatchMapper batches, DiffMapper diffs, DiffFileMapper files, SandboxWorkerClient worker,
+                                  DiffSnapshotStorage snapshots, EventService events, TransactionTemplate transactions) {
         this.tasks = tasks;
         this.runs = runs;
         this.worktrees = worktrees;
@@ -63,7 +49,9 @@ public class FinalDiffBundleService {
         this.transactions = transactions;
     }
 
-    /** Worker calls happen before the short persistence transaction; no DB lock spans network I/O. */
+    /**
+     * Worker calls happen before the short persistence transaction; no DB lock spans network I/O.
+     */
     public UUID createPendingBatch(UUID projectId, UUID taskId, UUID finalCodingRunId) {
         TaskEntity task = requireTask(projectId, taskId);
         DiffReviewBatchEntity existing = batches.selectOne(Wrappers.<DiffReviewBatchEntity>lambdaQuery()
@@ -149,7 +137,9 @@ public class FinalDiffBundleService {
         return batch.getId();
     }
 
-    /** 兼容批次已提交但旧流程尚未更新 Task 状态的窗口；锁定后只恢复仍待确认的批次。 */
+    /**
+     * 兼容批次已提交但旧流程尚未更新 Task 状态的窗口；锁定后只恢复仍待确认的批次。
+     */
     private UUID restoreExistingPendingBatch(TaskEntity task, UUID batchId) {
         return transactions.execute(status -> {
             DiffReviewBatchEntity batch = batches.selectByIdForUpdate(batchId);

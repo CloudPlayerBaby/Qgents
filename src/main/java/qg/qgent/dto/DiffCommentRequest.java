@@ -9,16 +9,26 @@ import lombok.Data;
  */
 @Data
 public class DiffCommentRequest {
-    /** 评论指向的文件路径。 */
+    /**
+     * 评论指向的文件路径。
+     */
     @NotBlank
     private String path;
-    /** 变更侧：LEFT/RIGHT，行级评论可指定。 */
+    /**
+     * 变更侧：LEFT/RIGHT，行级评论可指定。
+     */
     private String side;
-    /** 行号，行级评论必填。 */
+    /**
+     * 行号，行级评论必填。
+     */
     private Integer line;
-    /** hunk 标识，hunk 级评论使用。 */
+    /**
+     * hunk 标识，hunk 级评论使用。
+     */
     private String hunkId;
-    /** 审查意见正文。 */
+    /**
+     * 审查意见正文。
+     */
     @NotBlank
     private String body;
 }

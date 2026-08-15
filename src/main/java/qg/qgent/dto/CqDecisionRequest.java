@@ -7,6 +7,8 @@ import lombok.Data;
  */
 @Data
 public class CqDecisionRequest {
-    /** CQ 理由或修改意见。 */
+    /**
+     * CQ 理由或修改意见。
+     */
     private String reason;
 }

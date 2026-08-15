@@ -2,11 +2,7 @@ package qg.qgent.controller;
 
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.service.NotificationService;
@@ -15,7 +11,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 通知中心接口（§7.1）。
+ * 通知中心接口
  * 按用户维度持久化已读状态与历史列表；不经过 IdempotencyFilter，无需 Idempotency-Key。
  */
 @RestController
@@ -29,26 +25,26 @@ public class NotificationController {
     }
 
     /**
-     * 返回当前用户通知列表（含 isRead，按时间倒序）。
+     * 契约 §7.1：返回当前用户通知列表（含 isRead，按时间倒序）。
      */
     @GetMapping
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId,
-            HttpServletRequest request) {
+                               HttpServletRequest request) {
         return ok(notificationService.list(userId), request);
     }
 
     /**
-     * 标记单条通知已读（幂等）。
+     * 契约 §7.1：标记单条通知已读（幂等）。
      */
     @PostMapping("/{notificationId}/read")
     public ApiResponse<?> markRead(@AuthenticationPrincipal UUID userId,
-            @PathVariable UUID notificationId, HttpServletRequest request) {
+                                   @PathVariable UUID notificationId, HttpServletRequest request) {
         notificationService.markRead(userId, notificationId);
         return ok(Map.of(), request);
     }
 
     /**
-     * 全部通知已读（幂等）。
+     * 契约 §7.1：全部通知已读（幂等）。
      */
     @PostMapping("/read-all")
     public ApiResponse<?> markAllRead(@AuthenticationPrincipal UUID userId, HttpServletRequest request) {

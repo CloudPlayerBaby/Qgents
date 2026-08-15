@@ -13,9 +13,13 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class WorkerErrorResponse {
 
-    /** 稳定错误码，如 FILE_HASH_MISMATCH、EXECUTION_NOT_FOUND。 */
+    /**
+     * 稳定错误码，如 FILE_HASH_MISMATCH、EXECUTION_NOT_FOUND。
+     */
     private String code;
 
-    /** 不泄露内部信息的错误说明。 */
+    /**
+     * 不泄露内部信息的错误说明。
+     */
     private String message;
 }

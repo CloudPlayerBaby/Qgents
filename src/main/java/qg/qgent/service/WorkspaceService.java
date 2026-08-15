@@ -28,7 +28,7 @@ public class WorkspaceService {
     private final Path base;
 
     public WorkspaceService(WorkspaceMapper workspaceMapper,
-            @Value("${app.workspace.base-dir:}") String baseDir) {
+                            @Value("${app.workspace.base-dir:}") String baseDir) {
         this.workspaceMapper = workspaceMapper;
         this.base = (baseDir == null || baseDir.isBlank()) ? null
                 : Path.of(baseDir).toAbsolutePath().normalize();
@@ -39,9 +39,9 @@ public class WorkspaceService {
      *
      * @param workspaceId 目标 Workspace。
      * @return 解析结果：found 表示 workspace 存在且路径合法可解析；
-     *         ready 表示对应目录已存在（found 为 true 时才有意义）；
-     *         root 为解析出的根目录（found 为 true 时非 null）；
-     *         reason 为不可用原因（正常就绪时为 null）。
+     * ready 表示对应目录已存在（found 为 true 时才有意义）；
+     * root 为解析出的根目录（found 为 true 时非 null）；
+     * reason 为不可用原因（正常就绪时为 null）。
      */
     public WorkspaceResolution resolve(UUID workspaceId) {
         if (base == null) {
@@ -62,7 +62,9 @@ public class WorkspaceService {
         return WorkspaceResolution.resolved(root, ready, ready ? null : "workspace directory not present: " + root);
     }
 
-    /** workspaceId 解析结果（内部值对象）。 */
+    /**
+     * workspaceId 解析结果（内部值对象）。
+     */
     public record WorkspaceResolution(boolean found, boolean ready, Path root, String reason) {
 
         private static WorkspaceResolution notConfigured() {

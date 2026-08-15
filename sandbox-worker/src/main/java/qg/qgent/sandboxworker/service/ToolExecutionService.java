@@ -56,7 +56,9 @@ public class ToolExecutionService {
     private final ConcurrentMap<UUID, Thread> activeThreads = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Object> logLocks = new ConcurrentHashMap<>();
 
-    /** Worker 重启后把无法恢复的排队中和运行中记录标记为中断。 */
+    /**
+     * Worker 重启后把无法恢复的排队中和运行中记录标记为中断。
+     */
     @PostConstruct
     void markInterruptedExecutions() {
         executionMapper.markInterrupted(properties.getWorkerId(), utc(clock.instant()));
@@ -101,7 +103,9 @@ public class ToolExecutionService {
         return response(entity);
     }
 
-    /** 查询一条持久化工具执行记录。 */
+    /**
+     * 查询一条持久化工具执行记录。
+     */
     public ToolExecutionResponse find(UUID executionId) {
         return response(require(executionId));
     }
@@ -130,7 +134,9 @@ public class ToolExecutionService {
         return response(require(executionId));
     }
 
-    /** 取消指定 Sandbox 中仍处于活动状态的全部工具执行。 */
+    /**
+     * 取消指定 Sandbox 中仍处于活动状态的全部工具执行。
+     */
     public void cancelBySandbox(UUID sandboxId) {
         executionMapper.selectActiveIdsBySandbox(sandboxId.toString(), properties.getWorkerId()).forEach(id -> {
             try {
@@ -143,7 +149,9 @@ public class ToolExecutionService {
         });
     }
 
-    /** 按执行内递增序号分页读取日志。 */
+    /**
+     * 按执行内递增序号分页读取日志。
+     */
     public ExecutionLogsResponse logs(UUID executionId, long after, int limit) {
         require(executionId);
         List<ExecutionLogEntryResponse> items = logMapper

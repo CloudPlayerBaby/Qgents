@@ -1,11 +1,7 @@
 package qg.qgent.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Result;
-import org.apache.ibatis.annotations.Results;
-import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.*;
 import qg.qgent.dto.ProjectMembershipView;
 import qg.qgent.entity.ProjectEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
@@ -23,7 +19,7 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
     })
     ProjectEntity selectByIdForUpdate(@Param("projectId") UUID projectId);
 
-    @Select({ "<script>",
+    @Select({"<script>",
             "SELECT p.id, p.team_id, p.name, p.description, p.status,",
             "CASE WHEN #{teamOwner} THEN 'PROJECT_ADMIN' ELSE pm.role END AS role",
             "FROM projects p LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = #{userId}",
@@ -31,14 +27,14 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
             "<if test='teamOwner == false'>AND pm.user_id IS NOT NULL</if>",
             "<if test='anchor != null'>AND p.id &gt; #{anchor}</if>",
             "ORDER BY p.id LIMIT #{limit}",
-            "</script>" })
+            "</script>"})
     @Results({
             @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class)
     })
     List<ProjectMembershipView> selectAccessiblePage(@Param("teamId") UUID teamId,
-            @Param("userId") UUID userId, @Param("teamOwner") boolean teamOwner,
-            @Param("anchor") UUID anchor, @Param("limit") int limit);
+                                                     @Param("userId") UUID userId, @Param("teamOwner") boolean teamOwner,
+                                                     @Param("anchor") UUID anchor, @Param("limit") int limit);
 
     @Select("SELECT id, team_id, created_by, name, description, status FROM projects "
             + "WHERE team_id = #{teamId} ORDER BY id FOR UPDATE")

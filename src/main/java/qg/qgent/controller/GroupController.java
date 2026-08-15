@@ -4,14 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.GroupCreateRequest;
@@ -22,7 +15,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 项目群组接口（§7）。
+ * 项目群组接口
+ * 提供项目群组列表查询、创建、详情、更新、归档、成员列表与退出操作。
  * POST 写操作的 Idempotency-Key 由 {@code IdempotencyFilter} 统一强制与回放。
  */
 @RestController
@@ -36,66 +30,66 @@ public class GroupController {
     }
 
     /**
-     * 项目总群与需求群列表（按最近活跃排序）。
+     * 契约 §7：项目总群与需求群列表（按最近活跃排序）。
      */
     @GetMapping("/projects/{projectId}/groups")
     public ApiResponse<?> list(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            HttpServletRequest request) {
+                               HttpServletRequest request) {
         return ok(groupService.list(userId, projectId), request);
     }
 
     /**
-     * 创建 REQUIREMENT 需求群。
+     * 契约 §7：创建 REQUIREMENT 需求群。
      */
     @PostMapping("/projects/{projectId}/groups")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<?> create(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @Valid @RequestBody GroupCreateRequest body, HttpServletRequest request) {
+                                 @Valid @RequestBody GroupCreateRequest body, HttpServletRequest request) {
         return ok(groupService.create(userId, projectId, body), request);
     }
 
     /**
-     * 获取群详情（含 memberCount）。
+     * 契约 §7：获取群详情（含 memberCount）。
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}")
     public ApiResponse<?> get(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, HttpServletRequest request) {
+                              @PathVariable UUID groupId, HttpServletRequest request) {
         return ok(groupService.get(userId, projectId, groupId), request);
     }
 
     /**
-     * 修改需求群标题、描述和关联仓库。
+     * 契约 §7：修改需求群标题、描述和关联仓库。
      */
     @PatchMapping("/projects/{projectId}/groups/{groupId}")
     public ApiResponse<?> update(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, @Valid @RequestBody GroupUpdateRequest body, HttpServletRequest request) {
+                                 @PathVariable UUID groupId, @Valid @RequestBody GroupUpdateRequest body, HttpServletRequest request) {
         return ok(groupService.update(userId, projectId, groupId, body), request);
     }
 
     /**
-     * 归档需求群（仅 REQUIREMENT）。
+     * 契约 §7：归档需求群（仅 REQUIREMENT）。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/archive")
     public ApiResponse<?> archive(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, HttpServletRequest request) {
+                                  @PathVariable UUID groupId, HttpServletRequest request) {
         return ok(groupService.archive(userId, projectId, groupId), request);
     }
 
     /**
-     * 获取群成员列表（含参与群聊的 Agent，无角色）。
+     * 契约 §7：获取群成员列表（含参与群聊的 Agent，无角色）。
      */
     @GetMapping("/projects/{projectId}/groups/{groupId}/members")
     public ApiResponse<?> members(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, HttpServletRequest request) {
+                                  @PathVariable UUID groupId, HttpServletRequest request) {
         return ok(groupService.members(userId, projectId, groupId), request);
     }
 
     /**
-     * 当前用户退出群聊（即移出本项目成员）。
+     * 契约 §7：当前用户退出群聊（即移出本项目成员）。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/leave")
     public ApiResponse<?> leave(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-            @PathVariable UUID groupId, HttpServletRequest request) {
+                                @PathVariable UUID groupId, HttpServletRequest request) {
         groupService.leave(userId, projectId, groupId);
         return ok(Map.of(), request);
     }

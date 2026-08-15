@@ -13,12 +13,18 @@ import java.util.List;
 @AllArgsConstructor
 public class CommandExecutionResult {
 
-    /** 进程退出码；底层运行时无法取得时使用 -1。 */
+    /**
+     * 进程退出码；底层运行时无法取得时使用 -1。
+     */
     private int exitCode;
 
-    /** 按行拆分的标准输出。 */
+    /**
+     * 按行拆分的标准输出。
+     */
     private List<String> standardOutput;
 
-    /** 按行拆分的标准错误输出。 */
+    /**
+     * 按行拆分的标准错误输出。
+     */
     private List<String> standardError;
 }

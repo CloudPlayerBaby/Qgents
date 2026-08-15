@@ -32,7 +32,8 @@ class DiffReviewBatchServiceTest {
         DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, mock(TaskMapper.class),
                 repositories, mock(SandboxWorkerClient.class), mock(MergeRequestService.class), access,
                 mock(EventService.class), mock(TransactionTemplate.class), mock(DiffSnapshotStorage.class),
-                mock(DiffDeliveryService.class), mergeRequests, githubRepositories);
+                mock(DiffDeliveryService.class), mergeRequests, githubRepositories,
+                mock(NotificationService.class));
         UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), batchId = UUID.randomUUID();
         UUID repositoryId = UUID.randomUUID(), githubId = UUID.randomUUID(), diffId = UUID.randomUUID();
         DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
@@ -67,7 +68,7 @@ class DiffReviewBatchServiceTest {
     }
 
     @Test
-    void preflightFailureRestoresPendingBatchSoUserCanReject() {
+    void staleSnapshotFailsBatchDiffAndTask() {
         DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
         DiffMapper diffs = mock(DiffMapper.class);
         TaskMapper tasks = mock(TaskMapper.class);
@@ -99,11 +100,51 @@ class DiffReviewBatchServiceTest {
 
         assertThrows(qg.qgent.api.ApiException.class, () -> service.confirm(projectId, taskId, actor));
         assertEquals("PENDING_CONFIRMATION", batch.getReviewStatus());
+        assertEquals("FAILED", batch.getDeliveryStatus());
+        assertNull(batch.getDeliveryClaimToken());
+        assertEquals("FAILED", diff.getDeliveryStatus());
+        assertEquals("DELIVERY_FAILED", task.getStatus());
+        verify(tasks).updateById(task);
+        verify(diffs).updateById(diff);
+        verify(batches, times(2)).updateById(batch);
+        verify(worker).createWorkspaceGitDiff(workspaceId, repositoryId);
+    }
+
+    @Test
+    void transientPreflightFailureRestoresPendingBatchForRetry() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        TransactionTemplate transactions = immediateTransactions();
+        ProjectAccessService access = mock(ProjectAccessService.class);
+        SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        UUID batchId = UUID.randomUUID(), repositoryId = UUID.randomUUID(), actor = UUID.randomUUID();
+        TaskEntity task = new TaskEntity(); task.setId(taskId); task.setProjectId(projectId);
+        task.setWorkspaceId(workspaceId); task.setCreatedBy(actor); task.setStatus("WAITING_DIFF_CONFIRMATION");
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity(); batch.setId(batchId); batch.setProjectId(projectId);
+        batch.setTaskId(taskId); batch.setWorkspaceId(workspaceId); batch.setReviewStatus("PENDING_CONFIRMATION");
+        batch.setDeliveryStatus("NOT_STARTED"); batch.setAggregateHash("hash");
+        DiffEntity diff = new DiffEntity(); diff.setId(UUID.randomUUID()); diff.setProjectId(projectId);
+        diff.setTaskId(taskId); diff.setTaskRunId(UUID.randomUUID()); diff.setWorkspaceId(workspaceId);
+        diff.setProjectRepositoryId(repositoryId); diff.setHeadCommit("head"); diff.setWorkingTreeHash("hash");
+        diff.setBaseCommit("base"); diff.setSourceBranch("feat/x"); diff.setStatus("PENDING_REVIEW");
+        diff.setDeliveryStatus("NOT_STARTED"); diff.setCreatedAt(LocalDateTime.now());
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+        when(batches.selectOne(any())).thenReturn(batch);
+        when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
+        when(diffs.selectList(any())).thenReturn(List.of(diff));
+        when(worker.createWorkspaceGitDiff(workspaceId, repositoryId))
+                .thenThrow(new IllegalStateException("worker unavailable"));
+        DiffReviewBatchService service = service(batches, diffs, tasks, worker, access, transactions);
+
+        assertThrows(IllegalStateException.class, () -> service.confirm(projectId, taskId, actor));
+        assertEquals("PENDING_CONFIRMATION", batch.getReviewStatus());
         assertEquals("NOT_STARTED", batch.getDeliveryStatus());
         assertNull(batch.getDeliveryClaimToken());
-
-        DiffReviewBatchResponse rejected = service.reject(projectId, taskId, actor, "needs changes");
-        assertEquals("REJECTED", rejected.getReviewStatus());
+        assertEquals("WAITING_DIFF_CONFIRMATION", task.getStatus());
+        verify(tasks, never()).updateById(task);
     }
 
     @Test
@@ -134,12 +175,48 @@ class DiffReviewBatchServiceTest {
         assertEquals("DIFF_DELIVERY_CLAIM_LOST", error.code());
     }
 
+    @Test
+    void finishNotifiesOnlyWhenTaskTerminalStatusChanges() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        TransactionTemplate transactions = immediateTransactions();
+        NotificationService notifications = mock(NotificationService.class);
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), batchId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId); task.setProjectId(projectId); task.setCreatedBy(actor); task.setStatus("DELIVERING");
+        task.setTitle("登录接口"); task.setRequirement("实现登录接口");
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId); batch.setProjectId(projectId); batch.setTaskId(taskId);
+        batch.setReviewStatus("ACCEPTED"); batch.setDeliveryStatus("DELIVERING");
+        batch.setDeliveryClaimToken("claim"); batch.setUpdatedAt(LocalDateTime.now());
+        DiffEntity diff = new DiffEntity(); diff.setId(UUID.randomUUID());
+        diff.setReviewBatchId(batchId); diff.setDeliveryStatus("MR_CREATED");
+        when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
+        when(diffs.selectList(any())).thenReturn(List.of(diff));
+        DiffReviewBatchService service = service(batches, diffs, tasks, mock(SandboxWorkerClient.class),
+                mock(ProjectAccessService.class), transactions, notifications);
+
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "finish", task, batchId, "claim");
+
+        verify(notifications).notify(actor, projectId, null, "TASK_COMPLETED", "任务完成：登录接口",
+                "实现登录接口", taskId.toString());
+        assertEquals("SUCCEEDED", task.getStatus());
+    }
+
     private DiffReviewBatchService service(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
             SandboxWorkerClient worker, ProjectAccessService access, TransactionTemplate transactions) {
+        return service(batches, diffs, tasks, worker, access, transactions, mock(NotificationService.class));
+    }
+
+    private DiffReviewBatchService service(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
+            SandboxWorkerClient worker, ProjectAccessService access, TransactionTemplate transactions,
+            NotificationService notifications) {
         return new DiffReviewBatchService(batches, diffs, tasks, mock(ProjectRepositoryMapper.class), worker,
                 mock(MergeRequestService.class), access, mock(EventService.class), transactions,
                 mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class), mock(MergeRequestMapper.class),
-                mock(GitHubRepositoryMapper.class));
+                mock(GitHubRepositoryMapper.class), notifications);
     }
 
     private TransactionTemplate immediateTransactions() {

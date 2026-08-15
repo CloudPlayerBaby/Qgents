@@ -2,70 +2,29 @@ package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.dao.DuplicateKeyException;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.ApiPageResponse;
-import qg.qgent.dto.MergeRequestCheckResponse;
-import qg.qgent.dto.MergeRequestCreateRequest;
-import qg.qgent.dto.MergeRequestDetailResponse;
-import qg.qgent.dto.MergeRequestReviewResponse;
-import qg.qgent.dto.MergeRequestSummaryResponse;
-import qg.qgent.dto.PageMeta;
-import qg.qgent.dto.QualityGateResponse;
-import qg.qgent.entity.TaskEntity;
-import qg.qgent.entity.WorkspaceRepositoryEntity;
-import qg.qgent.entity.GitHubInstallationEntity;
-import qg.qgent.entity.GitHubRepositoryEntity;
-import qg.qgent.entity.MergeRequestEntity;
-import qg.qgent.entity.MergeRequestDeliveryOperationEntity;
-import qg.qgent.entity.MergeRequestGroupEntity;
-import qg.qgent.entity.MergeRequestReviewEntity;
-import qg.qgent.entity.ProjectRepositoryEntity;
-import qg.qgent.entity.QualityCheckResultEntity;
-import qg.qgent.entity.RepositoryBranchConfigEntity;
-import qg.qgent.entity.RepositoryBranchConfigTestsetEntity;
-import qg.qgent.mapper.TaskMapper;
-import qg.qgent.mapper.DiffMapper;
-import qg.qgent.mapper.WorkspaceRepositoryMapper;
-import qg.qgent.mapper.GitHubInstallationMapper;
-import qg.qgent.mapper.GitHubRepositoryMapper;
-import qg.qgent.mapper.ProjectMapper;
-import qg.qgent.mapper.MergeRequestGroupMapper;
-import qg.qgent.mapper.MergeRequestMapper;
-import qg.qgent.mapper.MergeRequestDeliveryOperationMapper;
-import qg.qgent.mapper.MergeRequestReviewMapper;
-import qg.qgent.mapper.ProjectRepositoryMapper;
-import qg.qgent.mapper.QualityCheckResultMapper;
-import qg.qgent.mapper.RepositoryBranchConfigMapper;
-import qg.qgent.mapper.RepositoryBranchConfigTestsetMapper;
-import qg.qgent.github.GitHubAppClient;
-import qg.qgent.github.GitHubPullRequestCreateRequest;
-import qg.qgent.github.GitHubPullRequestDetails;
-import qg.qgent.github.GitHubPullRequestMergeRequest;
-import qg.qgent.github.GitHubPullRequestMergeResult;
+import qg.qgent.dto.*;
+import qg.qgent.entity.*;
+import qg.qgent.github.*;
+import qg.qgent.mapper.*;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitPushRequest;
 import qg.qgent.orchestration.worker.WorkerGitPushResponse;
-import qg.qgent.entity.GitCredentialPurpose;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.time.Duration;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.HexFormat;
+import java.util.*;
 import java.util.function.Supplier;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -108,16 +67,16 @@ public class MergeRequestService {
 
     @org.springframework.beans.factory.annotation.Autowired
     public MergeRequestService(MergeRequestMapper mergeRequestMapper, MergeRequestGroupMapper mergeRequestGroupMapper,
-            QualityCheckResultMapper qualityCheckMapper, MergeRequestReviewMapper reviewMapper,
-            TaskMapper taskMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
-            ProjectRepositoryMapper projectRepositoryMapper,
-            RepositoryBranchConfigMapper branchConfigMapper,
-            RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
-            EventService eventService, GitHubInstallationMapper githubInstallationMapper,
-            GitHubRepositoryMapper githubRepositoryMapper, ProjectMapper projectMapper, GitHubAppClient githubClient,
-            NotificationService notificationService, SandboxWorkerClient workerClient,
-            GitCredentialService credentialService, MergeRequestDeliveryOperationMapper deliveryOperationMapper,
-            TransactionTemplate transactions, DiffMapper diffMapper) {
+                               QualityCheckResultMapper qualityCheckMapper, MergeRequestReviewMapper reviewMapper,
+                               TaskMapper taskMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
+                               ProjectRepositoryMapper projectRepositoryMapper,
+                               RepositoryBranchConfigMapper branchConfigMapper,
+                               RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
+                               EventService eventService, GitHubInstallationMapper githubInstallationMapper,
+                               GitHubRepositoryMapper githubRepositoryMapper, ProjectMapper projectMapper, GitHubAppClient githubClient,
+                               NotificationService notificationService, SandboxWorkerClient workerClient,
+                               GitCredentialService credentialService, MergeRequestDeliveryOperationMapper deliveryOperationMapper,
+                               TransactionTemplate transactions, DiffMapper diffMapper) {
         this.mergeRequestMapper = mergeRequestMapper;
         this.mergeRequestGroupMapper = mergeRequestGroupMapper;
         this.qualityCheckMapper = qualityCheckMapper;
@@ -141,16 +100,18 @@ public class MergeRequestService {
         this.diffMapper = diffMapper;
     }
 
-    /** 兼容纯 Mockito 单元测试；生产环境始终使用带事务协调器的构造器。 */
+    /**
+     * 兼容纯 Mockito 单元测试；生产环境始终使用带事务协调器的构造器。
+     */
     MergeRequestService(MergeRequestMapper mergeRequestMapper, MergeRequestGroupMapper mergeRequestGroupMapper,
-            QualityCheckResultMapper qualityCheckMapper, MergeRequestReviewMapper reviewMapper,
-            TaskMapper taskMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
-            ProjectRepositoryMapper projectRepositoryMapper, RepositoryBranchConfigMapper branchConfigMapper,
-            RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
-            EventService eventService, GitHubInstallationMapper githubInstallationMapper,
-            GitHubRepositoryMapper githubRepositoryMapper, ProjectMapper projectMapper, GitHubAppClient githubClient,
-            NotificationService notificationService, SandboxWorkerClient workerClient,
-            GitCredentialService credentialService) {
+                        QualityCheckResultMapper qualityCheckMapper, MergeRequestReviewMapper reviewMapper,
+                        TaskMapper taskMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
+                        ProjectRepositoryMapper projectRepositoryMapper, RepositoryBranchConfigMapper branchConfigMapper,
+                        RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
+                        EventService eventService, GitHubInstallationMapper githubInstallationMapper,
+                        GitHubRepositoryMapper githubRepositoryMapper, ProjectMapper projectMapper, GitHubAppClient githubClient,
+                        NotificationService notificationService, SandboxWorkerClient workerClient,
+                        GitCredentialService credentialService) {
         this(mergeRequestMapper, mergeRequestGroupMapper, qualityCheckMapper, reviewMapper, taskMapper,
                 workspaceRepositoryMapper, projectRepositoryMapper, branchConfigMapper, branchConfigTestsetMapper,
                 projectAccess, eventService, githubInstallationMapper, githubRepositoryMapper, projectMapper,
@@ -161,11 +122,11 @@ public class MergeRequestService {
      * 查询项目关联 MR，支持仓库、需求群、状态过滤（游标分页）。
      */
     public ApiPageResponse<MergeRequestSummaryResponse> list(UUID projectId, UUID userId, UUID repositoryId,
-            UUID groupId, String status, String cursor, int limit, String requestId) {
+                                                             UUID groupId, String status, String cursor, int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
         int size = clampLimit(limit);
         List<UUID> repoIds = projectRepositoryMapper.selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
-                .eq(ProjectRepositoryEntity::getProjectId, projectId)).stream()
+                        .eq(ProjectRepositoryEntity::getProjectId, projectId)).stream()
                 .map(ProjectRepositoryEntity::getId).toList();
         if (repoIds.isEmpty()) {
             return emptyPage(requestId);
@@ -208,7 +169,9 @@ public class MergeRequestService {
         return toDetail(mr, groupIds, qualityGate(mr));
     }
 
-    /** 以短事务领取、无事务外调、短事务落库的方式创建真实 Pull Request。 */
+    /**
+     * 以短事务领取、无事务外调、短事务落库的方式创建真实 Pull Request。
+     */
     public MergeRequestSummaryResponse create(UUID projectId, UUID userId, MergeRequestCreateRequest request) {
         projectAccess.requireProjectMember(projectId, userId);
         CreateClaim claim = claimCreateWithRetry(projectId, userId, request);
@@ -301,15 +264,23 @@ public class MergeRequestService {
         String token = UUID.randomUUID().toString();
         if (operation == null) {
             operation = new MergeRequestDeliveryOperationEntity();
-            operation.setId(UuidV7.next()); operation.setOperationKey(key); operation.setProjectId(projectId);
-            operation.setProjectRepositoryId(request.getRepositoryId()); operation.setTaskId(task.getId());
-            operation.setWorkspaceId(task.getWorkspaceId()); operation.setActorUserId(userId);
-            operation.setSourceBranch(worktree.getSourceBranch()); operation.setTargetBranch(request.getTargetBranch());
-            operation.setHeadCommit(worktree.getHeadCommit()); operation.setTitle(request.getTitle());
+            operation.setId(UuidV7.next());
+            operation.setOperationKey(key);
+            operation.setProjectId(projectId);
+            operation.setProjectRepositoryId(request.getRepositoryId());
+            operation.setTaskId(task.getId());
+            operation.setWorkspaceId(task.getWorkspaceId());
+            operation.setActorUserId(userId);
+            operation.setSourceBranch(worktree.getSourceBranch());
+            operation.setTargetBranch(request.getTargetBranch());
+            operation.setHeadCommit(worktree.getHeadCommit());
+            operation.setTitle(request.getTitle());
             operation.setCreatedAt(now);
         }
-        operation.setStatus("RUNNING"); operation.setClaimToken(token);
-        operation.setLeaseExpiresAt(now.plus(Duration.ofMinutes(20))); operation.setFailureCode(null);
+        operation.setStatus("RUNNING");
+        operation.setClaimToken(token);
+        operation.setLeaseExpiresAt(now.plus(Duration.ofMinutes(20)));
+        operation.setFailureCode(null);
         operation.setUpdatedAt(now);
         if (deliveryOperationMapper.selectById(operation.getId()) == null) deliveryOperationMapper.insert(operation);
         else deliveryOperationMapper.updateById(operation);
@@ -361,9 +332,11 @@ public class MergeRequestService {
         inTransaction(() -> {
             MergeRequestDeliveryOperationEntity operation = deliveryOperationMapper.selectByIdForUpdate(claim.operation().getId());
             requireOperationClaim(operation, claim.token());
-            operation.setStatus("REMOTE_CREATED"); operation.setProviderNumber((long) remote.number());
+            operation.setStatus("REMOTE_CREATED");
+            operation.setProviderNumber((long) remote.number());
             operation.setLeaseExpiresAt(LocalDateTime.now(ZoneOffset.UTC).plus(Duration.ofMinutes(20)));
-            operation.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC)); deliveryOperationMapper.updateById(operation);
+            operation.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+            deliveryOperationMapper.updateById(operation);
             return null;
         });
     }
@@ -379,26 +352,39 @@ public class MergeRequestService {
         MergeRequestEntity mr = existing == null ? new MergeRequestEntity() : existing;
         if (existing == null) {
             LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-            mr.setId(UuidV7.next()); mr.setProjectRepositoryId(claim.request().getRepositoryId());
-            mr.setTaskId(claim.task().getId()); mr.setWorkspaceId(claim.task().getWorkspaceId());
-            mr.setProvider("GITHUB"); mr.setProviderNumber((long) remote.number());
-            mr.setSourceBranch(remote.headBranch()); mr.setTargetBranch(remote.baseBranch());
+            mr.setId(UuidV7.next());
+            mr.setProjectRepositoryId(claim.request().getRepositoryId());
+            mr.setTaskId(claim.task().getId());
+            mr.setWorkspaceId(claim.task().getWorkspaceId());
+            mr.setProvider("GITHUB");
+            mr.setProviderNumber((long) remote.number());
+            mr.setSourceBranch(remote.headBranch());
+            mr.setTargetBranch(remote.baseBranch());
             mr.setHeadCommit(remote.headSha());
             mr.setTitle(remote.title() == null ? claim.request().getTitle() : remote.title());
-            mr.setStatus(toLocalStatus(remote)); mr.setQualityGateStatus("PENDING"); mr.setSyncedAt(now);
+            mr.setStatus(toLocalStatus(remote));
+            mr.setQualityGateStatus("PENDING");
+            mr.setSyncedAt(now);
             mr.setAuthorUserId(operation == null ? claim.task().getCreatedBy() : operation.getActorUserId());
-            mr.setCreatedAt(now); mergeRequestMapper.insert(mr);
+            mr.setCreatedAt(now);
+            mergeRequestMapper.insert(mr);
             if (claim.task().getRequirementGroupId() != null) {
-                MergeRequestGroupEntity relation = new MergeRequestGroupEntity(); relation.setMergeRequestId(mr.getId());
-                relation.setRequirementGroupId(claim.task().getRequirementGroupId()); mergeRequestGroupMapper.insert(relation);
+                MergeRequestGroupEntity relation = new MergeRequestGroupEntity();
+                relation.setMergeRequestId(mr.getId());
+                relation.setRequirementGroupId(claim.task().getRequirementGroupId());
+                mergeRequestGroupMapper.insert(relation);
             }
             refreshQualityGate(mr);
         }
         if (operation != null) {
-            operation.setStatus("COMPLETED"); operation.setMergeRequestId(mr.getId());
-            operation.setProviderNumber((long) remote.number()); operation.setClaimToken(null);
-            operation.setLeaseExpiresAt(null); operation.setFailureCode(null);
-            operation.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC)); deliveryOperationMapper.updateById(operation);
+            operation.setStatus("COMPLETED");
+            operation.setMergeRequestId(mr.getId());
+            operation.setProviderNumber((long) remote.number());
+            operation.setClaimToken(null);
+            operation.setLeaseExpiresAt(null);
+            operation.setFailureCode(null);
+            operation.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+            deliveryOperationMapper.updateById(operation);
         }
         return mr;
     }
@@ -410,12 +396,16 @@ public class MergeRequestService {
                 MergeRequestDeliveryOperationEntity operation = deliveryOperationMapper.selectByIdForUpdate(claim.operation().getId());
                 if (operation == null || !claim.token().equals(operation.getClaimToken())
                         || "COMPLETED".equals(operation.getStatus())) return null;
-                operation.setStatus("FAILED"); operation.setClaimToken(null); operation.setLeaseExpiresAt(null);
+                operation.setStatus("FAILED");
+                operation.setClaimToken(null);
+                operation.setLeaseExpiresAt(null);
                 operation.setFailureCode(failure instanceof ApiException api ? api.code() : "MR_CREATION_FAILED");
-                operation.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC)); deliveryOperationMapper.updateById(operation);
+                operation.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+                deliveryOperationMapper.updateById(operation);
                 return null;
             });
-        } catch (RuntimeException ignored) { }
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private void requireOperationClaim(MergeRequestDeliveryOperationEntity operation, String token) {
@@ -425,7 +415,7 @@ public class MergeRequestService {
     }
 
     private String operationKey(UUID projectId, TaskEntity task, WorkspaceRepositoryEntity worktree,
-            MergeRequestCreateRequest request) {
+                                MergeRequestCreateRequest request) {
         try {
             String value = projectId + "\n" + task.getId() + "\n" + task.getWorkspaceId() + "\n"
                     + request.getRepositoryId() + "\n" + worktree.getSourceBranch() + "\n"
@@ -450,7 +440,7 @@ public class MergeRequestService {
     }
 
     private void requireOperationContext(MergeRequestDeliveryOperationEntity operation, UUID projectId,
-            TaskEntity task, WorkspaceRepositoryEntity worktree, MergeRequestCreateRequest request) {
+                                         TaskEntity task, WorkspaceRepositoryEntity worktree, MergeRequestCreateRequest request) {
         if (!projectId.equals(operation.getProjectId()) || !task.getId().equals(operation.getTaskId())
                 || !task.getWorkspaceId().equals(operation.getWorkspaceId())
                 || !request.getRepositoryId().equals(operation.getProjectRepositoryId())
@@ -471,12 +461,14 @@ public class MergeRequestService {
     }
 
     private record CreateClaim(TaskEntity task, WorkspaceRepositoryEntity worktree,
-            GitHubRepositoryEntity githubRepository, GitHubInstallationEntity installation,
-            MergeRequestCreateRequest request, MergeRequestDeliveryOperationEntity operation,
-            String token, MergeRequestEntity existing) { }
+                               GitHubRepositoryEntity githubRepository, GitHubInstallationEntity installation,
+                               MergeRequestCreateRequest request, MergeRequestDeliveryOperationEntity operation,
+                               String token, MergeRequestEntity existing) {
+    }
 
     private record MergeClaim(MergeRequestEntity mergeRequest, GitHubRepositoryEntity githubRepository,
-            GitHubInstallationEntity installation, String operationId, boolean alreadyCompleted) { }
+                              GitHubInstallationEntity installation, String operationId, boolean alreadyCompleted) {
+    }
 
     /**
      * 查询门禁检查详情。
@@ -500,7 +492,9 @@ public class MergeRequestService {
                 .orderByAsc(MergeRequestReviewEntity::getCreatedAt)).stream().map(this::toReview).toList();
     }
 
-    /** Refreshes the local mirror from GitHub's current Pull Request state. */
+    /**
+     * Refreshes the local mirror from GitHub's current Pull Request state.
+     */
     public MergeRequestSummaryResponse sync(UUID projectId, UUID mergeRequestId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         MergeRequestEntity mr = requireMr(projectId, mergeRequestId);
@@ -666,7 +660,7 @@ public class MergeRequestService {
     // ---------- 私有辅助 ----------
 
     private MergeRequestEntity persistRemoteState(UUID projectId, UUID mergeRequestId,
-            GitHubPullRequestDetails remote) {
+                                                  GitHubPullRequestDetails remote) {
         MergeRequestEntity current = mergeRequestMapper.selectByIdForUpdate(mergeRequestId);
         if (current == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "MERGE_REQUEST_NOT_FOUND", "MR 不存在或不可见");
@@ -676,19 +670,25 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.NOT_FOUND, "MERGE_REQUEST_NOT_FOUND", "MR 不存在或不可见");
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        current.setProviderNumber((long) remote.number()); current.setSourceBranch(remote.headBranch());
-        current.setTargetBranch(remote.baseBranch()); current.setHeadCommit(remote.headSha());
+        current.setProviderNumber((long) remote.number());
+        current.setSourceBranch(remote.headBranch());
+        current.setTargetBranch(remote.baseBranch());
+        current.setHeadCommit(remote.headSha());
         if (remote.title() != null) current.setTitle(remote.title());
         // 较早发起的同步请求不得把已经落库的 MERGED 终态覆盖回 OPEN。
         if (!"MERGED".equals(current.getStatus()) || remote.merged()) {
             current.setStatus(toLocalStatus(remote));
         }
-        current.setProviderUpdatedAt(now); current.setSyncedAt(now);
-        mergeRequestMapper.updateById(current); refreshQualityGate(current);
+        current.setProviderUpdatedAt(now);
+        current.setSyncedAt(now);
+        mergeRequestMapper.updateById(current);
+        refreshQualityGate(current);
         return current;
     }
 
-    /** 加载 MR 并校验其仓库属于路径项目，禁止仅凭 UUID 跨项目查询。 */
+    /**
+     * 加载 MR 并校验其仓库属于路径项目，禁止仅凭 UUID 跨项目查询。
+     */
     private MergeRequestEntity requireMr(UUID projectId, UUID mergeRequestId) {
         MergeRequestEntity mr = mergeRequestMapper.selectById(mergeRequestId);
         if (mr == null) {
@@ -701,16 +701,20 @@ public class MergeRequestService {
         return mr;
     }
 
-    /** CQ reviewer must differ from the MR author. */
+    /**
+     * CQ reviewer must differ from the MR author.
+     */
     private void requireCqReviewer(MergeRequestEntity mr, UUID userId) {
         if (userId.equals(mr.getAuthorUserId())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "CQ_REVIEWER_NOT_ALLOWED", "MR 作者不能审查自己的 CQ");
         }
     }
 
-    /** 写入质量门禁检查结果（attemptNo 在同提交同类型内递增）。 */
+    /**
+     * 写入质量门禁检查结果（attemptNo 在同提交同类型内递增）。
+     */
     private void writeCheck(MergeRequestEntity mr, String checkType, String status, String source, String reason,
-            LocalDateTime now) {
+                            LocalDateTime now) {
         QualityCheckResultEntity check = new QualityCheckResultEntity();
         check.setId(UuidV7.next());
         check.setMergeRequestId(mr.getId());
@@ -726,7 +730,9 @@ public class MergeRequestService {
         qualityCheckMapper.insert(check);
     }
 
-    /** 汇总目标分支质量门禁：必检项全部 PASSED → PASSED；任一 FAILED → FAILED；缺失/运行中 → PENDING。 */
+    /**
+     * 汇总目标分支质量门禁：必检项全部 PASSED → PASSED；任一 FAILED → FAILED；缺失/运行中 → PENDING。
+     */
     private QualityGateResponse qualityGate(MergeRequestEntity mr) {
         return qualityGates(List.of(mr)).get(mr.getId());
     }
@@ -769,17 +775,19 @@ public class MergeRequestService {
         return satisfied >= total ? "PASSED" : "PENDING";
     }
 
-    /** 批量汇总多个 MR 的目标分支质量门禁状态，消除 N+1 查询 */
+    /**
+     * 批量汇总多个 MR 的目标分支质量门禁状态，消除 N+1 查询
+     */
     private Map<UUID, QualityGateResponse> qualityGates(List<MergeRequestEntity> mrs) {
         if (mrs.isEmpty()) {
             return Map.of();
         }
-        
+
         List<UUID> repoIds = mrs.stream().map(MergeRequestEntity::getProjectRepositoryId).distinct().toList();
         List<RepositoryBranchConfigEntity> allConfigs = branchConfigMapper.selectList(
                 Wrappers.<RepositoryBranchConfigEntity>query()
                         .in("project_repository_id", repoIds));
-                        
+
         Map<UUID, RepositoryBranchConfigEntity> mrConfigMap = new HashMap<>();
         for (MergeRequestEntity mr : mrs) {
             allConfigs.stream()
@@ -792,7 +800,7 @@ public class MergeRequestService {
         List<RepositoryBranchConfigTestsetEntity> allTestsets = configIds.isEmpty() ? List.of() :
                 branchConfigTestsetMapper.selectList(Wrappers.<RepositoryBranchConfigTestsetEntity>query()
                         .in("branch_config_id", configIds));
-                        
+
         Map<UUID, List<UUID>> configTestsetsMap = allTestsets.stream()
                 .collect(Collectors.groupingBy(RepositoryBranchConfigTestsetEntity::getBranchConfigId,
                         Collectors.mapping(RepositoryBranchConfigTestsetEntity::getTestsetId, Collectors.toList())));
@@ -802,7 +810,7 @@ public class MergeRequestService {
                 Wrappers.<QualityCheckResultEntity>query()
                         .in("merge_request_id", mrIds)
                         .orderByDesc("attempt_no"));
-                        
+
         Map<UUID, QualityGateResponse> resultMap = new HashMap<>();
         for (MergeRequestEntity mr : mrs) {
             RepositoryBranchConfigEntity config = mrConfigMap.get(mr.getId());
@@ -812,16 +820,16 @@ public class MergeRequestService {
             }
             List<UUID> requiredTestsets = config == null ? List.of() :
                     configTestsetsMap.getOrDefault(config.getId(), List.of());
-                    
+
             if (!requiredTestsets.isEmpty() && !required.contains("TESTSET")) {
                 required.add("TESTSET");
             }
             List<String> checks = required.stream().distinct().toList();
-            
+
             List<QualityCheckResultEntity> mrChecks = allChecks.stream()
                     .filter(c -> java.util.Objects.equals(c.getMergeRequestId(), mr.getId()) && java.util.Objects.equals(c.getCommitSha(), mr.getHeadCommit()))
                     .toList();
-                    
+
             String status = computeGateStatusFromList(mrChecks, checks, requiredTestsets);
             resultMap.put(mr.getId(), new QualityGateResponse(status, checks));
         }
@@ -856,7 +864,9 @@ public class MergeRequestService {
         return satisfied >= total ? "PASSED" : "PENDING";
     }
 
-    /** 取 (mrId, checkType, commitSha[, testsetId]) 的最新 attempt_no 检查结果。 */
+    /**
+     * 取 (mrId, checkType, commitSha[, testsetId]) 的最新 attempt_no 检查结果。
+     */
     private QualityCheckResultEntity latestCheck(UUID mrId, String checkType, String commitSha, UUID testsetId) {
         return qualityCheckMapper.selectOne(Wrappers.<QualityCheckResultEntity>lambdaQuery()
                 .eq(QualityCheckResultEntity::getMergeRequestId, mrId)
@@ -872,7 +882,9 @@ public class MergeRequestService {
         return (last == null || last.getAttemptNo() == null) ? 1 : last.getAttemptNo() + 1;
     }
 
-    /** 重算并持久化 MR 的门禁汇总状态。 */
+    /**
+     * 重算并持久化 MR 的门禁汇总状态。
+     */
     private void refreshQualityGate(MergeRequestEntity mr) {
         String status = qualityGate(mr).getStatus();
         if (!status.equals(mr.getQualityGateStatus())) {
@@ -925,7 +937,9 @@ public class MergeRequestService {
         return "open".equalsIgnoreCase(remote.state()) ? "OPEN" : "CLOSED";
     }
 
-    /** 批量取 MR 的需求群ID映射，避免列表 N+1 查询。 */
+    /**
+     * 批量取 MR 的需求群ID映射，避免列表 N+1 查询。
+     */
     private Map<UUID, List<String>> groupIdsByMr(List<MergeRequestEntity> mrs) {
         if (mrs.isEmpty()) {
             return Map.of();
@@ -972,14 +986,14 @@ public class MergeRequestService {
     }
 
     private MergeRequestSummaryResponse toSummary(MergeRequestEntity mr, List<String> groupIds,
-            QualityGateResponse gate) {
+                                                  QualityGateResponse gate) {
         return new MergeRequestSummaryResponse(id(mr.getId()), id(mr.getProjectRepositoryId()), groupIds,
                 mr.getProvider(), mr.getProviderNumber(), mr.getSourceBranch(), mr.getTargetBranch(), mr.getStatus(),
                 mr.getHeadCommit(), gate, mr.getTitle(), iso(mr.getCreatedAt()));
     }
 
     private MergeRequestDetailResponse toDetail(MergeRequestEntity mr, List<String> groupIds,
-            QualityGateResponse gate) {
+                                                QualityGateResponse gate) {
         return new MergeRequestDetailResponse(id(mr.getId()), id(mr.getProjectRepositoryId()), groupIds,
                 mr.getProvider(), mr.getProviderNumber(), mr.getSourceBranch(), mr.getTargetBranch(), mr.getStatus(),
                 mr.getHeadCommit(), mr.getTitle(), gate, id(mr.getAuthorUserId()), iso(mr.getSyncedAt()),

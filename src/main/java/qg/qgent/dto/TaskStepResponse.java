@@ -1,7 +1,14 @@
 package qg.qgent.dto;
-import lombok.*;
-import java.util.*;
-/** Persisted workflow-step view. */
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.List;
+
+/**
+ * Persisted workflow-step view.
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

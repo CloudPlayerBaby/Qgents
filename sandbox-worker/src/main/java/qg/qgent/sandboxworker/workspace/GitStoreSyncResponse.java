@@ -7,7 +7,9 @@ import lombok.NoArgsConstructor;
 
 import java.util.UUID;
 
-/** Git Store 同步完成后的受控状态。 */
+/**
+ * Git Store 同步完成后的受控状态。
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

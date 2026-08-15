@@ -9,7 +9,9 @@ import java.nio.file.Path;
 
 import static org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY;
 
-/** 将 Agent 提交的仓库相对路径解析为受控本地文件。 */
+/**
+ * 将 Agent 提交的仓库相对路径解析为受控本地文件。
+ */
 @Component
 public class RepositoryFileResolver {
     public Path resolveExisting(Path repository, String relativePath) {

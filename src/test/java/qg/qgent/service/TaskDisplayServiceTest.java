@@ -157,9 +157,9 @@ class TaskDisplayServiceTest {
         PagedApiResponse<TaskListItemResponse> page = service.list(projectId, actor, null, null, null, null, null,
                 null, "req");
 
-        TaskListItemResponse item = page.getData().getFirst();
-        assertNull(page.getPage().getNextCursor());
-        assertFalse(page.getPage().isHasMore());
+        TaskListItemResponse item = page.data().getFirst();
+        assertNull(page.page().getNextCursor());
+        assertFalse(page.page().isHasMore());
         assertEquals("T-1024", item.getDisplayCode());
         assertEquals("陈同学", item.getCreatedByUser().getDisplayName());
         assertEquals("登录功能", item.getRequirementGroup().getName());
@@ -189,7 +189,7 @@ class TaskDisplayServiceTest {
         when(groups.selectList(any())).thenReturn(List.of(group));
 
         TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, "req")
-                .getData().getFirst();
+                .data().getFirst();
 
         assertEquals("DIFF_CONFIRMATION_REQUIRED", item.getAttention().getKind());
     }

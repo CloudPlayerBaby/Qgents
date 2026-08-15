@@ -6,6 +6,7 @@ import lombok.Data;
 
 @Data
 public class RefreshTokenRequest {
-    @NotBlank @Size(max = 512)
+    @NotBlank
+    @Size(max = 512)
     private String refreshToken;
 }

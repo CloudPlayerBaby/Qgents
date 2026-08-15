@@ -18,35 +18,51 @@ import java.util.List;
 @AllArgsConstructor
 public class GroupContext {
 
-    /** 需求群 ID。 */
+    /**
+     * 需求群 ID。
+     */
     @Schema(description = "需求群 ID")
     private String groupId;
 
-    /** 所属项目 ID。 */
+    /**
+     * 所属项目 ID。
+     */
     @Schema(description = "所属项目 ID")
     private String projectId;
 
-    /** 需求群标题（需求名称）。 */
+    /**
+     * 需求群标题（需求名称）。
+     */
     @Schema(description = "需求群标题")
     private String requirementTitle;
 
-    /** 需求背景说明。 */
+    /**
+     * 需求背景说明。
+     */
     @Schema(description = "需求背景说明")
     private String requirementDescription;
 
-    /** 需求群关联的项目仓库绑定 ID 列表。 */
+    /**
+     * 需求群关联的项目仓库绑定 ID 列表。
+     */
     @Schema(description = "需求群关联的项目仓库绑定 ID 列表")
     private List<String> repositoryIds;
 
-    /** 近期群聊消息（新→旧或旧→新，供 Agent 理解对话历史）。 */
+    /**
+     * 近期群聊消息（新→旧或旧→新，供 Agent 理解对话历史）。
+     */
     @Schema(description = "近期群聊消息")
     private List<ContextMessage> conversation;
 
-    /** 项目已发布的共享 Skill（供 Agent 遵循团队规范）。 */
+    /**
+     * 项目已发布的共享 Skill（供 Agent 遵循团队规范）。
+     */
     @Schema(description = "项目已发布的共享 Skill")
     private List<ContextSkill> skills;
 
-    /** 项目已批准的 Memory（供 Agent 复用确认知识）。 */
+    /**
+     * 项目已批准的 Memory（供 Agent 复用确认知识）。
+     */
     @Schema(description = "项目已批准的 Memory")
     private List<ContextMemory> memories;
 }

@@ -15,9 +15,13 @@ import java.util.List;
 @AllArgsConstructor
 public class WorkerExecutionLogs {
 
-    /** 有序增量日志。 */
+    /**
+     * 有序增量日志。
+     */
     private List<WorkerExecutionLogEntry> items;
 
-    /** 下一次查询的起始游标。 */
+    /**
+     * 下一次查询的起始游标。
+     */
     private long nextCursor;
 }

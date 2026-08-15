@@ -48,7 +48,7 @@ public class LocalSignedAttachmentStorage implements AttachmentStorageStrategy {
 
     @Override
     public UploadCredential createCredential(UUID attachmentId, String objectKey, String fileName, String mediaType,
-            Long sizeBytes) {
+                                             Long sizeBytes) {
         LocalDateTime expiresAt = LocalDateTime.now(ZoneOffset.UTC).plus(expiry);
         long expiresAtMillis = expiresAt.toInstant(ZoneOffset.UTC).toEpochMilli();
         String payload = attachmentId + ":" + expiresAtMillis;

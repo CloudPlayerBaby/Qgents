@@ -21,28 +21,32 @@ abstract class AbstractWorkerToolPort {
     private final java.util.function.Supplier<Long> nanoTimeSupplier;
 
     AbstractWorkerToolPort(SandboxWorkerClient client, SandboxSessionManager sessions,
-            SandboxWorkerProperties properties) {
+                           SandboxWorkerProperties properties) {
         this(client, sessions, properties, System::nanoTime);
     }
 
     AbstractWorkerToolPort(SandboxWorkerClient client, SandboxSessionManager sessions,
-            SandboxWorkerProperties properties, java.util.function.Supplier<Long> nanoTimeSupplier) {
+                           SandboxWorkerProperties properties, java.util.function.Supplier<Long> nanoTimeSupplier) {
         this.client = client;
         this.sessions = sessions;
         this.properties = properties;
         this.nanoTimeSupplier = nanoTimeSupplier == null ? System::nanoTime : nanoTimeSupplier;
     }
 
-    /** 解析当前 Workspace 的会话；未启用或未创建时抛错。 */
+    /**
+     * 解析当前 Workspace 的会话；未启用或未创建时抛错。
+     */
     protected SandboxSession session(UUID workspaceId) {
         return sessions.require(workspaceId);
     }
 
-    /** 提交一次工具执行并阻塞等待终态。 */
+    /**
+     * 提交一次工具执行并阻塞等待终态。
+     */
     protected WorkerToolExecution executeTool(UUID workspaceId, UUID repositoryId, String tool,
-            Map<String, Object> arguments, Duration timeout) {
+                                              Map<String, Object> arguments, Duration timeout) {
         SandboxSession session = session(workspaceId);
-        UUID sandboxId = session.getSandboxId();
+        UUID sandboxId = session.sandboxId();
         client.renewSandbox(sandboxId);
 
         WorkerToolExecutionRequest request = new WorkerToolExecutionRequest();
@@ -94,7 +98,9 @@ abstract class AbstractWorkerToolPort {
         }
     }
 
-    /** 工具执行结果 map（终态失败时 Worker 返回空 map，故空安全）。 */
+    /**
+     * 工具执行结果 map（终态失败时 Worker 返回空 map，故空安全）。
+     */
     protected static Map<String, Object> resultOf(WorkerToolExecution execution) {
         return execution.getResult() == null ? Map.of() : execution.getResult();
     }

@@ -11,32 +11,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.Mention;
-import qg.qgent.dto.MessageResponse;
-import qg.qgent.dto.MessageSendRequest;
-import qg.qgent.dto.PageInfo;
-import qg.qgent.dto.PageSlice;
+import qg.qgent.dto.*;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.UserEntity;
-import qg.qgent.mapper.AgentMapper;
-import qg.qgent.mapper.GroupAgentMapper;
-import qg.qgent.mapper.MessageMapper;
-import qg.qgent.mapper.RequirementGroupMapper;
-import qg.qgent.mapper.UserMapper;
+import qg.qgent.mapper.*;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.Base64;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.UUID;
-import java.util.function.Function;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -59,8 +44,8 @@ public class MessageService {
     private final ObjectMapper mapper;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
-            GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
-            ProjectAccessService access, TaskTriggerService taskTriggerService, ObjectMapper mapper) {
+                          GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
+                          ProjectAccessService access, TaskTriggerService taskTriggerService, ObjectMapper mapper) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupAgentMapper = groupAgentMapper;
@@ -102,7 +87,7 @@ public class MessageService {
      * 自动触发失败不阻塞消息发送（日志 warn）；幂等由 TaskTriggerService 保证（同消息只建一次）。
      */
     private void triggerTaskOnAgentMention(UUID actor, UUID projectId, UUID groupId, UUID messageId,
-            List<Mention> mentions) {
+                                           List<Mention> mentions) {
         if (mentions == null || mentions.stream().noneMatch(m -> "AGENT".equals(m.getType()))) {
             return;
         }
@@ -294,7 +279,7 @@ public class MessageService {
         List<Mention> mentions = m.getMentions() == null || m.getMentions().isBlank()
                 ? List.of()
                 : readJson(m.getMentions(), new TypeReference<List<Mention>>() {
-                });
+        });
         String senderType;
         String senderId;
         if (m.getAgentId() != null) {
@@ -312,7 +297,9 @@ public class MessageService {
                 m.getReplyToMessageId() == null ? null : m.getReplyToMessageId().toString(), mentions, m.getCreatedAt());
     }
 
-    /** 批量加载消息页中出现的用户显示名，返回 userId → displayName。 */
+    /**
+     * 批量加载消息页中出现的用户显示名，返回 userId → displayName。
+     */
     private Map<UUID, String> loadUserNames(List<MessageEntity> pageRows) {
         Set<UUID> userIds = pageRows.stream().map(MessageEntity::getAuthorUserId).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
@@ -325,7 +312,9 @@ public class MessageService {
                                 : u.getDisplayName()));
     }
 
-    /** 批量加载消息页中出现的 Agent 名称，返回 agentId → name。 */
+    /**
+     * 批量加载消息页中出现的 Agent 名称，返回 agentId → name。
+     */
     private Map<UUID, String> loadAgentNames(List<MessageEntity> pageRows) {
         Set<UUID> agentIds = pageRows.stream().map(MessageEntity::getAgentId).filter(Objects::nonNull)
                 .collect(Collectors.toSet());

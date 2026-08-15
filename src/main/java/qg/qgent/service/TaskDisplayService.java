@@ -7,73 +7,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import qg.qgent.api.ApiException;
 import qg.qgent.api.PagedApiResponse;
-import qg.qgent.dto.AcceptanceCriterion;
-import qg.qgent.dto.AgentSummary;
-import qg.qgent.dto.ArtifactSummary;
-import qg.qgent.dto.Attention;
-import qg.qgent.dto.DiffReviewSummary;
-import qg.qgent.dto.ExecutionSummary;
-import qg.qgent.dto.PageInfo;
-import qg.qgent.dto.RequirementGroupSummary;
-import qg.qgent.dto.RepositorySummary;
-import qg.qgent.dto.SourceMessage;
-import qg.qgent.dto.TaskCapabilities;
-import qg.qgent.dto.TaskDetailResponse;
-import qg.qgent.dto.TaskListItemResponse;
-import qg.qgent.dto.TaskStepLatestRun;
-import qg.qgent.dto.TaskStepListItemResponse;
-import qg.qgent.dto.UserSummary;
-import qg.qgent.dto.WorkspaceSummary;
-import qg.qgent.entity.AgentEntity;
-import qg.qgent.entity.DiffEntity;
-import qg.qgent.entity.DiffReviewBatchEntity;
-import qg.qgent.entity.GitHubRepositoryEntity;
-import qg.qgent.entity.InputRequestEntity;
-import qg.qgent.entity.MessageEntity;
-import qg.qgent.entity.ProjectRepositoryEntity;
-import qg.qgent.entity.RequirementGroupEntity;
-import qg.qgent.entity.TaskAcceptanceCriterionEntity;
-import qg.qgent.entity.TaskEntity;
-import qg.qgent.entity.TaskExecutionArtifactEntity;
-import qg.qgent.entity.TaskRunEntity;
-import qg.qgent.entity.TaskStepDependencyEntity;
-import qg.qgent.entity.TaskStepEntity;
-import qg.qgent.entity.TaskStepRepositoryEntity;
-import qg.qgent.entity.UserEntity;
-import qg.qgent.entity.WorkspaceEntity;
-import qg.qgent.entity.WorkspaceRepositoryEntity;
-import qg.qgent.mapper.AgentMapper;
-import qg.qgent.mapper.DiffMapper;
-import qg.qgent.mapper.DiffReviewBatchMapper;
-import qg.qgent.mapper.GitHubRepositoryMapper;
-import qg.qgent.mapper.InputRequestMapper;
-import qg.qgent.mapper.MergeRequestMapper;
-import qg.qgent.mapper.MessageMapper;
-import qg.qgent.mapper.ProjectRepositoryMapper;
-import qg.qgent.mapper.RequirementGroupMapper;
-import qg.qgent.mapper.TaskAcceptanceCriterionMapper;
-import qg.qgent.mapper.TaskExecutionArtifactMapper;
-import qg.qgent.mapper.TaskMapper;
-import qg.qgent.mapper.TaskRunMapper;
-import qg.qgent.mapper.TaskStepDependencyMapper;
-import qg.qgent.mapper.TaskStepMapper;
-import qg.qgent.mapper.TaskStepRepositoryMapper;
-import qg.qgent.mapper.UserMapper;
-import qg.qgent.mapper.WorkspaceMapper;
-import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.dto.*;
+import qg.qgent.entity.*;
+import qg.qgent.mapper.*;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -87,7 +28,9 @@ import java.util.stream.Collectors;
  */
 @Service
 public class TaskDisplayService {
-    /** 任务终态集合，用于能力派生。 */
+    /**
+     * 任务终态集合，用于能力派生。
+     */
     private static final Set<String> TERMINAL_TASK_STATUSES = Set.of("SUCCEEDED", "FAILED", "DELIVERY_FAILED",
             "CANCELLED", "CANCELLING");
     private static final Set<String> CANCELLABLE_TASK_STATUSES = Set.of("PLANNING", "PENDING", "RUNNING");
@@ -119,13 +62,13 @@ public class TaskDisplayService {
     private final ObjectMapper json;
 
     public TaskDisplayService(TaskMapper tasks, TaskStepMapper steps, TaskRunMapper runs,
-            TaskStepDependencyMapper dependencies, TaskStepRepositoryMapper stepRepositories,
-            WorkspaceRepositoryMapper worktrees, WorkspaceMapper workspaces,
-            ProjectRepositoryMapper projectRepositories, GitHubRepositoryMapper githubRepositories, UserMapper users,
-            AgentMapper agents, RequirementGroupMapper groups, InputRequestMapper inputRequests,
-            TaskExecutionArtifactMapper artifacts, DiffReviewBatchMapper diffBatches, DiffMapper diffs,
-            MergeRequestMapper mergeRequests, MessageMapper messages,
-            TaskAcceptanceCriterionMapper acceptanceCriteria, ProjectAccessService access, ObjectMapper json) {
+                              TaskStepDependencyMapper dependencies, TaskStepRepositoryMapper stepRepositories,
+                              WorkspaceRepositoryMapper worktrees, WorkspaceMapper workspaces,
+                              ProjectRepositoryMapper projectRepositories, GitHubRepositoryMapper githubRepositories, UserMapper users,
+                              AgentMapper agents, RequirementGroupMapper groups, InputRequestMapper inputRequests,
+                              TaskExecutionArtifactMapper artifacts, DiffReviewBatchMapper diffBatches, DiffMapper diffs,
+                              MergeRequestMapper mergeRequests, MessageMapper messages,
+                              TaskAcceptanceCriterionMapper acceptanceCriteria, ProjectAccessService access, ObjectMapper json) {
         this.tasks = tasks;
         this.steps = steps;
         this.runs = runs;
@@ -156,7 +99,7 @@ public class TaskDisplayService {
      * 一页任务的后置数据（步骤/运行/输入请求/仓库/用户/群）批量加载后内存组装。
      */
     public PagedApiResponse<TaskListItemResponse> list(UUID projectId, UUID actor, String groupId, String status,
-            String createdBy, String repositoryId, String cursor, Integer limit, String requestId) {
+                                                       String createdBy, String repositoryId, String cursor, Integer limit, String requestId) {
         access.requireProjectMember(projectId, actor);
         int size = clampLimit(limit);
         UUID cursorUuid = parseCursor(cursor);
@@ -240,7 +183,7 @@ public class TaskDisplayService {
         // 空 Map 用 emptyMap 保证 assignedAgentId 为 null 时 get(null) 返回 null（Map.of().get(null) 会抛 NPE）
         Map<UUID, AgentEntity> agentById = agentIds.isEmpty() ? Collections.emptyMap()
                 : agents.selectList(Wrappers.<AgentEntity>lambdaQuery().in(AgentEntity::getId, agentIds)).stream()
-                        .collect(Collectors.toMap(AgentEntity::getId, Function.identity()));
+                .collect(Collectors.toMap(AgentEntity::getId, Function.identity()));
         Map<UUID, List<UUID>> depsByStep = dependencies.selectByStepIds(stepIds).stream()
                 .collect(Collectors.groupingBy(TaskStepDependencyEntity::getTaskStepId,
                         Collectors.mapping(TaskStepDependencyEntity::getDependsOnTaskStepId,
@@ -287,16 +230,16 @@ public class TaskDisplayService {
                 .stream().collect(Collectors.toMap(RequirementGroupEntity::getId, Function.identity()));
 
         return page.stream().map(task -> toListItem(task,
-                stepsByTask.getOrDefault(task.getId(), List.of()),
-                runsByTask.getOrDefault(task.getId(), List.of()), inputByRun,
-                worktreesByTask.getOrDefault(task.getWorkspaceId(), List.of()), worktreeData, userById, groupById))
+                        stepsByTask.getOrDefault(task.getId(), List.of()),
+                        runsByTask.getOrDefault(task.getId(), List.of()), inputByRun,
+                        worktreesByTask.getOrDefault(task.getWorkspaceId(), List.of()), worktreeData, userById, groupById))
                 .toList();
     }
 
     private TaskListItemResponse toListItem(TaskEntity task, List<TaskStepEntity> stepList, List<TaskRunEntity> taskRuns,
-            Map<UUID, List<InputRequestEntity>> inputByRun, List<WorkspaceRepositoryEntity> worktreeList,
-            WorktreeData worktreeData, Map<UUID, UserEntity> userById,
-            Map<UUID, RequirementGroupEntity> groupById) {
+                                            Map<UUID, List<InputRequestEntity>> inputByRun, List<WorkspaceRepositoryEntity> worktreeList,
+                                            WorktreeData worktreeData, Map<UUID, UserEntity> userById,
+                                            Map<UUID, RequirementGroupEntity> groupById) {
         Attention attention = buildAttention(task, taskRuns, inputByRun);
         ExecutionSummary execution = buildExecutionSummary(stepList, taskRuns, attention != null);
         List<RepositorySummary> repositories = worktreeList.stream()
@@ -312,9 +255,11 @@ public class TaskDisplayService {
 
     // ---------- 执行统计 / 待处理事项 / 操作能力 ----------
 
-    /** 由步骤真实状态与最新运行状态聚合执行统计；waiting/blocked 取步骤最新运行状态。 */
+    /**
+     * 由步骤真实状态与最新运行状态聚合执行统计；waiting/blocked 取步骤最新运行状态。
+     */
     private ExecutionSummary buildExecutionSummary(List<TaskStepEntity> stepList, List<TaskRunEntity> taskRuns,
-            boolean requiresUserAction) {
+                                                   boolean requiresUserAction) {
         Map<UUID, List<TaskRunEntity>> runsByStep = taskRuns.stream()
                 .collect(Collectors.groupingBy(TaskRunEntity::getTaskStepId));
         int pending = 0, running = 0, succeeded = 0, failed = 0, waiting = 0, blocked = 0;
@@ -360,9 +305,11 @@ public class TaskDisplayService {
                 requiresUserAction);
     }
 
-    /** 按任务状态与最新运行推导待处理事项；无待处理事项返回 null。 */
+    /**
+     * 按任务状态与最新运行推导待处理事项；无待处理事项返回 null。
+     */
     private Attention buildAttention(TaskEntity task, List<TaskRunEntity> taskRuns,
-            Map<UUID, List<InputRequestEntity>> inputByRun) {
+                                     Map<UUID, List<InputRequestEntity>> inputByRun) {
         String status = task.getStatus();
         if ("WAITING_DIFF_CONFIRMATION".equals(status)) {
             return new Attention("DIFF_CONFIRMATION_REQUIRED", "等待确认最终 Diff", "已生成多仓库总 Diff，等待确认",
@@ -404,9 +351,11 @@ public class TaskDisplayService {
         return null;
     }
 
-    /** 当前用户对当前任务的操作能力，由任务状态与调用者身份派生。 */
+    /**
+     * 当前用户对当前任务的操作能力，由任务状态与调用者身份派生。
+     */
     private TaskCapabilities buildCapabilities(TaskEntity task, UUID actor, List<TaskStepEntity> stepList,
-            DiffReviewBatchEntity batch) {
+                                               DiffReviewBatchEntity batch) {
         boolean ownerOrAdmin = access.isOwnerOrAdmin(task.getCreatedBy(), task.getProjectId(), actor);
         String status = task.getStatus();
 
@@ -418,23 +367,23 @@ public class TaskDisplayService {
         boolean replaceable = ownerOrAdmin && !TERMINAL_TASK_STATUSES.contains(status) && hasPendingStep;
         String replaceReason = replaceable ? null
                 : (!ownerOrAdmin ? "TASK_FORBIDDEN"
-                        : (!hasPendingStep ? "NO_PENDING_STEP" : "TASK_TERMINATED"));
+                   : (!hasPendingStep ? "NO_PENDING_STEP" : "TASK_TERMINATED"));
 
         boolean reviewDecidable = batch != null && "PENDING_CONFIRMATION".equals(batch.getReviewStatus());
         boolean canConfirm = ownerOrAdmin && reviewDecidable;
         String confirmReason = canConfirm ? null
                 : (!ownerOrAdmin ? "DIFF_REVIEW_FORBIDDEN"
-                        : (batch == null ? "DIFF_REVIEW_NOT_FOUND" : "DIFF_REVIEW_NOT_DECIDABLE"));
+                   : (batch == null ? "DIFF_REVIEW_NOT_FOUND" : "DIFF_REVIEW_NOT_DECIDABLE"));
         boolean canReject = canConfirm;
         String rejectReason = confirmReason;
 
         boolean retryableDelivery = batch != null && "ACCEPTED".equals(batch.getReviewStatus())
                 && ("PARTIALLY_DELIVERED".equals(batch.getDeliveryStatus())
-                        || "FAILED".equals(batch.getDeliveryStatus()));
+                || "FAILED".equals(batch.getDeliveryStatus()));
         boolean canRetry = ownerOrAdmin && retryableDelivery;
         String retryReason = canRetry ? null
                 : (!ownerOrAdmin ? "DIFF_REVIEW_FORBIDDEN"
-                        : (batch == null ? "DIFF_REVIEW_NOT_FOUND" : "DIFF_DELIVERY_NOT_RETRYABLE"));
+                   : (batch == null ? "DIFF_REVIEW_NOT_FOUND" : "DIFF_DELIVERY_NOT_RETRYABLE"));
 
         return new TaskCapabilities(cancellable, cancelReason, replaceable, replaceReason, canConfirm, confirmReason,
                 canReject, rejectReason, canRetry, retryReason);
@@ -443,7 +392,7 @@ public class TaskDisplayService {
     // ---------- 仓库 / 用户 / 群 / 产物 / Diff / 消息 摘要 ----------
 
     private RepositorySummary repositorySummary(WorkspaceRepositoryEntity worktree, ProjectRepositoryEntity binding,
-            GitHubRepositoryEntity repo) {
+                                                GitHubRepositoryEntity repo) {
         String name = binding != null && binding.getDisplayName() != null && !binding.getDisplayName().isBlank()
                 ? binding.getDisplayName()
                 : (repo == null ? null : repo.getName());
@@ -522,7 +471,9 @@ public class TaskDisplayService {
         return new SourceMessage(id(message.getId()), sender, textExcerpt(message), iso(message.getCreatedAt()));
     }
 
-    /** 从消息 content JSON 提取纯文本摘要，截断到 200 字符，解析失败返回 null。 */
+    /**
+     * 从消息 content JSON 提取纯文本摘要，截断到 200 字符，解析失败返回 null。
+     */
     private String textExcerpt(MessageEntity message) {
         try {
             Map<String, Object> content = json.readValue(message.getContent(), new TypeReference<Map<String, Object>>() {
@@ -567,12 +518,12 @@ public class TaskDisplayService {
     // ---------- 步骤组装 ----------
 
     private TaskStepListItemResponse toStepItem(TaskEntity task, TaskStepEntity step, List<TaskRunEntity> stepRuns,
-            List<UUID> dependencyIds, List<UUID> scopedRepoIds, AgentEntity agent, WorktreeData worktreeData,
-            Map<UUID, WorkspaceRepositoryEntity> worktreeByRepo) {
+                                                List<UUID> dependencyIds, List<UUID> scopedRepoIds, AgentEntity agent, WorktreeData worktreeData,
+                                                Map<UUID, WorkspaceRepositoryEntity> worktreeByRepo) {
         TaskRunEntity latest = latestRun(stepRuns);
         TaskStepLatestRun latestRun = latest == null ? null
                 : new TaskStepLatestRun(id(latest.getId()), latest.getStatus(), iso(latest.getStartedAt()),
-                        iso(latest.getFinishedAt()), durationMs(latest));
+                iso(latest.getFinishedAt()), durationMs(latest));
         RepositorySummary repository = stepRepository(step, scopedRepoIds, worktreeData, worktreeByRepo);
         LocalDateTime startedAt = stepRuns.stream().map(TaskRunEntity::getStartedAt).filter(Objects::nonNull)
                 .min(Comparator.naturalOrder()).orElse(null);
@@ -585,9 +536,11 @@ public class TaskDisplayService {
                 iso(step.getUpdatedAt()));
     }
 
-    /** 步骤目标仓库：取步骤仓库范围第一个，无范围则取任务 Workspace 第一个 worktree。 */
+    /**
+     * 步骤目标仓库：取步骤仓库范围第一个，无范围则取任务 Workspace 第一个 worktree。
+     */
     private RepositorySummary stepRepository(TaskStepEntity step, List<UUID> scopedRepoIds, WorktreeData worktreeData,
-            Map<UUID, WorkspaceRepositoryEntity> worktreeByRepo) {
+                                             Map<UUID, WorkspaceRepositoryEntity> worktreeByRepo) {
         UUID repositoryId = scopedRepoIds.isEmpty() ? worktreeData.worktrees.stream()
                 .map(WorkspaceRepositoryEntity::getProjectRepositoryId).findFirst().orElse(null) : scopedRepoIds.get(0);
         if (repositoryId == null) {
@@ -607,23 +560,25 @@ public class TaskDisplayService {
 
     // ---------- 数据加载辅助 ----------
 
-    /** 一次性加载多个 Workspace 的 worktree 与仓库绑定/镜像数据。 */
+    /**
+     * 一次性加载多个 Workspace 的 worktree 与仓库绑定/镜像数据。
+     */
     private WorktreeData loadWorktreeData(List<UUID> workspaceIds) {
         List<WorkspaceRepositoryEntity> worktreeList = worktrees.selectByWorkspaces(workspaceIds);
         List<UUID> bindingIds = worktreeList.stream().map(WorkspaceRepositoryEntity::getProjectRepositoryId).distinct()
                 .toList();
         Map<UUID, ProjectRepositoryEntity> bindingById = bindingIds.isEmpty() ? Collections.emptyMap()
                 : projectRepositories
-                        .selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
-                                .in(ProjectRepositoryEntity::getId, bindingIds))
-                        .stream().collect(Collectors.toMap(ProjectRepositoryEntity::getId, Function.identity()));
+                .selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
+                        .in(ProjectRepositoryEntity::getId, bindingIds))
+                .stream().collect(Collectors.toMap(ProjectRepositoryEntity::getId, Function.identity()));
         List<UUID> githubIds = bindingById.values().stream().map(ProjectRepositoryEntity::getRepositoryId).distinct()
                 .toList();
         Map<UUID, GitHubRepositoryEntity> repoById = githubIds.isEmpty() ? Collections.emptyMap()
                 : githubRepositories
-                        .selectList(Wrappers.<GitHubRepositoryEntity>lambdaQuery()
-                                .in(GitHubRepositoryEntity::getId, githubIds))
-                        .stream().collect(Collectors.toMap(GitHubRepositoryEntity::getId, Function.identity()));
+                .selectList(Wrappers.<GitHubRepositoryEntity>lambdaQuery()
+                        .in(GitHubRepositoryEntity::getId, githubIds))
+                .stream().collect(Collectors.toMap(GitHubRepositoryEntity::getId, Function.identity()));
         return new WorktreeData(worktreeList, bindingById, repoById);
     }
 
@@ -739,17 +694,11 @@ public class TaskDisplayService {
         return uuid == null ? null : uuid.toString();
     }
 
-    /** Workspace worktree 与仓库绑定/镜像的批量加载结果。 */
-    private static final class WorktreeData {
-        private final List<WorkspaceRepositoryEntity> worktrees;
-        private final Map<UUID, ProjectRepositoryEntity> bindingById;
-        private final Map<UUID, GitHubRepositoryEntity> repoById;
-
-        private WorktreeData(List<WorkspaceRepositoryEntity> worktrees,
-                Map<UUID, ProjectRepositoryEntity> bindingById, Map<UUID, GitHubRepositoryEntity> repoById) {
-            this.worktrees = worktrees;
-            this.bindingById = bindingById;
-            this.repoById = repoById;
-        }
+    /**
+         * Workspace worktree 与仓库绑定/镜像的批量加载结果。
+         */
+        private record WorktreeData(List<WorkspaceRepositoryEntity> worktrees,
+                                    Map<UUID, ProjectRepositoryEntity> bindingById,
+                                    Map<UUID, GitHubRepositoryEntity> repoById) {
     }
 }

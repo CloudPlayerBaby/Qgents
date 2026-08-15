@@ -31,14 +31,16 @@ public class TaskExecutionListener {
         this.orchestrator = orchestrator;
     }
 
-    /** 任务创建提交后，异步启动编排；失败只记录日志，避免重复/并发执行与线程泄漏。 */
+    /**
+     * 任务创建提交后，异步启动编排；失败只记录日志，避免重复/并发执行与线程泄漏。
+     */
     @Async
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onTaskCreated(TaskCreatedEvent event) {
         try {
-            orchestrator.orchestrate(event.getProjectId(), event.getTaskId());
+            orchestrator.orchestrate(event.projectId(), event.taskId());
         } catch (RuntimeException e) {
-            log.warn("task orchestration trigger skipped for task {}: {}", event.getTaskId(), e.getMessage());
+            log.warn("task orchestration trigger skipped for task {}: {}", event.taskId(), e.getMessage());
         }
     }
 }

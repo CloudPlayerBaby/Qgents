@@ -14,13 +14,21 @@ import lombok.Data;
 @Data
 public class WorkspaceWriteResult {
 
-    /** 是否写入成功。 */
+    /**
+     * 是否写入成功。
+     */
     private boolean ok;
-    /** 相对路径；仅成功时有意义。 */
+    /**
+     * 相对路径；仅成功时有意义。
+     */
     private String path;
-    /** 失败原因（不得包含宿主机绝对路径或 Secret）。 */
+    /**
+     * 失败原因（不得包含宿主机绝对路径或 Secret）。
+     */
     private String error;
-    /** 是否为基础设施级失败（workspace 不可用 / 文件系统错误）；仅 ok=false 时有意义。 */
+    /**
+     * 是否为基础设施级失败（workspace 不可用 / 文件系统错误）；仅 ok=false 时有意义。
+     */
     private boolean infrastructureFailure;
 
     public static WorkspaceWriteResult ok(String path) {
@@ -30,7 +38,9 @@ public class WorkspaceWriteResult {
         return result;
     }
 
-    /** 工具级失败：模型可依据错误信息自行纠正，不判基础设施失败。 */
+    /**
+     * 工具级失败：模型可依据错误信息自行纠正，不判基础设施失败。
+     */
     public static WorkspaceWriteResult fail(String path, String error) {
         WorkspaceWriteResult result = new WorkspaceWriteResult();
         result.setOk(false);
@@ -39,7 +49,9 @@ public class WorkspaceWriteResult {
         return result;
     }
 
-    /** 基础设施级失败：workspace 不可用、文件系统错误等，应映射 FAILED_INFRASTRUCTURE。 */
+    /**
+     * 基础设施级失败：workspace 不可用、文件系统错误等，应映射 FAILED_INFRASTRUCTURE。
+     */
     public static WorkspaceWriteResult infraFail(String path, String error) {
         WorkspaceWriteResult result = fail(path, error);
         result.setInfrastructureFailure(true);

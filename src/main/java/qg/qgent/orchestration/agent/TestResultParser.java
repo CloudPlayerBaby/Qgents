@@ -89,7 +89,9 @@ public class TestResultParser {
         return value != null && value.isTextual() ? value.asText().trim() : null;
     }
 
-    /** 去掉常见的 ```json / ``` 围栏包裹。 */
+    /**
+     * 去掉常见的 ```json / ``` 围栏包裹。
+     */
     private String stripFences(String raw) {
         String trimmed = raw.trim();
         if (trimmed.startsWith("```")) {

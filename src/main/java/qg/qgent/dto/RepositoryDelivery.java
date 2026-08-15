@@ -17,35 +17,51 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class RepositoryDelivery {
 
-    /** 项目仓库绑定 ID。 */
+    /**
+     * 项目仓库绑定 ID。
+     */
     @Schema(description = "项目仓库绑定 ID")
     private String repositoryId;
 
-    /** 仓库显示名称。 */
+    /**
+     * 仓库显示名称。
+     */
     @Schema(description = "仓库显示名称")
     private String repositoryName;
 
-    /** 该仓库的总 Diff ID。 */
+    /**
+     * 该仓库的总 Diff ID。
+     */
     @Schema(description = "Diff ID")
     private String diffId;
 
-    /** 该仓库交付状态。 */
+    /**
+     * 该仓库交付状态。
+     */
     @Schema(description = "交付状态")
     private String deliveryStatus;
 
-    /** 失败原因码，可为 null。 */
+    /**
+     * 失败原因码，可为 null。
+     */
     @Schema(description = "失败原因码")
     private String failureCode;
 
-    /** 脱敏失败原因，可为 null。 */
+    /**
+     * 脱敏失败原因，可为 null。
+     */
     @Schema(description = "脱敏失败原因")
     private String failureReason;
 
-    /** 已创建 MR 的摘要，可为 null。 */
+    /**
+     * 已创建 MR 的摘要，可为 null。
+     */
     @Schema(description = "MR 摘要")
     private MergeRequestBrief mergeRequest;
 
-    /** 交付状态更新时间（UTC）。 */
+    /**
+     * 交付状态更新时间（UTC）。
+     */
     @Schema(description = "交付状态更新时间")
     private String updatedAt;
 }

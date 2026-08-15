@@ -8,7 +8,9 @@ import java.util.Map;
 
 import static org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY;
 
-/** 统一校验工具参数，避免各处理器接受任意形状的输入。 */
+/**
+ * 统一校验工具参数，避免各处理器接受任意形状的输入。
+ */
 public final class ToolArguments {
     private ToolArguments() {
     }

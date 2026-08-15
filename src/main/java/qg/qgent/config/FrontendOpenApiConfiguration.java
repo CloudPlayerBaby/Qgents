@@ -1,7 +1,6 @@
 package qg.qgent.config;
 
 import io.swagger.v3.oas.models.OpenAPI;
-import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.tags.Tag;
 import org.springdoc.core.customizers.OpenApiCustomizer;
@@ -91,7 +90,8 @@ public class FrontendOpenApiConfiguration {
         if (path.endsWith("/logout")) return "退出登录";
         if (path.endsWith("/password-reset-requests")) return "提交密码重置申请";
         if (path.endsWith("/password-resets")) return "重置密码";
-        if (path.equals("/api/v1/me")) return method == PathItem.HttpMethod.GET ? "获取当前用户资料" : "修改当前用户资料";
+        if (path.equals("/api/v1/me"))
+            return method == PathItem.HttpMethod.GET ? "获取当前用户资料" : "修改当前用户资料";
         if (path.endsWith("/trigger-task")) return "从消息触发任务";
         if (path.endsWith("/replace-agent")) return "更换步骤 Agent";
         if (path.endsWith("/cq-approvals")) return "提交 CQ+1 审查";
@@ -172,5 +172,6 @@ public class FrontendOpenApiConfiguration {
         return "资源";
     }
 
-    private record ApiGroup(String code, String name) { }
+    private record ApiGroup(String code, String name) {
+    }
 }

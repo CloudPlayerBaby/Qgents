@@ -18,7 +18,9 @@ import java.util.UUID;
 @Service
 public class AgentContextAssembler {
 
-    /** PLAN 相位输入：无 TaskRun/TaskStep。 */
+    /**
+     * PLAN 相位输入：无 TaskRun/TaskStep。
+     */
     public AgentInput assemblePlan(TaskEntity task) {
         AgentInput input = base(task);
         input.setPhase(OrchestrationPhase.PLAN);
@@ -26,10 +28,12 @@ public class AgentContextAssembler {
         return input;
     }
 
-    /** CODING/TESTING/REVIEWING 相位输入：携带步骤指令、循环反馈、结构化计划、本次修改与测试结果。 */
+    /**
+     * CODING/TESTING/REVIEWING 相位输入：携带步骤指令、循环反馈、结构化计划、本次修改与测试结果。
+     */
     public AgentInput assemble(TaskEntity task, TaskStepEntity step, OrchestrationPhase phase,
-            AgentRunOutcome feedback, UUID taskRunId, PlanResult planResult, CodingResult codingResult,
-            TestResult testResult) {
+                               AgentRunOutcome feedback, UUID taskRunId, PlanResult planResult, CodingResult codingResult,
+                               TestResult testResult) {
         AgentInput input = base(task);
         input.setPhase(phase);
         input.setTaskStepId(step.getId());

@@ -6,7 +6,9 @@ import lombok.NoArgsConstructor;
 
 import java.util.UUID;
 
-/** Workspace 中单个独立仓库副本的可公开状态。 */
+/**
+ * Workspace 中单个独立仓库副本的可公开状态。
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

@@ -69,7 +69,9 @@ public class PlanAgent implements Agent {
         }
     }
 
-    /** 第一轮：让 LLM 从文件树挑选要读取的文件；解析失败时退回不读取任何文件。 */
+    /**
+     * 第一轮：让 LLM 从文件树挑选要读取的文件；解析失败时退回不读取任何文件。
+     */
     private List<String> selectFilesToRead(AgentInput input, List<String> files) {
         try {
             String raw = llm.complete(promptBuilder.buildSelectFilesSystem(),
@@ -91,7 +93,9 @@ public class PlanAgent implements Agent {
         }
     }
 
-    /** 按需读取选中的文件；目录缺失、越界或文件过大时跳过该文件。 */
+    /**
+     * 按需读取选中的文件；目录缺失、越界或文件过大时跳过该文件。
+     */
     private Map<String, String> readSelectedFiles(AgentInput input, List<String> paths) {
         Map<String, String> contents = new LinkedHashMap<>();
         for (String path : paths) {

@@ -41,7 +41,9 @@ import java.util.UUID;
 @ConditionalOnProperty(name = "app.worker.enabled", havingValue = "false", matchIfMissing = true)
 public class LocalGitDiffAccess implements WorkspaceDiffAccess {
 
-    /** 单次 git 命令超时。 */
+    /**
+     * 单次 git 命令超时。
+     */
     private static final Duration GIT_TIMEOUT = Duration.ofSeconds(30);
 
     private final WorkspaceService workspaceService;
@@ -53,9 +55,11 @@ public class LocalGitDiffAccess implements WorkspaceDiffAccess {
         this(workspaceService, repositoryMapper, new SandboxProcessRunner());
     }
 
-    /** 测试用构造：可注入 Runner 桩，Workspace 定位与 worktree 查询仍为真实依赖。 */
+    /**
+     * 测试用构造：可注入 Runner 桩，Workspace 定位与 worktree 查询仍为真实依赖。
+     */
     LocalGitDiffAccess(WorkspaceService workspaceService, WorkspaceRepositoryMapper repositoryMapper,
-            SandboxProcessRunner processRunner) {
+                       SandboxProcessRunner processRunner) {
         this.workspaceService = workspaceService;
         this.repositoryMapper = repositoryMapper;
         this.processRunner = processRunner;
@@ -96,7 +100,9 @@ public class LocalGitDiffAccess implements WorkspaceDiffAccess {
         return GitDiffResult.ok(combined.toString(), baseCommit, headCommit);
     }
 
-    /** 在单个 worktree 上执行 git diff + rev-parse，返回 diff 文本与真实 base/head SHA。 */
+    /**
+     * 在单个 worktree 上执行 git diff + rev-parse，返回 diff 文本与真实 base/head SHA。
+     */
     private WorktreeDiff diffWorktree(Path root, WorkspaceRepositoryEntity worktree) {
         String workspacePath = worktree.getWorkspacePath();
         Path repoDir = resolveWorktree(root, workspacePath);
@@ -130,13 +136,17 @@ public class LocalGitDiffAccess implements WorkspaceDiffAccess {
         return WorktreeDiff.ok(diff.stdout(), baseSha, headSha);
     }
 
-    /** diff base：优先已接受的 headCommit，否则 worktree 创建时的 baseCommit。 */
+    /**
+     * diff base：优先已接受的 headCommit，否则 worktree 创建时的 baseCommit。
+     */
     private static String baseRef(WorkspaceRepositoryEntity worktree) {
         String head = worktree.getHeadCommit();
         return (head != null && !head.isBlank()) ? head : worktree.getBaseCommit();
     }
 
-    /** 把 DB 中的相对 worktree 名解析到工作区根目录下，越界/非法时返回 null。 */
+    /**
+     * 把 DB 中的相对 worktree 名解析到工作区根目录下，越界/非法时返回 null。
+     */
     private static Path resolveWorktree(Path root, String workspacePath) {
         if (workspacePath == null || workspacePath.isBlank()) {
             return null;
@@ -157,7 +167,9 @@ public class LocalGitDiffAccess implements WorkspaceDiffAccess {
         return new GitDiffResult(false, "", "", "", error);
     }
 
-    /** 单个 worktree 的 diff 结果（内部值对象）。 */
+    /**
+     * 单个 worktree 的 diff 结果（内部值对象）。
+     */
     private record WorktreeDiff(boolean ok, String diff, String baseCommit, String headCommit, String error) {
 
         static WorktreeDiff ok(String diff, String baseCommit, String headCommit) {

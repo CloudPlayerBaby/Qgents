@@ -13,15 +13,21 @@ import java.util.UUID;
 @Data
 public class GroupMemberRow {
 
-    /** 成员用户 ID。 */
+    /**
+     * 成员用户 ID。
+     */
     @Schema(description = "成员用户 ID")
     private UUID userId;
 
-    /** 成员昵称。 */
+    /**
+     * 成员昵称。
+     */
     @Schema(description = "成员昵称")
     private String displayName;
 
-    /** 成员头像 URL，可为空。 */
+    /**
+     * 成员头像 URL，可为空。
+     */
     @Schema(description = "成员头像 URL")
     private String avatarUrl;
 }

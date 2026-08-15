@@ -15,12 +15,18 @@ import java.util.UUID;
 @TableName("group_agents")
 public class GroupAgentEntity {
 
-    /** 需求群 ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * 需求群 ID（UUIDv7，BINARY(16)）。
+     */
     private UUID requirementGroupId;
 
-    /** Agent ID（UUIDv7，BINARY(16)）。 */
+    /**
+     * Agent ID（UUIDv7，BINARY(16)）。
+     */
     private UUID agentId;
 
-    /** 加入时间（UTC）。 */
+    /**
+     * 加入时间（UTC）。
+     */
     private LocalDateTime joinedAt;
 }

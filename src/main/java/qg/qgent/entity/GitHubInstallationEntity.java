@@ -1,16 +1,15 @@
 package qg.qgent.entity;
 
-import java.time.LocalDateTime;
-import java.util.UUID;
-
 import com.baomidou.mybatisplus.annotation.IdType;
-import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
-
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import qg.qgent.handler.UuidBinaryTypeHandler;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
 
 /**
  * GitHub App installation metadata authorized by one team. The mapped table stores no installation token;

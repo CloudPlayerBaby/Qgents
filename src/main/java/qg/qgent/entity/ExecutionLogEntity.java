@@ -18,13 +18,21 @@ import java.util.UUID;
 public class ExecutionLogEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
-    /** 所属任务运行ID。 */
+    /**
+     * 所属任务运行ID。
+     */
     private UUID taskRunId;
-    /** 运行内单调递增日志序号，用于游标分页。 */
+    /**
+     * 运行内单调递增日志序号，用于游标分页。
+     */
     private Long sequenceNo;
-    /** 产生日志的节点名，单节点运行为空。 */
+    /**
+     * 产生日志的节点名，单节点运行为空。
+     */
     private String node;
-    /** 已脱敏的日志内容。 */
+    /**
+     * 已脱敏的日志内容。
+     */
     private String content;
     private LocalDateTime createdAt;
 }

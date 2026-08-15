@@ -9,21 +9,33 @@ import lombok.Data;
  */
 @Data
 public class OrchestrationCounters {
-    /** 已发生的质量修复循环次数（Test/Review 失败 → 回到 Coding）。 */
+    /**
+     * 已发生的质量修复循环次数（Test/Review 失败 → 回到 Coding）。
+     */
     private int qualityFixLoops = 0;
-    /** 已发生的基础设施重试次数（同相位重跑）。 */
+    /**
+     * 已发生的基础设施重试次数（同相位重跑）。
+     */
     private int infraRetries = 0;
-    /** 质量修复循环上限，超过则 Task FAILED。 */
+    /**
+     * 质量修复循环上限，超过则 Task FAILED。
+     */
     private int maxQualityFixLoops = 3;
-    /** 基础设施重试上限，超过则 Task FAILED。 */
+    /**
+     * 基础设施重试上限，超过则 Task FAILED。
+     */
     private int maxInfraRetries = 3;
 
-    /** 是否还能回 Coding 做一次质量修复。 */
+    /**
+     * 是否还能回 Coding 做一次质量修复。
+     */
     public boolean canRequeueCoding() {
         return qualityFixLoops < maxQualityFixLoops;
     }
 
-    /** 是否还能同相位基础设施重试。 */
+    /**
+     * 是否还能同相位基础设施重试。
+     */
     public boolean canRetryInfra() {
         return infraRetries < maxInfraRetries;
     }

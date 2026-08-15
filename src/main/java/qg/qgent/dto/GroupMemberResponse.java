@@ -15,19 +15,27 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class GroupMemberResponse {
 
-    /** 成员 ID（用户 ID 或 Agent ID）。 */
+    /**
+     * 成员 ID（用户 ID 或 Agent ID）。
+     */
     @Schema(description = "成员 ID（用户 ID 或 Agent ID）")
     private String id;
 
-    /** 成员昵称（用户 displayName 或 Agent name）。 */
+    /**
+     * 成员昵称（用户 displayName 或 Agent name）。
+     */
     @Schema(description = "成员昵称")
     private String displayName;
 
-    /** 成员头像 URL，可为空（Agent 当前无头像字段）。 */
+    /**
+     * 成员头像 URL，可为空（Agent 当前无头像字段）。
+     */
     @Schema(description = "成员头像 URL")
     private String avatarUrl;
 
-    /** 成员类型：USER / AGENT。 */
+    /**
+     * 成员类型：USER / AGENT。
+     */
     @Schema(description = "成员类型：USER / AGENT")
     private String memberType;
 }

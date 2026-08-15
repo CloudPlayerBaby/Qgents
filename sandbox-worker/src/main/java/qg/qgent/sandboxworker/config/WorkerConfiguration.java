@@ -17,19 +17,25 @@ import java.util.concurrent.Executors;
 @EnableScheduling
 @EnableConfigurationProperties(SandboxWorkerProperties.class)
 public class WorkerConfiguration {
-    /** 提供统一 JSON 序列化/反序列化工具，避免直接使用 Jackson。 */
+    /**
+     * 提供统一 JSON 序列化/反序列化工具，避免直接使用 Jackson。
+     */
     @Bean
     ObjectMapper workerObjectMapper() {
         return new ObjectMapper().findAndRegisterModules();
     }
 
-    /** 提供统一 UTC 时钟，便于测试替换和时间语义一致。 */
+    /**
+     * 提供统一 UTC 时钟，便于测试替换和时间语义一致。
+     */
     @Bean
     Clock workerClock() {
         return Clock.systemUTC();
     }
 
-    /** 创建结构化工具异步执行使用的固定大小线程池。 */
+    /**
+     * 创建结构化工具异步执行使用的固定大小线程池。
+     */
     @Bean(destroyMethod = "shutdownNow")
     ExecutorService sandboxExecutionPool(SandboxWorkerProperties properties) {
         return Executors.newFixedThreadPool(properties.getExecutionThreads(),

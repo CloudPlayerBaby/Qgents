@@ -4,7 +4,9 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/** 已授权的最终 Diff 原始 patch 快照，不包含宿主机存储位置。 */
+/**
+ * 已授权的最终 Diff 原始 patch 快照，不包含宿主机存储位置。
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

@@ -11,21 +11,33 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class GitHubRepositoryDetails {
-    /** GitHub 提供的仓库数字 ID。 */
+    /**
+     * GitHub 提供的仓库数字 ID。
+     */
     private long repositoryId;
 
-    /** 仓库所有者登录名。 */
+    /**
+     * 仓库所有者登录名。
+     */
     private String ownerLogin;
 
-    /** 仓库名称。 */
+    /**
+     * 仓库名称。
+     */
     private String name;
 
-    /** 仓库默认分支。 */
+    /**
+     * 仓库默认分支。
+     */
     private String defaultBranch;
 
-    /** 仓库可见性。 */
+    /**
+     * 仓库可见性。
+     */
     private String visibility;
 
-    /** 仓库是否已归档。 */
+    /**
+     * 仓库是否已归档。
+     */
     private boolean archived;
 }

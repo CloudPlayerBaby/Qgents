@@ -18,19 +18,33 @@ import java.util.UUID;
 public class RequirementGroupEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
-    /** 所属项目ID。 */
+    /**
+     * 所属项目ID。
+     */
     private UUID projectId;
-    /** 创建用户ID。 */
+    /**
+     * 创建用户ID。
+     */
     private UUID createdBy;
-    /** 群聊名称。 */
+    /**
+     * 群聊名称。
+     */
     private String name;
-    /** 群聊目标和需求背景说明。 */
+    /**
+     * 群聊目标和需求背景说明。
+     */
     private String description;
-    /** 群类型：PROJECT_MAIN/REQUIREMENT。 */
+    /**
+     * 群类型：PROJECT_MAIN/REQUIREMENT。
+     */
     private String groupType;
-    /** 群状态：ACTIVE/ARCHIVED。 */
+    /**
+     * 群状态：ACTIVE/ARCHIVED。
+     */
     private String status;
-    /** 最近消息时间（UTC），无消息时为空。 */
+    /**
+     * 最近消息时间（UTC），无消息时为空。
+     */
     private LocalDateTime lastMessageAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

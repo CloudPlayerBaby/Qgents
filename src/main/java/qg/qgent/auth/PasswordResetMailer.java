@@ -1,13 +1,13 @@
 package qg.qgent.auth;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.SimpleMailMessage;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.MailException;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.mail.MailException;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Component;
 
 /**
  * 发送密码重置邮件
@@ -21,7 +21,7 @@ public class PasswordResetMailer {
     private final String frontend;
 
     public PasswordResetMailer(JavaMailSender sender, @Value("${spring.mail.username}") String from,
-            @Value("${app.frontend-url}") String frontend) {
+                               @Value("${app.frontend-url}") String frontend) {
         this.sender = sender;
         this.from = from;
         this.frontend = frontend;

@@ -23,14 +23,18 @@ import java.util.UUID;
 @ConditionalOnProperty(name = "app.worker.enabled", havingValue = "true")
 public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements WorkspaceCodeWriter {
 
-    /** 单次写入内容的最大字节数，与本地实现一致。 */
+    /**
+     * 单次写入内容的最大字节数，与本地实现一致。
+     */
     private static final int MAX_WRITE_BYTES = 256 * 1024;
-    /** 空内容的 SHA-256，用于新建文件的 expectedHash。 */
+    /**
+     * 空内容的 SHA-256，用于新建文件的 expectedHash。
+     */
     private static final String EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     private static final Duration TOOL_TIMEOUT = Duration.ofSeconds(30);
 
     public WorkerWorkspaceCodeWriter(SandboxWorkerClient client, SandboxSessionManager sessions,
-            SandboxWorkerProperties properties) {
+                                     SandboxWorkerProperties properties) {
         super(client, sessions, properties);
     }
 
@@ -64,7 +68,9 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
         }
     }
 
-    /** 读取目标文件当前 sha256；文件不存在时返回空内容哈希。 */
+    /**
+     * 读取目标文件当前 sha256；文件不存在时返回空内容哈希。
+     */
     private String currentHash(UUID workspaceId, WorkerPathResolver.Target target) {
         WorkerToolExecution read = executeTool(workspaceId, target.repositoryId(), "file.read",
                 Map.of("path", target.relativePath(), "startLine", 1, "lineCount", 1), TOOL_TIMEOUT);

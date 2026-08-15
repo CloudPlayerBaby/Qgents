@@ -10,21 +10,33 @@ import java.util.UUID;
 @Data
 public class WorkerWorkspaceRepository {
 
-    /** 项目仓库绑定编号。 */
+    /**
+     * 项目仓库绑定编号。
+     */
     private UUID repositoryId;
 
-    /** 创建独立仓库时使用的基线引用。 */
+    /**
+     * 创建独立仓库时使用的基线引用。
+     */
     private String baseRef;
 
-    /** 功能分支。 */
+    /**
+     * 功能分支。
+     */
     private String sourceBranch;
 
-    /** Workspace 内的一级相对目录名称。 */
+    /**
+     * Workspace 内的一级相对目录名称。
+     */
     private String workspacePath;
 
-    /** 工作区创建时的真实基线提交。 */
+    /**
+     * 工作区创建时的真实基线提交。
+     */
     private String baseCommit;
 
-    /** 当前 HEAD 提交，未接受过 Diff 时为 null。 */
+    /**
+     * 当前 HEAD 提交，未接受过 Diff 时为 null。
+     */
     private String headCommit;
 }

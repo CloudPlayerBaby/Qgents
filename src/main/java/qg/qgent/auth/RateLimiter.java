@@ -5,9 +5,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.HexFormat;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -28,10 +28,11 @@ public class RateLimiter {
 
     /**
      * 检查是否允许请求通过
-     * @param scope 限流场景
+     *
+     * @param scope       限流场景
      * @param fingerprint 请求指纹（如 IP、用户 ID 等）
-     * @param limit 限流阈值
-     * @param window 限流窗口（如 1 秒）
+     * @param limit       限流阈值
+     * @param window      限流窗口（如 1 秒）
      * @return 是否允许请求通过
      */
     public boolean allow(String scope, String fingerprint, int limit, Duration window) {
@@ -78,13 +79,6 @@ public class RateLimiter {
     }
 
     // 在redis挂掉的时候弄的一个本地的限流窗口
-    private static final class LocalWindow {
-        private final AtomicInteger count;
-        private final long expiresAt;
-
-        private LocalWindow(AtomicInteger count, long expiresAt) {
-            this.count = count;
-            this.expiresAt = expiresAt;
-        }
+        private record LocalWindow(AtomicInteger count, long expiresAt) {
     }
 }

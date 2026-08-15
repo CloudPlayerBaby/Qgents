@@ -10,7 +10,9 @@ import java.util.stream.Collectors;
 
 import static org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY;
 
-/** 维护 Agent Sandbox 允许调用的非 Git 工具白名单。 */
+/**
+ * 维护 Agent Sandbox 允许调用的非 Git 工具白名单。
+ */
 @Component
 public class ToolRegistry {
     private final Map<String, SandboxTool> tools;
@@ -23,11 +25,14 @@ public class ToolRegistry {
         return require(name).execute(context, arguments);
     }
 
-    public boolean requiresRepository(String name) { return require(name).requiresRepository(); }
+    public boolean requiresRepository(String name) {
+        return require(name).requiresRepository();
+    }
 
     private SandboxTool require(String name) {
         SandboxTool tool = tools.get(name);
-        if (tool == null) throw new WorkerException(UNPROCESSABLE_ENTITY, "TOOL_NOT_SUPPORTED", "Worker 不支持该工具：" + name);
+        if (tool == null)
+            throw new WorkerException(UNPROCESSABLE_ENTITY, "TOOL_NOT_SUPPORTED", "Worker 不支持该工具：" + name);
         return tool;
     }
 }

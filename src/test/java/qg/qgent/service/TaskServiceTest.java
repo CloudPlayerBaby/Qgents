@@ -71,8 +71,8 @@ class TaskServiceTest {
 
         ArgumentCaptor<TaskCreatedEvent> captor = ArgumentCaptor.forClass(TaskCreatedEvent.class);
         verify(eventPublisher).publishEvent(captor.capture());
-        assertEquals(projectId, captor.getValue().getProjectId());
-        assertNotNull(captor.getValue().getTaskId());
+        assertEquals(projectId, captor.getValue().projectId());
+        assertNotNull(captor.getValue().taskId());
     }
 
     @Test

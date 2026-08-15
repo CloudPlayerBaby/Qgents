@@ -5,36 +5,23 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import qg.qgent.api.ApiException;
-import qg.qgent.dto.DiffListItemResponse;
-import qg.qgent.dto.DiffMergeRequestSummaryResponse;
-import qg.qgent.dto.DiffRepositoryDeliveryResponse;
-import qg.qgent.dto.DiffReviewBatchResponse;
-import qg.qgent.dto.DiffReviewPatchResponse;
-import qg.qgent.dto.MergeRequestCreateRequest;
-import qg.qgent.entity.DiffEntity;
-import qg.qgent.entity.DiffReviewBatchEntity;
-import qg.qgent.entity.ProjectRepositoryEntity;
-import qg.qgent.entity.GitHubRepositoryEntity;
-import qg.qgent.entity.MergeRequestEntity;
-import qg.qgent.entity.TaskEntity;
-import qg.qgent.mapper.DiffMapper;
-import qg.qgent.mapper.DiffReviewBatchMapper;
-import qg.qgent.mapper.ProjectRepositoryMapper;
-import qg.qgent.mapper.GitHubRepositoryMapper;
-import qg.qgent.mapper.MergeRequestMapper;
-import qg.qgent.mapper.TaskMapper;
+import qg.qgent.dto.*;
+import qg.qgent.entity.*;
+import qg.qgent.mapper.*;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitDiff;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.HashMap;
 import java.util.UUID;
 
-/** Applies one Task-level review decision, then delivers each repository independently. */
+/**
+ * Applies one Task-level review decision, then delivers each repository independently.
+ */
 @Service
 public class DiffReviewBatchService {
     private static final Duration DELIVERY_LEASE = Duration.ofMinutes(30);
@@ -51,12 +38,14 @@ public class DiffReviewBatchService {
     private final DiffDeliveryService deliveryService;
     private final MergeRequestMapper mergeRequestMapper;
     private final GitHubRepositoryMapper githubRepositories;
+    private final NotificationService notificationService;
 
     public DiffReviewBatchService(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
             ProjectRepositoryMapper repositories, SandboxWorkerClient worker,
             MergeRequestService mergeRequests, ProjectAccessService access, EventService events,
             TransactionTemplate transactions, DiffSnapshotStorage snapshots, DiffDeliveryService deliveryService,
-            MergeRequestMapper mergeRequestMapper, GitHubRepositoryMapper githubRepositories) {
+            MergeRequestMapper mergeRequestMapper, GitHubRepositoryMapper githubRepositories,
+            NotificationService notificationService) {
         this.batches = batches;
         this.diffs = diffs;
         this.tasks = tasks;
@@ -70,6 +59,7 @@ public class DiffReviewBatchService {
         this.deliveryService = deliveryService;
         this.mergeRequestMapper = mergeRequestMapper;
         this.githubRepositories = githubRepositories;
+        this.notificationService = notificationService;
     }
 
     public DiffReviewBatchResponse get(UUID projectId, UUID taskId, UUID actor) {
@@ -78,7 +68,9 @@ public class DiffReviewBatchService {
         return response(batch, diffs(batch.getId()));
     }
 
-    /** Returns one immutable patch only after project membership and batch ownership checks. */
+    /**
+     * Returns one immutable patch only after project membership and batch ownership checks.
+     */
     public DiffReviewPatchResponse patch(UUID projectId, UUID taskId, UUID diffId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         DiffReviewBatchEntity batch = latest(projectId, taskId);
@@ -91,7 +83,9 @@ public class DiffReviewBatchService {
                 snapshots.load(diff.getSnapshotKey()));
     }
 
-    /** A short DB transaction claims delivery; Worker calls deliberately occur after it commits. */
+    /**
+     * A short DB transaction claims delivery; Worker calls deliberately occur after it commits.
+     */
     public DiffReviewBatchResponse confirm(UUID projectId, UUID taskId, UUID actor) {
         TaskEntity task = requireTask(projectId, taskId);
         requireOwnerOrAdmin(task, actor);
@@ -100,7 +94,11 @@ public class DiffReviewBatchService {
         try {
             preflight(task, values);
         } catch (RuntimeException failure) {
-            restoreAfterPreflightFailure(batch.getId(), batch.getDeliveryClaimToken());
+            if (isStaleSnapshot(failure)) {
+                failStaleReview(task, batch, values, failure);
+            } else {
+                restoreAfterPreflightFailure(batch.getId(), batch.getDeliveryClaimToken());
+            }
             throw failure;
         }
         transactions.execute(status -> {
@@ -287,7 +285,7 @@ public class DiffReviewBatchService {
     }
 
     private void markDiffFailure(TaskEntity task, UUID diffId, UUID batchId, String claimToken,
-            RuntimeException failure) {
+                                 RuntimeException failure) {
         transactions.execute(status -> {
             DiffReviewBatchEntity batch = batches.selectByIdForUpdate(batchId);
             if (!ownsBatchClaim(batch, claimToken)) return null;
@@ -302,25 +300,88 @@ public class DiffReviewBatchService {
     }
 
     private void finish(TaskEntity task, UUID batchId, String claimToken) {
-        transactions.execute(status -> {
+        FinishResult result = transactions.execute(status -> {
             DiffReviewBatchEntity batch = batches.selectByIdForUpdate(batchId);
             requireBatchClaim(batch, claimToken);
             List<DiffEntity> values = diffs(batchId);
             boolean allDelivered = values.stream().allMatch(value -> "MR_CREATED".equals(value.getDeliveryStatus()));
             boolean anyDelivered = values.stream().anyMatch(value -> "MR_CREATED".equals(value.getDeliveryStatus()));
+            String previousTaskStatus = task.getStatus();
+            String nextTaskStatus = allDelivered ? "SUCCEEDED" : "DELIVERY_FAILED";
             batch.setDeliveryStatus(allDelivered ? "DELIVERED" : anyDelivered ? "PARTIALLY_DELIVERED" : "FAILED");
             batch.setDeliveryClaimToken(null);
             batch.setDeliveryLeaseExpiresAt(null);
             batch.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
             batches.updateById(batch);
-            task.setStatus(allDelivered ? "SUCCEEDED" : "DELIVERY_FAILED");
+            task.setStatus(nextTaskStatus);
             task.setUpdatedAt(batch.getUpdatedAt());
             tasks.updateById(task);
             events.publish(task.getProjectId(), task.getRequirementGroupId(), allDelivered ? "delivery.completed" : "delivery.failed",
                     batchId.toString(), Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
                             "reviewBatchId", batchId, "deliveryStatus", batch.getDeliveryStatus()));
+            return new FinishResult(allDelivered, !nextTaskStatus.equals(previousTaskStatus));
+        });
+        if (result != null && result.statusChanged() && notificationService != null) {
+            String kind = result.allDelivered() ? "TASK_COMPLETED" : "TASK_FAILED";
+            notificationService.notify(task.getCreatedBy(), task.getProjectId(), task.getRequirementGroupId(), kind,
+                    (result.allDelivered() ? "任务完成：" : "任务交付失败：") + task.getTitle(),
+                    result.allDelivered() ? task.getRequirement() : "Diff 交付未全部完成，请查看交付失败详情",
+                    task.getId().toString());
+        }
+    }
+
+    private boolean isStaleSnapshot(RuntimeException failure) {
+        return failure instanceof ApiException api && "DIFF_SNAPSHOT_STALE".equals(api.code());
+    }
+
+    /** 快照已失效时终止本次交付，避免任务无限停留在待确认状态。 */
+    private void failStaleReview(TaskEntity task, DiffReviewBatchEntity batch, List<DiffEntity> values,
+            RuntimeException failure) {
+        transactions.execute(status -> {
+            DiffReviewBatchEntity currentBatch = batches.selectByIdForUpdate(batch.getId());
+            if (!ownsBatchClaim(currentBatch, batch.getDeliveryClaimToken())) {
+                return null;
+            }
+            LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+            currentBatch.setDeliveryStatus("FAILED");
+            currentBatch.setDeliveryClaimToken(null);
+            currentBatch.setDeliveryLeaseExpiresAt(null);
+            currentBatch.setUpdatedAt(now);
+            batches.updateById(currentBatch);
+            for (DiffEntity diff : values) {
+                diff.setDeliveryStatus("FAILED");
+                diff.setDeliveryFailureCode("DIFF_SNAPSHOT_STALE");
+                diff.setDeliveryFailureReason(failure.getMessage());
+                diff.setUpdatedAt(now);
+                diffs.updateById(diff);
+            }
+            task.setStatus("DELIVERY_FAILED");
+            task.setUpdatedAt(now);
+            tasks.updateById(task);
+            events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.diff-review.failed",
+                    currentBatch.getId().toString(),
+                    Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
+                            "reviewBatchId", currentBatch.getId(), "reason", "DIFF_SNAPSHOT_STALE"));
             return null;
         });
+    }
+
+    private static final class FinishResult {
+        private final boolean allDelivered;
+        private final boolean statusChanged;
+
+        private FinishResult(boolean allDelivered, boolean statusChanged) {
+            this.allDelivered = allDelivered;
+            this.statusChanged = statusChanged;
+        }
+
+        private boolean allDelivered() {
+            return allDelivered;
+        }
+
+        private boolean statusChanged() {
+            return statusChanged;
+        }
     }
 
     private void restoreAfterPreflightFailure(UUID batchId, String claimToken) {
@@ -370,7 +431,8 @@ public class DiffReviewBatchService {
         DiffReviewBatchEntity batch = batches.selectOne(Wrappers.<DiffReviewBatchEntity>lambdaQuery()
                 .eq(DiffReviewBatchEntity::getProjectId, projectId).eq(DiffReviewBatchEntity::getTaskId, taskId)
                 .orderByDesc(DiffReviewBatchEntity::getCreatedAt).last("LIMIT 1"));
-        if (batch == null) throw new ApiException(HttpStatus.NOT_FOUND, "DIFF_REVIEW_NOT_FOUND", "Final Diff review does not exist");
+        if (batch == null)
+            throw new ApiException(HttpStatus.NOT_FOUND, "DIFF_REVIEW_NOT_FOUND", "Final Diff review does not exist");
         return batch;
     }
 
@@ -385,7 +447,8 @@ public class DiffReviewBatchService {
 
     private DiffReviewBatchEntity requireBatch(UUID id) {
         DiffReviewBatchEntity batch = batches.selectById(id);
-        if (batch == null) throw new ApiException(HttpStatus.NOT_FOUND, "DIFF_REVIEW_NOT_FOUND", "Final Diff review does not exist");
+        if (batch == null)
+            throw new ApiException(HttpStatus.NOT_FOUND, "DIFF_REVIEW_NOT_FOUND", "Final Diff review does not exist");
         return batch;
     }
 
@@ -421,7 +484,7 @@ public class DiffReviewBatchService {
     }
 
     private List<DiffRepositoryDeliveryResponse> repositoryDeliveries(DiffReviewBatchEntity batch,
-            List<DiffEntity> values) {
+                                                                      List<DiffEntity> values) {
         Map<UUID, ProjectRepositoryEntity> repositoryById = new HashMap<>();
         if (!values.isEmpty()) {
             repositories.selectBatchIds(values.stream().map(DiffEntity::getProjectRepositoryId).distinct().toList())
@@ -435,9 +498,9 @@ public class DiffReviewBatchService {
                     .forEach(repository -> githubById.put(repository.getId(), repository));
         }
         List<MergeRequestEntity> matchingMrs = mergeRequestMapper.selectList(Wrappers.<MergeRequestEntity>lambdaQuery()
-                        .eq(MergeRequestEntity::getTaskId, batch.getTaskId())
-                        .eq(MergeRequestEntity::getWorkspaceId, batch.getWorkspaceId())
-                        .orderByDesc(MergeRequestEntity::getCreatedAt));
+                .eq(MergeRequestEntity::getTaskId, batch.getTaskId())
+                .eq(MergeRequestEntity::getWorkspaceId, batch.getWorkspaceId())
+                .orderByDesc(MergeRequestEntity::getCreatedAt));
         return values.stream().map(diff -> {
             ProjectRepositoryEntity repository = repositoryById.get(diff.getProjectRepositoryId());
             MergeRequestEntity mr = matchingMrs.stream()
@@ -461,7 +524,8 @@ public class DiffReviewBatchService {
             }
             GitHubRepositoryEntity github = repository == null ? null : githubById.get(repository.getRepositoryId());
             String repositoryName = repository == null ? null : repository.getDisplayName();
-            if ((repositoryName == null || repositoryName.isBlank()) && github != null) repositoryName = github.getName();
+            if ((repositoryName == null || repositoryName.isBlank()) && github != null)
+                repositoryName = github.getName();
             String deliveryStatus = diff.getDeliveryStatus() == null ? "NOT_STARTED" : diff.getDeliveryStatus();
             return new DiffRepositoryDeliveryResponse(diff.getProjectRepositoryId().toString(), repositoryName,
                     diff.getId().toString(), deliveryStatus, diff.getDeliveryFailureCode(),

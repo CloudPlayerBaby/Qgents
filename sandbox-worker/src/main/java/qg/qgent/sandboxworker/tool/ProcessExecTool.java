@@ -8,7 +8,9 @@ import qg.qgent.sandboxworker.runtime.CommandExecutor;
 import java.util.List;
 import java.util.Map;
 
-/** 在仓库目录中执行不经过 shell 拼接的参数数组命令。 */
+/**
+ * 在仓库目录中执行不经过 shell 拼接的参数数组命令。
+ */
 @Component
 @RequiredArgsConstructor
 public class ProcessExecTool implements SandboxTool {

@@ -9,7 +9,9 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 构造逐仓挂载，并用只读空文件覆盖 linked worktree 的 .git 指针。 */
+/**
+ * 构造逐仓挂载，并用只读空文件覆盖 linked worktree 的 .git 指针。
+ */
 @Component
 @RequiredArgsConstructor
 public class SandboxBindFactory {

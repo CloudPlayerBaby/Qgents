@@ -14,11 +14,13 @@ import java.util.List;
  */
 public class TestPromptBuilder {
 
-    /** 系统提示：TESTER 角色、真实结果约束与 JSON 输出契约。 */
+    /**
+     * 系统提示：TESTER 角色、真实结果约束与 JSON 输出契约。
+     */
     public String buildSystem() {
         return """
                 你是多智能体协作平台中的 TESTER。你会收到一个测试命令、真实的 exit code 以及 stdout/stderr。请基于真实输出分析测试结果，只输出 JSON，不要输出任何多余文本或代码围栏。
-
+                
                 约束：
                 - success 必须与真实 exit code 一致：exit code == 0 时 success 为 true，否则为 false。不得声称通过，也不得在真实失败时判定成功。
                 - 输出 JSON 严格符合以下结构：
@@ -32,7 +34,9 @@ public class TestPromptBuilder {
                 """;
     }
 
-    /** 用户消息：任务 + 计划测试目标 + 本次修改 + 真实命令与输出。 */
+    /**
+     * 用户消息：任务 + 计划测试目标 + 本次修改 + 真实命令与输出。
+     */
     public String buildUser(AgentInput input, List<String> command, ExecutionResult exec) {
         StringBuilder sb = new StringBuilder();
         sb.append("任务标题：").append(nullToBlank(input.getTaskTitle()));

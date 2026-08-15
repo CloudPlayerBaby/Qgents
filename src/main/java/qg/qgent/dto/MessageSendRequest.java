@@ -19,27 +19,37 @@ import java.util.UUID;
 @Data
 public class MessageSendRequest {
 
-    /** 消息类型：TEXT/CODE/IMAGE/FILE/QUOTE（SYSTEM 由服务端维护）。 */
+    /**
+     * 消息类型：TEXT/CODE/IMAGE/FILE/QUOTE（SYSTEM 由服务端维护）。
+     */
     @NotBlank
     @Size(max = 32)
     @Schema(description = "消息类型：TEXT/CODE/IMAGE/FILE/QUOTE（SYSTEM 由服务端维护）", maxLength = 32,
             requiredMode = Schema.RequiredMode.REQUIRED)
     private String type;
 
-    /** 按类型校验的结构化内容对象，不能为空。 */
+    /**
+     * 按类型校验的结构化内容对象，不能为空。
+     */
     @NotNull
     @Schema(description = "结构化内容，如 {\"text\":\"...\"}；CODE 需 language+code，IMAGE/FILE 需 url")
     private Map<String, Object> content;
 
-    /** 提及对象列表（可空）。 */
+    /**
+     * 提及对象列表（可空）。
+     */
     @Schema(description = "提及对象列表")
     private List<Mention> mentions;
 
-    /** 回复或引用的原消息 ID（可空），必须属于同一群。 */
+    /**
+     * 回复或引用的原消息 ID（可空），必须属于同一群。
+     */
     @Schema(description = "回复或引用的原消息 ID，必须属于同一群")
     private UUID replyToId;
 
-    /** 客户端幂等 ID（≤128，可空），同一群内唯一。 */
+    /**
+     * 客户端幂等 ID（≤128，可空），同一群内唯一。
+     */
     @Size(max = 128)
     @Schema(description = "客户端幂等 ID，同一群内唯一，断线重试返回原消息", maxLength = 128)
     private String clientMessageId;

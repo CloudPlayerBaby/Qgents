@@ -17,15 +17,21 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class AttachmentDownloadUrlResponse {
 
-    /** 附件 ID（UUIDv7，字符串形式）。 */
+    /**
+     * 附件 ID（UUIDv7，字符串形式）。
+     */
     @Schema(description = "附件 ID")
     private String attachmentId;
 
-    /** 预签名下载地址（GET）。 */
+    /**
+     * 预签名下载地址（GET）。
+     */
     @Schema(description = "预签名下载地址")
     private String downloadUrl;
 
-    /** 地址过期时间（UTC）。 */
+    /**
+     * 地址过期时间（UTC）。
+     */
     @Schema(description = "地址过期时间")
     private LocalDateTime expiresAt;
 }

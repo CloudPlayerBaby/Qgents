@@ -1,11 +1,7 @@
 package qg.qgent.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Result;
-import org.apache.ibatis.annotations.Results;
-import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.*;
 import qg.qgent.dto.GroupLatestMessageRow;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
@@ -75,7 +71,7 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
      * @param limit     返回条数上限
      * @return 匹配的消息实体列表，新的在前
      */
-    @Select({ "<script>",
+    @Select({"<script>",
             "SELECT m.id, m.requirement_group_id, m.sequence_no, m.author_user_id, m.agent_id, ",
             "m.client_message_id, m.message_type, m.content, m.mentions, m.reply_to_message_id, m.created_at ",
             "FROM messages m ",
@@ -84,7 +80,7 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             "<if test='groupId != null'>AND m.requirement_group_id = #{groupId}</if> ",
             "AND JSON_UNQUOTE(JSON_EXTRACT(m.content, '$.text')) LIKE CONCAT('%', #{q}, '%') ",
             "ORDER BY m.sequence_no DESC LIMIT #{limit}",
-            "</script>" })
+            "</script>"})
     @Results({
             @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "requirement_group_id", property = "requirementGroupId",
@@ -97,5 +93,5 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             @Result(column = "content", property = "content")
     })
     List<MessageEntity> searchByQuery(@Param("projectId") UUID projectId, @Param("groupId") UUID groupId,
-            @Param("q") String q, @Param("limit") int limit);
+                                      @Param("q") String q, @Param("limit") int limit);
 }

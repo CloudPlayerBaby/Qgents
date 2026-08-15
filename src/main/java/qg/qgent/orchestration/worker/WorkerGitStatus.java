@@ -14,15 +14,23 @@ import java.util.List;
 @AllArgsConstructor
 public class WorkerGitStatus {
 
-    /** 当前分支。 */
+    /**
+     * 当前分支。
+     */
     private String branch;
 
-    /** 当前 HEAD 提交。 */
+    /**
+     * 当前 HEAD 提交。
+     */
     private String headCommit;
 
-    /** 工作树是否干净。 */
+    /**
+     * 工作树是否干净。
+     */
     private Boolean clean;
 
-    /** 结构化变更列表。 */
+    /**
+     * 结构化变更列表。
+     */
     private List<WorkerGitChange> changes;
 }

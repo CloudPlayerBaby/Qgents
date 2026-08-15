@@ -6,11 +6,7 @@ import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeSet;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * {@link WorkspaceCodeAccess} 的 Worker 实现：通过 Worker 的 {@code file.list/file.read/file.search}
@@ -27,15 +23,21 @@ import java.util.UUID;
 @ConditionalOnProperty(name = "app.worker.enabled", havingValue = "true")
 public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements WorkspaceCodeAccess {
 
-    /** 单文件检索/读取的最大字节数，防止把超大文件塞进 Agent 上下文。 */
+    /**
+     * 单文件检索/读取的最大字节数，防止把超大文件塞进 Agent 上下文。
+     */
     private static final int MAX_READ_BYTES = 64 * 1024;
-    /** 单次 file.read 每页行数。 */
+    /**
+     * 单次 file.read 每页行数。
+     */
     private static final int READ_PAGE_LINES = 1000;
-    /** 单次 file.list / file.read / file.search 工具超时。 */
+    /**
+     * 单次 file.list / file.read / file.search 工具超时。
+     */
     private static final Duration TOOL_TIMEOUT = Duration.ofSeconds(30);
 
     public WorkerWorkspaceCodeAccess(SandboxWorkerClient client, SandboxSessionManager sessions,
-            SandboxWorkerProperties properties) {
+                                     SandboxWorkerProperties properties) {
         super(client, sessions, properties);
     }
 
@@ -43,7 +45,7 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
     public List<String> listFiles(UUID workspaceId) {
         SandboxSession session = session(workspaceId);
         List<String> files = new ArrayList<>();
-        for (Map.Entry<String, UUID> entry : session.getRepositoryByPath().entrySet()) {
+        for (Map.Entry<String, UUID> entry : session.repositoryByPath().entrySet()) {
             String prefix = entry.getKey();
             for (String relative : listRecursive(workspaceId, entry.getValue(), ".")) {
                 files.add(prefix + "/" + relative);
@@ -94,7 +96,7 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
         }
         SandboxSession session = session(workspaceId);
         TreeSet<String> matches = new TreeSet<>();
-        for (Map.Entry<String, UUID> entry : session.getRepositoryByPath().entrySet()) {
+        for (Map.Entry<String, UUID> entry : session.repositoryByPath().entrySet()) {
             WorkerToolExecution execution = executeTool(workspaceId, entry.getValue(), "file.search",
                     Map.of("query", query, "path", "."), TOOL_TIMEOUT);
             if (!"SUCCEEDED".equals(execution.getStatus())) {
@@ -115,7 +117,9 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
         return List.copyOf(matches);
     }
 
-    /** 递归列出仓库内相对路径，跳过 .git/target/node_modules/.idea/build 与点文件。 */
+    /**
+     * 递归列出仓库内相对路径，跳过 .git/target/node_modules/.idea/build 与点文件。
+     */
     private List<String> listRecursive(UUID workspaceId, UUID repositoryId, String dir) {
         List<String> files = new ArrayList<>();
         WorkerToolExecution execution = executeTool(workspaceId, repositoryId, "file.list",

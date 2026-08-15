@@ -6,13 +6,21 @@ package qg.qgent.orchestration;
  * 质量或基础设施失败时按状态机回到 CODING 或同相位重试。
  */
 public enum OrchestrationPhase {
-    /** 需求理解与计划产出阶段（方案 B：不创建 TaskRun）。 */
+    /**
+     * 需求理解与计划产出阶段（方案 B：不创建 TaskRun）。
+     */
     PLAN,
-    /** 按计划修改 Workspace 代码。 */
+    /**
+     * 按计划修改 Workspace 代码。
+     */
     CODING,
-    /** 执行测试并判定是否满足验收。 */
+    /**
+     * 执行测试并判定是否满足验收。
+     */
     TESTING,
-    /** 审查代码质量、安全与契约一致性。 */
+    /**
+     * 审查代码质量、安全与契约一致性。
+     */
     REVIEWING;
 
     /**

@@ -2,8 +2,8 @@ package qg.qgent.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import qg.qgent.entity.MergeRequestDeliveryOperationEntity;
 
 import java.util.UUID;
@@ -20,5 +20,5 @@ public interface MergeRequestDeliveryOperationMapper extends BaseMapper<MergeReq
             + "and source_branch=#{sourceBranch} and target_branch=#{targetBranch} "
             + "and status in ('RUNNING','REMOTE_CREATED') order by created_at limit 1 for update")
     MergeRequestDeliveryOperationEntity selectActiveBranchForUpdate(@Param("repositoryId") UUID repositoryId,
-            @Param("sourceBranch") String sourceBranch, @Param("targetBranch") String targetBranch);
+                                                                    @Param("sourceBranch") String sourceBranch, @Param("targetBranch") String targetBranch);
 }

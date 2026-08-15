@@ -12,18 +12,24 @@ import lombok.Data;
 @Data
 public class AttachmentCreateRequest {
 
-    /** 原始文件名（必填，≤512）。 */
+    /**
+     * 原始文件名（必填，≤512）。
+     */
     @NotBlank
     @Size(max = 512)
     @Schema(description = "原始文件名（必填）", maxLength = 512, requiredMode = Schema.RequiredMode.REQUIRED)
     private String fileName;
 
-    /** MIME 媒体类型（≤255，可空）。 */
+    /**
+     * MIME 媒体类型（≤255，可空）。
+     */
     @Size(max = 255)
     @Schema(description = "MIME 媒体类型", maxLength = 255)
     private String contentType;
 
-    /** 文件大小（字节，必填；上限由 app.attachment-max-size-bytes 配置，默认 50MB）。 */
+    /**
+     * 文件大小（字节，必填；上限由 app.attachment-max-size-bytes 配置，默认 50MB）。
+     */
     @NotNull
     @Schema(description = "文件大小（字节，必填）", requiredMode = Schema.RequiredMode.REQUIRED)
     private Long sizeBytes;

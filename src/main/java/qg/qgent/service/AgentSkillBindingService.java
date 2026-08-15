@@ -17,11 +17,7 @@ import qg.qgent.mapper.SkillMapper;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * Agent-Skill 绑定服务（按项目隔离，PUT 全量替换语义）。
@@ -48,7 +44,7 @@ public class AgentSkillBindingService {
     private final ProjectAccessService access;
 
     public AgentSkillBindingService(AgentSkillBindingMapper bindingMapper, AgentMapper agentMapper,
-            SkillMapper skillMapper, ProjectMapper projectMapper, ProjectAccessService access) {
+                                    SkillMapper skillMapper, ProjectMapper projectMapper, ProjectAccessService access) {
         this.bindingMapper = bindingMapper;
         this.agentMapper = agentMapper;
         this.skillMapper = skillMapper;
@@ -56,7 +52,9 @@ public class AgentSkillBindingService {
         this.access = access;
     }
 
-    /** 读取指定 Agent 在当前项目的绑定集（无需修改权限，项目成员即可读）。 */
+    /**
+     * 读取指定 Agent 在当前项目的绑定集（无需修改权限，项目成员即可读）。
+     */
     public AgentSkillBindingsResponse get(UUID projectId, UUID agentId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         return response(projectId, agentId);
@@ -73,7 +71,7 @@ public class AgentSkillBindingService {
      */
     @Transactional
     public AgentSkillBindingsResponse replace(UUID projectId, UUID agentId, UUID actor,
-            AgentSkillBindingsRequest request) {
+                                              AgentSkillBindingsRequest request) {
         access.requireProjectMember(projectId, actor);
         ProjectEntity project = requireProject(projectId);
         AgentEntity agent = requireAgent(agentId);
@@ -122,7 +120,9 @@ public class AgentSkillBindingService {
         return ids;
     }
 
-    /** 仅 Agent 创建者或 Project Admin 可修改绑定；TEAM 共享 Agent 视为无创建者，需 Admin。 */
+    /**
+     * 仅 Agent 创建者或 Project Admin 可修改绑定；TEAM 共享 Agent 视为无创建者，需 Admin。
+     */
     private void requireOwner(AgentEntity agent, UUID projectId, UUID actor) {
         if (agent.getCreatedBy() != null && agent.getCreatedBy().equals(actor)) {
             return;
@@ -145,7 +145,9 @@ public class AgentSkillBindingService {
         }
     }
 
-    /** PROJECT_SHARED 需已 PUBLISHED；PRIVATE 仅本人可用且非 ARCHIVED。 */
+    /**
+     * PROJECT_SHARED 需已 PUBLISHED；PRIVATE 仅本人可用且非 ARCHIVED。
+     */
     private boolean bindable(SkillEntity skill, UUID actor) {
         if ("ARCHIVED".equals(skill.getStatus())) {
             return false;
@@ -179,10 +181,10 @@ public class AgentSkillBindingService {
         List<UUID> skillIds = bindingMapper.selectSkillIds(projectId, agentId);
         List<SkillBindingItemResponse> skills = skillIds.isEmpty() ? List.of()
                 : skillMapper.selectBatchIds(skillIds).stream()
-                        .sorted((a, b) -> Integer.compare(skillIds.indexOf(a.getId()), skillIds.indexOf(b.getId())))
-                        .map(s -> new SkillBindingItemResponse(id(s.getId()), s.getName(), s.getVisibility(),
-                                s.getStatus()))
-                        .toList();
+                .sorted((a, b) -> Integer.compare(skillIds.indexOf(a.getId()), skillIds.indexOf(b.getId())))
+                .map(s -> new SkillBindingItemResponse(id(s.getId()), s.getName(), s.getVisibility(),
+                        s.getStatus()))
+                .toList();
         return new AgentSkillBindingsResponse(id(agentId), skillIds.stream().map(this::id).toList(), skills,
                 iso(LocalDateTime.now(ZoneOffset.UTC)));
     }

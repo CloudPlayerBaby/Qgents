@@ -21,14 +21,22 @@ import java.util.UUID;
 public class RepositoryBranchConfigEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
-    /** 所属项目仓库绑定ID。 */
+    /**
+     * 所属项目仓库绑定ID。
+     */
     private UUID projectRepositoryId;
-    /** 应用配置的目标分支名。 */
+    /**
+     * 应用配置的目标分支名。
+     */
     private String branchName;
-    /** 分支保护策略 JSON，如合并限制和命名规则。 */
+    /**
+     * 分支保护策略 JSON，如合并限制和命名规则。
+     */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> policyJson;
-    /** 必需门禁类型 JSON 字符串数组。 */
+    /**
+     * 必需门禁类型 JSON 字符串数组。
+     */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<String> requiredChecks;
     private LocalDateTime createdAt;

@@ -1,11 +1,13 @@
 package qg.qgent.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import io.swagger.v3.oas.annotations.media.Schema;
 
-/** 总 Diff 中单个仓库的交付进展。 */
+/**
+ * 总 Diff 中单个仓库的交付进展。
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

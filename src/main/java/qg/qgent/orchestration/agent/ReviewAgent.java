@@ -77,7 +77,9 @@ public class ReviewAgent implements Agent {
         }
     }
 
-    /** 多轮只读工具调用循环：工具结果持续回灌上下文，直到模型输出 finalResult 或达到上限。 */
+    /**
+     * 多轮只读工具调用循环：工具结果持续回灌上下文，直到模型输出 finalResult 或达到上限。
+     */
     private ReviewResult executeReview(AgentInput input, GitDiffResult diff) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         List<LlmMessage> history = new ArrayList<>();
@@ -101,7 +103,9 @@ public class ReviewAgent implements Agent {
         throw new ReviewParseException("exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
     }
 
-    /** 依据 severity 策略的确定性底线：存在 BLOCKER/MAJOR 即强制 FAIL，即使 LLM 声称通过。 */
+    /**
+     * 依据 severity 策略的确定性底线：存在 BLOCKER/MAJOR 即强制 FAIL，即使 LLM 声称通过。
+     */
     private boolean hasBlockerOrMajor(ReviewResult review) {
         if (review.getFindings() == null) {
             return false;
@@ -133,7 +137,9 @@ public class ReviewAgent implements Agent {
         }
     }
 
-    /** 去掉常见的 ```json / ``` 围栏包裹。 */
+    /**
+     * 去掉常见的 ```json / ``` 围栏包裹。
+     */
     private String stripFences(String raw) {
         String trimmed = raw.trim();
         if (trimmed.startsWith("```")) {

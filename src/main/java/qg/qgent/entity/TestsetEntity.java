@@ -20,18 +20,30 @@ import java.util.UUID;
 public class TestsetEntity {
     @TableId(type = IdType.INPUT)
     private UUID id;
-    /** 所属项目ID。 */
+    /**
+     * 所属项目ID。
+     */
     private UUID projectId;
-    /** 限定的项目仓库绑定ID；为空表示项目通用。 */
+    /**
+     * 限定的项目仓库绑定ID；为空表示项目通用。
+     */
     private UUID projectRepositoryId;
-    /** 测试集名称。 */
+    /**
+     * 测试集名称。
+     */
     private String name;
-    /** 测试定义 JSON，包含命令、超时和通过条件。 */
+    /**
+     * 测试定义 JSON，包含命令、超时和通过条件。
+     */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> definition;
-    /** 状态：ENABLED/DISABLED。 */
+    /**
+     * 状态：ENABLED/DISABLED。
+     */
     private String status;
-    /** 创建用户ID。 */
+    /**
+     * 创建用户ID。
+     */
     private UUID createdBy;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

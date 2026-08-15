@@ -5,7 +5,9 @@ import lombok.Data;
 
 import java.util.List;
 
-/** 执行日志的游标查询结果。 */
+/**
+ * 执行日志的游标查询结果。
+ */
 @Data
 @AllArgsConstructor
 public class ExecutionLogsResponse {

@@ -1,17 +1,8 @@
 package qg.qgent.controller;
 
-import java.util.UUID;
-
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
+import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.BranchPolicyDto;
@@ -21,8 +12,11 @@ import qg.qgent.dto.UpdateQualityGateRequest;
 import qg.qgent.security.CurrentActorProvider;
 import qg.qgent.service.RepositoryBranchConfigService;
 
+import java.util.UUID;
+
 /**
- * 分支策略与质量门禁接口（§6.1）。
+ * 仓库分支策略与质量门禁接口
+ * 读取/配置受保护分支策略（BranchPolicy）与目标分支质量门禁（QualityGate）。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -36,7 +30,7 @@ public class RepositoryBranchConfigController {
     }
 
     /**
-     * 查询受保护分支策略。
+     * 契约 §6.1：查询受保护分支策略。
      */
     @GetMapping("/projects/{projectId}/repositories/{repositoryId}/branch-policies/{branch}")
     public ApiResponse<BranchPolicyDto> getBranchPolicy(
@@ -48,7 +42,7 @@ public class RepositoryBranchConfigController {
     }
 
     /**
-     * 配置受保护分支策略。
+     * 契约 §6.1：配置受保护分支策略。
      */
     @PutMapping("/projects/{projectId}/repositories/{repositoryId}/branch-policies/{branch}")
     public ApiResponse<BranchPolicyDto> updateBranchPolicy(
@@ -61,7 +55,7 @@ public class RepositoryBranchConfigController {
     }
 
     /**
-     * 查询目标分支的门禁。
+     * 契约 §6.1：查询目标分支的质量门禁。
      */
     @GetMapping("/projects/{projectId}/repositories/{repositoryId}/quality-gates/{branch}")
     public ApiResponse<QualityGateDto> getQualityGate(
@@ -73,7 +67,7 @@ public class RepositoryBranchConfigController {
     }
 
     /**
-     * 配置目标分支的门禁。
+     * 契约 §6.1：配置目标分支的质量门禁。
      */
     @PutMapping("/projects/{projectId}/repositories/{repositoryId}/quality-gates/{branch}")
     public ApiResponse<QualityGateDto> updateQualityGate(

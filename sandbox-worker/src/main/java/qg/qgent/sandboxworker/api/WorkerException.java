@@ -3,7 +3,9 @@ package qg.qgent.sandboxworker.api;
 import lombok.Getter;
 import org.springframework.http.HttpStatus;
 
-/** 内部接口可预期的业务异常。 */
+/**
+ * 内部接口可预期的业务异常。
+ */
 @Getter
 public class WorkerException extends RuntimeException {
     private final HttpStatus status;

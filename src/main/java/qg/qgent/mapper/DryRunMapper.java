@@ -13,18 +13,18 @@ public interface DryRunMapper extends BaseMapper<DryRunEntity> {
             + "attempt_count=attempt_count+1 where id=#{id} and "
             + "(status='QUEUED' or (status='RUNNING' and lease_expires_at < #{now}))")
     int claim(@Param("id") java.util.UUID id, @Param("token") String token,
-            @Param("now") java.time.LocalDateTime now,
-            @Param("leaseExpiresAt") java.time.LocalDateTime leaseExpiresAt);
+              @Param("now") java.time.LocalDateTime now,
+              @Param("leaseExpiresAt") java.time.LocalDateTime leaseExpiresAt);
 
     @Select("select id from dry_runs where status='QUEUED' or (status='RUNNING' and lease_expires_at < #{now}) "
             + "order by created_at limit #{limit}")
     java.util.List<java.util.UUID> selectRecoverable(@Param("now") java.time.LocalDateTime now,
-            @Param("limit") int limit);
+                                                     @Param("limit") int limit);
 
     @Update("update dry_runs set status=#{status},report=#{report,typeHandler=com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler},"
             + "head_commit=coalesce(#{headCommit},head_commit),claim_token=null,lease_expires_at=null "
             + "where id=#{id} and claim_token=#{token}")
     int complete(@Param("id") java.util.UUID id, @Param("token") String token,
-            @Param("status") String status, @Param("report") java.util.Map<String,Object> report,
-            @Param("headCommit") String headCommit);
+                 @Param("status") String status, @Param("report") java.util.Map<String, Object> report,
+                 @Param("headCommit") String headCommit);
 }

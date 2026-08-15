@@ -15,13 +15,15 @@ import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitCommitRequest;
 import qg.qgent.orchestration.worker.WorkerGitCommitResponse;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 
-/** 复用 Worker 对精确 Diff 快照的校验与真实 Commit 落库流程。 */
+/**
+ * 复用 Worker 对精确 Diff 快照的校验与真实 Commit 落库流程。
+ */
 @Service
 public class DiffDeliveryService {
     private final DiffMapper diffs;
@@ -32,8 +34,8 @@ public class DiffDeliveryService {
     private final DiffReviewBatchMapper batches;
 
     public DiffDeliveryService(DiffMapper diffs, WorkspaceMapper workspaces,
-            WorkspaceRepositoryMapper worktrees, SandboxWorkerClient worker, TransactionTemplate transactions,
-            DiffReviewBatchMapper batches) {
+                               WorkspaceRepositoryMapper worktrees, SandboxWorkerClient worker, TransactionTemplate transactions,
+                               DiffReviewBatchMapper batches) {
         this.diffs = diffs;
         this.workspaces = workspaces;
         this.worktrees = worktrees;
@@ -42,7 +44,9 @@ public class DiffDeliveryService {
         this.batches = batches;
     }
 
-    /** 在 Worker 中校验预期 HEAD 与 Diff hash 后创建 Commit，不持有数据库事务。 */
+    /**
+     * 在 Worker 中校验预期 HEAD 与 Diff hash 后创建 Commit，不持有数据库事务。
+     */
     public String commitVerified(TaskEntity task, DiffEntity diff) {
         String expectedHead = diff.getHeadCommit() == null || diff.getHeadCommit().isBlank()
                 ? diff.getBaseCommit() : diff.getHeadCommit();
@@ -61,7 +65,9 @@ public class DiffDeliveryService {
         return result.getCommitSha();
     }
 
-    /** 保存批次交付已经由 Worker 创建的真实 Commit。 */
+    /**
+     * 保存批次交付已经由 Worker 创建的真实 Commit。
+     */
     public void recordCommitted(TaskEntity task, UUID diffId, String commitSha, UUID batchId, String batchToken) {
         transactions.executeWithoutResult(status -> {
             requireBatchClaim(batchId, batchToken);
@@ -69,7 +75,9 @@ public class DiffDeliveryService {
         });
     }
 
-    /** 非批次 Diff 仅在真实 Commit 成功后同时记录审核决定和 Commit 事实。 */
+    /**
+     * 非批次 Diff 仅在真实 Commit 成功后同时记录审核决定和 Commit 事实。
+     */
     public DiffEntity acceptNonBatch(TaskEntity task, DiffEntity snapshot, UUID actor) {
         DiffEntity claimed = transactions.execute(status -> claimNonBatch(task, snapshot.getId()));
         String commitSha;
@@ -83,7 +91,9 @@ public class DiffDeliveryService {
                 claimed.getDeliveryClaimToken(), null));
     }
 
-    /** 在短事务内拒绝非批次 Diff，不触发任何 Git 操作。 */
+    /**
+     * 在短事务内拒绝非批次 Diff，不触发任何 Git 操作。
+     */
     public DiffEntity rejectNonBatch(TaskEntity task, DiffEntity snapshot, UUID actor, String reason) {
         return transactions.execute(status -> {
             DiffEntity current = requirePendingNonBatchForUpdate(task, snapshot.getId());
@@ -104,7 +114,7 @@ public class DiffDeliveryService {
     }
 
     private DiffEntity recordCommit(TaskEntity task, UUID diffId, String commitSha, UUID actor, String claimToken,
-            UUID expectedBatchId) {
+                                    UUID expectedBatchId) {
         DiffEntity current = diffs.selectByIdForUpdate(diffId);
         requireContext(task, current);
         if (expectedBatchId != null && (!expectedBatchId.equals(current.getReviewBatchId())

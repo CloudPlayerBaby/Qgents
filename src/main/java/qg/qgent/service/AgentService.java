@@ -12,7 +12,9 @@ import qg.qgent.mapper.TeamMemberMapper;
 import java.util.List;
 import java.util.UUID;
 
-/** Team-scoped Agent visibility and read operations. */
+/**
+ * Team-scoped Agent visibility and read operations.
+ */
 @Service
 public class AgentService {
     private final AgentMapper agentMapper;

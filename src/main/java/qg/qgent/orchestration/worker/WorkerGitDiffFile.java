@@ -5,7 +5,9 @@ import lombok.Data;
 import java.util.List;
 import java.util.Map;
 
-/** Structured file summary returned alongside a Worker Git patch. */
+/**
+ * Structured file summary returned alongside a Worker Git patch.
+ */
 @Data
 public class WorkerGitDiffFile {
     private String path;

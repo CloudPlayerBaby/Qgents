@@ -1,6 +1,8 @@
 package qg.qgent.github;
 
-/** Minimal GitHub Check Run summary for later quality-gate mapping. */
+/**
+ * Minimal GitHub Check Run summary for later quality-gate mapping.
+ */
 public record GitHubCheckRunDetails(
         /* GitHub Check Run identifier. */
         long id,
@@ -10,4 +12,5 @@ public record GitHubCheckRunDetails(
         String status,
         /* GitHub terminal conclusion, if available. */
         String conclusion
-) {}
+) {
+}

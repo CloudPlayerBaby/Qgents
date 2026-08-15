@@ -14,7 +14,9 @@ import qg.qgent.mapper.TeamMemberMapper;
 
 import java.util.UUID;
 
-/** 服务端项目访问边界，不信任客户端提交的角色或用户标识。 */
+/**
+ * 服务端项目访问边界，不信任客户端提交的角色或用户标识。
+ */
 @Service
 public class ProjectAccessService {
     private final ProjectMapper projectMapper;
@@ -23,7 +25,7 @@ public class ProjectAccessService {
     private final TeamMemberMapper teamMemberMapper;
 
     public ProjectAccessService(ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
-            TeamMapper teamMapper, TeamMemberMapper teamMemberMapper) {
+                                TeamMapper teamMapper, TeamMemberMapper teamMemberMapper) {
         this.projectMapper = projectMapper;
         this.projectMemberMapper = projectMemberMapper;
         this.teamMapper = teamMapper;
@@ -39,12 +41,16 @@ public class ProjectAccessService {
         requireAdmin(requireProject(projectId, false), userId);
     }
 
-    /** 归档项目必须仍可授权恢复，因此该入口允许读取 ARCHIVED 项目。 */
+    /**
+     * 归档项目必须仍可授权恢复，因此该入口允许读取 ARCHIVED 项目。
+     */
     public void requireProjectAdminAnyState(UUID projectId, UUID userId) {
         requireAdmin(requireProject(projectId, true), userId);
     }
 
-    /** 对已加锁项目执行不限状态的 Admin 校验，供状态错误前的防泄漏授权使用。 */
+    /**
+     * 对已加锁项目执行不限状态的 Admin 校验，供状态错误前的防泄漏授权使用。
+     */
     public void requireProjectAdminAnyState(ProjectEntity project, UUID userId) {
         requireAdmin(project, userId);
     }
@@ -75,7 +81,9 @@ public class ProjectAccessService {
         throw new ApiException(HttpStatus.FORBIDDEN, "PROJECT_ADMIN_REQUIRED", "需要项目 Admin 权限");
     }
 
-    /** 同时核对 teams.owner_user_id 与成员角色，额外 TEAM_OWNER 不能获得兜底权限。 */
+    /**
+     * 同时核对 teams.owner_user_id 与成员角色，额外 TEAM_OWNER 不能获得兜底权限。
+     */
     public boolean isCanonicalTeamOwner(UUID teamId, UUID userId) {
         TeamEntity team = teamMapper.selectById(teamId);
         if (team == null || !userId.equals(team.getOwnerUserId())) {

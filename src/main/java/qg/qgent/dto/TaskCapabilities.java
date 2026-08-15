@@ -15,43 +15,63 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class TaskCapabilities {
 
-    /** 当前用户是否可取消任务。 */
+    /**
+     * 当前用户是否可取消任务。
+     */
     @Schema(description = "是否可取消任务")
     private boolean canCancel;
 
-    /** 不可取消的原因码，如 TASK_NOT_CANCELLABLE。 */
+    /**
+     * 不可取消的原因码，如 TASK_NOT_CANCELLABLE。
+     */
     @Schema(description = "不可取消原因码")
     private String cancelDisabledReason;
 
-    /** 当前用户是否可替换待执行步骤的 Agent。 */
+    /**
+     * 当前用户是否可替换待执行步骤的 Agent。
+     */
     @Schema(description = "是否可替换待执行步骤 Agent")
     private boolean canReplacePendingStepAgent;
 
-    /** 不可替换 Agent 的原因码。 */
+    /**
+     * 不可替换 Agent 的原因码。
+     */
     @Schema(description = "不可替换 Agent 原因码")
     private String replacePendingStepAgentDisabledReason;
 
-    /** 当前用户是否可确认总 Diff。 */
+    /**
+     * 当前用户是否可确认总 Diff。
+     */
     @Schema(description = "是否可确认总 Diff")
     private boolean canConfirmDiffReview;
 
-    /** 不可确认总 Diff 的原因码。 */
+    /**
+     * 不可确认总 Diff 的原因码。
+     */
     @Schema(description = "不可确认总 Diff 原因码")
     private String confirmDiffReviewDisabledReason;
 
-    /** 当前用户是否可拒绝总 Diff。 */
+    /**
+     * 当前用户是否可拒绝总 Diff。
+     */
     @Schema(description = "是否可拒绝总 Diff")
     private boolean canRejectDiffReview;
 
-    /** 不可拒绝总 Diff 的原因码。 */
+    /**
+     * 不可拒绝总 Diff 的原因码。
+     */
     @Schema(description = "不可拒绝总 Diff 原因码")
     private String rejectDiffReviewDisabledReason;
 
-    /** 当前用户是否可重试交付。 */
+    /**
+     * 当前用户是否可重试交付。
+     */
     @Schema(description = "是否可重试交付")
     private boolean canRetryDelivery;
 
-    /** 不可重试交付的原因码。 */
+    /**
+     * 不可重试交付的原因码。
+     */
     @Schema(description = "不可重试交付原因码")
     private String retryDeliveryDisabledReason;
 }

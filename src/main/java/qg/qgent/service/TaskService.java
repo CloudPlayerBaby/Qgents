@@ -45,10 +45,10 @@ public class TaskService {
      * collaborators.
      */
     public TaskService(TaskMapper tasks, WorkspaceMapper workspaces, WorkspaceRepositoryMapper repositories,
-            TaskStepMapper steps, TaskStepDependencyMapper dependencies, TaskStepRepositoryMapper scopes,
-            RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories, ProjectMapper projects,
-            MessageMapper messages, AgentMapper agents, ProjectAccessService access, EventService eventService,
-            ApplicationEventPublisher eventPublisher) {
+                       TaskStepMapper steps, TaskStepDependencyMapper dependencies, TaskStepRepositoryMapper scopes,
+                       RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories, ProjectMapper projects,
+                       MessageMapper messages, AgentMapper agents, ProjectAccessService access, EventService eventService,
+                       ApplicationEventPublisher eventPublisher) {
         this.tasks = tasks;
         this.workspaces = workspaces;
         this.repositories = repositories;
@@ -204,7 +204,7 @@ public class TaskService {
      */
     @Transactional
     public List<TaskStepResponse> addSteps(UUID projectId, UUID taskId, UUID actor,
-            List<TaskStepCreateRequest> requests) {
+                                           List<TaskStepCreateRequest> requests) {
         TaskEntity task = requireTask(projectId, taskId);
         requireTaskManager(task, actor);
         workspaces.selectByIdForUpdate(task.getWorkspaceId());
@@ -375,7 +375,9 @@ public class TaskService {
         return response;
     }
 
-    /** 在持有项目级行锁的事务内生成项目内唯一、创建后不可变的展示编号，如 T-1、T-2。 */
+    /**
+     * 在持有项目级行锁的事务内生成项目内唯一、创建后不可变的展示编号，如 T-1、T-2。
+     */
     private String nextDisplayCode(UUID projectId) {
         Long max = tasks.selectMaxDisplayCodeSeq(projectId);
         return "T-" + (max == null ? 1 : max + 1);

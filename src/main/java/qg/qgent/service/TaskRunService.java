@@ -6,41 +6,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.AgentSummary;
-import qg.qgent.dto.ApiPageResponse;
-import qg.qgent.dto.ExecutionContextResponse;
-import qg.qgent.dto.InputRequestResponse;
-import qg.qgent.dto.LogEntryResponse;
-import qg.qgent.dto.PageMeta;
-import qg.qgent.dto.TaskRunDetailResponse;
-import qg.qgent.dto.TaskRunListItemResponse;
-import qg.qgent.dto.TaskRunSummaryResponse;
-import qg.qgent.dto.TaskStatusReason;
-import qg.qgent.entity.AgentEntity;
-import qg.qgent.entity.DiffEntity;
-import qg.qgent.entity.ExecutionLogEntity;
-import qg.qgent.entity.InputRequestEntity;
-import qg.qgent.entity.TaskExecutionArtifactEntity;
-import qg.qgent.entity.TaskRunEntity;
-import qg.qgent.entity.TaskStepEntity;
-import qg.qgent.mapper.AgentMapper;
-import qg.qgent.mapper.DiffMapper;
-import qg.qgent.mapper.ExecutionLogMapper;
-import qg.qgent.mapper.InputRequestMapper;
-import qg.qgent.mapper.TaskExecutionArtifactMapper;
-import qg.qgent.mapper.TaskRunMapper;
-import qg.qgent.mapper.TaskStepMapper;
+import qg.qgent.dto.*;
+import qg.qgent.entity.*;
+import qg.qgent.mapper.*;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -73,10 +45,10 @@ public class TaskRunService {
     private final NotificationService notificationService;
 
     public TaskRunService(TaskRunMapper taskRunMapper,
-            ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
-            TaskStepMapper taskStepMapper, AgentMapper agentMapper, TaskExecutionArtifactMapper artifactMapper,
-            ProjectAccessService projectAccess, EventService eventService,
-            NotificationService notificationService) {
+                          ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
+                          TaskStepMapper taskStepMapper, AgentMapper agentMapper, TaskExecutionArtifactMapper artifactMapper,
+                          ProjectAccessService projectAccess, EventService eventService,
+                          NotificationService notificationService) {
         this.taskRunMapper = taskRunMapper;
         this.logMapper = logMapper;
         this.inputRequestMapper = inputRequestMapper;
@@ -95,7 +67,7 @@ public class TaskRunService {
      * 步骤与 Agent 一次性批量加载，避免逐条运行查询。
      */
     public ApiPageResponse<TaskRunListItemResponse> listByTask(UUID projectId, UUID taskId, UUID userId,
-            String cursor, int limit, String requestId) {
+                                                               String cursor, int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
         int size = clampLimit(limit);
         UUID cursorUuid = parseCursor(cursor);
@@ -199,7 +171,7 @@ public class TaskRunService {
      * @param cursor 上页最后一条日志的 sequence，首页为空
      */
     public ApiPageResponse<LogEntryResponse> logs(UUID projectId, UUID taskRunId, UUID userId, String cursor,
-            int limit, String requestId) {
+                                                  int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
         requireRun(projectId, taskRunId);
         int size = clampLimit(limit);
@@ -233,7 +205,7 @@ public class TaskRunService {
         projectAccess.requireProjectMember(projectId, userId);
         requireRun(projectId, taskRunId);
         return inputRequestMapper.selectList(Wrappers.<InputRequestEntity>lambdaQuery()
-                .eq(InputRequestEntity::getTaskRunId, taskRunId).orderByAsc(InputRequestEntity::getCreatedAt))
+                        .eq(InputRequestEntity::getTaskRunId, taskRunId).orderByAsc(InputRequestEntity::getCreatedAt))
                 .stream().map(this::toInput).toList();
     }
 
@@ -242,7 +214,7 @@ public class TaskRunService {
      */
     @Transactional
     public InputRequestResponse replyInput(UUID projectId, UUID taskRunId, UUID requestId, UUID userId,
-            Map<String, Object> answer) {
+                                           Map<String, Object> answer) {
         projectAccess.requireProjectMember(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
         requireOwner(run, projectId, userId);
@@ -269,7 +241,7 @@ public class TaskRunService {
      */
     @Transactional
     public InputRequestResponse approveInput(UUID projectId, UUID taskRunId, UUID requestId, UUID userId,
-            String reason) {
+                                             String reason) {
         projectAccess.requireProjectAdmin(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
         return decideInput(run, requestId, "APPROVED", reason);
@@ -280,7 +252,7 @@ public class TaskRunService {
      */
     @Transactional
     public InputRequestResponse rejectInput(UUID projectId, UUID taskRunId, UUID requestId, UUID userId,
-            String reason) {
+                                            String reason) {
         projectAccess.requireProjectAdmin(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
         return decideInput(run, requestId, "REJECTED", reason);
@@ -294,7 +266,7 @@ public class TaskRunService {
      */
     @Transactional
     public TaskRunEntity createForStep(UUID projectId, UUID taskId, UUID taskStepId, String role, UUID agentId,
-            UUID createdBy, UUID retryOfTaskRunId) {
+                                       UUID createdBy, UUID retryOfTaskRunId) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         TaskRunEntity run = new TaskRunEntity();
         run.setId(UuidV7.next());
@@ -320,7 +292,7 @@ public class TaskRunService {
      */
     @Transactional
     public InputRequestResponse createInputRequest(UUID projectId, UUID taskId, UUID taskStepId, UUID taskRunId,
-            String kind, String prompt, List<Object> options, UUID createdBy) {
+                                                   String kind, String prompt, List<Object> options, UUID createdBy) {
         TaskRunEntity run = requireRun(projectId, taskRunId);
         if (!"INPUT".equals(kind) && !"APPROVAL".equals(kind)) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_INPUT_KIND", "非法输入请求类型");
@@ -353,7 +325,9 @@ public class TaskRunService {
         return toInput(req);
     }
 
-    /** QUEUED → RUNNING，记录开始时间；仅 QUEUED 状态可开始。 */
+    /**
+     * QUEUED → RUNNING，记录开始时间；仅 QUEUED 状态可开始。
+     */
     @Transactional
     public void markRunning(UUID taskRunId) {
         TaskRunEntity run = taskRunMapper.selectById(taskRunId);
@@ -389,7 +363,9 @@ public class TaskRunService {
         eventService.publish(run.getProjectId(), null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
     }
 
-    /** 批准/拒绝 WAITING_APPROVAL 请求：批准恢复 RUNNING，拒绝进入 BLOCKED。 */
+    /**
+     * 批准/拒绝 WAITING_APPROVAL 请求：批准恢复 RUNNING，拒绝进入 BLOCKED。
+     */
     private InputRequestResponse decideInput(TaskRunEntity run, UUID requestId, String decision, String reason) {
         InputRequestEntity req = requireInput(run, requestId);
         if (!"PENDING".equals(req.getStatus()) || !"APPROVAL".equals(req.getKind())
@@ -411,7 +387,9 @@ public class TaskRunService {
 
     // ---------- 私有辅助 ----------
 
-    /** 加载运行并校验其归属路径项目，防止跨项目仅凭 UUID 查询。 */
+    /**
+     * 加载运行并校验其归属路径项目，防止跨项目仅凭 UUID 查询。
+     */
     private TaskRunEntity requireRun(UUID projectId, UUID taskRunId) {
         TaskRunEntity run = taskRunMapper.selectById(taskRunId);
         if (run == null || !run.getProjectId().equals(projectId)) {
@@ -420,14 +398,18 @@ public class TaskRunService {
         return run;
     }
 
-    /** 发起人或 Project Admin 才允许操作，否则 403。 */
+    /**
+     * 发起人或 Project Admin 才允许操作，否则 403。
+     */
     private void requireOwner(TaskRunEntity run, UUID projectId, UUID userId) {
         if (!projectAccess.isOwnerOrAdmin(run.getCreatedBy(), projectId, userId)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "TASK_RUN_FORBIDDEN", "仅发起人或 Project Admin 可操作该运行");
         }
     }
 
-    /** 加载输入请求并校验其归属于该运行。 */
+    /**
+     * 加载输入请求并校验其归属于该运行。
+     */
     private InputRequestEntity requireInput(TaskRunEntity run, UUID requestId) {
         InputRequestEntity req = inputRequestMapper.selectById(requestId);
         if (req == null || !run.getId().equals(req.getTaskRunId())) {
@@ -436,7 +418,9 @@ public class TaskRunService {
         return req;
     }
 
-    /** 该运行自身产出的产物与 Diff 数量摘要（total=执行产物数，diffCount=总 Diff 数）。 */
+    /**
+     * 该运行自身产出的产物与 Diff 数量摘要（total=执行产物数，diffCount=总 Diff 数）。
+     */
     private Map<String, Object> artifactSummary(UUID taskRunId) {
         long total = artifactMapper.selectCount(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
                 .eq(TaskExecutionArtifactEntity::getTaskRunId, taskRunId));
@@ -448,7 +432,9 @@ public class TaskRunService {
         return result;
     }
 
-    /** 批量构造任务运行列表项；步骤、Agent、输入请求、产物与 Diff 一次性加载，避免逐条运行 N+1。 */
+    /**
+     * 批量构造任务运行列表项；步骤、Agent、输入请求、产物与 Diff 一次性加载，避免逐条运行 N+1。
+     */
     private List<TaskRunListItemResponse> buildListItems(List<TaskRunEntity> page) {
         List<UUID> runIds = page.stream().map(TaskRunEntity::getId).toList();
         Set<UUID> stepIds = page.stream().map(TaskRunEntity::getTaskStepId).filter(Objects::nonNull)
@@ -458,32 +444,32 @@ public class TaskRunService {
         // 空 Map 用 emptyMap 保证 null 键查找返回 null（TaskRun.agentId 可为 null，Map.of() 的 get(null) 会抛 NPE）
         Map<UUID, TaskStepEntity> stepById = stepIds.isEmpty() ? Collections.emptyMap()
                 : taskStepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery().in(TaskStepEntity::getId, stepIds))
-                        .stream().collect(Collectors.toMap(TaskStepEntity::getId, Function.identity()));
+                .stream().collect(Collectors.toMap(TaskStepEntity::getId, Function.identity()));
         Map<UUID, AgentEntity> agentById = agentIds.isEmpty() ? Collections.emptyMap()
                 : agentMapper.selectList(Wrappers.<AgentEntity>lambdaQuery().in(AgentEntity::getId, agentIds)).stream()
-                        .collect(Collectors.toMap(AgentEntity::getId, Function.identity()));
+                .collect(Collectors.toMap(AgentEntity::getId, Function.identity()));
         Map<UUID, List<InputRequestEntity>> inputByRun = runIds.isEmpty() ? Collections.emptyMap()
                 : inputRequestMapper
-                        .selectList(Wrappers.<InputRequestEntity>lambdaQuery()
-                                .in(InputRequestEntity::getTaskRunId, runIds))
-                        .stream().collect(Collectors.groupingBy(InputRequestEntity::getTaskRunId));
+                .selectList(Wrappers.<InputRequestEntity>lambdaQuery()
+                        .in(InputRequestEntity::getTaskRunId, runIds))
+                .stream().collect(Collectors.groupingBy(InputRequestEntity::getTaskRunId));
         Map<UUID, Long> artifactCountByRun = runIds.isEmpty() ? Collections.emptyMap()
                 : artifactMapper
-                        .selectList(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
-                                .in(TaskExecutionArtifactEntity::getTaskRunId, runIds))
-                        .stream().collect(Collectors.groupingBy(TaskExecutionArtifactEntity::getTaskRunId,
-                                Collectors.counting()));
+                .selectList(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
+                        .in(TaskExecutionArtifactEntity::getTaskRunId, runIds))
+                .stream().collect(Collectors.groupingBy(TaskExecutionArtifactEntity::getTaskRunId,
+                        Collectors.counting()));
         Map<UUID, Long> diffCountByRun = runIds.isEmpty() ? Collections.emptyMap()
                 : diffMapper.selectList(Wrappers.<DiffEntity>lambdaQuery().in(DiffEntity::getTaskRunId, runIds))
-                        .stream().collect(Collectors.groupingBy(DiffEntity::getTaskRunId, Collectors.counting()));
+                .stream().collect(Collectors.groupingBy(DiffEntity::getTaskRunId, Collectors.counting()));
         return page.stream().map(run -> toListItem(run, stepById.get(run.getTaskStepId()),
-                agentById.get(run.getAgentId()), inputByRun.getOrDefault(run.getId(), List.of()),
-                artifactCountByRun.getOrDefault(run.getId(), 0L), diffCountByRun.getOrDefault(run.getId(), 0L)))
+                        agentById.get(run.getAgentId()), inputByRun.getOrDefault(run.getId(), List.of()),
+                        artifactCountByRun.getOrDefault(run.getId(), 0L), diffCountByRun.getOrDefault(run.getId(), 0L)))
                 .toList();
     }
 
     private TaskRunListItemResponse toListItem(TaskRunEntity run, TaskStepEntity step, AgentEntity agent,
-            List<InputRequestEntity> requests, long artifactTotal, long diffCount) {
+                                               List<InputRequestEntity> requests, long artifactTotal, long diffCount) {
         Map<String, Object> artifactSummary = new LinkedHashMap<>();
         artifactSummary.put("total", artifactTotal);
         artifactSummary.put("diffCount", diffCount);
@@ -495,7 +481,9 @@ public class TaskRunService {
                 iso(run.getUpdatedAt()));
     }
 
-    /** 等待/阻塞/失败原因摘要，仅返回脱敏用户可见文本；无等待或失败时返回 null。 */
+    /**
+     * 等待/阻塞/失败原因摘要，仅返回脱敏用户可见文本；无等待或失败时返回 null。
+     */
     private TaskStatusReason statusReason(TaskRunEntity run, List<InputRequestEntity> requests) {
         return switch (run.getStatus()) {
             case "WAITING_INPUT" -> {
@@ -525,7 +513,9 @@ public class TaskRunService {
         };
     }
 
-    /** 脱敏状态摘要：不返回日志原文、Prompt、Token 或环境变量。 */
+    /**
+     * 脱敏状态摘要：不返回日志原文、Prompt、Token 或环境变量。
+     */
     private String statusSummary(String status) {
         return switch (status) {
             case "QUEUED" -> "等待执行";
@@ -564,7 +554,9 @@ public class TaskRunService {
                 agent.getStatus());
     }
 
-    /** 计算执行耗时（毫秒）；任一端时间为空或结束早于开始时返回 null，避免负值误导前端。 */
+    /**
+     * 计算执行耗时（毫秒）；任一端时间为空或结束早于开始时返回 null，避免负值误导前端。
+     */
     private Long durationMs(LocalDateTime startedAt, LocalDateTime finishedAt) {
         if (startedAt == null || finishedAt == null || finishedAt.isBefore(startedAt)) {
             return null;
@@ -572,7 +564,9 @@ public class TaskRunService {
         return java.time.Duration.between(startedAt, finishedAt).toMillis();
     }
 
-    /** 构造 task-run.updated 事件载荷；sequence 为运行内执行序号，状态事件暂无步骤序号填 0。 */
+    /**
+     * 构造 task-run.updated 事件载荷；sequence 为运行内执行序号，状态事件暂无步骤序号填 0。
+     */
     private Map<String, Object> eventPayload(TaskRunEntity run, long sequence) {
         return TaskEventPayloads.taskRunUpdated(run, sequence);
     }

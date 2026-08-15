@@ -6,8 +6,12 @@ import lombok.NoArgsConstructor;
 
 import java.util.List;
 
-/** 只读合并预演结果，不包含原始 Git 输出。 */
-@Data @NoArgsConstructor @AllArgsConstructor
+/**
+ * 只读合并预演结果，不包含原始 Git 输出。
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
 public class MergePreviewResponse {
     private String resolvedHeadCommit;
     private String resolvedTargetCommit;

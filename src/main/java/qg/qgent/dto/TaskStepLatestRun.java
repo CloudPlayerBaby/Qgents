@@ -15,23 +15,33 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class TaskStepLatestRun {
 
-    /** 任务运行 ID（UUIDv7，字符串形式）。 */
+    /**
+     * 任务运行 ID（UUIDv7，字符串形式）。
+     */
     @Schema(description = "任务运行 ID")
     private String id;
 
-    /** 运行状态。 */
+    /**
+     * 运行状态。
+     */
     @Schema(description = "运行状态")
     private String status;
 
-    /** 开始时间（UTC），可为 null。 */
+    /**
+     * 开始时间（UTC），可为 null。
+     */
     @Schema(description = "开始时间")
     private String startedAt;
 
-    /** 结束时间（UTC），可为 null。 */
+    /**
+     * 结束时间（UTC），可为 null。
+     */
     @Schema(description = "结束时间")
     private String finishedAt;
 
-    /** 执行耗时毫秒数，可为 null。 */
+    /**
+     * 执行耗时毫秒数，可为 null。
+     */
     @Schema(description = "执行耗时毫秒")
     private Long durationMs;
 }

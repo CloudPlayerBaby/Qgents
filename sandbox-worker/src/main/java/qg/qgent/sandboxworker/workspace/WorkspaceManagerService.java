@@ -21,7 +21,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
-/** 管理 Project 内持久 Workspace、仓库 worktree 和受控 Git 操作。 */
+/**
+ * 管理 Project 内持久 Workspace、仓库 worktree 和受控 Git 操作。
+ */
 @Service
 @RequiredArgsConstructor
 public class WorkspaceManagerService {
@@ -32,7 +34,9 @@ public class WorkspaceManagerService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
-    /** 幂等准备 Workspace；相同编号但规格不同时拒绝。 */
+    /**
+     * 幂等准备 Workspace；相同编号但规格不同时拒绝。
+     */
     public WorkspaceResponse provision(UUID workspaceId, WorkspaceProvisionRequest request) {
         return workspaceLock.execute(storageKey(workspaceId), () -> provisionLocked(workspaceId, request));
     }
@@ -84,7 +88,9 @@ public class WorkspaceManagerService {
         }
     }
 
-    /** 查询 Workspace，并刷新每个仓库的真实 HEAD。 */
+    /**
+     * 查询 Workspace，并刷新每个仓库的真实 HEAD。
+     */
     public WorkspaceResponse get(UUID workspaceId) {
         Path metadata = metadataPath(workspaceId);
         if (!Files.isRegularFile(metadata))
@@ -92,7 +98,9 @@ public class WorkspaceManagerService {
         return refresh(read(metadata));
     }
 
-    /** 注销 linked worktree 并删除 Workspace，不删除共享 bare store。 */
+    /**
+     * 注销 linked worktree 并删除 Workspace，不删除共享 bare store。
+     */
     public void delete(UUID workspaceId) {
         workspaceLock.execute(storageKey(workspaceId), () -> {
             Path metadata = metadataPath(workspaceId);
@@ -156,17 +164,23 @@ public class WorkspaceManagerService {
         });
     }
 
-    /** 对共享 Git Store 中两个受控引用执行只读合并预演。 */
+    /**
+     * 对共享 Git Store 中两个受控引用执行只读合并预演。
+     */
     public MergePreviewResponse mergePreview(UUID repositoryId, String sourceRef, String targetBranch) {
         return repositories.mergePreview(repositoryId, sourceRef, targetBranch);
     }
 
-    /** 将分支、标签或 SHA 解析为不可变 commit SHA。 */
+    /**
+     * 将分支、标签或 SHA 解析为不可变 commit SHA。
+     */
     public String resolveGitRef(UUID repositoryId, String reference) {
         return repositories.resolveRef(repositoryId, reference);
     }
 
-    /** 仅供临时测试 Workspace 使用：把源引用合并进当前 worktree。 */
+    /**
+     * 仅供临时测试 Workspace 使用：把源引用合并进当前 worktree。
+     */
     public void mergeForTest(UUID workspaceId, UUID repositoryId, String sourceRef) {
         workspaceLock.execute(storageKey(workspaceId), () -> {
             WorkspaceRepositoryResponse repository = requireRepository(get(workspaceId), repositoryId);
@@ -175,14 +189,18 @@ public class WorkspaceManagerService {
         });
     }
 
-    /** 清理 Worker 内部临时测试分支；只接受固定前缀。 */
+    /**
+     * 清理 Worker 内部临时测试分支；只接受固定前缀。
+     */
     public void deleteTemporaryBranch(UUID repositoryId, String branch) {
         repositories.deleteTemporaryBranch(repositoryId, branch);
     }
 
-    /** 创建当前未提交工作树的隔离快照；相同 snapshotWorkspaceId 可安全重试。 */
+    /**
+     * 创建当前未提交工作树的隔离快照；相同 snapshotWorkspaceId 可安全重试。
+     */
     public WorkspaceResponse snapshotForTest(UUID sourceWorkspaceId, UUID repositoryId,
-            UUID snapshotWorkspaceId, UUID projectId) {
+                                             UUID snapshotWorkspaceId, UUID projectId) {
         if (sourceWorkspaceId.equals(snapshotWorkspaceId)) {
             throw conflict("TEST_SNAPSHOT_ID_INVALID", "测试快照不能覆盖源 Workspace");
         }
@@ -223,13 +241,21 @@ public class WorkspaceManagerService {
         });
     }
 
-    /** 幂等清理临时测试 worktree、残留元数据和内部临时分支。 */
+    /**
+     * 幂等清理临时测试 worktree、残留元数据和内部临时分支。
+     */
     public void cleanupTemporary(UUID workspaceId, UUID repositoryId, String branch) {
         Path workspace = workspacePath(workspaceId);
         Path repository = workspace.resolve("repository").normalize();
-        try { repositories.remove(repositoryId, repository); } catch (RuntimeException ignored) { }
+        try {
+            repositories.remove(repositoryId, repository);
+        } catch (RuntimeException ignored) {
+        }
         deleteTree(workspace);
-        try { Files.deleteIfExists(metadataPath(workspaceId)); } catch (Exception ignored) { }
+        try {
+            Files.deleteIfExists(metadataPath(workspaceId));
+        } catch (Exception ignored) {
+        }
         repositories.deleteTemporaryBranch(repositoryId, branch);
     }
 
@@ -286,7 +312,9 @@ public class WorkspaceManagerService {
         }
     }
 
-    /** 为升级前已存在的 Workspace 安全补建空 marker，并拒绝覆盖异常文件。 */
+    /**
+     * 为升级前已存在的 Workspace 安全补建空 marker，并拒绝覆盖异常文件。
+     */
     private void ensureGitMarker(Path workspace) {
         Path marker = workspace.resolve(WorkspacePathResolver.GIT_MARKER).normalize();
         if (!marker.startsWith(workspace) || marker.equals(workspace)) {

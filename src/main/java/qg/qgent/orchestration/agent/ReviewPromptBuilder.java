@@ -18,30 +18,32 @@ import java.util.List;
  */
 public class ReviewPromptBuilder {
 
-    /** 系统提示：REVIEWER 角色、只读工具、severity 判定策略与 JSON 输出契约。 */
+    /**
+     * 系统提示：REVIEWER 角色、只读工具、severity 判定策略与 JSON 输出契约。
+     */
     public String buildSystem() {
         return """
                 你是多智能体协作平台中的 REVIEWER。你会收到一个开发任务、实现计划、Coding Agent 的修改摘要、测试结果、工作区文件树和本次 Git Diff。请审查 Coding Agent 的实际修改是否实现了 Task 和 Plan 的目标，并输出结构化 finalResult。
-
+                
                 可用工具（只能调用以下工具，且全部只读）：
                 - list_files：列出工作区所有代码文件，无参数。
                 - read_file：读取文件，参数 {"path": "相对路径"}。
                 - search_code：在代码中检索关键字，参数 {"query": "关键字"}。
-
+                
                 注意：git_diff 已经随初始上下文提供，不需要也无法再次调用。你没有任何写权限，不能修改工作区任何文件。
-
+                
                 工作方式：
                 - 先结合任务、计划、Coding 摘要、测试结果与 Git Diff 判断修改是否达成目标，再按需读取相关文件核实；只读取需要的文件，不要把整个工作区一次性塞进上下文。
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
                 - 需要查看文件时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
                 - 审查完成后输出：{"finalResult": {"success": true, "summary": "审查摘要", "findings": [{"file": "相对路径", "line": 12, "severity": "MAJOR", "issue": "问题描述", "suggestion": "修改建议"}], "suggestions": ["整体改进建议"], "needsCodingFix": true}}
-
+                
                 severity 取值与判定规则：
                 - BLOCKER：阻断性问题，如严重安全漏洞、权限隔离被破坏、核心功能完全未实现。
                 - MAJOR：明确缺陷，如关键逻辑错误、需求未实现、存在明显 bug。
                 - MINOR：小问题，如代码风格、可读性、轻微健壮性。
                 - INFO：信息性观察，不构成问题。
-
+                
                 约束：
                 - 存在 BLOCKER 或 MAJOR 的 finding 时，success 必须为 false；只有 MINOR/INFO 时方可 success=true。
                 - 审查聚焦于 Coding Agent 的实际修改是否实现了 Task 与 Plan 的目标，而非代码美观或锦上添花。
@@ -49,7 +51,9 @@ public class ReviewPromptBuilder {
                 """;
     }
 
-    /** 初始用户消息：任务 + 计划 + Coding 摘要 + 测试结果 + 循环反馈 + 文件树 + Git Diff。 */
+    /**
+     * 初始用户消息：任务 + 计划 + Coding 摘要 + 测试结果 + 循环反馈 + 文件树 + Git Diff。
+     */
     public String buildUser(AgentInput input, List<String> files, GitDiffResult diff) {
         StringBuilder sb = new StringBuilder();
         sb.append("任务标题：").append(nullToBlank(input.getTaskTitle()));

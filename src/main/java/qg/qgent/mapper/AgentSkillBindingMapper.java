@@ -1,10 +1,6 @@
 package qg.qgent.mapper;
 
-import org.apache.ibatis.annotations.Delete;
-import org.apache.ibatis.annotations.Insert;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.*;
 
 import java.util.List;
 import java.util.UUID;
@@ -48,5 +44,5 @@ public interface AgentSkillBindingMapper {
     @Insert("INSERT INTO agent_skill_bindings(project_id, agent_id, skill_id, created_by) "
             + "VALUES(#{projectId}, #{agentId}, #{skillId}, #{createdBy})")
     int insertBinding(@Param("projectId") UUID projectId, @Param("agentId") UUID agentId,
-            @Param("skillId") UUID skillId, @Param("createdBy") UUID createdBy);
+                      @Param("skillId") UUID skillId, @Param("createdBy") UUID createdBy);
 }

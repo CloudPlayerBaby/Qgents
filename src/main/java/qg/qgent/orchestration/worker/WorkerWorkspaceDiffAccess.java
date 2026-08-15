@@ -38,7 +38,7 @@ public class WorkerWorkspaceDiffAccess implements WorkspaceDiffAccess {
             StringBuilder combined = new StringBuilder();
             String baseCommit = null;
             String headCommit = null;
-            for (Map.Entry<String, UUID> entry : session.getRepositoryByPath().entrySet()) {
+            for (Map.Entry<String, UUID> entry : session.repositoryByPath().entrySet()) {
                 WorkerGitDiff diff = client.createWorkspaceGitDiff(workspaceId, entry.getValue());
                 if (diff == null) {
                     return failure("workspace git diff unavailable");

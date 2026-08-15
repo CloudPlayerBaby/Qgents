@@ -11,7 +11,9 @@ import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.UUID;
 
-/** Task timeline entry produced by planning or a controlled TaskRun. */
+/**
+ * Task timeline entry produced by planning or a controlled TaskRun.
+ */
 @Data
 @TableName(value = "task_execution_artifacts", autoResultMap = true)
 public class TaskExecutionArtifactEntity {

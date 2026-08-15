@@ -12,16 +12,22 @@ import java.util.List;
 @Data
 public class SkillUpdateRequest {
 
-    /** 新名称（≤255，null 表示不修改）。 */
+    /**
+     * 新名称（≤255，null 表示不修改）。
+     */
     @Size(max = 255)
     @Schema(description = "新名称，null 表示不修改", maxLength = 255)
     private String name;
 
-    /** 新正文（null 表示不修改）。 */
+    /**
+     * 新正文（null 表示不修改）。
+     */
     @Schema(description = "新正文，null 表示不修改")
     private String content;
 
-    /** 新标签列表（null 表示不修改）。 */
+    /**
+     * 新标签列表（null 表示不修改）。
+     */
     @Schema(description = "新标签列表，null 表示不修改")
     private List<String> tags;
 }

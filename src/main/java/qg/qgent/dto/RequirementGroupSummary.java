@@ -15,15 +15,21 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class RequirementGroupSummary {
 
-    /** 需求群 ID（UUIDv7，字符串形式）。 */
+    /**
+     * 需求群 ID（UUIDv7，字符串形式）。
+     */
     @Schema(description = "需求群 ID")
     private String id;
 
-    /** 群聊名称。 */
+    /**
+     * 群聊名称。
+     */
     @Schema(description = "群聊名称")
     private String name;
 
-    /** 群状态：ACTIVE/ARCHIVED。 */
+    /**
+     * 群状态：ACTIVE/ARCHIVED。
+     */
     @Schema(description = "群状态")
     private String status;
 }

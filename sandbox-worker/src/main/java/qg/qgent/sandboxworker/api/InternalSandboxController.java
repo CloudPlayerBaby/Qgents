@@ -38,13 +38,17 @@ public class InternalSandboxController {
     private final TestExecutionService testExecutionService;
     private final WorkspaceManagerService workspaceManagerService;
 
-    /** 返回 Worker 进程的基础存活状态。 */
+    /**
+     * 返回 Worker 进程的基础存活状态。
+     */
     @GetMapping("/health")
     public Map<String, String> health() {
         return Map.of("status", "UP");
     }
 
-    /** 创建 Sandbox 并应用 Worker 本地资源上限。 */
+    /**
+     * 创建 Sandbox 并应用 Worker 本地资源上限。
+     */
     @PostMapping("/sandboxes")
     @ResponseStatus(HttpStatus.CREATED)
     public SandboxResponse createSandbox(@Valid @RequestBody CreateSandboxRequest request) {
@@ -121,20 +125,26 @@ public class InternalSandboxController {
         sandboxService.destroy(sandboxId);
     }
 
-    /** 同步执行一组已验证 Testset，返回脱敏结果。 */
+    /**
+     * 同步执行一组已验证 Testset，返回脱敏结果。
+     */
     @PostMapping("/test-executions")
     public TestExecutionResponse executeTests(@Valid @RequestBody TestExecutionRequest request) {
         return testExecutionService.execute(request);
     }
 
-    /** 基于共享 Git Store 做只读合并预演，不创建 Commit。 */
+    /**
+     * 基于共享 Git Store 做只读合并预演，不创建 Commit。
+     */
     @PostMapping("/merge-previews")
     public MergePreviewResponse mergePreview(@Valid @RequestBody MergePreviewRequest request) {
         return workspaceManagerService.mergePreview(request.getRepositoryId(), request.getSourceRef(),
                 request.getTargetBranch());
     }
 
-    /** 在受控 Git Store 中把引用解析为固定 commit SHA。 */
+    /**
+     * 在受控 Git Store 中把引用解析为固定 commit SHA。
+     */
     @PostMapping("/git-resolutions")
     public GitResolveResponse resolveGitRef(@Valid @RequestBody GitResolveRequest request) {
         return new GitResolveResponse(workspaceManagerService.resolveGitRef(request.getRepositoryId(), request.getRef()));

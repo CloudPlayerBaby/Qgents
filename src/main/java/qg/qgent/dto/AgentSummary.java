@@ -16,23 +16,33 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class AgentSummary {
 
-    /** Agent ID（UUIDv7，字符串形式）。 */
+    /**
+     * Agent ID（UUIDv7，字符串形式）。
+     */
     @Schema(description = "Agent ID")
     private String id;
 
-    /** Agent 展示名称。 */
+    /**
+     * Agent 展示名称。
+     */
     @Schema(description = "Agent 展示名称")
     private String name;
 
-    /** Agent 声明的角色。 */
+    /**
+     * Agent 声明的角色。
+     */
     @Schema(description = "Agent 角色")
     private String role;
 
-    /** Agent 头像 URL，可为 null。 */
+    /**
+     * Agent 头像 URL，可为 null。
+     */
     @Schema(description = "Agent 头像 URL")
     private String avatarUrl;
 
-    /** Agent 生命周期状态，如 ACTIVE。 */
+    /**
+     * Agent 生命周期状态，如 ACTIVE。
+     */
     @Schema(description = "Agent 状态")
     private String status;
 }

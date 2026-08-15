@@ -9,7 +9,9 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
-/** 列出仓库内指定目录的直接子项。 */
+/**
+ * 列出仓库内指定目录的直接子项。
+ */
 @Component
 @RequiredArgsConstructor
 public class FileListTool implements SandboxTool {

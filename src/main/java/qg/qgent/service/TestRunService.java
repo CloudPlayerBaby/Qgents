@@ -3,44 +3,22 @@ package qg.qgent.service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import qg.qgent.api.ApiException;
-import qg.qgent.auth.UuidV7;
-import qg.qgent.dto.DryRunCreateRequest;
-import qg.qgent.dto.DryRunReportResponse;
-import qg.qgent.dto.DryRunResponse;
-import qg.qgent.dto.TestRunCreateRequest;
-import qg.qgent.dto.TestRunResponse;
-import qg.qgent.entity.DryRunEntity;
-import qg.qgent.entity.ProjectRepositoryEntity;
-import qg.qgent.entity.RepositoryBranchConfigEntity;
-import qg.qgent.entity.RepositoryBranchConfigTestsetEntity;
-import qg.qgent.entity.TestRunEntity;
-import qg.qgent.entity.TestsetEntity;
-import qg.qgent.entity.TaskEntity;
-import qg.qgent.mapper.DryRunMapper;
-import qg.qgent.mapper.ProjectRepositoryMapper;
-import qg.qgent.mapper.RepositoryBranchConfigMapper;
-import qg.qgent.mapper.RepositoryBranchConfigTestsetMapper;
-import qg.qgent.mapper.TestRunMapper;
-import qg.qgent.mapper.TestsetMapper;
-import qg.qgent.mapper.TaskMapper;
-import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import qg.qgent.api.ApiException;
+import qg.qgent.auth.UuidV7;
+import qg.qgent.dto.*;
+import qg.qgent.entity.*;
+import qg.qgent.mapper.*;
+import qg.qgent.orchestration.worker.SandboxWorkerClient;
+import qg.qgent.orchestration.worker.WorkerGitResolveRequest;
+import qg.qgent.orchestration.worker.WorkerGitResolveResponse;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
-import qg.qgent.entity.WorkspaceRepositoryEntity;
-import qg.qgent.orchestration.worker.SandboxWorkerClient;
-import qg.qgent.orchestration.worker.WorkerGitResolveRequest;
-import qg.qgent.orchestration.worker.WorkerGitResolveResponse;
 
 /**
  * 受控 Test Run 与 Dry Run 服务。
@@ -65,11 +43,11 @@ public class TestRunService {
     private final SandboxWorkerClient worker;
 
     public TestRunService(TestRunMapper testRunMapper, DryRunMapper dryRunMapper,
-            ProjectRepositoryMapper repositoryMapper, TestsetMapper testsetMapper,
-            RepositoryBranchConfigMapper branchConfigMapper,
-            RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
-            EventService eventService, TaskMapper taskMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
-            TestRunExecutionDispatcher executionDispatcher, SandboxWorkerClient worker) {
+                          ProjectRepositoryMapper repositoryMapper, TestsetMapper testsetMapper,
+                          RepositoryBranchConfigMapper branchConfigMapper,
+                          RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
+                          EventService eventService, TaskMapper taskMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
+                          TestRunExecutionDispatcher executionDispatcher, SandboxWorkerClient worker) {
         this.testRunMapper = testRunMapper;
         this.dryRunMapper = dryRunMapper;
         this.repositoryMapper = repositoryMapper;
@@ -252,7 +230,9 @@ public class TestRunService {
         });
     }
 
-    /** 校验请求的 testsetIds 均属于该仓库且为 ENABLED。 */
+    /**
+     * 校验请求的 testsetIds 均属于该仓库且为 ENABLED。
+     */
     private List<TestsetEntity> validateTestsets(UUID projectId, TestRunCreateRequest request) {
         if (request.getTestsetIds().size() > 32
                 || request.getTestsetIds().stream().distinct().count() != request.getTestsetIds().size()) {
@@ -347,7 +327,9 @@ public class TestRunService {
         }
     }
 
-    /** 校验受保护分支必选测试集未被跳过；暂以仓库默认分支的 branch config 为准。 */
+    /**
+     * 校验受保护分支必选测试集未被跳过；暂以仓库默认分支的 branch config 为准。
+     */
     private void enforceRequiredTestsets(ProjectRepositoryEntity repo, TestRunCreateRequest request) {
         RepositoryBranchConfigEntity config = branchConfigMapper.selectOne(
                 Wrappers.<RepositoryBranchConfigEntity>lambdaQuery()

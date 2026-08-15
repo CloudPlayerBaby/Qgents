@@ -23,7 +23,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** 管理项目级可复用 Testset，并在服务端校验项目与仓库归属。 */
+/**
+ * 管理项目级可复用 Testset，并在服务端校验项目与仓库归属。
+ */
 @Service
 public class TestsetService {
     private final TestsetMapper testsets;
@@ -32,7 +34,7 @@ public class TestsetService {
     private final ProjectAccessService access;
 
     public TestsetService(TestsetMapper testsets, ProjectRepositoryMapper repositories,
-            RepositoryBranchConfigTestsetMapper gateReferences, ProjectAccessService access) {
+                          RepositoryBranchConfigTestsetMapper gateReferences, ProjectAccessService access) {
         this.testsets = testsets;
         this.repositories = repositories;
         this.gateReferences = gateReferences;
@@ -146,7 +148,7 @@ public class TestsetService {
     }
 
     private Map<String, Object> definition(List<String> tags, String command, Integer timeout,
-            TestsetPassRule rule, String notes) {
+                                           TestsetPassRule rule, String notes) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("scopeTags", tags == null ? List.of() : List.copyOf(tags));
         result.put("command", command);
@@ -157,7 +159,7 @@ public class TestsetService {
     }
 
     private ValidatedDefinition validateDefinition(String name, List<String> tags, String command, Integer timeout,
-            TestsetPassRule rule) {
+                                                   TestsetPassRule rule) {
         String normalizedName = name == null ? "" : name.trim();
         String normalizedCommand = command == null ? "" : command.trim();
         if (normalizedName.isEmpty() || normalizedName.length() > 255) {
@@ -205,14 +207,24 @@ public class TestsetService {
         return rule;
     }
 
-    private String string(Object value) { return value == null ? null : String.valueOf(value); }
+    private String string(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
     private Integer integer(Object value) {
         if (value == null) return null;
-        try { return value instanceof Number number ? number.intValue() : Integer.valueOf(String.valueOf(value)); }
-        catch (NumberFormatException ignored) { return null; }
+        try {
+            return value instanceof Number number ? number.intValue() : Integer.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
-    private String iso(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC).toString(); }
+
+    private String iso(LocalDateTime value) {
+        return value == null ? null : value.toInstant(ZoneOffset.UTC).toString();
+    }
 
     private record ValidatedDefinition(String name, List<String> tags, String command, Integer timeout,
-            TestsetPassRule rule) { }
+                                       TestsetPassRule rule) {
+    }
 }

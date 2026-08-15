@@ -16,24 +16,38 @@ import java.util.UUID;
 @AllArgsConstructor
 public class WorkerWorkspace {
 
-    /** Workspace 编号。 */
+    /**
+     * Workspace 编号。
+     */
     private UUID id;
 
-    /** 所属项目编号。 */
+    /**
+     * 所属项目编号。
+     */
     private UUID projectId;
 
-    /** 不透明存储键，创建 Sandbox 时回传给 Worker 解析。 */
+    /**
+     * 不透明存储键，创建 Sandbox 时回传给 Worker 解析。
+     */
     private String storageKey;
 
-    /** 生命周期状态，当前只有 READY。 */
+    /**
+     * 生命周期状态，当前只有 READY。
+     */
     private String status;
 
-    /** 各仓库副本状态。 */
+    /**
+     * 各仓库副本状态。
+     */
     private List<WorkerWorkspaceRepository> repositories;
 
-    /** 创建时间（ISO-8601 字符串）。 */
+    /**
+     * 创建时间（ISO-8601 字符串）。
+     */
     private String createdAt;
 
-    /** 最后更新时间（ISO-8601 字符串）。 */
+    /**
+     * 最后更新时间（ISO-8601 字符串）。
+     */
     private String updatedAt;
 }

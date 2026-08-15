@@ -9,17 +9,29 @@ import lombok.Getter;
 @Getter
 public class StateMachineDecision {
     public enum Action {
-        /** 进入 nextPhase（如 PLAN→CODING、CODING→TESTING）。 */
+        /**
+         * 进入 nextPhase（如 PLAN→CODING、CODING→TESTING）。
+         */
         ADVANCE,
-        /** 同相位基础设施重试。 */
+        /**
+         * 同相位基础设施重试。
+         */
         RETRY_PHASE,
-        /** Test/Review 质量失败，回到 CODING 修复。 */
+        /**
+         * Test/Review 质量失败，回到 CODING 修复。
+         */
         REQUEUE_CODING,
-        /** Task 成功完成。 */
+        /**
+         * Task 成功完成。
+         */
         COMPLETE_SUCCESS,
-        /** Task 失败（质量循环超限或不可修复）。 */
+        /**
+         * Task 失败（质量循环超限或不可修复）。
+         */
         COMPLETE_FAILED,
-        /** Task 被取消。 */
+        /**
+         * Task 被取消。
+         */
         COMPLETE_CANCELLED
     }
 
@@ -55,7 +67,9 @@ public class StateMachineDecision {
         return new StateMachineDecision(Action.COMPLETE_CANCELLED, null);
     }
 
-    /** 是否进入 Task 级终态。 */
+    /**
+     * 是否进入 Task 级终态。
+     */
     public boolean isTerminal() {
         return action == Action.COMPLETE_SUCCESS || action == Action.COMPLETE_FAILED
                 || action == Action.COMPLETE_CANCELLED;

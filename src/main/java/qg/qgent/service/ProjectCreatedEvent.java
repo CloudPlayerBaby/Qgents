@@ -1,8 +1,5 @@
 package qg.qgent.service;
 
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-
 import java.util.UUID;
 
 /**
@@ -13,17 +10,11 @@ import java.util.UUID;
  * <pre>{@code
  * applicationEventPublisher.publishEvent(new ProjectCreatedEvent(projectId, projectName, creatorUserId));
  * }</pre>
+ *
+ * @param projectId     新项目 ID。
+ * @param projectName   新项目名称，用作主群标题。
+ * @param creatorUserId 项目创建者用户 ID（会自动成为 PROJECT_ADMIN）。
  */
-@Getter
-@AllArgsConstructor
-public class ProjectCreatedEvent {
+public record ProjectCreatedEvent(UUID projectId, String projectName, UUID creatorUserId) {
 
-    /** 新项目 ID。 */
-    private final UUID projectId;
-
-    /** 新项目名称，用作主群标题。 */
-    private final String projectName;
-
-    /** 项目创建者用户 ID（会自动成为 PROJECT_ADMIN）。 */
-    private final UUID creatorUserId;
 }

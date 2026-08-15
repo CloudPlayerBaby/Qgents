@@ -7,7 +7,9 @@ import lombok.Data;
 
 import java.util.UUID;
 
-/** 由 Worker 在受控 Git Store 中解析一个 Git 引用。 */
+/**
+ * 由 Worker 在受控 Git Store 中解析一个 Git 引用。
+ */
 @Data
 public class GitResolveRequest {
     @NotNull

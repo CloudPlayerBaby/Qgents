@@ -2,15 +2,17 @@ package qg.qgent.service;
 
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import qg.qgent.entity.TestRunEntity;
 import qg.qgent.mapper.DryRunMapper;
 import qg.qgent.mapper.TestRunMapper;
-import qg.qgent.entity.TestRunEntity;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 
-/** 扫描未领取或租约过期的执行，并通过独立异步 Bean 调度，避免 self-invocation。 */
+/**
+ * 扫描未领取或租约过期的执行，并通过独立异步 Bean 调度，避免 self-invocation。
+ */
 @Service
 public class TestRunRecoveryScheduler {
     private final TestRunMapper testRuns;
@@ -19,7 +21,7 @@ public class TestRunRecoveryScheduler {
     private final SandboxWorkerClient worker;
 
     public TestRunRecoveryScheduler(TestRunMapper testRuns, DryRunMapper dryRuns,
-            TestRunExecutionDispatcher dispatcher, SandboxWorkerClient worker) {
+                                    TestRunExecutionDispatcher dispatcher, SandboxWorkerClient worker) {
         this.testRuns = testRuns;
         this.dryRuns = dryRuns;
         this.dispatcher = dispatcher;

@@ -14,14 +14,24 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class TaskRepositoryScopeResponse {
-    /** 项目仓库绑定 ID。 */
+    /**
+     * 项目仓库绑定 ID。
+     */
     private String repositoryId;
-    /** 相对 worktree 名，绝不包含宿主机绝对路径。 */
+    /**
+     * 相对 worktree 名，绝不包含宿主机绝对路径。
+     */
     private String workspacePath;
-    /** 创建 worktree 时固定的不可变基线提交 SHA；未接受前为空。 */
+    /**
+     * 创建 worktree 时固定的不可变基线提交 SHA；未接受前为空。
+     */
     private String baseCommit;
-    /** 任务共用特性分支名。 */
+    /**
+     * 任务共用特性分支名。
+     */
     private String sourceBranch;
-    /** 已接受 Diff 后真实产生的头提交 SHA；未接受前为空。 */
+    /**
+     * 已接受 Diff 后真实产生的头提交 SHA；未接受前为空。
+     */
     private String headCommit;
 }

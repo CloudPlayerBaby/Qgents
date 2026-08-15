@@ -16,11 +16,15 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class GroupLatestMessage {
 
-    /** 发送者昵称（用户 displayName 或 Agent name）；SYSTEM 消息为空。 */
+    /**
+     * 发送者昵称（用户 displayName 或 Agent name）；SYSTEM 消息为空。
+     */
     @Schema(description = "发送者昵称（用户 displayName 或 Agent name）；SYSTEM 消息为空")
     private String senderName;
 
-    /** 最新消息文本摘要；非文本消息为空。 */
+    /**
+     * 最新消息文本摘要；非文本消息为空。
+     */
     @Schema(description = "最新消息文本摘要；非文本消息为空")
     private String text;
 }

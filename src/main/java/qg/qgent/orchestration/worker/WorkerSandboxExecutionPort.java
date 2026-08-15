@@ -28,7 +28,7 @@ import java.util.UUID;
 public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implements ExecutionPort {
 
     public WorkerSandboxExecutionPort(SandboxWorkerClient client, SandboxSessionManager sessions,
-            SandboxWorkerProperties properties) {
+                                      SandboxWorkerProperties properties) {
         super(client, sessions, properties);
     }
 
@@ -54,7 +54,9 @@ public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implement
         }
     }
 
-    /** 按游标拉取指定流的全部日志并合并为文本。 */
+    /**
+     * 按游标拉取指定流的全部日志并合并为文本。
+     */
     private String collectLogs(UUID executionId, String stream) {
         StringBuilder buffer = new StringBuilder();
         long after = 0;

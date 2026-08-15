@@ -27,7 +27,7 @@ public interface ToolExecutionMapper extends BaseMapper<ToolExecutionEntity> {
             WHERE id = #{id} AND owner_worker_id = #{workerId} AND status = 'QUEUED'
             """)
     int markRunning(@Param("id") String id, @Param("workerId") String workerId,
-            @Param("startedAt") LocalDateTime startedAt);
+                    @Param("startedAt") LocalDateTime startedAt);
 
     @Update("""
             UPDATE tool_executions
@@ -35,7 +35,7 @@ public interface ToolExecutionMapper extends BaseMapper<ToolExecutionEntity> {
             WHERE id = #{id} AND owner_worker_id = #{workerId} AND status IN ('QUEUED', 'RUNNING')
             """)
     int markCancelled(@Param("id") String id, @Param("workerId") String workerId,
-            @Param("finishedAt") LocalDateTime finishedAt);
+                      @Param("finishedAt") LocalDateTime finishedAt);
 
     @Update("""
             UPDATE tool_executions
@@ -44,9 +44,9 @@ public interface ToolExecutionMapper extends BaseMapper<ToolExecutionEntity> {
             WHERE id = #{id} AND owner_worker_id = #{workerId} AND status = 'RUNNING'
             """)
     int finishIfRunning(@Param("id") String id, @Param("workerId") String workerId,
-            @Param("status") String status,
-            @Param("exitCode") Integer exitCode, @Param("resultJson") String resultJson,
-            @Param("failureReason") String failureReason, @Param("finishedAt") LocalDateTime finishedAt);
+                        @Param("status") String status,
+                        @Param("exitCode") Integer exitCode, @Param("resultJson") String resultJson,
+                        @Param("failureReason") String failureReason, @Param("finishedAt") LocalDateTime finishedAt);
 
     @Update("""
             UPDATE tool_executions
@@ -54,8 +54,8 @@ public interface ToolExecutionMapper extends BaseMapper<ToolExecutionEntity> {
             WHERE id = #{id} AND owner_worker_id = #{workerId} AND status = 'QUEUED'
             """)
     int rejectQueued(@Param("id") String id, @Param("workerId") String workerId,
-            @Param("reason") String reason,
-            @Param("finishedAt") LocalDateTime finishedAt);
+                     @Param("reason") String reason,
+                     @Param("finishedAt") LocalDateTime finishedAt);
 
     @Select("""
             SELECT id FROM tool_executions
@@ -63,5 +63,5 @@ public interface ToolExecutionMapper extends BaseMapper<ToolExecutionEntity> {
               AND status IN ('QUEUED', 'RUNNING')
             """)
     List<String> selectActiveIdsBySandbox(@Param("sandboxId") String sandboxId,
-            @Param("workerId") String workerId);
+                                          @Param("workerId") String workerId);
 }

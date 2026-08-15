@@ -18,6 +18,8 @@ public class AgentRunOutcome {
     private CodingResult codingResult;
     private TestResult testResult;
     private ReviewResult reviewResult;
-    /** 结果摘要或失败原因（已脱敏）。 */
+    /**
+     * 结果摘要或失败原因（已脱敏）。
+     */
     private String message;
 }

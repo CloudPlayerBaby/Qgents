@@ -12,7 +12,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** A controlled repository test execution, optionally requested by a TaskStep. */
+/**
+ * A controlled repository test execution, optionally requested by a TaskStep.
+ */
 @Data
 @TableName(value = "test_runs", autoResultMap = true)
 public class TestRunEntity {
@@ -22,16 +24,24 @@ public class TestRunEntity {
     private UUID taskId;
     private UUID taskStepId;
     private UUID projectRepositoryId;
-    /** Target commit or branch; Task-scoped runs are located by taskId and repositoryId. */
+    /**
+     * Target commit or branch; Task-scoped runs are located by taskId and repositoryId.
+     */
     private String ref;
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<String> testsetIds;
-    /** 创建时固化的 Testset 执行定义，后续配置修改不会改变本次运行。 */
+    /**
+     * 创建时固化的 Testset 执行定义，后续配置修改不会改变本次运行。
+     */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<Map<String, Object>> executionSnapshot;
-    /** Worker 使用的不可变 Git 引用；Task 运行也通过临时 checkout 执行。 */
+    /**
+     * Worker 使用的不可变 Git 引用；Task 运行也通过临时 checkout 执行。
+     */
     private String executionSourceRef;
-    /** Task 当前未提交工作树在 Worker 中固化出的隔离 Workspace；ref 运行为空。 */
+    /**
+     * Task 当前未提交工作树在 Worker 中固化出的隔离 Workspace；ref 运行为空。
+     */
     private UUID executionWorkspaceId;
     private String status;
     @TableField(typeHandler = JacksonTypeHandler.class)

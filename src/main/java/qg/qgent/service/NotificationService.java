@@ -79,7 +79,7 @@ public class NotificationService {
      * @param resourceId      关联资源 ID 字符串，可为空
      */
     public void notify(UUID recipientUserId, UUID projectId, UUID groupId, String kind, String title,
-            String description, String resourceId) {
+                       String description, String resourceId) {
         if (recipientUserId == null) {
             return;
         }

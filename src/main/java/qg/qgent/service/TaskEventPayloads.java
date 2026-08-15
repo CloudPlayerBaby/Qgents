@@ -1,10 +1,6 @@
 package qg.qgent.service;
 
-import qg.qgent.entity.DiffEntity;
-import qg.qgent.entity.InputRequestEntity;
-import qg.qgent.entity.TaskEntity;
-import qg.qgent.entity.TaskRunEntity;
-import qg.qgent.entity.TaskStepEntity;
+import qg.qgent.entity.*;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -64,7 +60,7 @@ public final class TaskEventPayloads {
     }
 
     public static Map<String, Object> inputRequest(UUID projectId, UUID taskId, UUID taskStepId, UUID taskRunId,
-            InputRequestEntity req) {
+                                                   InputRequestEntity req) {
         Map<String, Object> p = new HashMap<>();
         p.put("projectId", projectId);
         p.put("taskId", taskId);

@@ -5,7 +5,7 @@ import org.springframework.stereotype.Component;
 /**
  * 确定性状态机：依据当前相位、Agent 结果与循环计数决定下一步。
  * 纯逻辑、无 I/O、不调用 LLM；可独立单元测试，也可被同步/异步驱动复用。
- *
+ * <p>
  * 转移规则：
  * PLAN/CODING SUCCEEDED → 进入下一相位；质量失败 → Task FAILED（Plan/Coding 无修复循环）。
  * TESTING/REVIEWING SUCCEEDED → 进入下一相位 / Task SUCCESS。
@@ -16,7 +16,9 @@ import org.springframework.stereotype.Component;
 @Component
 public class OrchestrationStateMachine {
 
-    /** 依据相位与结果决策下一步；会推进传入 counters 的循环计数。 */
+    /**
+     * 依据相位与结果决策下一步；会推进传入 counters 的循环计数。
+     */
     public StateMachineDecision decide(OrchestrationPhase phase, RunOutcome outcome, OrchestrationCounters counters) {
         return switch (phase) {
             case PLAN -> plan(phase, outcome, counters);
@@ -64,7 +66,9 @@ public class OrchestrationStateMachine {
         };
     }
 
-    /** 基础设施失败：计数内同相位重试，超限 Task FAILED。 */
+    /**
+     * 基础设施失败：计数内同相位重试，超限 Task FAILED。
+     */
     private StateMachineDecision retryOrFail(OrchestrationPhase phase, OrchestrationCounters counters) {
         if (counters.canRetryInfra()) {
             counters.incrementInfraRetries();
@@ -73,7 +77,9 @@ public class OrchestrationStateMachine {
         return StateMachineDecision.failed();
     }
 
-    /** 质量失败：计数内回到 CODING，超限 Task FAILED。 */
+    /**
+     * 质量失败：计数内回到 CODING，超限 Task FAILED。
+     */
     private StateMachineDecision requeueCodingOrFail(OrchestrationCounters counters) {
         if (counters.canRequeueCoding()) {
             counters.incrementQualityFixLoops();

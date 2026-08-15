@@ -6,7 +6,9 @@ import lombok.Data;
 import java.util.List;
 import java.util.Map;
 
-/** 工具处理器返回的结构化结果与日志。 */
+/**
+ * 工具处理器返回的结构化结果与日志。
+ */
 @Data
 @AllArgsConstructor
 public class ToolResult {

@@ -15,14 +15,43 @@ public class GitHubAppProperties {
                 && !stateSecret.isBlank();
     }
 
-    public String getAppId() { return appId; }
-    public void setAppId(String appId) { this.appId = appId; }
-    public String getSlug() { return slug; }
-    public void setSlug(String slug) { this.slug = slug; }
-    public String getPrivateKeyPath() { return privateKeyPath; }
-    public void setPrivateKeyPath(String privateKeyPath) { this.privateKeyPath = privateKeyPath; }
-    public String getCallbackUrl() { return callbackUrl; }
-    public void setCallbackUrl(String callbackUrl) { this.callbackUrl = callbackUrl; }
-    public String getStateSecret() { return stateSecret; }
-    public void setStateSecret(String stateSecret) { this.stateSecret = stateSecret; }
+    public String getAppId() {
+        return appId;
+    }
+
+    public void setAppId(String appId) {
+        this.appId = appId;
+    }
+
+    public String getSlug() {
+        return slug;
+    }
+
+    public void setSlug(String slug) {
+        this.slug = slug;
+    }
+
+    public String getPrivateKeyPath() {
+        return privateKeyPath;
+    }
+
+    public void setPrivateKeyPath(String privateKeyPath) {
+        this.privateKeyPath = privateKeyPath;
+    }
+
+    public String getCallbackUrl() {
+        return callbackUrl;
+    }
+
+    public void setCallbackUrl(String callbackUrl) {
+        this.callbackUrl = callbackUrl;
+    }
+
+    public String getStateSecret() {
+        return stateSecret;
+    }
+
+    public void setStateSecret(String stateSecret) {
+        this.stateSecret = stateSecret;
+    }
 }

@@ -18,24 +18,32 @@ import java.util.UUID;
 @Data
 public class TaskTriggerRequest {
 
-    /** Task 标题；缺省时服务端从消息文本或群标题提取（截断 255）。 */
+    /**
+     * Task 标题；缺省时服务端从消息文本或群标题提取（截断 255）。
+     */
     @NotBlank
     @Size(max = 255)
     @Schema(description = "Task 标题；缺省用消息文本或群标题", maxLength = 255,
             requiredMode = Schema.RequiredMode.REQUIRED)
     private String title;
 
-    /** Task 需求描述；可空，缺省用消息文本或群描述。 */
+    /**
+     * Task 需求描述；可空，缺省用消息文本或群描述。
+     */
     @Size(max = 10000)
     @Schema(description = "Task 需求描述；缺省用消息文本或群描述", maxLength = 10000)
     private String requirement;
 
-    /** 新 Workspace 的仓库绑定 ID；可空，缺省用群关联仓库。 */
+    /**
+     * 新 Workspace 的仓库绑定 ID；可空，缺省用群关联仓库。
+     */
     @Size(max = 20)
     @Schema(description = "新 Workspace 的仓库绑定 ID；缺省用群关联仓库")
     private List<@jakarta.validation.constraints.NotNull UUID> repositoryIds;
 
-    /** 可选公共基线分支。 */
+    /**
+     * 可选公共基线分支。
+     */
     @Size(max = 512)
     @Schema(description = "可选公共基线分支")
     private String baseRef;

@@ -13,7 +13,7 @@ import java.util.UUID;
 public class GitCredentialGrant {
     @TableId(type = IdType.AUTO)
     private Long id;
-    
+
     private String grantIdHash;
     private UUID teamId;
     private UUID projectId;

@@ -10,7 +10,9 @@ import lombok.Data;
 import java.util.List;
 import java.util.UUID;
 
-/** 局部修改 Testset 的请求；未提供的字段保持不变。 */
+/**
+ * 局部修改 Testset 的请求；未提供的字段保持不变。
+ */
 @Data
 public class TestsetUpdateRequest {
     @Size(max = 255)

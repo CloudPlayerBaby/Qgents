@@ -11,7 +11,9 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
-/** 分页读取 UTF-8 文本文件并返回内容哈希。 */
+/**
+ * 分页读取 UTF-8 文本文件并返回内容哈希。
+ */
 @Component
 @RequiredArgsConstructor
 public class FileReadTool implements SandboxTool {

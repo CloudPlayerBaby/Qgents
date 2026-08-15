@@ -1,7 +1,7 @@
 package qg.qgent.service;
 
-import com.aliyun.oss.OSS;
 import com.aliyun.oss.HttpMethod;
+import com.aliyun.oss.OSS;
 import com.aliyun.oss.model.OSSObject;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
@@ -43,7 +43,7 @@ public class AliyunOssAttachmentStorage implements AttachmentStorageStrategy {
 
     @Override
     public UploadCredential createCredential(UUID attachmentId, String objectKey, String fileName, String mediaType,
-            Long sizeBytes) {
+                                             Long sizeBytes) {
         Date expiresAt = new Date(System.currentTimeMillis() + properties.getPresignExpirySeconds() * 1000L);
         URL url = oss.generatePresignedUrl(properties.getBucketName(), objectKey, expiresAt, HttpMethod.PUT);
         LocalDateTime expiry = LocalDateTime.ofInstant(expiresAt.toInstant(), ZoneOffset.UTC);

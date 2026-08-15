@@ -37,6 +37,11 @@ spring:
       mail.smtp.timeout: 5000
       mail.smtp.writetimeout: 5000
 
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [requestId=%X{requestId}] %logger{36} : %msg%n"
+    file: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [requestId=%X{requestId}] %logger{36} : %msg%n"
+
 
 # TODO(Deployment): 部署到生产环境（有真实的公网域名）时，必须在 GitHub 开发者后台创建一个全新的 GitHub App。
 # 注意1：生产环境的 GitHub App 必须将其 Callback URL 配置为线上真实的 HTTPS 域名地址（例如 https://api.qgents.com/api/v1/integrations/github/callback），否则将面临严重的安全泄露风险并被 GitHub 拦截。

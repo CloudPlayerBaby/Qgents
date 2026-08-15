@@ -14,7 +14,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** 只读解析 Workspace Manager 保存的受控仓库元数据。 */
+/**
+ * 只读解析 Workspace Manager 保存的受控仓库元数据。
+ */
 @Component
 @RequiredArgsConstructor
 public class WorkspaceMetadataStore {

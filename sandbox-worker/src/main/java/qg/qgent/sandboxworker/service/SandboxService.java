@@ -113,12 +113,16 @@ public class SandboxService {
         return response(allocation);
     }
 
-    /** 销毁 Sandbox 容器，不删除 Workspace。 */
+    /**
+     * 销毁 Sandbox 容器，不删除 Workspace。
+     */
     public void destroy(UUID sandboxId) {
         runtime.destroy(sandboxId);
     }
 
-    /** 判断指定持久 Workspace 是否仍被任一受管 Sandbox 引用。 */
+    /**
+     * 判断指定持久 Workspace 是否仍被任一受管 Sandbox 引用。
+     */
     public boolean isWorkspaceInUse(String workspaceStorageKey) {
         return runtime.isWorkspaceInUse(workspaceStorageKey);
     }
