@@ -44,6 +44,18 @@ public class AgentController {
     }
 
     /**
+     * 契约 v1.8.0 §22（前端联调）：获取单张 Agent 卡；projectId 可选，
+     * 传了则校验该 Agent 属于此项目的 Team 且调用者为项目成员。
+     */
+    @GetMapping("/teams/{teamId}/agents/{agentId}")
+    public ApiResponse<AgentResponse> get(@PathVariable UUID teamId, @PathVariable UUID agentId,
+                                          @RequestParam(required = false) UUID projectId,
+                                          HttpServletRequest request) {
+        return ApiResponse.ok(service.get(teamId, agentId, currentActor.currentUserId(), projectId),
+                (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
      * 契约 v1.8.0 §20（成员 B B04）：Agent 分配列表（需求群/工作流）。
      */
     @GetMapping("/projects/{projectId}/agents/{agentId}/assignments")

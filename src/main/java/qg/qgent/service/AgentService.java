@@ -15,6 +15,7 @@ import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.mapper.AgentMapper;
 import qg.qgent.mapper.GroupAgentMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TaskRunMapper;
 import qg.qgent.mapper.TeamMemberMapper;
@@ -44,16 +45,19 @@ public class AgentService {
     private final GroupAgentMapper groupAgentMapper;
     private final RequirementGroupMapper requirementGroupMapper;
     private final TaskRunMapper taskRunMapper;
+    private final ProjectMapper projectMapper;
 
     public AgentService(AgentMapper agentMapper, TeamMemberMapper teamMemberMapper,
                         ProjectAccessService projectAccess, GroupAgentMapper groupAgentMapper,
-                        RequirementGroupMapper requirementGroupMapper, TaskRunMapper taskRunMapper) {
+                        RequirementGroupMapper requirementGroupMapper, TaskRunMapper taskRunMapper,
+                        ProjectMapper projectMapper) {
         this.agentMapper = agentMapper;
         this.teamMemberMapper = teamMemberMapper;
         this.projectAccess = projectAccess;
         this.groupAgentMapper = groupAgentMapper;
         this.requirementGroupMapper = requirementGroupMapper;
         this.taskRunMapper = taskRunMapper;
+        this.projectMapper = projectMapper;
     }
 
     public List<AgentResponse> list(UUID actorId, UUID teamId) {
@@ -68,6 +72,33 @@ public class AgentService {
                 .filter(agent -> "TEAM".equals(agent.getVisibility()) || actorId.equals(agent.getCreatedBy()))
                 .map(agent -> toResponse(agent, actorId.equals(agent.getCreatedBy())))
                 .toList();
+    }
+
+    /**
+     * 获取单张 Agent 卡（前端需要）：团队可见性校验；projectId 可选，传了则额外校验
+     * 该 Agent 属于此项目的 Team（项目上下文可见），并校验调用者是该项目成员。
+     * PRIVATE Agent 仅创建者可见（prompt 仅创建者返回）。
+     */
+    public AgentResponse get(UUID teamId, UUID agentId, UUID actor, UUID projectId) {
+        if (teamMemberMapper.selectByTeamAndUser(teamId, actor) == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "TEAM_RESOURCE_NOT_FOUND", "团队资源不存在或不可见");
+        }
+        if (projectId != null) {
+            projectAccess.requireProjectMember(projectId, actor);
+            qg.qgent.entity.ProjectEntity project = projectMapper.selectById(projectId);
+            if (project == null || !teamId.equals(project.getTeamId())) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_NOT_FOUND", "项目不存在或不可见");
+            }
+        }
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null || !teamId.equals(agent.getTeamId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "AGENT_NOT_FOUND", "Agent 不存在或不可见");
+        }
+        boolean owner = actor.equals(agent.getCreatedBy());
+        if (!"TEAM".equals(agent.getVisibility()) && !owner) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "AGENT_NOT_FOUND", "Agent 不存在或不可见");
+        }
+        return toResponse(agent, owner);
     }
 
     /**
