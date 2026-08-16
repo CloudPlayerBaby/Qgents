@@ -22,6 +22,14 @@ public class MergeRequestSummaryResponse {
     private String targetBranch;
     private String status;
     private String headCommit;
+    /**
+     * GitHub 是否可合并；null 表示 GitHub 尚未计算完成。
+     */
+    private Boolean mergeable;
+    /**
+     * GitHub mergeable_state 枚举：clean/dirty/blocked/behind/unstable/draft/unknown。
+     */
+    private String mergeableState;
     private QualityGateResponse qualityGate;
     private String title;
     private String webUrl;

@@ -21,6 +21,12 @@ public record GitHubPullRequestDetails(
         /* Whether GitHub reports that the Pull Request was merged. */
         boolean merged,
         /* GitHub page URL. */
-        String htmlUrl
+        String htmlUrl,
+        /* Whether GitHub can currently merge the Pull Request; null while GitHub is still computing mergeability. */
+        Boolean mergeable,
+        /* GitHub mergeable_state such as clean/dirty/blocked/behind/unstable/draft/unknown. */
+        String mergeableState,
+        /* Target branch (base) commit SHA used by GitHub for mergeability computation. */
+        String baseSha
 ) {
 }

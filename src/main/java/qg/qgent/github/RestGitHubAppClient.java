@@ -428,12 +428,14 @@ public class RestGitHubAppClient implements GitHubAppClient {
             throw upstreamFailure();
         }
         return new GitHubPullRequestDetails(response.id(), response.number(), response.state(), response.title(),
-                response.head().sha(), response.head().ref(), response.base().ref(), Boolean.TRUE.equals(response.merged()), response.htmlUrl());
+                response.head().sha(), response.head().ref(), response.base().ref(), Boolean.TRUE.equals(response.merged()),
+                response.htmlUrl(), response.mergeable(), response.mergeableState(), response.base().sha());
     }
 
     private record PullRequestResponse(long id, int number, String state, String title,
                                        @JsonProperty("html_url") String htmlUrl, PullRequestRef head,
-                                       PullRequestRef base, Boolean merged) {
+                                       PullRequestRef base, Boolean merged, Boolean mergeable,
+                                       @JsonProperty("mergeable_state") String mergeableState) {
     }
 
     private record PullRequestRef(String ref, String sha) {

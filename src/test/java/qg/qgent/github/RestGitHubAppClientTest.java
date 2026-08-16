@@ -73,11 +73,31 @@ class RestGitHubAppClientTest {
                 .andRespond(withSuccess("""
                         {"id":12345,"number":42,"state":"open","title":"Test PR",
                          "html_url":"https://github.com/owner/repo/pull/42",
+                         "mergeable":false,"mergeable_state":"dirty",
                          "head":{"ref":"feat/mock","sha":"head-sha"},"base":{"ref":"main","sha":"base-sha"}}
                         """, MediaType.APPLICATION_JSON));
         GitHubPullRequestDetails details = client.getPullRequest(12345L, "owner", "repo", 42);
         assertEquals(42, details.number());
         assertEquals("open", details.state());
+        assertEquals(Boolean.FALSE, details.mergeable());
+        assertEquals("dirty", details.mergeableState());
+        assertEquals("base-sha", details.baseSha());
+        server.verify();
+    }
+
+    @Test
+    void mergabilityIsNullWhenGitHubHasNotComputedIt() {
+        server.expect(once(), requestTo("https://api.github.com/repos/owner/repo/pulls/42"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        {"id":12345,"number":42,"state":"open","title":"Test PR",
+                         "html_url":"https://github.com/owner/repo/pull/42",
+                         "mergeable":null,"mergeable_state":"unknown",
+                         "head":{"ref":"feat/mock","sha":"head-sha"},"base":{"ref":"main","sha":"base-sha"}}
+                        """, MediaType.APPLICATION_JSON));
+        GitHubPullRequestDetails details = client.getPullRequest(12345L, "owner", "repo", 42);
+        assertEquals(null, details.mergeable());
+        assertEquals("unknown", details.mergeableState());
         server.verify();
     }
 

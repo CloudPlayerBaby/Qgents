@@ -45,6 +45,18 @@ public class MergeRequestEntity {
      */
     private String headCommit;
     /**
+     * GitHub 是否可合并；null 表示 GitHub 尚未计算完成。
+     */
+    private Boolean mergeable;
+    /**
+     * GitHub mergeable_state 枚举：clean/dirty/blocked/behind/unstable/draft/unknown。
+     */
+    private String mergeableState;
+    /**
+     * 合并基线（目标分支）提交 SHA，GitHub 冲突计算基于该提交。
+     */
+    private String baseSha;
+    /**
      * MR 标题。
      */
     private String title;
