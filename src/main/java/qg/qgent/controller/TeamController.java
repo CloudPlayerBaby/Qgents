@@ -3,12 +3,15 @@ package qg.qgent.controller;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.PagedApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.*;
+import qg.qgent.service.EventService;
 import qg.qgent.service.IdempotencyService;
 import qg.qgent.service.TeamService;
 
@@ -24,10 +27,23 @@ import java.util.UUID;
 public class TeamController {
     private final TeamService teams;
     private final IdempotencyService idempotency;
+    private final EventService eventService;
 
-    public TeamController(TeamService teams, IdempotencyService idempotency) {
+    public TeamController(TeamService teams, IdempotencyService idempotency, EventService eventService) {
         this.teams = teams;
         this.idempotency = idempotency;
+        this.eventService = eventService;
+    }
+
+    /**
+     * 前端 SSE 需求清单 ②：团队级实时事件流（需团队成员）。
+     * 事件：project.member.added / team.member.updated / activity.created；
+     * 支持 Last-Event-ID 续传，游标过期返回 409。
+     */
+    @GetMapping("/{teamId}/events")
+    public SseEmitter events(@PathVariable UUID teamId, @AuthenticationPrincipal UUID userId,
+                             @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId) {
+        return eventService.teamStream(teamId, userId, lastEventId);
     }
 
     /**

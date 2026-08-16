@@ -53,6 +53,7 @@ public class TeamService {
     private final TeamInvitationMailer invitationMailer;
     private final TeamDisbandService teamDisbandService;
     private final NotificationService notificationService;
+    private final EventService eventService;
     private final EventMapper eventMapper;
     private final TaskMapper taskMapper;
     private final MergeRequestMapper mergeRequestMapper;
@@ -61,6 +62,7 @@ public class TeamService {
                        TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, ProjectMapper projectMapper,
                        UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer,
                        TeamDisbandService teamDisbandService, NotificationService notificationService,
+                       EventService eventService,
                        EventMapper eventMapper, TaskMapper taskMapper, MergeRequestMapper mergeRequestMapper) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
@@ -72,6 +74,7 @@ public class TeamService {
         this.invitationMailer = invitationMailer;
         this.teamDisbandService = teamDisbandService;
         this.notificationService = notificationService;
+        this.eventService = eventService;
         this.eventMapper = eventMapper;
         this.taskMapper = taskMapper;
         this.mergeRequestMapper = mergeRequestMapper;
@@ -360,6 +363,9 @@ public class TeamService {
             member.setUserId(actor);
             member.setRole("TEAM_MEMBER");
             memberMapper.insert(member);
+            // 团队级 SSE：新成员加入团队（前端 SSE 需求清单 ②）
+            eventService.publishTeamEvent(invitation.getTeamId(), "team.member.updated", id(actor),
+                    Map.of("teamId", id(invitation.getTeamId()), "userId", id(actor)));
         }
         // 更新邀请状态为已接受
         invitation.setStatus("ACCEPTED");
@@ -493,6 +499,9 @@ public class TeamService {
         projectMemberMapper.deleteByTeamAndUser(teamId, userId);
         // 移除团队成员在团队成员列表
         memberMapper.deleteByTeamAndUser(teamId, userId);
+        // 团队级 SSE：成员移出团队（前端 SSE 需求清单 ②）
+        eventService.publishTeamEvent(teamId, "team.member.updated", id(userId),
+                Map.of("teamId", id(teamId), "userId", id(userId)));
         return memberResponse(userId, team, target.getRole(), userMapper.selectById(userId));
     }
 
@@ -945,5 +954,9 @@ public class TeamService {
 
     private ApiException invalid(String message) {
         return new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_TEAM_OPERATION", message);
+    }
+
+    private String id(UUID value) {
+        return value == null ? null : value.toString();
     }
 }

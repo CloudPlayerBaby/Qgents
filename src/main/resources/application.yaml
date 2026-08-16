@@ -10,8 +10,6 @@ spring:
           model: deepseek-v4-flash
           temperature: 0.2
           max-tokens: 8192
-        response-format:
-          type: JSON_OBJECT
   application:
     name: Qgents
   datasource:

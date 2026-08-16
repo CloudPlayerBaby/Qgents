@@ -72,7 +72,7 @@ class TeamServiceTest {
     private final TeamService service = new TeamService(teamMapper, memberMapper, invitationMapper,
             projectMemberMapper, projectMapper, userMapper, mock(TokenService.class),
             mock(TeamInvitationMailer.class), teamDisbandService, notificationService,
-            eventMapper, taskMapper, mergeRequestMapper);
+            mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper);
 
     @Test
     void createAddsCreatorAsOwner() {
@@ -276,7 +276,7 @@ class TeamServiceTest {
         TokenService tokens = mock(TokenService.class);
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
                 projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class), mock(TeamDisbandService.class),
-                mock(NotificationService.class), eventMapper, taskMapper, mergeRequestMapper);
+                mock(NotificationService.class), mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper);
         when(userMapper.selectById(actor)).thenReturn(user);
         when(tokens.hash("raw-token")).thenReturn(new byte[] { 1 });
         when(invitationMapper.selectOne(any())).thenReturn(invitation);
@@ -323,7 +323,7 @@ class TeamServiceTest {
         when(tokens.hash("raw-token")).thenReturn(new byte[] { 1 });
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
                 projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class), mock(TeamDisbandService.class),
-                mock(NotificationService.class), eventMapper, taskMapper, mergeRequestMapper);
+                mock(NotificationService.class), mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper);
         InviteTeamMemberRequest request = new InviteTeamMemberRequest();
         request.setEmail("new@example.com");
         request.setRole("TEAM_MEMBER");

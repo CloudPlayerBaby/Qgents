@@ -4,7 +4,10 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.*;
 import qg.qgent.entity.*;
@@ -39,12 +42,14 @@ public class GitHubRepositoryService {
     private final RepositoryBranchConfigMapper branchConfigMapper;
     private final GitHubAppClient gitHubClient;
     private final Clock clock;
+    private final TransactionTemplate required;
 
     public GitHubRepositoryService(GitHubInstallationMapper installationMapper, GitHubRepositoryMapper repositoryMapper,
                                    ProjectRepositoryMapper projectRepositoryMapper,
                                    ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
                                    TeamMemberMapper teamMemberMapper, RepositoryBranchConfigMapper branchConfigMapper,
-                                   GitHubAppClient gitHubClient, Clock clock) {
+                                   GitHubAppClient gitHubClient, Clock clock,
+                                   PlatformTransactionManager transactionManager) {
         this.installationMapper = installationMapper;
         this.repositoryMapper = repositoryMapper;
         this.projectRepositoryMapper = projectRepositoryMapper;
@@ -54,6 +59,8 @@ public class GitHubRepositoryService {
         this.branchConfigMapper = branchConfigMapper;
         this.gitHubClient = gitHubClient;
         this.clock = clock;
+        this.required = new TransactionTemplate(transactionManager);
+        this.required.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
     }
 
     /**
@@ -101,8 +108,9 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 移除团队已安装的 GitHub App 授权记录。
-     * 如果该安装下的仓库已经被绑定到某个具体项目里，则拒绝删除（需要先解绑项目仓库）。
+     * 解除团队已安装的 GitHub App 授权记录（解除 Qgents 团队关联，不是替用户去 GitHub 远程卸载 App）。
+     * 若该安装下的仓库仍被项目绑定引用，则拒绝解除并返回 409 GITHUB_INSTALLATION_IN_USE，不删除任何数据；
+     * 若没有项目绑定，先显式删除该安装下未绑定的仓库镜像，再删除安装记录，避免外键约束触发 500。
      *
      * @param actorId        操作人 ID
      * @param teamId         团队 ID
@@ -121,20 +129,23 @@ public class GitHubRepositoryService {
             throw notFound("GitHub installation does not exist");
         }
 
-        // 查询该安装记录下同步过来的所有仓库 ID
-        List<UUID> repositoryIds = repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
-                        .eq(GitHubRepositoryEntity::getInstallationId, installationId)
-                        .select(GitHubRepositoryEntity::getId))
-                .stream().map(GitHubRepositoryEntity::getId).toList();
+        // 查询该安装记录下同步过来的所有仓库镜像
+        List<GitHubRepositoryEntity> repositories = repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+                .eq(GitHubRepositoryEntity::getInstallationId, installationId));
+        List<UUID> repositoryIds = repositories.stream().map(GitHubRepositoryEntity::getId).toList();
 
-        // 如果有仓库，并且这些仓库有任何一个正在被某个项目绑定使用，就抛出冲突异常
+        // 若任一仓库仍被项目绑定引用，拒绝解除，不删除任何数据
         if (!repositoryIds.isEmpty() && projectRepositoryMapper.selectCount(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .in(ProjectRepositoryEntity::getRepositoryId, repositoryIds)) > 0) {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_IN_USE",
                     "Unbind project repositories before removing this GitHub installation");
         }
 
-        // 只有所有仓库都没被项目引用时，才允许物理删除这条安装记录
+        // 无项目绑定：先显式删除未绑定的仓库镜像（避免外键约束），再删除安装记录
+        if (!repositoryIds.isEmpty()) {
+            repositoryMapper.delete(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+                    .eq(GitHubRepositoryEntity::getInstallationId, installationId));
+        }
         installationMapper.deleteById(installationId);
     }
 
@@ -351,7 +362,6 @@ public class GitHubRepositoryService {
      * @param providerInstallationId GitHub 底层真实的 Installation ID
      * @param state                  授权时生成的加密状态，内含发起的团队 teamId
      */
-    @Transactional
     public UUID handleInstallationCallback(long providerInstallationId, String state) {
         log.info("Handling GitHub App installation callback. providerInstallationId: {}", providerInstallationId);
         Object callbackLock = INSTALLATION_CALLBACK_LOCKS.computeIfAbsent(providerInstallationId, ignored -> new Object());
@@ -369,7 +379,6 @@ public class GitHubRepositoryService {
     /**
      * Verifies state, synchronizes the installation, and preserves the initiating client for redirect routing.
      */
-    @Transactional
     public GitHubInstallationState handleInstallationCallbackDetails(long providerInstallationId, String state) {
         log.info("Handling GitHub App installation callback. providerInstallationId: {}", providerInstallationId);
 
@@ -415,7 +424,6 @@ public class GitHubRepositoryService {
      * 手动触发指定授权的全量同步。
      * 只有 Team Owner 才能执行此操作。
      */
-    @Transactional
     public GitHubInstallationResponse manualSyncInstallation(UUID actorId, UUID teamId, UUID installationId) {
         requireTeamOwner(actorId, teamId);
         GitHubInstallationEntity installationEntity = installationMapper.selectOne(
@@ -429,23 +437,34 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 核心全量同步逻辑，提供给 callback 和手动刷新复用
+     * 核心全量同步逻辑，提供给 callback 和手动刷新复用。
+     * 远程 GitHub 查询在事务、行锁之外完成；落库阶段在事务内以 Installation 行锁复查本地状态，
+     * 若安装已被 Webhook suspend/deleted 则不得用旧快照恢复 ACTIVE/AUTHORIZED。
      */
     private GitHubInstallationResponse syncInstallation(UUID teamId, long providerInstallationId) {
-        // 先读取 GitHub Installation 详情和完整 Repository 集合
+        // 锁外拉取 GitHub 快照：不持有数据库事务或行锁
         GitHubInstallationDetails installation = gitHubClient.getInstallation(providerInstallationId);
         List<GitHubRepositoryDetails> providerRepositories = gitHubClient.listRepositories(providerInstallationId);
 
-        // 在本地库查找这条安装记录
-        GitHubInstallationEntity installationEntity = installationMapper.selectOne(
-                new LambdaQueryWrapper<GitHubInstallationEntity>().eq(
-                        GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+        return required.execute(status -> syncInstallationInTransaction(teamId, providerInstallationId,
+                installation, providerRepositories));
+    }
+
+    private GitHubInstallationResponse syncInstallationInTransaction(UUID teamId, long providerInstallationId,
+                                                                    GitHubInstallationDetails installation,
+                                                                    List<GitHubRepositoryDetails> providerRepositories) {
+        // 行锁内读取并复查状态：与 Webhook 的 installation/suspend 事件按 Installation 串行
+        GitHubInstallationEntity installationEntity = installationMapper.selectByProviderInstallationIdForUpdate(providerInstallationId);
 
         boolean newInstallation = installationEntity == null;
 
         if (!newInstallation && !installationEntity.getTeamId().equals(teamId)) {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_TEAM_CONFLICT",
                     "This GitHub installation is already bound to another team");
+        }
+        // 已存在且被 Webhook suspend/deleted：不得用旧快照恢复 ACTIVE/AUTHORIZED，直接返回当前状态
+        if (!newInstallation && !"ACTIVE".equals(installationEntity.getStatus())) {
+            return toInstallationResponse(installationEntity);
         }
 
         if (newInstallation) {
@@ -610,6 +629,9 @@ public class GitHubRepositoryService {
         return installationIds.isEmpty() ? List.of()
                 : repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
                 .in(GitHubRepositoryEntity::getInstallationId, installationIds)
+                // 团队授权仓库列表只返回仍可用的仓库：已撤权或已归档的不再暴露给前端供绑定
+                .eq(GitHubRepositoryEntity::getAuthorizationStatus, "AUTHORIZED")
+                .eq(GitHubRepositoryEntity::getArchived, false)
                 .orderByAsc(GitHubRepositoryEntity::getOwnerLogin, GitHubRepositoryEntity::getName));
     }
 

@@ -161,7 +161,14 @@ public class ProjectService {
         // 通知被加入项目的成员
         notificationService.notify(request.getUserId(), projectId, null, "PROJECT_ADDED",
                 "你被加入项目 " + project.getName(), null, projectId.toString());
+        // 团队级 SSE：新成员加入项目（前端 SSE 需求清单 ②）
+        eventService.publishTeamEvent(project.getTeamId(), "project.member.added", id(projectId),
+                Map.of("teamId", id(project.getTeamId()), "projectId", id(projectId)));
         return new ProjectMemberResponse(request.getUserId().toString(), "PROJECT_MEMBER");
+    }
+
+    private String id(UUID value) {
+        return value == null ? null : value.toString();
     }
 
     @Transactional

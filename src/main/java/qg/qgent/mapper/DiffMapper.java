@@ -22,4 +22,13 @@ public interface DiffMapper extends BaseMapper<DiffEntity> {
     DiffEntity selectAcceptedCommittedForMr(@Param("taskId") java.util.UUID taskId,
                                             @Param("projectId") java.util.UUID projectId, @Param("workspaceId") java.util.UUID workspaceId,
                                             @Param("repositoryId") java.util.UUID repositoryId, @Param("headCommit") String headCommit);
+
+    /**
+     * 交付成功时置 MR_CREATED 并显式清空失败标记。MyBatis-Plus 的 updateById 会忽略 null 字段，
+     * 因此必须用显式 SQL 把 failure_code/failure_reason 置空。
+     */
+    @org.apache.ibatis.annotations.Update("update diffs set delivery_status='MR_CREATED', "
+            + "delivery_failure_code=null, delivery_failure_reason=null, updated_at=#{updatedAt} "
+            + "where id=#{id}")
+    int markDelivered(@Param("id") java.util.UUID id, @Param("updatedAt") java.time.LocalDateTime updatedAt);
 }
