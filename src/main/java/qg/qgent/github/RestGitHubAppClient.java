@@ -175,6 +175,39 @@ public class RestGitHubAppClient implements GitHubAppClient {
     }
 
     @Override
+    public GitHubRepositoryDetails createRepository(long installationId, String accountType, String accountLogin,
+                                                    GitHubRepositoryCreateRequest request) {
+        requireConfigured();
+        try {
+            RepositoryResponse response = client.post()
+                    .uri(uriBuilder -> "Organization".equalsIgnoreCase(accountType)
+                            ? uriBuilder.path("/orgs/{org}/repos").build(accountLogin)
+                            : uriBuilder.path("/user/repos").build())
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .body(request)
+                    .retrieve()
+                    .body(RepositoryResponse.class);
+            if (response == null || response.id() == 0 || response.name() == null || response.owner() == null) {
+                throw upstreamFailure();
+            }
+            return new GitHubRepositoryDetails(response.id(), response.owner().login(), response.name(),
+                    response.defaultBranch(), response.visibility(), response.archived());
+        } catch (RestClientResponseException exception) {
+            if (exception.getStatusCode().value() == HttpStatus.UNPROCESSABLE_ENTITY.value()) {
+                throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_CREATE_CONFLICT",
+                        "GitHub 仓库创建失败，名称可能已存在或不符合命名规范");
+            }
+            log.warn("GitHub createRepository rejected: account={} status={} body={}",
+                    accountLogin, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            throw upstreamFailure();
+        } catch (RestClientException exception) {
+            log.warn("GitHub createRepository failed before receiving a response: account={} {}",
+                    accountLogin, exception.getMessage());
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
     public String createInstallationToken(long installationId) {
         return installationTokenProvider.apply(installationId);
     }

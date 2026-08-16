@@ -6,9 +6,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import qg.qgent.api.ApiException;
+import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
 import qg.qgent.entity.*;
 import qg.qgent.github.*;
@@ -193,6 +195,64 @@ public class GitHubRepositoryService {
         return bindings.stream()
                 .map(binding -> toProjectRepositoryResponse(binding, repoMap.get(binding.getRepositoryId())))
                 .toList();
+    }
+
+    /**
+     * 在团队 GitHub App 账号下新建一个仓库（事务外），返回建仓结果与所用安装记录，不落库。
+     * 采用 NOT_SUPPORTED 挂起调用方事务，确保 GitHub 建仓 HTTP 不持有数据库事务或行锁（AGENTS §3.4）。
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public RemoteRepositoryCreation createRemoteRepository(UUID actorId, UUID teamId, NewProjectRepositoryRequest request) {
+        requireTeamOwner(actorId, teamId);
+        GitHubInstallationEntity installation = resolveInstallationForCreate(teamId, request.getInstallationId());
+        GitHubRepositoryDetails created = gitHubClient.createRepository(
+                installation.getProviderInstallationId(), installation.getAccountType(), installation.getAccountLogin(),
+                new GitHubRepositoryCreateRequest(request.getName(), request.getDescription(),
+                        request.getIsPrivate() == null || request.getIsPrivate(), true));
+        return new RemoteRepositoryCreation(installation, created);
+    }
+
+    /**
+     * 在建仓成功后、调用方事务内落库：写入仓库镜像并绑定到项目。不自行开启事务，
+     * 由调用方（项目创建事务）保证与项目落库的原子性。
+     */
+    public ProjectRepositoryResponse bindCreatedRepository(UUID projectId, RemoteRepositoryCreation creation,
+                                                           NewProjectRepositoryRequest request) {
+        GitHubInstallationEntity installation = creation.installation();
+        GitHubRepositoryDetails created = creation.repository();
+        GitHubRepositoryEntity mirror = repositoryMapper.selectOne(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+                .eq(GitHubRepositoryEntity::getProviderRepositoryId, created.getRepositoryId())
+                .eq(GitHubRepositoryEntity::getInstallationId, installation.getId()));
+        if (mirror == null) {
+            mirror = new GitHubRepositoryEntity();
+            mirror.setId(UuidV7.next());
+            mirror.setInstallationId(installation.getId());
+            mirror.setProviderRepositoryId(created.getRepositoryId());
+            mirror.setOwnerLogin(created.getOwnerLogin());
+            mirror.setName(created.getName());
+            mirror.setDefaultBranch(created.getDefaultBranch());
+            mirror.setVisibility(normalizeEnum(created.getVisibility()));
+            mirror.setArchived(created.isArchived());
+            mirror.setAuthorizationStatus("AUTHORIZED");
+            mirror.setSyncedAt(LocalDateTime.now(clock));
+            repositoryMapper.insert(mirror);
+        }
+        if (projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
+                .eq(ProjectRepositoryEntity::getProjectId, projectId)
+                .eq(ProjectRepositoryEntity::getRepositoryId, mirror.getId())) != null) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_ALREADY_BOUND",
+                    "仓库已被该项目绑定");
+        }
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(UuidV7.next());
+        binding.setProjectId(projectId);
+        binding.setRepositoryId(mirror.getId());
+        binding.setDefaultBranch(created.getDefaultBranch());
+        binding.setDisplayName(request.getDisplayName() == null || request.getDisplayName().isBlank()
+                ? created.getName() : request.getDisplayName());
+        binding.setBoundAt(LocalDateTime.now(clock));
+        projectRepositoryMapper.insert(binding);
+        return toProjectRepositoryResponse(binding, mirror);
     }
 
     /**
@@ -686,5 +746,41 @@ public class GitHubRepositoryService {
 
     private ApiException notFound(String message) {
         return new ApiException(HttpStatus.NOT_FOUND, "GITHUB_RESOURCE_NOT_FOUND", message);
+    }
+
+    /**
+     * 解析自动建仓所用的安装记录：指定 installationId 时校验其归属与状态；
+     * 未指定时要求团队恰好一个 ACTIVE 安装，否则明确报错要求指定。
+     */
+    private GitHubInstallationEntity resolveInstallationForCreate(UUID teamId, UUID installationId) {
+        if (installationId != null) {
+            GitHubInstallationEntity installation = installationMapper.selectById(installationId);
+            if (installation == null || !teamId.equals(installation.getTeamId())
+                    || !"ACTIVE".equalsIgnoreCase(installation.getStatus())
+                    || installation.getProviderInstallationId() == null) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GITHUB_INSTALLATION_NOT_ACTIVE",
+                        "GitHub App installation is not active for this team");
+            }
+            return installation;
+        }
+        List<GitHubInstallationEntity> active = installationMapper.selectList(
+                new LambdaQueryWrapper<GitHubInstallationEntity>()
+                        .eq(GitHubInstallationEntity::getTeamId, teamId)
+                        .eq(GitHubInstallationEntity::getStatus, "ACTIVE"));
+        if (active.size() == 1 && active.get(0).getProviderInstallationId() != null) {
+            return active.get(0);
+        }
+        if (active.isEmpty()) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GITHUB_INSTALLATION_NOT_ACTIVE",
+                    "团队没有可用的 GitHub App 安装授权");
+        }
+        throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GITHUB_INSTALLATION_REQUIRED",
+                "团队有多个 GitHub App 安装授权，请指定 installationId");
+    }
+
+    /**
+     * 自动建仓的事务外结果：所用安装记录 + 新建仓库元数据。
+     */
+    public record RemoteRepositoryCreation(GitHubInstallationEntity installation, GitHubRepositoryDetails repository) {
     }
 }

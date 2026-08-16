@@ -10,8 +10,11 @@ import qg.qgent.dto.UpdateProjectMemberRequest;
 import qg.qgent.dto.UpdateProjectRequest;
 import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectMemberEntity;
+import qg.qgent.dto.NewProjectRepositoryRequest;
+import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamMemberEntity;
+import qg.qgent.github.GitHubRepositoryDetails;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.TeamMapper;
@@ -24,8 +27,10 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -63,6 +68,33 @@ class ProjectServiceTest {
         assertEquals("PROJECT_ADMIN", response.getRole());
         verify(projects).insert(any(ProjectEntity.class));
         verify(members, org.mockito.Mockito.times(2)).insert(any(ProjectMemberEntity.class));
+    }
+
+    @Test
+    void createAutoProvisionsNewRepository() {
+        UUID teamId = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        when(teams.selectByIdForUpdate(teamId)).thenReturn(team(teamId, owner));
+        TeamMemberEntity ownerMember = teamMember(teamId, owner);
+        ownerMember.setRole("TEAM_OWNER");
+        when(teamMembers.selectByTeamAndUser(teamId, owner)).thenReturn(ownerMember);
+
+        NewProjectRepositoryRequest newRepo = new NewProjectRepositoryRequest();
+        newRepo.setName("auto-repo");
+        CreateProjectRequest request = new CreateProjectRequest();
+        request.setName("project");
+        request.setNewRepository(newRepo);
+
+        GitHubRepositoryService.RemoteRepositoryCreation creation = new GitHubRepositoryService.RemoteRepositoryCreation(
+                new GitHubInstallationEntity(), new GitHubRepositoryDetails());
+        when(githubRepositoryService.createRemoteRepository(owner, teamId, newRepo)).thenReturn(creation);
+
+        service.create(owner, teamId, request);
+
+        verify(githubRepositoryService).createRemoteRepository(owner, teamId, newRepo);
+        verify(githubRepositoryService).bindCreatedRepository(any(UUID.class), eq(creation), eq(newRepo));
+        verify(githubRepositoryService, never()).bindRepositoriesOnCreate(any(UUID.class), any(UUID.class),
+                any(UUID.class), any());
     }
 
     @Test
