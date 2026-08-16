@@ -300,9 +300,8 @@ public class GitHubWebhookService {
             complete(row, STATUS_IGNORED);
             return;
         }
-        GitHubInstallationEntity installation = installationMapper.selectOne(Wrappers
-                .<GitHubInstallationEntity>lambdaQuery()
-                .eq(GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+        // 行锁内读取：不同 Delivery 的事件按 Installation 串行，避免与 added/suspend 交错
+        GitHubInstallationEntity installation = installationMapper.selectByProviderInstallationIdForUpdate(providerInstallationId);
         if (installation == null) {
             // 本地无安装记录时不根据 payload 猜测 team
             complete(row, STATUS_IGNORED);
@@ -322,6 +321,12 @@ public class GitHubWebhookService {
         installation.setStatus(status);
         installation.setUpdatedAt(now);
         installationMapper.updateById(installation);
+
+        // suspend/deleted：立即撤销该安装下仍为 AUTHORIZED 的全部仓库镜像，防止已撤权安装继续读写仓库。
+        // created/unsuspend 不自动恢复仓库授权，恢复只能来自后续有效同步或仓库 added 事件。
+        if ("SUSPENDED".equals(status) || "DELETED".equals(status)) {
+            revokeAllRepositories(installation, now);
+        }
 
         // Project 隔离：只发给实际关联该安装下仓库的 Project；没有仓库绑定则不发 SSE。
         // 禁止按 Team 广播，避免把安装状态泄漏到无关项目。
@@ -343,7 +348,30 @@ public class GitHubWebhookService {
     }
 
     /**
+     * 将安装下仍为 AUTHORIZED 的仓库镜像批量改为 REVOKED，并对实际状态变化的仓库
+     * 只向关联项目发送 github-repository.updated SSE。
+     */
+    private void revokeAllRepositories(GitHubInstallationEntity installation, LocalDateTime now) {
+        List<GitHubRepositoryEntity> repositories = repositoryMapper.selectList(Wrappers
+                .<GitHubRepositoryEntity>lambdaQuery()
+                .eq(GitHubRepositoryEntity::getInstallationId, installation.getId()));
+        for (GitHubRepositoryEntity mirror : repositories) {
+            if (!"AUTHORIZED".equals(mirror.getAuthorizationStatus())) {
+                continue; // 已撤权/非授权：无状态变化，不发 SSE
+            }
+            mirror.setAuthorizationStatus("REVOKED");
+            mirror.setSyncedAt(now);
+            repositoryMapper.updateById(mirror);
+            publishRepositoryUpdated(installation, mirror);
+            log.info("github webhook repository revoked by installation {}, providerRepositoryId={}",
+                    installation.getStatus(), mirror.getProviderRepositoryId());
+        }
+    }
+
+    /**
      * installation_repositories：added/removed 批量 upsert 仓库镜像授权状态，按受影响项目分别发布 SSE。
+     * 非 ACTIVE 安装的 added 直接忽略（不得调 GitHub、不得创建或重新授权镜像）；
+     * ACTIVE 安装的 added 必须先确认仓库仍在当前授权列表内，抵抗 removed 后延迟到达的 added 事件。
      */
     private void handleInstallationRepositories(JsonNode payload, String action,
                                                 GitHubWebhookDeliveryEntity row,
@@ -353,10 +381,15 @@ public class GitHubWebhookService {
             complete(row, STATUS_IGNORED);
             return;
         }
-        GitHubInstallationEntity installation = installationMapper.selectOne(Wrappers
-                .<GitHubInstallationEntity>lambdaQuery()
-                .eq(GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+        // 行锁内读取并判断状态：拿锁后以状态复查为最终判定。
+        // 外部 GitHub 查询（prefetch）在锁外，此处状态可能已被 suspend 等事件更新，必须按锁内最新值决定。
+        GitHubInstallationEntity installation = installationMapper.selectByProviderInstallationIdForUpdate(providerInstallationId);
         if (installation == null) {
+            complete(row, STATUS_IGNORED);
+            return;
+        }
+        if (!"ACTIVE".equals(installation.getStatus())) {
+            // 非 ACTIVE 安装：added 不得重新授权；removed 也无需处理（撤销状态已由 installation 事件完成）
             complete(row, STATUS_IGNORED);
             return;
         }
@@ -390,6 +423,19 @@ public class GitHubWebhookService {
                     "仓库镜像属于其他安装，拒绝跨安装更新授权状态");
         }
         GitHubRepositoryDetails details = fetched == null ? null : fetched.get(providerRepositoryId);
+        // ACTIVE 安装的 added：无论镜像是否存在，都必须确认该仓库仍在当前授权列表内；
+        // 若 fetched 不含该仓库（如 removed 后延迟到达的 added），保持/改为 REVOKED，不得重新授权。
+        if (fetched != null && !fetched.containsKey(providerRepositoryId)) {
+            if (mirror != null && !"REVOKED".equals(mirror.getAuthorizationStatus())) {
+                mirror.setAuthorizationStatus("REVOKED");
+                mirror.setSyncedAt(now);
+                repositoryMapper.updateById(mirror);
+                publishRepositoryUpdated(installation, mirror);
+                log.info("github webhook repository kept revoked (not in current list), providerRepositoryId={}",
+                        providerRepositoryId);
+            }
+            return;
+        }
         boolean created = false;
         if (mirror == null) {
             if (details == null) {
@@ -496,6 +542,13 @@ public class GitHubWebhookService {
         if (payloadInstallation == null
                 || !payloadInstallation.getId().equals(githubRepository.getInstallationId())) {
             complete(row, STATUS_IGNORED); // installation 与本地镜像不一致：不落业务
+            return;
+        }
+        // Installation 必须 ACTIVE、仓库必须 AUTHORIZED 且未归档，否则不创建/更新 MR、不发 SSE
+        if (!"ACTIVE".equals(payloadInstallation.getStatus())
+                || !"AUTHORIZED".equals(githubRepository.getAuthorizationStatus())
+                || Boolean.TRUE.equals(githubRepository.getArchived())) {
+            complete(row, STATUS_IGNORED);
             return;
         }
         List<ProjectRepositoryEntity> bindings = projectRepositoryMapper.selectList(Wrappers
@@ -620,8 +673,11 @@ public class GitHubWebhookService {
     // ---------- 事务外补齐 ----------
 
     /**
-     * installation_repositories added 且本地缺失的仓库，通过受控 GitHub 客户端补齐详情。
+     * installation_repositories added 时通过受控 GitHub 客户端拉取当前安装的完整授权仓库列表。
      * 仅在事务外调用外部 HTTP，不持有数据库事务或行锁。
+     * <p>
+     * 对 ACTIVE 安装的 added，无论本地镜像是否存在都拉取列表，用于确认 added 仓库仍在授权范围内；
+     * 对非 ACTIVE 安装返回空（added 会被 IGNORED，不会走到这里）。
      */
     private Map<Long, GitHubRepositoryDetails> prefetchRepositoryDetails(JsonNode payload, String eventName,
                                                                         String action) {
@@ -642,22 +698,18 @@ public class GitHubWebhookService {
         if (addedIds.isEmpty()) {
             return Map.of();
         }
-        List<GitHubRepositoryEntity> local = repositoryMapper.selectList(Wrappers.<GitHubRepositoryEntity>lambdaQuery()
-                .in(GitHubRepositoryEntity::getProviderRepositoryId, addedIds));
-        Set<Long> localIds = new HashSet<>();
-        for (GitHubRepositoryEntity mirror : local) {
-            localIds.add(mirror.getProviderRepositoryId());
-        }
-        Set<Long> missing = new HashSet<>(addedIds);
-        missing.removeAll(localIds);
-        if (missing.isEmpty()) {
+        // 非 ACTIVE 安装不调 GitHub：返回空集合，事件处理会因 installation 状态 IGNORED
+        GitHubInstallationEntity installation = installationMapper.selectOne(Wrappers
+                .<GitHubInstallationEntity>lambdaQuery()
+                .eq(GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+        if (installation == null || !"ACTIVE".equals(installation.getStatus())) {
             return Map.of();
         }
         try {
             List<GitHubRepositoryDetails> all = gitHubClient.listRepositories(providerInstallationId);
             Map<Long, GitHubRepositoryDetails> result = new HashMap<>();
             for (GitHubRepositoryDetails details : all) {
-                if (missing.contains(details.getRepositoryId())) {
+                if (addedIds.contains(details.getRepositoryId())) {
                     result.put(details.getRepositoryId(), details);
                 }
             }

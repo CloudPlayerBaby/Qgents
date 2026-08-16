@@ -5,8 +5,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,6 +26,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
@@ -80,9 +85,12 @@ class GitHubRepositoryServiceTest {
 
     @BeforeEach
     void setUp() {
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        // lenient：仅 sync 相关测试会触发事务，其余测试该 stub 不被使用
+        lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         service = new GitHubRepositoryService(installationMapper, repositoryMapper, projectRepositoryMapper,
                 projectMapper, projectMemberMapper, teamMemberMapper, branchConfigMapper, gitHubClient,
-                Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC));
+                Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), transactionManager);
     }
 
     @Test
@@ -207,7 +215,7 @@ class GitHubRepositoryServiceTest {
         existingInstallation.setTeamId(otherTeamId);
         existingInstallation.setProviderInstallationId(providerInstallationId);
         
-        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(existingInstallation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(existingInstallation);
         
         ApiException exception = assertThrows(ApiException.class, 
                 () -> service.handleInstallationCallback(providerInstallationId, "mock_state"));
@@ -233,8 +241,9 @@ class GitHubRepositoryServiceTest {
         existingInstallation.setId(installationId);
         existingInstallation.setTeamId(myTeamId);
         existingInstallation.setProviderInstallationId(providerInstallationId);
+        existingInstallation.setStatus("ACTIVE"); // 只有 ACTIVE 安装才继续落库同步
         
-        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(existingInstallation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(existingInstallation);
         
         // Return 2 repositories from Database
         GitHubRepositoryEntity repo1 = new GitHubRepositoryEntity();
@@ -274,7 +283,7 @@ class GitHubRepositoryServiceTest {
             new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "repo1", "main", "PRIVATE", false)
         ));
         
-        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(null);
         
         UUID returnedTeamId = service.handleInstallationCallback(providerInstallationId, "mock_state");
         
@@ -302,7 +311,7 @@ class GitHubRepositoryServiceTest {
                         providerInstallationId, "qgents", "Organization"));
         when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
                 new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "repo1", "main", "PRIVATE", false)));
-        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(null);
         when(installationMapper.selectById(previousInstallationId)).thenReturn(previousInstallation);
         when(repositoryMapper.selectList(any(Wrapper.class)))
                 .thenReturn(java.util.List.of(), java.util.List.of(existingRepository));
@@ -337,7 +346,7 @@ class GitHubRepositoryServiceTest {
                         providerInstallationId, "qgents", "Organization"));
         when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
                 new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "repo1", "main", "PRIVATE", false)));
-        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(null);
         when(installationMapper.selectById(previousInstallationId)).thenReturn(previousInstallation);
         when(repositoryMapper.selectList(any(Wrapper.class)))
                 .thenReturn(java.util.List.of(), java.util.List.of(existingRepository));
@@ -362,13 +371,68 @@ class GitHubRepositoryServiceTest {
         when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
                 new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "empty-repository", null,
                         "PRIVATE", false)));
-        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(null);
 
         service.handleInstallationCallback(providerInstallationId, "mock_state");
 
         ArgumentCaptor<GitHubRepositoryEntity> repository = ArgumentCaptor.forClass(GitHubRepositoryEntity.class);
         verify(repositoryMapper).insert(repository.capture());
         assertNull(repository.getValue().getDefaultBranch());
+    }
+
+    @Test
+    void syncDoesNotRestoreSuspendedInstallationFromStaleSnapshot() {
+        long providerInstallationId = 12345L;
+        UUID teamId = UUID.randomUUID();
+
+        // 锁外 GitHub 快照正常返回（旧快照，安装当时仍可用）
+        when(gitHubClient.verifyInstallationState("mock_state")).thenReturn(teamId);
+        when(gitHubClient.getInstallation(providerInstallationId))
+                .thenReturn(new qg.qgent.github.GitHubInstallationDetails(
+                        providerInstallationId, "qgents", "Organization"));
+        when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
+                new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "repo1", "main", "PRIVATE", false)));
+
+        // 落库阶段行锁读到：安装已被 Webhook suspend 置为 SUSPENDED
+        GitHubInstallationEntity suspended = new GitHubInstallationEntity();
+        suspended.setId(installationId);
+        suspended.setTeamId(teamId);
+        suspended.setProviderInstallationId(providerInstallationId);
+        suspended.setStatus("SUSPENDED");
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(suspended);
+
+        service.handleInstallationCallback(providerInstallationId, "mock_state");
+
+        // 不得用旧快照恢复 ACTIVE，不得写回 AUTHORIZED 仓库
+        verify(installationMapper, never()).updateById(any(GitHubInstallationEntity.class));
+        verify(repositoryMapper, never()).insert(any(GitHubRepositoryEntity.class));
+        verify(repositoryMapper, never()).updateById(any(GitHubRepositoryEntity.class));
+    }
+
+    @Test
+    void syncDoesNotRestoreDeletedInstallationFromStaleSnapshot() {
+        long providerInstallationId = 12345L;
+        UUID teamId = UUID.randomUUID();
+
+        when(gitHubClient.verifyInstallationState("mock_state")).thenReturn(teamId);
+        when(gitHubClient.getInstallation(providerInstallationId))
+                .thenReturn(new qg.qgent.github.GitHubInstallationDetails(
+                        providerInstallationId, "qgents", "Organization"));
+        when(gitHubClient.listRepositories(providerInstallationId)).thenReturn(java.util.List.of(
+                new qg.qgent.github.GitHubRepositoryDetails(100L, "qgents", "repo1", "main", "PRIVATE", false)));
+
+        GitHubInstallationEntity deleted = new GitHubInstallationEntity();
+        deleted.setId(installationId);
+        deleted.setTeamId(teamId);
+        deleted.setProviderInstallationId(providerInstallationId);
+        deleted.setStatus("DELETED");
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(deleted);
+
+        service.handleInstallationCallback(providerInstallationId, "mock_state");
+
+        verify(installationMapper, never()).updateById(any(GitHubInstallationEntity.class));
+        verify(repositoryMapper, never()).insert(any(GitHubRepositoryEntity.class));
+        verify(repositoryMapper, never()).updateById(any(GitHubRepositoryEntity.class));
     }
 
     private GitHubRepositoryEntity repository(String branch) {
@@ -455,6 +519,8 @@ class GitHubRepositoryServiceTest {
         entity.setProviderRepositoryId(12345L);
         entity.setOwnerLogin("owner");
         entity.setName("repo");
+        entity.setAuthorizationStatus("AUTHORIZED");
+        entity.setArchived(false);
         when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(entity));
 
         var response = service.listTeamRepositories(actorId, teamId);

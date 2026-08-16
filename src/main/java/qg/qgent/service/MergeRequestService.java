@@ -913,6 +913,11 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_UNAVAILABLE",
                     "The bound GitHub repository is unavailable or archived");
         }
+        // 已撤权（REVOKED）的仓库镜像不可再用于创建/同步/合并 PR，调用 GitHub 前统一拒绝
+        if (!"AUTHORIZED".equals(repository.getAuthorizationStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_UNAVAILABLE",
+                    "The bound GitHub repository authorization has been revoked");
+        }
         var project = projectMapper.selectById(projectId);
         GitHubInstallationEntity installation = repository.getInstallationId() == null ? null
                 : githubInstallationMapper.selectById(repository.getInstallationId());
