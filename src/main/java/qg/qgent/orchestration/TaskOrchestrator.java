@@ -125,13 +125,16 @@ public class TaskOrchestrator {
      * @throws IllegalStateException Task 不存在、不属于该项目或状态不可启动时抛出
      */
     public void orchestrate(UUID projectId, UUID taskId) {
+        log.info("orchestrate start taskId={} projectId={}", taskId, projectId);
         TaskEntity task = requireTask(projectId, taskId);
         requireStartable(task);
         TaskExecutionContext ctx = new TaskExecutionContext(task);
         executions.put(taskId, ctx);
         try {
             sandboxSessionManager.acquire(task.getId(), task.getProjectId(), task.getWorkspaceId());
+            log.info("orchestrate sandbox acquired taskId={}", taskId);
             graph.invoke(Map.of("projectId", projectId.toString(), "taskId", taskId.toString()));
+            log.info("orchestrate graph completed taskId={}", taskId);
         } finally {
             sandboxSessionManager.release(task.getWorkspaceId());
             executions.remove(taskId);

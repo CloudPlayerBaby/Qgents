@@ -37,6 +37,8 @@ spring:
       mail.smtp.writetimeout: 5000
 
 logging:
+  file:
+    name: ${LOG_FILE:logs/qgents.log}
   pattern:
     console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [requestId=%X{requestId}] %logger{36} : %msg%n"
     file: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [requestId=%X{requestId}] %logger{36} : %msg%n"

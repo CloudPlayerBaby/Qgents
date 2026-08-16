@@ -37,6 +37,7 @@ public class TaskExecutionListener {
     @Async("taskOrchestratorExecutor")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onTaskCreated(TaskCreatedEvent event) {
+        log.info("task created event received, taskId={} projectId={}", event.taskId(), event.projectId());
         try {
             orchestrator.orchestrate(event.projectId(), event.taskId());
         } catch (RuntimeException e) {
