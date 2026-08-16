@@ -156,10 +156,13 @@ CREATE TABLE IF NOT EXISTS
         default_branch VARCHAR(512) NOT NULL COMMENT '该项目使用的默认分支，可覆盖GitHub仓库默认值',
         display_name VARCHAR(255) NULL COMMENT '仓库在项目内的显示名称',
         bound_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '绑定时间（UTC）',
+        status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '绑定状态：ACTIVE/UNBOUND（软解绑）',
+        unbound_at DATETIME (6) NULL COMMENT '软解绑时间（UTC）',
         UNIQUE KEY uk_pr_repo (project_id, repository_id),
         KEY idx_pr_repository (repository_id),
         CONSTRAINT fk_pr_project FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
-        CONSTRAINT fk_pr_repo FOREIGN KEY (repository_id) REFERENCES github_repositories (id)
+        CONSTRAINT fk_pr_repo FOREIGN KEY (repository_id) REFERENCES github_repositories (id),
+        CONSTRAINT chk_pr_status CHECK (status IN ('ACTIVE', 'UNBOUND'))
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '项目与GitHub仓库绑定';
 
 CREATE TABLE IF NOT EXISTS
