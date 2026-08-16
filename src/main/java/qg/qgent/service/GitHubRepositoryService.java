@@ -108,8 +108,9 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 移除团队已安装的 GitHub App 授权记录。
-     * 如果该安装下的仓库已经被绑定到某个具体项目里，则拒绝删除（需要先解绑项目仓库）。
+     * 解除团队已安装的 GitHub App 授权记录（解除 Qgents 团队关联，不是替用户去 GitHub 远程卸载 App）。
+     * 若该安装下的仓库仍被项目绑定引用，则拒绝解除并返回 409 GITHUB_INSTALLATION_IN_USE，不删除任何数据；
+     * 若没有项目绑定，先显式删除该安装下未绑定的仓库镜像，再删除安装记录，避免外键约束触发 500。
      *
      * @param actorId        操作人 ID
      * @param teamId         团队 ID
@@ -128,20 +129,23 @@ public class GitHubRepositoryService {
             throw notFound("GitHub installation does not exist");
         }
 
-        // 查询该安装记录下同步过来的所有仓库 ID
-        List<UUID> repositoryIds = repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
-                        .eq(GitHubRepositoryEntity::getInstallationId, installationId)
-                        .select(GitHubRepositoryEntity::getId))
-                .stream().map(GitHubRepositoryEntity::getId).toList();
+        // 查询该安装记录下同步过来的所有仓库镜像
+        List<GitHubRepositoryEntity> repositories = repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+                .eq(GitHubRepositoryEntity::getInstallationId, installationId));
+        List<UUID> repositoryIds = repositories.stream().map(GitHubRepositoryEntity::getId).toList();
 
-        // 如果有仓库，并且这些仓库有任何一个正在被某个项目绑定使用，就抛出冲突异常
+        // 若任一仓库仍被项目绑定引用，拒绝解除，不删除任何数据
         if (!repositoryIds.isEmpty() && projectRepositoryMapper.selectCount(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .in(ProjectRepositoryEntity::getRepositoryId, repositoryIds)) > 0) {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_IN_USE",
                     "Unbind project repositories before removing this GitHub installation");
         }
 
-        // 只有所有仓库都没被项目引用时，才允许物理删除这条安装记录
+        // 无项目绑定：先显式删除未绑定的仓库镜像（避免外键约束），再删除安装记录
+        if (!repositoryIds.isEmpty()) {
+            repositoryMapper.delete(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+                    .eq(GitHubRepositoryEntity::getInstallationId, installationId));
+        }
         installationMapper.deleteById(installationId);
     }
 

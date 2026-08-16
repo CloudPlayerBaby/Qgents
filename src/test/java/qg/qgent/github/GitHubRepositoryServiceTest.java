@@ -11,6 +11,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Clock;
@@ -44,6 +45,7 @@ import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.entity.TeamMemberEntity;
+import qg.qgent.github.GitHubClient;
 import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
 import qg.qgent.mapper.ProjectMapper;
@@ -575,5 +577,77 @@ class GitHubRepositoryServiceTest {
         service.removeInstallation(actorId, teamId, installationId);
 
         verify(installationMapper).deleteById(installationId);
+        // 无仓库镜像时不调用镜像删除
+        verify(repositoryMapper, never()).delete(any(Wrapper.class));
+    }
+
+    @Test
+    void removeInstallationDeletesUnboundRepositoryMirrorsBeforeInstallation() {
+        UUID teamId = UUID.randomUUID();
+        UUID installationId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity entity = new GitHubInstallationEntity();
+        entity.setId(installationId);
+        entity.setTeamId(teamId);
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(entity);
+
+        // 存在仓库镜像，但无项目绑定
+        GitHubRepositoryEntity mirror = new GitHubRepositoryEntity();
+        mirror.setId(UUID.randomUUID());
+        mirror.setInstallationId(installationId);
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(mirror));
+        when(projectRepositoryMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+
+        service.removeInstallation(actorId, teamId, installationId);
+
+        // 先删镜像，再删安装
+        verify(repositoryMapper).delete(any(Wrapper.class));
+        verify(installationMapper).deleteById(installationId);
+    }
+
+    @Test
+    void removeInstallationRejectedWhenRepositoryBoundToProject() {
+        UUID teamId = UUID.randomUUID();
+        UUID installationId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity entity = new GitHubInstallationEntity();
+        entity.setId(installationId);
+        entity.setTeamId(teamId);
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(entity);
+
+        GitHubRepositoryEntity mirror = new GitHubRepositoryEntity();
+        mirror.setId(UUID.randomUUID());
+        mirror.setInstallationId(installationId);
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(mirror));
+        when(projectRepositoryMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.removeInstallation(actorId, teamId, installationId));
+
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("GITHUB_INSTALLATION_IN_USE", exception.code());
+        // 不删除任何数据
+        verify(repositoryMapper, never()).delete(any(Wrapper.class));
+        verify(installationMapper, never()).deleteById(any(GitHubInstallationEntity.class));
+        // 不调用 GitHub 远程卸载 API
+        verifyNoInteractions(gitHubClient);
+    }
+
+    @Test
+    void createInstallationUrlAlwaysReturnsNewInstallationPath() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        // 即使本地存在 Installation，服务层也不查询、不改 URL，始终返回 /new
+        when(gitHubClient.createInstallationUrl(teamId, actorId, GitHubClient.WEB))
+                .thenReturn("https://github.com/apps/qgents/installations/new?state=abc");
+
+        var response = service.createInstallationUrl(actorId, teamId, GitHubClient.WEB);
+
+        assertEquals("https://github.com/apps/qgents/installations/new?state=abc", response.getInstallationUrl());
+        // 不查询本地 Installation（服务层只转发 client 生成的 URL）
+        verify(installationMapper, never()).selectOne(any(Wrapper.class));
+        verify(installationMapper, never()).selectList(any(Wrapper.class));
     }
 }

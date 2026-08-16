@@ -150,4 +150,23 @@ class RestGitHubAppClientTest {
         assertEquals(teamId, verified.teamId());
         assertEquals(GitHubClient.MOBILE, verified.client());
     }
+
+    @Test
+    void installationUrlAlwaysUsesNewInstallationPath() {
+        UUID teamId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+
+        String installationUrl = client.createInstallationUrl(teamId, actorId, GitHubClient.WEB);
+
+        // 路径恒为 /apps/qgents/installations/new，不跳 Configure 或 GitHub settings
+        assertEquals("https://github.com/apps/qgents/installations/new",
+                UriComponentsBuilder.fromUriString(installationUrl).replaceQuery(null).build().toUriString());
+        String state = UriComponentsBuilder.fromUriString(installationUrl).build().getQueryParams().getFirst("state");
+        assertFalse(state == null || state.isBlank(), "state 必须存在");
+
+        // state 可还原为当前 team + actor + client
+        GitHubInstallationState verified = client.verifyInstallationStateDetails(state);
+        assertEquals(teamId, verified.teamId());
+        assertEquals(GitHubClient.WEB, verified.client());
+    }
 }
