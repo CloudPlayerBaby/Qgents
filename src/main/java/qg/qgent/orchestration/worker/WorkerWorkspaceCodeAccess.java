@@ -3,6 +3,7 @@ package qg.qgent.orchestration.worker;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -56,11 +57,12 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
     }
 
     @Override
-    public String readFile(UUID workspaceId, String path) {
+    public WorkspaceFileReadResult readFile(UUID workspaceId, String path) {
         WorkerPathResolver.Target target = WorkerPathResolver.resolve(session(workspaceId), path);
         if (target == null) {
-            return null;
+            return WorkspaceFileReadResult.fail(path, "path does not map to a workspace repository");
         }
+        String sha256 = null;
         List<String> allLines = new ArrayList<>();
         int startLine = 1;
         while (true) {
@@ -68,25 +70,34 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
                     Map.of("path", target.relativePath(), "startLine", startLine, "lineCount", READ_PAGE_LINES),
                     TOOL_TIMEOUT);
             if (!"SUCCEEDED".equals(execution.getStatus())) {
-                return null;
+                return WorkspaceFileReadResult.fail(path,
+                        execution.getFailureReason() == null ? "read failed" : execution.getFailureReason());
             }
-            Object lines = resultOf(execution).get("lines");
+            Map<String, Object> result = resultOf(execution);
+            if (sha256 == null) {
+                Object sha = result.get("sha256");
+                sha256 = sha == null ? null : String.valueOf(sha);
+            }
+            Object lines = result.get("lines");
             if (!(lines instanceof List<?> page)) {
-                return null;
+                return WorkspaceFileReadResult.fail(path, "read returned no lines");
             }
             for (Object line : page) {
                 allLines.add(String.valueOf(line));
             }
-            if (!Boolean.TRUE.equals(resultOf(execution).get("truncated"))) {
+            if (!Boolean.TRUE.equals(result.get("truncated"))) {
                 break;
             }
             startLine += READ_PAGE_LINES;
             if (allLines.size() > 100_000) {
-                return null;
+                return WorkspaceFileReadResult.fail(path, "file too large to read");
             }
         }
         String content = String.join("\n", allLines);
-        return content.getBytes(StandardCharsets.UTF_8).length > MAX_READ_BYTES ? null : content;
+        if (content.getBytes(StandardCharsets.UTF_8).length > MAX_READ_BYTES) {
+            return WorkspaceFileReadResult.fail(path, "file exceeds 64KB read limit");
+        }
+        return WorkspaceFileReadResult.ok(path, content, sha256);
     }
 
     @Override

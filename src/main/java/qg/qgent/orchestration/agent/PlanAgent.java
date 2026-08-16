@@ -10,6 +10,7 @@ import qg.qgent.orchestration.RunOutcome;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -102,9 +103,9 @@ public class PlanAgent implements Agent {
             if (contents.size() >= MAX_READ_FILES) {
                 break;
             }
-            String content = codeAccess.readFile(input.getWorkspaceId(), path);
-            if (content != null) {
-                contents.put(path, content);
+            WorkspaceFileReadResult read = codeAccess.readFile(input.getWorkspaceId(), path);
+            if (read != null && read.isOk()) {
+                contents.put(path, read.getContent());
             }
         }
         return contents;
