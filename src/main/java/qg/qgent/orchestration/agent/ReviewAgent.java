@@ -3,6 +3,10 @@ package qg.qgent.orchestration.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.support.ToolCallbacks;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Component;
 import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
@@ -10,6 +14,8 @@ import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.RunOutcome;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.LlmMessage;
+import qg.qgent.orchestration.llm.LlmObservation;
+import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
@@ -25,14 +31,17 @@ import java.util.List;
  * 权限与真实性约束：
  * <ul>
  *   <li>构造器只接收 {@link WorkspaceCodeAccess} 与 {@link WorkspaceDiffAccess}，不持有任何写端口，
- *       工具执行器 {@link ReviewToolExecutor} 也刻意拒绝 write_file，从结构上保证只能读不能写；</li>
+ *       原生工具 {@link ReviewTools} 与 legacy 执行器 {@link ReviewToolExecutor} 也刻意拒绝
+ *       write_file，从结构上保证只能读不能写；</li>
  *   <li>git_diff 由 {@link WorkspaceDiffAccess} 预取并嵌入初始上下文，审查循环只暴露
  *       list_files/read_file/search_code；diff 不可用（未就绪）→ FAILED_INFRASTRUCTURE；</li>
  *   <li>success 的最终判定依据 severity 策略：存在 BLOCKER/MAJOR 时强制 FAIL，
  *       只有 MINOR/INFO 时方可采纳 LLM 的 success；不得只凭 LLM 声称通过；</li>
- *   <li>输出非法、缺必填字段、severity 非法、超循环上限等抛 {@link ReviewParseException}，
- *       统一转为 FAILED_INFRASTRUCTURE 同相位重试，不把非法输出当作真实审查结论。</li>
+ *   <li>阶段 B 起默认走原生 Tool Calling（{@code app.agent.protocol=native}），legacy 手写 JSON
+ *       协议仅灰度期保留，协议稳定后删除；输出非法、缺必填字段、severity 非法、超循环上限等抛
+ *       {@link ReviewParseException}，统一转为 FAILED_INFRASTRUCTURE 同相位重试。</li>
  * </ul>
+ * 每轮模型调用生成一条脱敏观测 {@link LlmObservation} 随 Run 产物落库。
  * 不修改 Workspace、不 write_file、不调用其他 Agent、不执行 Git commit/push/MR、不访问宿主机。
  */
 @Slf4j
@@ -44,29 +53,34 @@ public class ReviewAgent implements Agent {
     private final LlmClient llm;
     private final WorkspaceCodeAccess codeAccess;
     private final WorkspaceDiffAccess diffAccess;
+    private final AgentProtocol protocol;
     private final ReviewPromptBuilder promptBuilder = new ReviewPromptBuilder();
     private final ReviewResultParser parser = new ReviewResultParser();
-    private final ReviewToolExecutor toolExecutor;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public ReviewAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, WorkspaceDiffAccess diffAccess) {
+    public ReviewAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, WorkspaceDiffAccess diffAccess,
+                       AgentProtocol protocol) {
         this.llm = llm;
         this.codeAccess = codeAccess;
         this.diffAccess = diffAccess;
-        this.toolExecutor = new ReviewToolExecutor(codeAccess);
+        this.protocol = protocol;
     }
 
     @Override
     public AgentRunOutcome run(AgentInput input) {
-        log.info("review agent start phase={} workspaceId={}", input.getPhase(), input.getWorkspaceId());
+        log.info("review agent start phase={} workspaceId={} protocol={}",
+                input.getPhase(), input.getWorkspaceId(), protocol.isNative() ? "native" : "legacy");
+        List<LlmObservation> observations = new ArrayList<>();
         try {
             GitDiffResult diff = diffAccess.diff(input.getWorkspaceId());
             if (!diff.ok()) {
                 log.warn("REVIEW_DIFF_UNAVAILABLE phase={} workspaceId={}",
                         input.getPhase(), input.getWorkspaceId());
-                return infraFailure(input, "git diff unavailable: " + diff.error());
+                return infraFailure(input, "git diff unavailable: " + diff.error(), observations);
             }
-            ReviewResult review = executeReview(input, diff);
+            ReviewResult review = protocol.isNative()
+                    ? executeReviewNative(input, diff, observations)
+                    : executeReviewLegacy(input, diff);
             boolean blockerOrMajor = hasBlockerOrMajor(review);
             boolean success = !blockerOrMajor && review.isSuccess();
             review.setSuccess(success);
@@ -76,24 +90,68 @@ public class ReviewAgent implements Agent {
             outcome.setOutcome(success ? RunOutcome.SUCCEEDED
                     : (review.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
             outcome.setMessage(success ? review.getSummary() : firstFinding(review));
-            log.info("review agent done phase={} workspaceId={} outcome={}",
-                    input.getPhase(), input.getWorkspaceId(), outcome.getOutcome());
+            outcome.setObservations(observations);
+            log.info("review agent done phase={} workspaceId={} outcome={} observations={}",
+                    input.getPhase(), input.getWorkspaceId(), outcome.getOutcome(), observations.size());
             return outcome;
         } catch (RuntimeException e) {
             log.error("REVIEW_AGENT_FAILED phase={} workspaceId={} category={}",
                     input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());
-            return infraFailure(input, e.getMessage());
+            return infraFailure(input, e.getMessage(), observations);
         }
     }
 
     /**
-     * 多轮只读工具调用循环：工具结果持续回灌上下文，直到模型输出 finalResult 或达到上限。
+     * 原生 Tool Calling 只读循环：每轮把历史回传给模型，直到输出 finalResult；每轮写入观测。
      */
-    private ReviewResult executeReview(AgentInput input, GitDiffResult diff) {
+    private ReviewResult executeReviewNative(AgentInput input, GitDiffResult diff,
+                                             List<LlmObservation> observations) {
+        List<String> files = codeAccess.listFiles(input.getWorkspaceId());
+        List<Message> history = new ArrayList<>();
+        history.add(new UserMessage(promptBuilder.buildUser(input, files, diff)));
+        String system = promptBuilder.buildSystem(true);
+        ReviewTools tools = new ReviewTools(input.getWorkspaceId(), codeAccess);
+        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools));
+        String finishReason = null;
+        for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
+            ToolTurnResult turn = llm.nextToolTurn(system, history, callbacks);
+            observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
+            finishReason = turn.finishReason();
+            if (turn.isInfraAbort()) {
+                log.error("REVIEW_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
+                        input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
+                throw new IllegalStateException(turn.infraFailure());
+            }
+            if (turn.continuesToolLoop()) {
+                history = turn.history();
+                continue;
+            }
+            if (turn.isFinalText()) {
+                if ("length".equals(finishReason)) {
+                    throw new ReviewParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
+                            "review output truncated by max tokens");
+                }
+                log.info("review agent round {} finalResult phase={} workspaceId={}",
+                        round, input.getPhase(), input.getWorkspaceId());
+                return parser.parse(turn.text());
+            }
+            throw new ReviewParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
+                    "review tool turn returned no text, history or infra failure");
+        }
+        throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
+                "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+    }
+
+    /**
+     * legacy 手写 JSON 协议只读循环：模型输出 toolCall/finalResult 文本，由
+     * {@link ReviewToolExecutor} 执行只读工具。仅灰度期使用，协议稳定后删除。
+     */
+    private ReviewResult executeReviewLegacy(AgentInput input, GitDiffResult diff) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         List<LlmMessage> history = new ArrayList<>();
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files, diff)));
-        String system = promptBuilder.buildSystem();
+        String system = promptBuilder.buildSystem(false);
+        ReviewToolExecutor toolExecutor = new ReviewToolExecutor(codeAccess);
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             String raw = llm.complete(system, history);
             history.add(LlmMessage.assistant(raw));
@@ -107,9 +165,11 @@ public class ReviewAgent implements Agent {
             if (finalResult != null && finalResult.isObject()) {
                 return parser.parse(finalResult);
             }
-            throw new ReviewParseException("review output is neither toolCall nor finalResult");
+            throw new ReviewParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
+                    "review output is neither toolCall nor finalResult");
         }
-        throw new ReviewParseException("exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+        throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
+                "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
     }
 
     /**
@@ -142,7 +202,8 @@ public class ReviewAgent implements Agent {
         try {
             return objectMapper.readTree(stripFences(raw));
         } catch (Exception e) {
-            throw new ReviewParseException("review output is not valid JSON: " + e.getMessage());
+            throw new ReviewParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
+                    "review output is not valid JSON: " + e.getMessage());
         }
     }
 
@@ -163,11 +224,12 @@ public class ReviewAgent implements Agent {
         return trimmed.trim();
     }
 
-    private AgentRunOutcome infraFailure(AgentInput input, String message) {
+    private AgentRunOutcome infraFailure(AgentInput input, String message, List<LlmObservation> observations) {
         AgentRunOutcome failure = new AgentRunOutcome();
         failure.setPhase(input.getPhase());
         failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
         failure.setMessage("review agent failed: " + message);
+        failure.setObservations(observations);
         return failure;
     }
 }

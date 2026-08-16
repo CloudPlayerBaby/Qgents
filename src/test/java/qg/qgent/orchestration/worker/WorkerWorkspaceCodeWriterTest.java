@@ -78,6 +78,9 @@ class WorkerWorkspaceCodeWriterTest {
         WorkspaceWriteResult result = writer.writeFile(WORKSPACE, "repo-1/src/Foo.java", "hello");
 
         assertThat(result.isOk()).isTrue();
+        // Worker 未返回 changed 时按 false 透传，sha256 透传新哈希。
+        assertThat(result.getNewSha256()).isEqualTo("new-hash");
+        assertThat(result.isChanged()).isFalse();
         ArgumentCaptor<WorkerToolExecutionRequest> captor =
                 ArgumentCaptor.forClass(WorkerToolExecutionRequest.class);
         verify(client, times(2)).submitToolExecution(any(), captor.capture());
@@ -85,6 +88,28 @@ class WorkerWorkspaceCodeWriterTest {
         assertThat(write.getTool()).isEqualTo("file.write");
         assertThat(write.getArguments().get("expectedHash")).isEqualTo("current-hash");
         assertThat(write.getArguments().get("content")).isEqualTo("hello");
+    }
+
+    @Test
+    void writeFilePassesThroughWorkerChangedFlag() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> {
+            WorkerToolExecution execution = new WorkerToolExecution();
+            execution.setStatus("SUCCEEDED");
+            if ("file.read".equals(request.getTool())) {
+                execution.setResult(Map.of("path", request.getArguments().get("path"), "sha256", "current-hash"));
+            } else {
+                execution.setResult(Map.of("path", request.getArguments().get("path"),
+                        "sha256", "new-hash", "bytes", 5, "changed", true));
+            }
+            return execution;
+        });
+
+        WorkspaceWriteResult result = writer.writeFile(WORKSPACE, "repo-1/src/Foo.java", "hello");
+
+        assertThat(result.isOk()).isTrue();
+        assertThat(result.isChanged()).isTrue();
+        assertThat(result.getNewSha256()).isEqualTo("new-hash");
     }
 
     @Test
@@ -124,6 +149,8 @@ class WorkerWorkspaceCodeWriterTest {
                 "@@ -1,1 +1,1 @@\n-a\n+b\n");
 
         assertThat(result.isOk()).isTrue();
+        assertThat(result.getNewSha256()).isEqualTo("new-hash");
+        assertThat(result.isChanged()).isTrue();
         ArgumentCaptor<WorkerToolExecutionRequest> captor =
                 ArgumentCaptor.forClass(WorkerToolExecutionRequest.class);
         verify(client, times(1)).submitToolExecution(any(), captor.capture());

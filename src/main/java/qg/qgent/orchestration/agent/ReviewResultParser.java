@@ -51,7 +51,11 @@ public class ReviewResultParser {
         } catch (Exception e) {
             throw new ReviewParseException("review result is not valid JSON: " + e.getMessage());
         }
-        return parse(node);
+        if (!node.isObject()) {
+            throw new ReviewParseException("review result is not a JSON object");
+        }
+        JsonNode finalResult = node.get("finalResult");
+        return parse(finalResult != null && finalResult.isObject() ? finalResult : node);
     }
 
     /**

@@ -19,6 +19,7 @@ import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.mapper.WorkspaceMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.orchestration.agent.AgentProtocol;
 import qg.qgent.orchestration.agent.CodingAgent;
 import qg.qgent.orchestration.agent.PlanAgent;
 import qg.qgent.orchestration.agent.ReviewAgent;
@@ -125,9 +126,11 @@ class TaskOrchestratorTest {
                         "{\"success\":true,\"summary\":\"tests passed\",\"failures\":[],\"needsCodingFix\":false}",
                         "{\"finalResult\":{\"success\":true,\"summary\":\"review passed\",\"findings\":[]," +
                                 "\"suggestions\":[],\"needsCodingFix\":false}}");
+        // 该主链路测试以 mock complete() 驱动 legacy 协议，灰度期保留；原生协议由 CodingAgentTest/ReviewAgentTest 覆盖。
         return orchestrator(new AgentRunExecutor(new PlanAgent(llm, codeAccess),
-                new CodingAgent(llm, codeAccess, writer), new TestAgent(llm, codeAccess, executionPort),
-                new ReviewAgent(llm, codeAccess, diffAccess)));
+                new CodingAgent(llm, codeAccess, writer, new AgentProtocol("legacy")),
+                new TestAgent(llm, codeAccess, executionPort),
+                new ReviewAgent(llm, codeAccess, diffAccess, new AgentProtocol("legacy"))));
     }
 
     private TaskEntity task(UUID projectId, UUID taskId) {

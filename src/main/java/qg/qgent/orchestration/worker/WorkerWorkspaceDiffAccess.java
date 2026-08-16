@@ -5,8 +5,12 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 import qg.qgent.orchestration.tool.GitDiffResult;
+import qg.qgent.orchestration.tool.Sha256;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -38,9 +42,15 @@ public class WorkerWorkspaceDiffAccess implements WorkspaceDiffAccess {
         try {
             SandboxSession session = sessions.require(workspaceId);
             StringBuilder combined = new StringBuilder();
+            StringBuilder treeDigest = new StringBuilder();
             String baseCommit = null;
             String headCommit = null;
-            for (Map.Entry<String, UUID> entry : session.repositoryByPath().entrySet()) {
+            int filesChanged = 0;
+            int additions = 0;
+            int deletions = 0;
+            List<Map.Entry<String, UUID>> repos = new ArrayList<>(session.repositoryByPath().entrySet());
+            repos.sort(Map.Entry.comparingByKey());
+            for (Map.Entry<String, UUID> entry : repos) {
                 WorkerGitDiff diff = client.createWorkspaceGitDiff(workspaceId, entry.getValue());
                 if (diff == null) {
                     log.warn("WORKSPACE_GIT_DIFF_UNAVAILABLE workspaceId={} repositoryId={}",
@@ -57,10 +67,24 @@ public class WorkerWorkspaceDiffAccess implements WorkspaceDiffAccess {
                     }
                     combined.append("===== ").append(entry.getKey()).append(" =====\n").append(diff.getPatch());
                 }
+                if (diff.getDiffHash() != null && !diff.getDiffHash().isBlank()) {
+                    treeDigest.append(entry.getKey()).append('\n').append(diff.getDiffHash()).append('\n');
+                }
+                if (diff.getFiles() != null) {
+                    filesChanged += diff.getFiles().size();
+                    for (WorkerGitDiffFile file : diff.getFiles()) {
+                        additions += file.getAdditions();
+                        deletions += file.getDeletions();
+                    }
+                }
             }
-            log.info("workspace git diff ok workspaceId={} repos={} patchChars={}",
-                    workspaceId, session.repositoryByPath().size(), combined.length());
-            return GitDiffResult.ok(combined.toString(), baseCommit, headCommit);
+            String workingTreeHash = treeDigest.length() == 0 ? null
+                    : "sha256:" + Sha256.hex(treeDigest.toString().getBytes(StandardCharsets.UTF_8));
+            log.info("workspace git diff ok workspaceId={} repos={} patchChars={} files={} add={} del={}",
+                    workspaceId, session.repositoryByPath().size(), combined.length(),
+                    filesChanged, additions, deletions);
+            return GitDiffResult.ok(combined.toString(), baseCommit, headCommit, workingTreeHash,
+                    filesChanged, additions, deletions);
         } catch (RuntimeException e) {
             log.error("WORKSPACE_GIT_DIFF_FAILED workspaceId={} category={}",
                     workspaceId, e.getClass().getSimpleName());
@@ -69,6 +93,6 @@ public class WorkerWorkspaceDiffAccess implements WorkspaceDiffAccess {
     }
 
     private GitDiffResult failure(String error) {
-        return new GitDiffResult(false, "", "", "", error);
+        return GitDiffResult.failure(error);
     }
 }

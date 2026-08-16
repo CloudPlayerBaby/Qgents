@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import lombok.extern.slf4j.Slf4j;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
@@ -21,15 +22,36 @@ import java.util.UUID;
  * 写入失败（workspace 不可用、文件系统错误）抛出异常，由 CodingAgent 映射
  * FAILED_INFRASTRUCTURE，不进入模型纠正循环。工具结果字符串不携带 Secret。
  */
+@Slf4j
 public class CodingToolExecutor {
 
     private final WorkspaceCodeAccess codeAccess;
     private final WorkspaceCodeWriter writer;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    /**
+     * 成功写后的预览回调（阶段 D）；null 表示未启用预览记录。由 CodingAgent 按 run 注入。
+     */
+    private CodingWriteObserver writeObserver;
+    private UUID projectId;
+    private UUID taskId;
+    private UUID taskRunId;
+    private UUID workspaceId;
 
     public CodingToolExecutor(WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer) {
         this.codeAccess = codeAccess;
         this.writer = writer;
+    }
+
+    /**
+     * 绑定成功写后的预览回调与任务上下文。由 CodingAgent 每次 run 调用；未配置时不记录预览。
+     */
+    public void setWriteObserver(CodingWriteObserver observer, UUID projectId, UUID taskId,
+                                 UUID taskRunId, UUID workspaceId) {
+        this.writeObserver = observer;
+        this.projectId = projectId;
+        this.taskId = taskId;
+        this.taskRunId = taskRunId;
+        this.workspaceId = workspaceId;
     }
 
     /**
@@ -105,6 +127,7 @@ public class CodingToolExecutor {
         }
         WorkspaceWriteResult result = writer.writeFile(workspaceId, path, content);
         if (result.isOk()) {
+            notifyWrite(result);
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("path", result.getPath());
             return ok(name, resultNode);
@@ -131,6 +154,7 @@ public class CodingToolExecutor {
         }
         WorkspaceWriteResult result = writer.patchFile(workspaceId, path, expectedHash, patch);
         if (result.isOk()) {
+            notifyWrite(result);
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("path", result.getPath());
             return ok(name, resultNode);
@@ -156,5 +180,20 @@ public class CodingToolExecutor {
         node.put("ok", false);
         node.put("error", message);
         return node.toString();
+    }
+
+    /**
+     * 成功写后通知预览回调；回调失败只记日志，绝不破坏 Coding 主循环。
+     */
+    private void notifyWrite(WorkspaceWriteResult result) {
+        if (writeObserver == null || projectId == null) {
+            return;
+        }
+        try {
+            writeObserver.onWrite(projectId, taskId, taskRunId, workspaceId, result);
+        } catch (RuntimeException e) {
+            log.warn("CODING_WRITE_OBSERVER_FAILED path={} category={}", result.getPath(),
+                    e.getClass().getSimpleName());
+        }
     }
 }

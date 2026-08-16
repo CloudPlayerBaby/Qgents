@@ -77,7 +77,8 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
                 Files.createDirectories(target.getParent());
             }
             Files.writeString(target, content, StandardCharsets.UTF_8);
-            return WorkspaceWriteResult.ok(path);
+            byte[] written = content.getBytes(StandardCharsets.UTF_8);
+            return WorkspaceWriteResult.ok(path, Sha256.hex(written), true);
         } catch (IOException e) {
             return WorkspaceWriteResult.infraFail(path, "write failed: " + e.getMessage());
         }
@@ -138,7 +139,8 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
                 return WorkspaceWriteResult.fail(path, "patched file exceeds 256KB limit");
             }
             atomicReplace(target, nextBytes);
-            return WorkspaceWriteResult.ok(path);
+            boolean changed = !java.util.Arrays.equals(previous, nextBytes);
+            return WorkspaceWriteResult.ok(path, Sha256.hex(nextBytes), changed);
         } catch (IOException e) {
             return WorkspaceWriteResult.infraFail(path, "patch failed: " + e.getMessage());
         }

@@ -7,6 +7,7 @@ import qg.qgent.mapper.WorkspaceMapper;
 import qg.qgent.service.WorkspaceService;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -44,6 +45,9 @@ class LocalWorkspaceCodeWriterTest {
 
         assertThat(result.isOk()).isTrue();
         assertThat(result.getPath()).isEqualTo("src/main/java/Y.java");
+        assertThat(result.isChanged()).isTrue();
+        assertThat(result.getNewSha256())
+                .isEqualTo(Sha256.hex("new code".getBytes(StandardCharsets.UTF_8)));
         Path written = baseDir.resolve("ws-1").resolve("src/main/java/Y.java");
         assertThat(Files.exists(written)).isTrue();
         assertThat(Files.readString(written)).isEqualTo("new code");
@@ -151,6 +155,8 @@ class LocalWorkspaceCodeWriterTest {
                 .patchFile(workspaceId, "README.md", hash(file), patch);
 
         assertThat(result.isOk()).isTrue();
+        assertThat(result.isChanged()).isTrue();
+        assertThat(result.getNewSha256()).isNotNull();
         assertThat(Files.readString(file)).isEqualTo("line1\nline2\nline3 changed\nline4\n");
     }
 
@@ -164,11 +170,15 @@ class LocalWorkspaceCodeWriterTest {
         WorkspaceWriteResult insert = writer.patchFile(workspaceId, "multi.txt", hash(file),
                 "@@ -2,0 +2,1 @@\n+inserted\n");
         assertThat(insert.isOk()).isTrue();
+        assertThat(insert.isChanged()).isTrue();
         assertThat(Files.readString(file)).isEqualTo("a\ninserted\nb\nc\nd\ne\nf\n");
 
         WorkspaceWriteResult delete = writer.patchFile(workspaceId, "multi.txt", hash(file),
                 "@@ -2,1 +2,0 @@\n-inserted\n");
         assertThat(delete.isOk()).isTrue();
+        // 删掉 inserted 后内容回到初始：changed=true（文件相对补丁前有变化），新哈希等于初始内容哈希。
+        assertThat(delete.isChanged()).isTrue();
+        assertThat(delete.getNewSha256()).isEqualTo(hash(file));
         assertThat(Files.readString(file)).isEqualTo("a\nb\nc\nd\ne\nf\n");
     }
 

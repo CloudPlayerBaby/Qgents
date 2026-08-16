@@ -30,6 +30,35 @@ public class CodingResultParser {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
+     * 解析 LLM 输出文本为结构化 CodingResult，兼容两种形状：
+     * <ul>
+     *   <li>{@code {"success": ..., ...}}（legacy 直接输出 finalResult 内容）；</li>
+     *   <li>{@code {"finalResult": {"success": ..., ...}}}（原生协议，finalResult 包裹）。</li>
+     * </ul>
+     * 输出允许包在 ```json 围栏内。形状不匹配抛 {@link CodingParseException}（协议错误）。
+     *
+     * @param raw LLM 输出文本。
+     * @return 校验通过的结构化 CodingResult。
+     * @throws CodingParseException 输出非法或缺必填字段。
+     */
+    public CodingResult parse(String raw) {
+        if (raw == null || raw.isBlank()) {
+            throw new CodingParseException("coding result is empty");
+        }
+        JsonNode node;
+        try {
+            node = objectMapper.readTree(stripFences(raw));
+        } catch (Exception e) {
+            throw new CodingParseException("coding result is not valid JSON: " + e.getMessage());
+        }
+        if (!node.isObject()) {
+            throw new CodingParseException("coding result is not a JSON object");
+        }
+        JsonNode finalResult = node.get("finalResult");
+        return parse(finalResult != null && finalResult.isObject() ? finalResult : node);
+    }
+
+    /**
      * 解析 finalResult 节点（调用方已做 JSON 解析与围栏剥离）。
      *
      * @param node finalResult 对象节点。
@@ -73,5 +102,22 @@ public class CodingResultParser {
     private String optionalText(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value != null && value.isTextual() ? value.asText().trim() : null;
+    }
+
+    /**
+     * 去掉常见的 ```json / ``` 围栏包裹。
+     */
+    private String stripFences(String raw) {
+        String trimmed = raw.trim();
+        if (trimmed.startsWith("```")) {
+            int firstLineBreak = trimmed.indexOf('\n');
+            if (firstLineBreak > 0) {
+                trimmed = trimmed.substring(firstLineBreak + 1);
+            }
+            if (trimmed.endsWith("```")) {
+                trimmed = trimmed.substring(0, trimmed.length() - 3);
+            }
+        }
+        return trimmed.trim();
     }
 }

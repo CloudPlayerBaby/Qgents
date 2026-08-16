@@ -15,6 +15,7 @@ import qg.qgent.dto.TaskRepositoryScopeRequest;
 import qg.qgent.dto.TaskStepCreateRequest;
 import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
+import qg.qgent.orchestration.llm.LlmObservation;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
@@ -280,13 +281,21 @@ public class TaskOrchestrator {
     }
 
     /**
-     * Run 级执行产物的脱敏摘要：角色、终态与 Agent 反馈消息，路径与敏感键由服务端 sanitize 兜底。
+     * Run 级执行产物的脱敏摘要：角色、终态、Agent 反馈消息与每轮 LLM 观测。观测经
+     * {@link LlmObservation#toSummary()} 序列化为脱敏 Map（仅 phase/round/字符数/结束原因/
+     * 工具名/错误码/sha256），路径与敏感键由服务端 sanitize 兜底。
      */
     private Map<String, Object> runArtifactSummary(OrchestrationPhase phase, AgentRunOutcome outcome) {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("role", phase.role());
         summary.put("status", terminalStatus(outcome.getOutcome()));
         summary.put("message", outcome.getMessage());
+        if (outcome.getObservations() != null && !outcome.getObservations().isEmpty()) {
+            List<Map<String, Object>> observations = outcome.getObservations().stream()
+                    .map(LlmObservation::toSummary)
+                    .toList();
+            summary.put("observations", observations);
+        }
         return summary;
     }
 

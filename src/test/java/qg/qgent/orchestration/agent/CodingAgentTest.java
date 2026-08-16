@@ -1,29 +1,22 @@
 package qg.qgent.orchestration.agent;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
-import qg.qgent.entity.WorkspaceEntity;
-import qg.qgent.mapper.WorkspaceMapper;
-import qg.qgent.service.WorkspaceService;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.tool.ToolCallback;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.OrchestrationPhase;
 import qg.qgent.orchestration.RunOutcome;
 import qg.qgent.orchestration.llm.LlmClient;
-import qg.qgent.orchestration.llm.LlmMessage;
+import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
-import qg.qgent.orchestration.tool.LocalWorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
-import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 
@@ -32,371 +25,235 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * CodingAgent 纯单元测试：Mock LLM 驱动 JSON 工具调用协议，覆盖正常读写、多轮循环、
- * 工具结果回灌、持久化写入、路径穿越/越界拒绝、工具失败、LLM 失败、循环上限与
- * CodingResult 装配。真实写盘场景使用 {@code @TempDir} 指向本地最小实现
- * {@link LocalWorkspaceCodeWriter}，验证文件确实落在 Workspace 目录。不写入任何 API Key。
+ * CodingAgent 单元测试：默认协议（native）以 mock {@link LlmClient#nextToolTurn} 驱动原生
+ * Tool Calling 循环，覆盖成功收敛、多轮工具循环、工具白名单、基础设施中止、错误码分类
+ * （length 截断 / 上下文超限 / 参数非法）、观测落库；legacy 手写 JSON 协议（灰度期）以 mock
+ * {@link LlmClient#complete} 做少量回归。工具的真实执行与类型校验由 CodingToolsTest 覆盖。
+ * 不写入任何 API Key。
  */
 class CodingAgentTest {
 
     private static final int MAX_TOOL_ROUNDS = 20;
 
-    private static final String HASH = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
     private final LlmClient llm = mock(LlmClient.class);
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
     private final WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
     private final UUID workspaceId = UUID.randomUUID();
-    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private CodingAgent agent() {
-        return new CodingAgent(llm, codeAccess, writer);
+    private CodingAgent nativeAgent() {
+        return new CodingAgent(llm, codeAccess, writer, AgentProtocol.nativeDefault());
     }
 
-    @Test
-    void readFileToolExecutesAndFinalResultSucceeds() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
-        when(codeAccess.readFile(workspaceId, "src/main/java/X.java"))
-                .thenReturn(WorkspaceFileReadResult.ok("src/main/java/X.java", "code", HASH));
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(readTool("src/main/java/X.java"), finalResult(true, "done", "src/main/java/X.java"));
+    private CodingAgent legacyAgent() {
+        return new CodingAgent(llm, codeAccess, writer, new AgentProtocol("legacy"));
+    }
 
-        AgentRunOutcome outcome = agent().run(codingInput());
+    // ---------- 原生 Tool Calling（默认协议） ----------
+
+    @Test
+    void nativeBareFinalResultSucceeds() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         assertThat(outcome.getCodingResult().isSuccess()).isTrue();
+        assertThat(outcome.getCodingResult().getSummary()).isEqualTo("done");
+        assertThat(outcome.getObservations()).hasSize(1);
+        assertThat(outcome.getObservations().get(0).phase()).isEqualTo("CODING");
+    }
+
+    @Test
+    void nativeWrappedFinalResultSucceeds() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":" + bareResult(true, "ok", "src/main/java/X.java") + "}", "stop"));
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         assertThat(outcome.getCodingResult().getModifiedFiles()).containsExactly("src/main/java/X.java");
-        verify(codeAccess).readFile(workspaceId, "src/main/java/X.java");
     }
 
     @Test
-    void writeFileToolWritesThroughWriter() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "new code"))
-                .thenReturn(WorkspaceWriteResult.ok("src/main/java/Y.java"));
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(writeTool("src/main/java/Y.java", "new code"),
-                        finalResult(true, "implemented", "src/main/java/Y.java"));
-
-        AgentRunOutcome outcome = agent().run(codingInput());
-
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        verify(writer).writeFile(workspaceId, "src/main/java/Y.java", "new code");
-    }
-
-    @Test
-    void multiRoundToolLoopExecutesToolsInOrder() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(codeAccess.readFile(workspaceId, "src/main/java/X.java"))
-                .thenReturn(WorkspaceFileReadResult.ok("src/main/java/X.java", "code", HASH));
-        when(writer.writeFile(any(), anyString(), anyString())).thenReturn(WorkspaceWriteResult.ok("src/main/java/Y.java"));
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(readTool("src/main/java/X.java"),
-                        writeTool("src/main/java/Y.java", "code"),
-                        finalResult(true, "done", "src/main/java/Y.java"));
-
-        AgentRunOutcome outcome = agent().run(codingInput());
-
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        verify(llm, times(3)).complete(anyString(), anyList());
-        verify(codeAccess).readFile(workspaceId, "src/main/java/X.java");
-        verify(writer).writeFile(workspaceId, "src/main/java/Y.java", "code");
-    }
-
-    @Test
-    void toolResultIsFedBackIntoLlmHistory() {
+    void nativeMultiRoundToolLoopExecutesToolsInOrder() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
-        when(codeAccess.readFile(workspaceId, "src/main/java/X.java"))
-                .thenReturn(WorkspaceFileReadResult.ok("src/main/java/X.java", "code", HASH));
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(readTool("src/main/java/X.java"), finalResult(true, "done", "src/main/java/X.java"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(toolTurn("read_file"),
+                        toolTurn("apply_patch"),
+                        finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
 
-        agent().run(codingInput());
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm, times(2)).complete(anyString(), historyCaptor.capture());
-        List<LlmMessage> secondHistory = historyCaptor.getAllValues().get(1);
-        assertThat(secondHistory).anySatisfy(msg -> {
-            assertThat(msg.role()).isEqualTo(LlmMessage.Role.TOOL);
-            assertThat(msg.content()).contains("\"tool\":\"read_file\"", "\"content\":\"code\"");
-        });
-    }
-
-    @Test
-    void readFileResultIncludesSha256ForApplyPatch() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
-        when(codeAccess.readFile(workspaceId, "src/main/java/X.java"))
-                .thenReturn(WorkspaceFileReadResult.ok("src/main/java/X.java", "code", HASH));
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(readTool("src/main/java/X.java"), finalResult(true, "done", "src/main/java/X.java"));
-
-        agent().run(codingInput());
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm, times(2)).complete(anyString(), historyCaptor.capture());
-        assertThat(historyCaptor.getAllValues().get(1)).anySatisfy(msg ->
-                assertThat(msg.content()).contains("\"tool\":\"read_file\"", "\"sha256\":\"" + HASH + "\""));
-    }
-
-    @Test
-    void applyPatchToolAppliesThroughWriter() {
-        String patch = "@@ -1,1 +1,1 @@\n-code\n+new code\n";
-        when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, patch))
-                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java"));
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(applyPatchTool("src/main/java/X.java", HASH, patch),
-                        finalResult(true, "patched", "src/main/java/X.java"));
-
-        AgentRunOutcome outcome = agent().run(codingInput());
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        verify(writer).patchFile(workspaceId, "src/main/java/X.java", HASH, patch);
+        verify(llm, times(3)).nextToolTurn(anyString(), anyList(), anyList());
+        assertThat(outcome.getObservations()).hasSize(3);
+        assertThat(outcome.getObservations().get(0).toolName()).isEqualTo("read_file");
+        assertThat(outcome.getObservations().get(1).toolName()).isEqualTo("apply_patch");
+        assertThat(outcome.getObservations().get(2).protocolFailureCode()).isNull();
     }
 
     @Test
-    void applyPatchMissingHashIsToolErrorAndModelRecovers() {
+    void nativePassesWhitelistedCodingTools() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn("{\"toolCall\":{\"name\":\"apply_patch\",\"arguments\":"
-                                + "{\"path\":\"src/main/java/X.java\",\"patch\":\"x\"}}}",
-                        finalResult(true, "retried with read", "src/main/java/X.java"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(bareResult(true, "done", null), "stop"));
 
-        AgentRunOutcome outcome = agent().run(codingInput());
+        nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        verify(writer, never()).patchFile(any(), anyString(), anyString(), anyString());
         @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm, times(2)).complete(anyString(), historyCaptor.capture());
-        assertThat(historyCaptor.getAllValues().get(1)).anySatisfy(msg ->
-                assertThat(msg.content()).contains("\"ok\":false"));
+        ArgumentCaptor<List<ToolCallback>> toolsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
+        List<String> names = toolsCaptor.getValue().stream()
+                .map(c -> c.getToolDefinition().name()).sorted().toList();
+        assertThat(names).containsExactly("apply_patch", "list_files", "read_file", "search_code", "write_file");
     }
 
     @Test
-    void applyPatchHashMismatchIsToolErrorAndModelRetries() {
-        String patch = "@@ -1,1 +1,1 @@\n-code\n+new code\n";
+    void nativeToolHistoryFlowsToNextCall() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, patch))
-                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "file has changed since read"),
-                        WorkspaceWriteResult.ok("src/main/java/X.java"));
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(applyPatchTool("src/main/java/X.java", HASH, patch),
-                        applyPatchTool("src/main/java/X.java", HASH, patch),
-                        finalResult(true, "patched after retry", "src/main/java/X.java"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(toolTurn("list_files"),
+                        finalTurn(bareResult(true, "done", null), "stop"));
 
-        AgentRunOutcome outcome = agent().run(codingInput());
+        nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        verify(writer, times(2)).patchFile(workspaceId, "src/main/java/X.java", HASH, patch);
         @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm, times(3)).complete(anyString(), historyCaptor.capture());
-        assertThat(historyCaptor.getAllValues().get(1)).anySatisfy(msg ->
-                assertThat(msg.content()).contains("\"ok\":false"));
+        ArgumentCaptor<List<Message>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm, times(2)).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
+        // 第二轮历史 = continueTools 返回的历史（非空、含首轮 user 与工具执行结果），原样回传。
+        assertThat(historyCaptor.getAllValues().get(1)).hasSize(1);
+        assertThat(historyCaptor.getAllValues().get(1).get(0)).isInstanceOf(UserMessage.class);
     }
 
     @Test
-    void applyPatchInfrastructureFailureMapsToInfrastructure() {
-        String patch = "@@ -1,1 +1,1 @@\n-code\n+new code\n";
+    void nativeInfraAbortMapsToInfrastructureFailure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, patch))
-                .thenReturn(WorkspaceWriteResult.infraFail("src/main/java/X.java", "workspace root is not available"));
-        when(llm.complete(anyString(), anyList())).thenReturn(applyPatchTool("src/main/java/X.java", HASH, patch));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(infraTurn("apply_patch", "workspace root is not available"));
 
-        AgentRunOutcome outcome = agent().run(codingInput());
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains("apply_patch infrastructure failure");
-        verify(llm, times(1)).complete(anyString(), anyList());
+        assertThat(outcome.getMessage()).contains("workspace root is not available");
+        verify(llm, times(1)).nextToolTurn(anyString(), anyList(), anyList());
     }
 
     @Test
-    void writeFilePersistsToWorkspaceOnDisk(@TempDir Path baseDir) throws Exception {
-        WorkspaceEntity workspace = workspaceWith("ws-1");
-        LocalWorkspaceCodeWriter realWriter = realWriter(workspace, baseDir);
+    void nativeFinishLengthMapsToLlmFinishLength() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(writeTool("src/main/java/Y.java", "real content"),
-                        finalResult(true, "implemented", "src/main/java/Y.java"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":true,\"summary\":\"tr", "length"));
 
-        AgentRunOutcome outcome = new CodingAgent(llm, codeAccess, realWriter).run(codingInput());
-
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        Path written = baseDir.resolve("ws-1").resolve("src/main/java/Y.java");
-        assertThat(Files.exists(written)).isTrue();
-        assertThat(Files.readString(written)).isEqualTo("real content");
-    }
-
-    @Test
-    void pathTraversalIsRejectedAndNeverPersists(@TempDir Path baseDir) {
-        WorkspaceEntity workspace = workspaceWith("ws-1");
-        LocalWorkspaceCodeWriter realWriter = realWriter(workspace, baseDir);
-        when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(writeTool("../escape.txt", "evil"), finalResult(true, "done", "../escape.txt"));
-
-        AgentRunOutcome outcome = new CodingAgent(llm, codeAccess, realWriter).run(codingInput());
-
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        assertThat(Files.exists(baseDir.resolve("escape.txt"))).isFalse();
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm, times(2)).complete(anyString(), historyCaptor.capture());
-        assertThat(historyCaptor.getAllValues().get(1)).anySatisfy(msg ->
-                assertThat(msg.content()).contains("\"ok\":false"));
-    }
-
-    @Test
-    void absolutePathOutsideWorkspaceIsRejected(@TempDir Path baseDir) {
-        WorkspaceEntity workspace = workspaceWith("ws-1");
-        LocalWorkspaceCodeWriter realWriter = realWriter(workspace, baseDir);
-        when(codeAccess.listFiles(any())).thenReturn(List.of());
-        String absolute = Path.of(".").toAbsolutePath().resolve("evil.txt").toString();
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(writeTool(absolute, "evil"), finalResult(true, "done", absolute));
-
-        AgentRunOutcome outcome = new CodingAgent(llm, codeAccess, realWriter).run(codingInput());
-
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        assertThat(Files.exists(Path.of(absolute))).isFalse();
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm, times(2)).complete(anyString(), historyCaptor.capture());
-        assertThat(historyCaptor.getAllValues().get(1)).anySatisfy(msg ->
-                assertThat(msg.content()).contains("\"ok\":false"));
-    }
-
-    @Test
-    void toolExecutionFailureIsReportedAndFinalResultFails() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(codeAccess.readFile(workspaceId, "src/main/java/Missing.java"))
-                .thenReturn(WorkspaceFileReadResult.fail("src/main/java/Missing.java", "file not found or unreadable"));
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(readTool("src/main/java/Missing.java"),
-                        "{\"finalResult\":{\"success\":false,\"summary\":\"cannot proceed\",\"errors\":[\"missing file\"]}}");
-
-        AgentRunOutcome outcome = agent().run(codingInput());
-
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getCodingResult().isSuccess()).isFalse();
-        assertThat(outcome.getCodingResult().getErrors()).contains("missing file");
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm, times(2)).complete(anyString(), historyCaptor.capture());
-        assertThat(historyCaptor.getAllValues().get(1)).anySatisfy(msg ->
-                assertThat(msg.content()).contains("\"ok\":false"));
-    }
-
-    @Test
-    void workspaceUnavailableWriteFailsInfrastructure(@TempDir Path baseDir) {
-        when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(llm.complete(anyString(), anyList())).thenReturn(writeTool("src/main/java/Y.java", "code"));
-
-        AgentRunOutcome outcome = new CodingAgent(llm, codeAccess, unknownWriter(baseDir)).run(codingInput());
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains("write_file infrastructure failure");
-        // 基础设施失败不进入模型纠正循环：只调一次 LLM，且失败不以 TOOL 结果回灌。
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm, times(1)).complete(anyString(), historyCaptor.capture());
-        assertThat(historyCaptor.getValue()).noneMatch(msg -> msg.role() == LlmMessage.Role.TOOL);
-        assertThat(Files.exists(baseDir.resolve("ws-1").resolve("src/main/java/Y.java"))).isFalse();
+        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
     }
 
     @Test
-    void infrastructureWriteFailureIsNotConfusedWithToolError() {
+    void nativeExceedingMaxRoundsFailsContextLimit() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "code"))
-                .thenReturn(WorkspaceWriteResult.infraFail("src/main/java/Y.java", "workspace root is not available"));
-        when(llm.complete(anyString(), anyList())).thenReturn(writeTool("src/main/java/Y.java", "code"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenReturn(toolTurn("list_files"));
 
-        AgentRunOutcome outcome = agent().run(codingInput());
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains("write_file infrastructure failure");
-        verify(llm, times(1)).complete(anyString(), anyList());
+        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_CONTEXT_LIMIT.name());
+        verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
+        assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS);
     }
 
     @Test
-    void toolLevelWriteFailureIsFedBackForRetryAndNotInfrastructure() {
+    void nativeToolArgumentInvalidObservationIsRecorded() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "code"))
-                .thenReturn(WorkspaceWriteResult.fail("src/main/java/Y.java", "path escapes workspace root"),
-                        WorkspaceWriteResult.ok("src/main/java/Y.java"));
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn(writeTool("src/main/java/Y.java", "code"),
-                        writeTool("src/main/java/Y.java", "code"),
-                        finalResult(true, "fixed", "src/main/java/Y.java"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(toolTurnWithCode("apply_patch", ProtocolFailureCode.LLM_TOOL_ARGUMENT_INVALID),
+                        finalTurn(bareResult(true, "corrected", "src/main/java/X.java"), "stop"));
 
-        AgentRunOutcome outcome = agent().run(codingInput());
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        // 工具级失败以 TOOL 结果回灌模型后能自我纠正，不判基础设施失败。
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        verify(writer, times(2)).writeFile(workspaceId, "src/main/java/Y.java", "code");
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm, times(3)).complete(anyString(), historyCaptor.capture());
-        // 第 2 轮历史包含第一次写入失败的 ok=false TOOL 结果，模型据此重试。
-        assertThat(historyCaptor.getAllValues().get(1)).anySatisfy(msg ->
-                assertThat(msg.content()).contains("\"ok\":false"));
+        assertThat(outcome.getObservations()).hasSize(2);
+        assertThat(outcome.getObservations().get(0).protocolFailureCode())
+                .isEqualTo(ProtocolFailureCode.LLM_TOOL_ARGUMENT_INVALID);
+        // 成功轮无错误码。
+        assertThat(outcome.getObservations().get(1).protocolFailureCode()).isNull();
     }
 
     @Test
-    void llmCallFailureMapsToInfrastructureFailure() {
+    void nativeLlmCallFailureMapsToInfrastructureFailure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(llm.complete(anyString(), anyList())).thenThrow(new RuntimeException("llm boom"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("llm boom"));
 
-        AgentRunOutcome outcome = agent().run(codingInput());
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
         assertThat(outcome.getMessage()).contains("llm boom");
     }
 
     @Test
-    void exceedingMaxToolRoundsFailsInfrastructure() {
+    void nativeMalformedFinalTextMapsToToolCallMalformed() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(llm.complete(anyString(), anyList())).thenReturn(listTool());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("this is not json", "stop"));
 
-        AgentRunOutcome outcome = agent().run(codingInput());
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        verify(llm, times(MAX_TOOL_ROUNDS)).complete(anyString(), anyList());
+        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+    }
+
+    // ---------- legacy 手写 JSON 协议（灰度期回归） ----------
+
+    @Test
+    void legacyFinalResultSucceeds() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"finalResult\":{\"success\":true,\"summary\":\"done\",\"modifiedFiles\":[\"src/main/java/X.java\"]}}");
+
+        AgentRunOutcome outcome = legacyAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).containsExactly("src/main/java/X.java");
     }
 
     @Test
-    void finalResultPopulatesCodingResultFields() {
+    void legacyWriteFailsInfrastructureAndDoesNotFeedBack() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "code"))
+                .thenReturn(WorkspaceWriteResult.infraFail("src/main/java/Y.java", "workspace root is not available"));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"toolCall\":{\"name\":\"write_file\",\"arguments\":{\"path\":\"src/main/java/Y.java\",\"content\":\"code\"}}}");
+
+        AgentRunOutcome outcome = legacyAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getMessage()).contains("write_file infrastructure failure");
+        verify(llm, times(1)).complete(anyString(), anyList());
+    }
+
+    @Test
+    void legacyExceedingMaxRoundsFailsInfrastructure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.complete(anyString(), anyList()))
-                .thenReturn("""
-                        {"finalResult":{"success":true,"summary":"added feature",
-                          "modifiedFiles":["src/main/java/X.java","src/main/java/Y.java"],
-                          "changes":["added class"],"errors":[]}}
-                        """);
+                .thenReturn("{\"toolCall\":{\"name\":\"list_files\"}}");
 
-        AgentRunOutcome outcome = agent().run(codingInput());
+        AgentRunOutcome outcome = legacyAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        CodingResult coding = outcome.getCodingResult();
-        assertThat(coding.isSuccess()).isTrue();
-        assertThat(coding.getSummary()).isEqualTo("added feature");
-        assertThat(coding.getModifiedFiles()).containsExactly("src/main/java/X.java", "src/main/java/Y.java");
-        assertThat(coding.getChanges()).containsExactly("added class");
-        assertThat(coding.getErrors()).isEmpty();
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_CONTEXT_LIMIT.name());
+        verify(llm, times(MAX_TOOL_ROUNDS)).complete(anyString(), anyList());
     }
+
+    // ---------- 工具与观测辅助 ----------
 
     private AgentInput codingInput() {
         AgentInput input = new AgentInput();
@@ -419,65 +276,30 @@ class CodingAgentTest {
         return input;
     }
 
-    private WorkspaceEntity workspaceWith(String storageKey) {
-        WorkspaceEntity workspace = new WorkspaceEntity();
-        workspace.setId(workspaceId);
-        workspace.setStorageKey(storageKey);
-        return workspace;
+    private ToolTurnResult finalTurn(String json, String finishReason) {
+        return ToolTurnResult.finalAnswer(json, finishReason, 20, 10, "aabb", null);
     }
 
-    private WorkspaceMapper workspaceMapper(WorkspaceEntity workspace) {
-        WorkspaceMapper mapper = mock(WorkspaceMapper.class);
-        when(mapper.selectById(workspaceId)).thenReturn(workspace);
-        return mapper;
+    private ToolTurnResult toolTurn(String toolName) {
+        return ToolTurnResult.continueTools(List.of(new UserMessage("tool executed: " + toolName)),
+                "stop", 20, 10, "aabb", toolName, null);
     }
 
-    private LocalWorkspaceCodeWriter realWriter(WorkspaceEntity workspace, Path baseDir) {
-        return new LocalWorkspaceCodeWriter(new WorkspaceService(workspaceMapper(workspace), baseDir.toString()));
+    private ToolTurnResult toolTurnWithCode(String toolName, ProtocolFailureCode code) {
+        return ToolTurnResult.continueTools(List.of(new UserMessage("tool executed: " + toolName)),
+                "stop", 20, 10, "aabb", toolName, code);
     }
 
-    private LocalWorkspaceCodeWriter unknownWriter(Path baseDir) {
-        WorkspaceMapper unknownMapper = mock(WorkspaceMapper.class);
-        when(unknownMapper.selectById(workspaceId)).thenReturn(null);
-        return new LocalWorkspaceCodeWriter(new WorkspaceService(unknownMapper, baseDir.toString()));
+    private ToolTurnResult infraTurn(String toolName, String reason) {
+        return ToolTurnResult.infraAbort(reason, "stop", 20, 10, "aabb", toolName);
     }
 
-    private String readTool(String path) {
-        ObjectNode node = objectMapper.createObjectNode();
-        node.putObject("toolCall").put("name", "read_file").putObject("arguments").put("path", path);
-        return node.toString();
-    }
-
-    private String listTool() {
-        ObjectNode node = objectMapper.createObjectNode();
-        node.putObject("toolCall").put("name", "list_files");
-        return node.toString();
-    }
-
-    private String writeTool(String path, String content) {
-        ObjectNode node = objectMapper.createObjectNode();
-        ObjectNode args = node.putObject("toolCall").put("name", "write_file").putObject("arguments");
-        args.put("path", path);
-        args.put("content", content);
-        return node.toString();
-    }
-
-    private String applyPatchTool(String path, String hash, String patch) {
-        ObjectNode node = objectMapper.createObjectNode();
-        ObjectNode args = node.putObject("toolCall").put("name", "apply_patch").putObject("arguments");
-        args.put("path", path);
-        args.put("expectedHash", hash);
-        args.put("patch", patch);
-        return node.toString();
-    }
-
-    private String finalResult(boolean success, String summary, String modifiedFile) {
-        ObjectNode finalNode = objectMapper.createObjectNode().put("success", success).put("summary", summary);
+    private String bareResult(boolean success, String summary, String modifiedFile) {
+        StringBuilder json = new StringBuilder("{\"success\":").append(success)
+                .append(",\"summary\":\"").append(summary).append("\"");
         if (modifiedFile != null) {
-            finalNode.putArray("modifiedFiles").add(modifiedFile);
+            json.append(",\"modifiedFiles\":[\"").append(modifiedFile).append("\"]");
         }
-        ObjectNode root = objectMapper.createObjectNode();
-        root.set("finalResult", finalNode);
-        return root.toString();
+        return json.append("}").toString();
     }
 }

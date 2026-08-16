@@ -164,7 +164,7 @@ public class LocalGitDiffAccess implements WorkspaceDiffAccess {
     }
 
     private static GitDiffResult failure(String error) {
-        return new GitDiffResult(false, "", "", "", error);
+        return GitDiffResult.failure(error);
     }
 
     /**

@@ -1,0 +1,297 @@
+package qg.qgent.orchestration.agent;
+
+import org.junit.jupiter.api.Test;
+import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
+import qg.qgent.orchestration.tool.WorkspaceInfraException;
+import qg.qgent.orchestration.tool.WorkspaceWriteResult;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * CodingTools 类型化工具层测试：验证白名单工具的真实执行与失败语义——只读工具透传端口结果、
+ * apply_patch 的 expectedHash 校验与基础设施失败中止、write_file 拒绝已存在文件（避免覆盖已有代码）、
+ * 工具级失败返回 ok=false 而非抛异常。不写入任何 API Key。
+ */
+class CodingToolsTest {
+
+    private static final String HASH = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    private static final String NEW_HASH = "1111111111111111111111111111111111111111111111111111111111111111";
+    private static final String NEWER_HASH = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
+    private final WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
+    private final UUID workspaceId = UUID.randomUUID();
+
+    private CodingTools tools() {
+        return new CodingTools(workspaceId, codeAccess, writer);
+    }
+
+    @Test
+    void listFilesReturnsOkWithPaths() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/X.java"));
+
+        Map<String, Object> result = tools().listFiles();
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("files")).isEqualTo(List.of("src/main/java/X.java"));
+    }
+
+    @Test
+    void readFileReturnsContentAndSha256() {
+        when(codeAccess.readFile(workspaceId, "src/main/java/X.java"))
+                .thenReturn(WorkspaceFileReadResult.ok("src/main/java/X.java", "code", HASH));
+
+        Map<String, Object> result = tools().readFile("src/main/java/X.java");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("path")).isEqualTo("src/main/java/X.java");
+        assertThat(result.get("content")).isEqualTo("code");
+        assertThat(result.get("sha256")).isEqualTo(HASH);
+    }
+
+    @Test
+    void readFileMissingReturnsToolError() {
+        when(codeAccess.readFile(workspaceId, "src/main/java/Missing.java"))
+                .thenReturn(WorkspaceFileReadResult.fail("src/main/java/Missing.java", "file not found or unreadable"));
+
+        Map<String, Object> result = tools().readFile("src/main/java/Missing.java");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat((String) result.get("error")).contains("file not found or unreadable");
+    }
+
+    @Test
+    void readFileBlankPathIsToolError() {
+        Map<String, Object> result = tools().readFile("  ");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        verify(codeAccess, never()).readFile(any(), any());
+    }
+
+    @Test
+    void searchCodeReturnsMatches() {
+        when(codeAccess.searchCode(workspaceId, "class")).thenReturn(List.of("src/main/java/X.java"));
+
+        Map<String, Object> result = tools().searchCode("class");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("matches")).isEqualTo(List.of("src/main/java/X.java"));
+    }
+
+    @Test
+    void applyPatchAppliesThroughWriterWhenHashMatches() {
+        String patch = "@@ -1 +1 @@\n-code\n+new code\n";
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, patch))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", "new-hash", true));
+
+        Map<String, Object> result = tools().applyPatch("src/main/java/X.java", HASH, patch);
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("changed")).isEqualTo(true);
+        assertThat(result.get("oldSha")).isEqualTo(HASH);
+        assertThat(result.get("newSha")).isEqualTo("new-hash");
+        // 结果最小化：绝不回塞 patch 或文件内容。
+        assertThat(result).doesNotContainKey("patch").doesNotContainKey("content");
+        verify(writer).patchFile(workspaceId, "src/main/java/X.java", HASH, patch);
+    }
+
+    @Test
+    void applyPatchOmitsExpectedHashUsesKnownHashFromPriorRead() {
+        when(codeAccess.readFile(workspaceId, "src/main/java/X.java"))
+                .thenReturn(WorkspaceFileReadResult.ok("src/main/java/X.java", "code", HASH));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", "new-hash", true));
+        CodingTools tools = tools();
+        tools.readFile("src/main/java/X.java");
+
+        Map<String, Object> result = tools.applyPatch("src/main/java/X.java", null, "patch");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("oldSha")).isEqualTo(HASH);
+        verify(writer).patchFile(workspaceId, "src/main/java/X.java", HASH, "patch");
+    }
+
+    @Test
+    void applyPatchOmitsExpectedHashWithoutPriorReadIsToolError() {
+        Map<String, Object> result = tools().applyPatch("src/main/java/X.java", null, "patch");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat((String) result.get("error")).contains("read_file first");
+        verify(writer, never()).patchFile(any(), any(), any(), any());
+    }
+
+    @Test
+    void applyPatchChainsNewHashFromSuccessfulWriteWithoutReread() {
+        // 第一次补丁成功后，已知哈希更新为 NEW_HASH；第二次省略 expectedHash 直接命中。
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch1"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", NEW_HASH, true));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", NEW_HASH, "patch2"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", NEWER_HASH, true));
+        CodingTools tools = tools();
+        tools.applyPatch("src/main/java/X.java", HASH, "patch1");
+
+        Map<String, Object> second = tools.applyPatch("src/main/java/X.java", null, "patch2");
+
+        assertThat(second.get("ok")).isEqualTo(true);
+        assertThat(second.get("oldSha")).isEqualTo(NEW_HASH);
+        assertThat(second.get("newSha")).isEqualTo(NEWER_HASH);
+        verify(writer).patchFile(workspaceId, "src/main/java/X.java", NEW_HASH, "patch2");
+    }
+
+    @Test
+    void applyPatchInvalidHashIsToolErrorAndDoesNotWrite() {
+        Map<String, Object> result = tools().applyPatch("src/main/java/X.java", "not-a-hash", "patch");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat((String) result.get("error")).contains("64-char hex");
+        verify(writer, never()).patchFile(any(), any(), any(), any());
+    }
+
+    @Test
+    void applyPatchInfraFailureThrowsInfraException() {
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.infraFail("src/main/java/X.java", "workspace root is not available"));
+
+        assertThatThrownBy(() -> tools().applyPatch("src/main/java/X.java", HASH, "patch"))
+                .isInstanceOf(WorkspaceInfraException.class)
+                .hasMessageContaining("apply_patch infrastructure failure");
+    }
+
+    @Test
+    void applyPatchToolLevelFailureIsToolError() {
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "file has changed since read"));
+
+        Map<String, Object> result = tools().applyPatch("src/main/java/X.java", HASH, "patch");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat((String) result.get("error")).contains("file has changed since read");
+    }
+
+    @Test
+    void writeFileCreatesNewFileThroughWriter() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/Existing.java"));
+        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "new code"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/Y.java", "new-hash", true));
+
+        Map<String, Object> result = tools().writeFile("src/main/java/Y.java", "new code");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("changed")).isEqualTo(true);
+        assertThat(result.get("oldSha")).isNull();
+        assertThat(result.get("newSha")).isEqualTo("new-hash");
+        assertThat(result).doesNotContainKey("content");
+        verify(writer).writeFile(workspaceId, "src/main/java/Y.java", "new code");
+    }
+
+    @Test
+    void writeFileRejectsExistingFileAsToolError() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/Y.java"));
+
+        Map<String, Object> result = tools().writeFile("src/main/java/Y.java", "overwrite");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat((String) result.get("error")).contains("only creates new files").contains("apply_patch");
+        verify(writer, never()).writeFile(any(), any(), any());
+    }
+
+    @Test
+    void writeFileInfraFailureThrowsInfraException() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "code"))
+                .thenReturn(WorkspaceWriteResult.infraFail("src/main/java/Y.java", "workspace root is not available"));
+
+        assertThatThrownBy(() -> tools().writeFile("src/main/java/Y.java", "code"))
+                .isInstanceOf(WorkspaceInfraException.class)
+                .hasMessageContaining("write_file infrastructure failure");
+    }
+
+    // ---- 阶段 D：成功写后的 Preview 回调（CodingWriteObserver） ----
+
+    private static final UUID PROJECT_ID = UUID.randomUUID();
+    private static final UUID TASK_ID = UUID.randomUUID();
+    private static final UUID TASK_RUN_ID = UUID.randomUUID();
+
+    private final CodingWriteObserver observer = mock(CodingWriteObserver.class);
+
+    private CodingTools toolsWithObserver() {
+        CodingTools tools = tools();
+        tools.setWriteObserver(observer, PROJECT_ID, TASK_ID, TASK_RUN_ID);
+        return tools;
+    }
+
+    @Test
+    void writeObserverFiresOnWriteFileSuccess() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "new code"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/Y.java", NEW_HASH, true));
+
+        toolsWithObserver().writeFile("src/main/java/Y.java", "new code");
+
+        verify(observer).onWrite(eq(PROJECT_ID), eq(TASK_ID), eq(TASK_RUN_ID), eq(workspaceId),
+                any(WorkspaceWriteResult.class));
+    }
+
+    @Test
+    void writeObserverFiresOnApplyPatchSuccess() {
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", NEW_HASH, true));
+
+        toolsWithObserver().applyPatch("src/main/java/X.java", HASH, "patch");
+
+        verify(observer).onWrite(eq(PROJECT_ID), eq(TASK_ID), eq(TASK_RUN_ID), eq(workspaceId),
+                any(WorkspaceWriteResult.class));
+    }
+
+    @Test
+    void writeObserverNotFiredOnToolLevelFailure() {
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "file has changed since read"));
+
+        Map<String, Object> result = toolsWithObserver().applyPatch("src/main/java/X.java", HASH, "patch");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        verify(observer, never()).onWrite(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void writeObserverNotFiredWhenNotConfigured() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "src/main/java/Y.java", "code"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/Y.java", NEW_HASH, true));
+
+        tools().writeFile("src/main/java/Y.java", "code");
+
+        verify(observer, never()).onWrite(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void writeObserverExceptionIsSwallowedAndWriteStillSucceeds() {
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", NEW_HASH, true));
+        doThrow(new IllegalStateException("preview store down"))
+                .when(observer).onWrite(any(), any(), any(), any(), any());
+
+        Map<String, Object> result = toolsWithObserver().applyPatch("src/main/java/X.java", HASH, "patch");
+
+        // 预览回调失败只记日志，绝不破坏 Coding 主循环。
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("newSha")).isEqualTo(NEW_HASH);
+        verify(observer).onWrite(eq(PROJECT_ID), eq(TASK_ID), eq(TASK_RUN_ID), eq(workspaceId),
+                any(WorkspaceWriteResult.class));
+    }
+}
