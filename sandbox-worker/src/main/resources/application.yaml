@@ -50,6 +50,8 @@ sandbox:
   network-policy: ${SANDBOX_NETWORK_POLICY:outbound}
   # stdout 和 stderr 各自允许保留的最大字节数
   max-output-bytes: ${SANDBOX_MAX_OUTPUT_BYTES:1048576}
+  # 单个 Sandbox 的 Maven / Maven Wrapper 临时缓存容量上限（容器内可写 tmpfs，Sandbox 销毁后清理）
+  maven-cache-size: ${SANDBOX_MAVEN_CACHE_SIZE:2g}
 
 management:
   endpoints:

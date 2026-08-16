@@ -90,7 +90,7 @@ public class DockerContainerRuntime implements ContainerRuntime {
                 .withMemory(properties.getMemoryBytes())
                 .withNanoCPUs(properties.getNanoCpus())
                 .withPidsLimit(properties.getPidsLimit())
-                .withTmpFs(Map.of("/tmp", "rw,noexec,nosuid,size=512m", "/run", "rw,noexec,nosuid,size=64m"));
+                .withTmpFs(tmpfsMounts());
 
         String containerId = null;
         try {
@@ -139,6 +139,18 @@ public class DockerContainerRuntime implements ContainerRuntime {
             log.warn("grant sandbox ownership failed repositoryId={} category={}",
                     repositoryId, e.getClass().getSimpleName());
         }
+    }
+
+    /**
+     * 构建容器可写 tmpfs 挂载：/tmp、/run 以及 Maven/Maven Wrapper 缓存目录。
+     * /home/developer/.m2 容量由 Worker 配置控制，仅作为本 Sandbox 的临时缓存，随容器销毁清理；
+     * 不挂载宿主机路径，不放开 rootfs 其他位置的只读隔离。
+     */
+    Map<String, String> tmpfsMounts() {
+        return Map.of(
+                "/tmp", "rw,noexec,nosuid,size=512m",
+                "/run", "rw,noexec,nosuid,size=64m",
+                "/home/developer/.m2", "rw,nosuid,nodev,size=" + properties.getMavenCacheSize());
     }
 
     @Override
