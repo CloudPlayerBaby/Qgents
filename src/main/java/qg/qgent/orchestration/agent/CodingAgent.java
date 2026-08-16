@@ -18,8 +18,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 真实 Coding Agent：理解任务与计划，通过只读工具按需读取工作区代码，用 write_file
- * 真正修改工作区文件，并输出结构化 finalResult 生成 {@link CodingResult}。
+ * 真实 Coding Agent：理解任务与计划，通过只读工具按需读取工作区代码，用 apply_patch
+ * 精确修改已有文件、用 write_file 新建或整文件替换，真正修改工作区文件，并输出结构化
+ * finalResult 生成 {@link CodingResult}。
  * <p>
  * 采用结构化 JSON 工具调用协议：模型输出 {@code {"toolCall":{name,arguments}}} 时执行
  * 工具并把结果以 TOOL 消息回灌历史继续决策；输出 {@code {"finalResult":{...}}} 时收敛

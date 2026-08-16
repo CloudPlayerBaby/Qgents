@@ -54,19 +54,20 @@ public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
     }
 
     @Override
-    public String readFile(UUID workspaceId, String path) {
+    public WorkspaceFileReadResult readFile(UUID workspaceId, String path) {
         Path root = workspaceRoot(workspaceId);
         Path file = resolveSafe(root, path);
         if (file == null || !Files.isRegularFile(file)) {
-            return null;
+            return WorkspaceFileReadResult.fail(path, "file not found or unreadable");
         }
         try {
             if (Files.size(file) > MAX_READ_BYTES) {
-                return null;
+                return WorkspaceFileReadResult.fail(path, "file exceeds 64KB read limit");
             }
-            return Files.readString(file, StandardCharsets.UTF_8);
+            byte[] bytes = Files.readAllBytes(file);
+            return WorkspaceFileReadResult.ok(path, new String(bytes, StandardCharsets.UTF_8), Sha256.hex(bytes));
         } catch (IOException e) {
-            return null;
+            return WorkspaceFileReadResult.fail(path, "file read failed");
         }
     }
 

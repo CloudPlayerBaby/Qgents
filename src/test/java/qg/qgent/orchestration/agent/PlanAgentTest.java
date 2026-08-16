@@ -8,6 +8,7 @@ import qg.qgent.orchestration.RunOutcome;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 
 import java.lang.reflect.Method;
 import java.util.List;
@@ -57,7 +58,8 @@ class PlanAgentTest {
 
     @Test void producesStructuredPlanFromTwoRounds() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml", "src/main/java/X.java"));
-        when(codeAccess.readFile(any(), eq("src/main/java/X.java"))).thenReturn("class X {}");
+        when(codeAccess.readFile(any(), eq("src/main/java/X.java")))
+                .thenReturn(WorkspaceFileReadResult.ok("src/main/java/X.java", "class X {}", "hash"));
         when(llm.complete(anyString(), anyString()))
                 .thenReturn("{\"readRequests\":[\"src/main/java/X.java\"]}", PLAN_JSON);
 
@@ -118,7 +120,8 @@ class PlanAgentTest {
 
     @Test void neverModifiesWorkspace() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
-        when(codeAccess.readFile(any(), eq("pom.xml"))).thenReturn("<project/>");
+        when(codeAccess.readFile(any(), eq("pom.xml")))
+                .thenReturn(WorkspaceFileReadResult.ok("pom.xml", "<project/>", "hash"));
         when(llm.complete(anyString(), anyString()))
                 .thenReturn("{\"readRequests\":[\"pom.xml\"]}", PLAN_JSON);
 

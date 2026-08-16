@@ -62,25 +62,29 @@ class LocalWorkspaceCodeAccessTest {
     }
 
     @Test
-    void readFileReturnsUtf8Content() throws Exception {
+    void readFileReturnsContentAndSha256() throws Exception {
         Files.writeString(root.resolve("A.java"), "public class A {}");
 
-        assertThat(access().readFile(workspaceId, "A.java")).isEqualTo("public class A {}");
+        WorkspaceFileReadResult read = access().readFile(workspaceId, "A.java");
+
+        assertThat(read.isOk()).isTrue();
+        assertThat(read.getContent()).isEqualTo("public class A {}");
+        assertThat(read.getSha256()).matches("[0-9a-f]{64}");
     }
 
     @Test
-    void readFileReturnsNullForMissingOrNonRegularFile() {
+    void readFileReturnsFailForMissingOrNonRegularFile() {
         LocalWorkspaceCodeAccess access = access();
 
-        assertThat(access.readFile(workspaceId, "Missing.java")).isNull();
-        assertThat(access.readFile(workspaceId, "some/dir")).isNull();
+        assertThat(access.readFile(workspaceId, "Missing.java").isOk()).isFalse();
+        assertThat(access.readFile(workspaceId, "some/dir").isOk()).isFalse();
     }
 
     @Test
-    void readFileReturnsNullForOversizedFile() throws Exception {
+    void readFileReturnsFailForOversizedFile() throws Exception {
         Files.writeString(root.resolve("big.java"), "x".repeat(MAX_READ_BYTES + 1));
 
-        assertThat(access().readFile(workspaceId, "big.java")).isNull();
+        assertThat(access().readFile(workspaceId, "big.java").isOk()).isFalse();
     }
 
     @Test
@@ -105,7 +109,7 @@ class LocalWorkspaceCodeAccessTest {
         LocalWorkspaceCodeAccess access = access();
 
         assertThat(access.listFiles(absent.getId())).isEmpty();
-        assertThat(access.readFile(absent.getId(), "A.java")).isNull();
+        assertThat(access.readFile(absent.getId(), "A.java").isOk()).isFalse();
         assertThat(access.searchCode(absent.getId(), "x")).isEmpty();
     }
 
@@ -114,8 +118,8 @@ class LocalWorkspaceCodeAccessTest {
         Files.writeString(baseDir.resolve("escape.txt"), "evil");
         LocalWorkspaceCodeAccess access = access();
 
-        assertThat(access.readFile(workspaceId, "../escape.txt")).isNull();
-        assertThat(access.readFile(workspaceId, "sub/../../escape.txt")).isNull();
+        assertThat(access.readFile(workspaceId, "../escape.txt").isOk()).isFalse();
+        assertThat(access.readFile(workspaceId, "sub/../../escape.txt").isOk()).isFalse();
     }
 
     @Test
@@ -123,7 +127,7 @@ class LocalWorkspaceCodeAccessTest {
         String absolute = Path.of(".").toAbsolutePath().resolve("evil.txt").toString();
         LocalWorkspaceCodeAccess access = access();
 
-        assertThat(access.readFile(workspaceId, absolute)).isNull();
+        assertThat(access.readFile(workspaceId, absolute).isOk()).isFalse();
     }
 
     @Test
@@ -133,7 +137,7 @@ class LocalWorkspaceCodeAccessTest {
         LocalWorkspaceCodeAccess access = access();
 
         assertThat(access.listFiles(unknown)).isEmpty();
-        assertThat(access.readFile(unknown, "A.java")).isNull();
+        assertThat(access.readFile(unknown, "A.java").isOk()).isFalse();
     }
 
     @Test

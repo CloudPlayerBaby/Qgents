@@ -5,13 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 
 import java.util.UUID;
 
 /**
  * Review Agent 的白名单只读工具执行器：list_files / read_file / search_code。
  * <p>
- * 刻意不提供 write_file：未知工具名（含 write_file）一律返回 unknown tool 错误，
+ * 刻意不提供 write_file / apply_patch：未知工具名（含两者）一律返回 unknown tool 错误，
  * 从结构上保证 Review Agent 无法修改 Workspace。结果格式化为可回灌给 LLM 的 JSON。
  */
 public class ReviewToolExecutor {
@@ -60,13 +61,15 @@ public class ReviewToolExecutor {
         if (path.isBlank()) {
             return error(name, "read_file requires non-empty 'path'");
         }
-        String content = codeAccess.readFile(workspaceId, path);
-        if (content == null) {
-            return error(name, "file not found or unreadable: " + path);
+        WorkspaceFileReadResult read = codeAccess.readFile(workspaceId, path);
+        if (read == null || !read.isOk()) {
+            return error(name, read == null || read.getError() == null
+                    ? "file not found or unreadable: " + path : read.getError());
         }
         ObjectNode result = objectMapper.createObjectNode();
         result.put("path", path);
-        result.put("content", content);
+        result.put("content", read.getContent());
+        result.put("sha256", read.getSha256());
         return ok(name, result);
     }
 
