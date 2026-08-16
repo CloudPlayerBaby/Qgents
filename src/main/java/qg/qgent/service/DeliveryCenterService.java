@@ -103,6 +103,50 @@ public class DeliveryCenterService {
     }
 
     /**
+     * 交付中心导出（契约成员 B P2）：按与 delivery-items 相同的筛选条件导出 CSV 摘要。
+     * <p>
+     * 只导出列表摘要字段（类型/标题/摘要/状态/时间/人员等），不包含完整 Memory/Skill 内容、
+     * Prompt、Token、凭据或代码 Patch。返回 UTF-8 CSV 文本（含 BOM，便于 Excel 识别中文），
+     * 空数据集同样返回表头行。CSV 生成遵循 RFC 4180 转义。
+     */
+    public String exportCsv(UUID projectId, UUID actor, String groupId, String type,
+                            String displayStatus, String repositoryId, String createdBy) {
+        access.requireProjectMember(projectId, actor);
+        UUID groupUuid = optionalUuid(groupId, "INVALID_GROUP_FILTER");
+        UUID repositoryUuid = optionalUuid(repositoryId, "INVALID_REPOSITORY_FILTER");
+        UUID creatorUuid = optionalUuid(createdBy, "INVALID_CREATEDBY_FILTER");
+        List<DeliveryItem> items = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid, creatorUuid);
+
+        StringBuilder csv = new StringBuilder();
+        csv.append('\uFEFF'); // UTF-8 BOM：Excel 直接打开时正确识别中文
+        appendCsvRow(csv, "类型", "标题", "摘要", "展示状态", "资源状态", "需求群", "来源任务编号", "来源任务标题",
+                "创建人", "审核人", "驳回原因", "创建时间", "审核时间", "更新时间", "变更文件数", "新增行数", "删除行数", "仓库");
+        for (DeliveryItem item : items) {
+            CodeDeliveryItem code = item instanceof CodeDeliveryItem c ? c : null;
+            appendCsvRow(csv,
+                    item.getResourceType(),
+                    item.getTitle(),
+                    item.getSummary(),
+                    item.getDisplayStatus(),
+                    item.getResourceStatus(),
+                    item.getRequirementGroup() == null ? null : item.getRequirementGroup().getName(),
+                    item.getSource() == null ? null : item.getSource().getTaskDisplayCode(),
+                    item.getSource() == null ? null : item.getSource().getTaskTitle(),
+                    displayName(item.getCreator()),
+                    displayName(item.getReviewer()),
+                    item.getReviewReason(),
+                    item.getCreatedAt(),
+                    item.getReviewedAt(),
+                    item.getUpdatedAt(),
+                    code == null ? null : Integer.toString(code.getFilesChanged()),
+                    code == null ? null : Integer.toString(code.getAdditions()),
+                    code == null ? null : Integer.toString(code.getDeletions()),
+                    code == null ? null : repositoryNames(code));
+        }
+        return csv.toString();
+    }
+
+    /**
      * 交付中心聚合统计：针对完整筛选数据集计算，不由当前分页推导。
      * 筛选参数与 delivery-items 一致（groupId/type/status/repositoryId/createdBy），
      * 用户切换筛选后统计同步变化。
@@ -683,6 +727,39 @@ public class DeliveryCenterService {
         UserEntity user = users.selectById(userId);
         return user == null ? null
                 : new UserSummary(user.getId().toString(), user.getDisplayName(), user.getAvatarUrl());
+    }
+
+    private String displayName(UserSummary user) {
+        return user == null ? null : user.getDisplayName();
+    }
+
+    private String repositoryNames(CodeDeliveryItem code) {
+        return code.getRepositories().stream().map(CodeDeliveryItem.RepositoryRef::getName)
+                .filter(Objects::nonNull).distinct().collect(Collectors.joining("; "));
+    }
+
+    /**
+     * 按 RFC 4180 追加一行 CSV：字段含逗号/引号/换行时用双引号包裹，内部引号翻倍转义。
+     */
+    private void appendCsvRow(StringBuilder csv, String... cells) {
+        for (int i = 0; i < cells.length; i++) {
+            if (i > 0) {
+                csv.append(',');
+            }
+            csv.append(csvCell(cells[i]));
+        }
+        csv.append("\r\n");
+    }
+
+    private String csvCell(String value) {
+        if (value == null) {
+            return "";
+        }
+        if (value.indexOf(',') >= 0 || value.indexOf('"') >= 0
+                || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
     }
 
     private String excerpt(String content) {
