@@ -286,7 +286,13 @@ public class RestGitHubAppClient implements GitHubAppClient {
                     .retrieve()
                     .body(PullRequestResponse.class);
             return requirePullRequest(response);
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub createPullRequest rejected: owner={} repo={} status={} body={}",
+                    owner, repo, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            throw upstreamFailure();
         } catch (RestClientException exception) {
+            log.warn("GitHub createPullRequest failed before receiving a response: owner={} repo={} {}",
+                    owner, repo, exception.getMessage());
             throw upstreamFailure();
         }
     }
@@ -308,7 +314,13 @@ public class RestGitHubAppClient implements GitHubAppClient {
                     .body(new org.springframework.core.ParameterizedTypeReference<List<PullRequestResponse>>() {
                     });
             return responses == null || responses.isEmpty() ? null : requirePullRequest(responses.get(0));
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub findOpenPullRequest rejected: owner={} repo={} status={} body={}",
+                    owner, repo, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            throw upstreamFailure();
         } catch (RestClientException exception) {
+            log.warn("GitHub findOpenPullRequest failed before receiving a response: owner={} repo={} {}",
+                    owner, repo, exception.getMessage());
             throw upstreamFailure();
         }
     }
