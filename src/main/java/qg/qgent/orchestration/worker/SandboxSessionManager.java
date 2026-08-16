@@ -255,17 +255,18 @@ public class SandboxSessionManager {
     }
 
     /**
-     * 解析仓库基线引用：worktree 已记录 baseCommit 时使用它；否则回退到项目仓库绑定的
-     * defaultBranch（真实受控引用）。两者都缺失时明确失败，不伪造基线。
+     * 解析仓库基线引用：优先使用项目仓库绑定的 defaultBranch（稳定受控引用），
+     * 否则回退到 worktree 记录的 baseCommit。baseCommit 在 provision 后会被回填为真实 SHA，
+     * 若用它作为 baseRef，复用 Workspace 时会与 Worker 端记录的原始分支名不一致，导致规格冲突。
      */
     private String resolveBaseRef(WorkspaceRepositoryEntity repository) {
-        if (repository.getBaseCommit() != null && !repository.getBaseCommit().isBlank()) {
-            return repository.getBaseCommit();
-        }
         ProjectRepositoryEntity projectRepository = projectRepositoryMapper.selectById(repository.getProjectRepositoryId());
         if (projectRepository != null && projectRepository.getDefaultBranch() != null
                 && !projectRepository.getDefaultBranch().isBlank()) {
             return projectRepository.getDefaultBranch();
+        }
+        if (repository.getBaseCommit() != null && !repository.getBaseCommit().isBlank()) {
+            return repository.getBaseCommit();
         }
         throw new IllegalStateException("workspace repository has no base ref: "
                 + repository.getProjectRepositoryId());
