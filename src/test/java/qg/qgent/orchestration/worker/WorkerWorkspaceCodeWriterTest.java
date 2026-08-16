@@ -3,6 +3,7 @@ package qg.qgent.orchestration.worker;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -28,6 +29,7 @@ class WorkerWorkspaceCodeWriterTest {
     private static final UUID WORKSPACE = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID SANDBOX = UUID.fromString("00000000-0000-0000-0000-000000000002");
     private static final UUID REPO = UUID.fromString("00000000-0000-0000-0000-000000000003");
+    private static final String HASH = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     private SandboxWorkerClient client;
     private SandboxSessionManager sessions;
@@ -105,5 +107,72 @@ class WorkerWorkspaceCodeWriterTest {
         assertThat(result.isOk()).isFalse();
         assertThat(result.isInfrastructureFailure()).isFalse();
         assertThat(result.getError()).contains("发生变化");
+    }
+
+    @Test
+    void patchFileSubmitsFilePatchWithExactArgs() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> {
+            WorkerToolExecution execution = new WorkerToolExecution();
+            execution.setStatus("SUCCEEDED");
+            execution.setResult(Map.of("path", request.getArguments().get("path"),
+                    "sha256", "new-hash", "bytes", 3, "changed", true));
+            return execution;
+        });
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isTrue();
+        ArgumentCaptor<WorkerToolExecutionRequest> captor =
+                ArgumentCaptor.forClass(WorkerToolExecutionRequest.class);
+        verify(client, times(1)).submitToolExecution(any(), captor.capture());
+        WorkerToolExecutionRequest patch = captor.getValue();
+        assertThat(patch.getTool()).isEqualTo("file.patch");
+        assertThat(patch.getArguments().get("path")).isEqualTo("src/Foo.java");
+        assertThat(patch.getArguments().get("expectedHash")).isEqualTo(HASH);
+        assertThat(patch.getArguments().get("patch")).isEqualTo("@@ -1,1 +1,1 @@\n-a\n+b\n");
+    }
+
+    @Test
+    void patchFileMapsWorkerFailureToToolFailure() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> {
+            WorkerToolExecution execution = new WorkerToolExecution();
+            execution.setStatus("FAILED");
+            execution.setFailureReason("FILE_HASH_MISMATCH 文件已经发生变化");
+            return execution;
+        });
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isFalse();
+        assertThat(result.getError()).contains("发生变化");
+    }
+
+    @Test
+    void patchFileMapsTransportFailureToInfrastructure() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        when(client.submitToolExecution(any(), any())).thenThrow(new IllegalStateException("worker down"));
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isTrue();
+        assertThat(result.getError()).contains("worker down");
+    }
+
+    @Test
+    void patchFileRejectsInvalidHashAndBlankArgs() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+
+        assertThat(writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", "not-a-hash",
+                "@@ -1,1 +1,1 @@\n-a\n+b\n").isOk()).isFalse();
+        assertThat(writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH, "  ").isOk()).isFalse();
+        assertThat(writer.patchFile(WORKSPACE, "  ", HASH, "@@ -1,1 +1,1 @@\n-a\n+b\n").isOk()).isFalse();
+        verify(client, never()).submitToolExecution(any(), any());
     }
 }

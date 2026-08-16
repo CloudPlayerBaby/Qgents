@@ -11,11 +11,13 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * {@link WorkspaceCodeWriter} 的 Worker 实现：通过 Worker 的 {@code file.write} 写入代码。
+ * {@link WorkspaceCodeWriter} 的 Worker 实现：通过 Worker 的 {@code file.write} 新建或整文件
+ * 替换、{@code file.patch} 对已有文件精确应用统一 Diff。
  * <p>
- * Worker 的 file.write 采用"旧内容哈希校验 + 原子替换"的乐观并发控制，本类先读取目标文件
- * 当前 sha256（不存在则取空内容哈希）再写入，从而符合契约；写入失败（如并发变化）映射为
- * 工具级失败回灌 LLM 纠正，传输/会话级失败映射为基础设施失败。
+ * Worker 的 file.write / file.patch 均采用"旧内容哈希校验 + 原子替换"的乐观并发控制：file.write
+ * 先读取目标文件当前 sha256（不存在则取空内容哈希）再写入；file.patch 原样透传调用方提交的
+ * expectedHash 与 patch。Worker 返回的哈希冲突、补丁上下文不匹配、路径非法等工具级失败映射为
+ * 工具级失败回灌 LLM 纠正；传输/会话/轮询级失败映射为基础设施失败。
  * <p>
  * {@code app.worker.enabled=true} 时启用本实现。
  */
@@ -27,6 +29,10 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
      * 单次写入内容的最大字节数，与本地实现一致。
      */
     private static final int MAX_WRITE_BYTES = 256 * 1024;
+    /**
+     * 单次补丁文本的最大字节数，与 Worker file.patch 契约一致。
+     */
+    private static final int MAX_PATCH_BYTES = 1024 * 1024;
     /**
      * 空内容的 SHA-256，用于新建文件的 expectedHash。
      */
@@ -65,6 +71,38 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
                     execution.getFailureReason() == null ? "write failed" : execution.getFailureReason());
         } catch (RuntimeException e) {
             return WorkspaceWriteResult.infraFail(path, "write failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public WorkspaceWriteResult patchFile(UUID workspaceId, String path, String expectedHash, String patch) {
+        if (path == null || path.isBlank()) {
+            return WorkspaceWriteResult.fail(null, "path must not be blank");
+        }
+        if (expectedHash == null || !expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return WorkspaceWriteResult.fail(path, "expectedHash must be 64 hex chars");
+        }
+        if (patch == null || patch.isBlank()) {
+            return WorkspaceWriteResult.fail(path, "patch must not be blank");
+        }
+        if (patch.getBytes(StandardCharsets.UTF_8).length > MAX_PATCH_BYTES) {
+            return WorkspaceWriteResult.fail(path, "patch exceeds 1MB limit");
+        }
+        WorkerPathResolver.Target target = WorkerPathResolver.resolve(session(workspaceId), path);
+        if (target == null) {
+            return WorkspaceWriteResult.fail(path, "path does not map to a workspace repository");
+        }
+        try {
+            WorkerToolExecution execution = executeTool(workspaceId, target.repositoryId(), "file.patch",
+                    Map.of("path", target.relativePath(), "expectedHash", expectedHash, "patch", patch),
+                    TOOL_TIMEOUT);
+            if ("SUCCEEDED".equals(execution.getStatus())) {
+                return WorkspaceWriteResult.ok(path);
+            }
+            return WorkspaceWriteResult.fail(path,
+                    execution.getFailureReason() == null ? "patch failed" : execution.getFailureReason());
+        } catch (RuntimeException e) {
+            return WorkspaceWriteResult.infraFail(path, "patch failed: " + e.getMessage());
         }
     }
 

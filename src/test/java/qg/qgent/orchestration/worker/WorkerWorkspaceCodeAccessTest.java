@@ -12,6 +12,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
 
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -94,9 +96,11 @@ class WorkerWorkspaceCodeAccessTest {
             return execution;
         });
 
-        String content = access.readFile(WORKSPACE, "repo-a/src/Foo.java");
+        WorkspaceFileReadResult read = access.readFile(WORKSPACE, "repo-a/src/Foo.java");
 
-        assertThat(content).isEqualTo("a\nb\nc");
+        assertThat(read.isOk()).isTrue();
+        assertThat(read.getContent()).isEqualTo("a\nb\nc");
+        assertThat(read.getSha256()).isEqualTo("abc");
         ArgumentCaptor<WorkerToolExecutionRequest> captor =
                 ArgumentCaptor.forClass(WorkerToolExecutionRequest.class);
         verify(client).submitToolExecution(any(), captor.capture());

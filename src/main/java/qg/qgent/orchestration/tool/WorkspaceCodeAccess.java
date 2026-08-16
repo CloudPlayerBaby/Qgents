@@ -21,13 +21,14 @@ public interface WorkspaceCodeAccess {
     List<String> listFiles(UUID workspaceId);
 
     /**
-     * 读取单个文件的文本内容。
+     * 读取单个文件的文本内容及其原始字节 SHA-256。
      *
      * @param workspaceId 目标 Workspace。
      * @param path        相对路径。
-     * @return UTF-8 文本内容；路径越界、文件不存在或读取失败时返回 null。
+     * @return 成功时 ok=true 并给出 UTF-8 文本内容与原始字节 SHA-256；路径越界、文件
+     *         不存在或读取失败时 ok=false 并给出错误说明（实现不得返回 null）。
      */
-    String readFile(UUID workspaceId, String path);
+    WorkspaceFileReadResult readFile(UUID workspaceId, String path);
 
     /**
      * 在 Workspace 代码中检索包含指定关键字（忽略大小写）的文件。

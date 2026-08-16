@@ -22,19 +22,22 @@ public class CodingPromptBuilder {
                 
                 可用工具（只能调用以下工具）：
                 - list_files：列出工作区所有代码文件，无参数。
-                - read_file：读取文件，参数 {"path": "相对路径"}。
+                - read_file：读取文件，参数 {"path": "相对路径"}；返回文件内容与当前 sha256。
                 - search_code：在代码中检索关键字，参数 {"query": "关键字"}。
-                - write_file：覆盖写入文件，参数 {"path": "相对路径", "content": "文件内容"}；父目录不存在时自动创建。
-                
+                - apply_patch：对已有文本文件精确应用统一 Diff，参数 {"path": "相对路径", "expectedHash": "read_file 返回的 64 位十六进制 sha256", "patch": "统一 Diff 文本"}；expectedHash 必须来自同一次 read_file。
+                - write_file：覆盖写入或新建文件，参数 {"path": "相对路径", "content": "文件内容"}；父目录不存在时自动创建。
+
                 工作方式：
                 - 先读取与任务相关的文件，理解现状后再修改；只读取需要的文件，不要把整个工作区一次性塞进上下文。
+                - 已有文件的修改优先使用 apply_patch 做精确局部修改；只有新建文件或需要整文件替换时才使用 write_file。
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
                 - 需要调用工具时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
                 - 修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
-                
+
                 约束：
                 - 只能修改工作区内的文件；路径必须为相对路径，禁止绝对路径、.. 或指向工作区外的路径。
+                - apply_patch 的 expectedHash 必须原样取自同一次 read_file 的结果，不得自行计算或伪造。
                 - finalResult 的 summary 不得为空。
                 """;
     }

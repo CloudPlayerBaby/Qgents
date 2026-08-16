@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 
 import java.util.UUID;
@@ -13,11 +14,12 @@ import java.util.UUID;
 /**
  * 执行 Coding Agent 的白名单工具调用，并把结果格式化为可回灌给 LLM 的 JSON 字符串。
  * <p>
- * 只允许 list_files / read_file / search_code（只读，经 {@link WorkspaceCodeAccess}）
- * 与 write_file（写，经 {@link WorkspaceCodeWriter}）。参数缺失、越界、文件不存在或
- * 工具级写入失败（路径/参数/大小）时返回 ok=false 的结构化错误而不是抛出异常，让模型能
- * 基于错误信息自行纠正；基础设施级写入失败（workspace 不可用、文件系统错误）抛出异常，
- * 由 CodingAgent 映射 FAILED_INFRASTRUCTURE，不进入模型纠正循环。工具结果字符串不携带 Secret。
+ * 只允许 list_files / read_file / search_code（只读，经 {@link WorkspaceCodeAccess}）、
+ * write_file（新建或整文件替换，经 {@link WorkspaceCodeWriter}）与 apply_patch（对已有文件
+ * 精确应用统一 Diff）。参数缺失、越界、文件不存在或工具级写入失败（路径/参数/大小/补丁冲突）
+ * 时返回 ok=false 的结构化错误而不是抛出异常，让模型能基于错误信息自行纠正；基础设施级
+ * 写入失败（workspace 不可用、文件系统错误）抛出异常，由 CodingAgent 映射
+ * FAILED_INFRASTRUCTURE，不进入模型纠正循环。工具结果字符串不携带 Secret。
  */
 public class CodingToolExecutor {
 
@@ -49,6 +51,7 @@ public class CodingToolExecutor {
             case "read_file" -> readFile(workspaceId, name, args);
             case "search_code" -> searchCode(workspaceId, name, args);
             case "write_file" -> writeFile(workspaceId, name, args);
+            case "apply_patch" -> applyPatch(workspaceId, name, args);
             default -> error(name, "unknown tool '" + name + "'");
         };
     }
@@ -68,13 +71,15 @@ public class CodingToolExecutor {
         if (path.isBlank()) {
             return error(name, "read_file requires non-empty 'path'");
         }
-        String content = codeAccess.readFile(workspaceId, path);
-        if (content == null) {
-            return error(name, "file not found or unreadable: " + path);
+        WorkspaceFileReadResult read = codeAccess.readFile(workspaceId, path);
+        if (read == null || !read.isOk()) {
+            return error(name, read == null || read.getError() == null
+                    ? "file not found or unreadable: " + path : read.getError());
         }
         ObjectNode result = objectMapper.createObjectNode();
         result.put("path", path);
-        result.put("content", content);
+        result.put("content", read.getContent());
+        result.put("sha256", read.getSha256());
         return ok(name, result);
     }
 
@@ -109,6 +114,32 @@ public class CodingToolExecutor {
                     + (result.getError() == null ? "workspace unavailable" : result.getError()));
         }
         return error(name, result.getError() == null ? "write failed" : result.getError());
+    }
+
+    private String applyPatch(UUID workspaceId, String name, JsonNode args) {
+        String path = args.path("path").asText("").trim();
+        String expectedHash = args.path("expectedHash").asText("").trim();
+        String patch = args.path("patch").asText("");
+        if (path.isBlank()) {
+            return error(name, "apply_patch requires non-empty 'path'");
+        }
+        if (!expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return error(name, "apply_patch requires 64-char hex 'expectedHash' from read_file");
+        }
+        if (patch.isBlank()) {
+            return error(name, "apply_patch requires non-empty 'patch'");
+        }
+        WorkspaceWriteResult result = writer.patchFile(workspaceId, path, expectedHash, patch);
+        if (result.isOk()) {
+            ObjectNode resultNode = objectMapper.createObjectNode();
+            resultNode.put("path", result.getPath());
+            return ok(name, resultNode);
+        }
+        if (result.isInfrastructureFailure()) {
+            throw new IllegalStateException("apply_patch infrastructure failure: "
+                    + (result.getError() == null ? "workspace unavailable" : result.getError()));
+        }
+        return error(name, result.getError() == null ? "patch failed" : result.getError());
     }
 
     private String ok(String tool, ObjectNode result) {

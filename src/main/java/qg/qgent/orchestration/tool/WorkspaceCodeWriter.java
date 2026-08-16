@@ -21,4 +21,17 @@ public interface WorkspaceCodeWriter {
      * @return 结构化结果：成功给出写入路径，失败给出可回灌给 LLM 的错误说明。
      */
     WorkspaceWriteResult writeFile(UUID workspaceId, String path, String content);
+
+    /**
+     * 对 Workspace 内已有 UTF-8 文本文件精确应用统一 Diff（unified diff）局部修改；
+     * expectedHash 必须来自同一次 {@link WorkspaceCodeAccess#readFile} 返回的 sha256，
+     * 与当前文件原始字节不一致时拒绝应用且不产生任何写入。
+     *
+     * @param workspaceId  目标 Workspace。
+     * @param path         相对路径。
+     * @param expectedHash 目标文件当前内容原始字节的 64 位十六进制 SHA-256。
+     * @param patch        统一 Diff 文本（UTF-8，最长 1 MiB）。
+     * @return 结构化结果：成功给出写入路径，失败给出可回灌给 LLM 的错误说明。
+     */
+    WorkspaceWriteResult patchFile(UUID workspaceId, String path, String expectedHash, String patch);
 }

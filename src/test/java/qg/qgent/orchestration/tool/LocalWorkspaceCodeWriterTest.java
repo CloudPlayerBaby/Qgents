@@ -6,6 +6,7 @@ import qg.qgent.entity.WorkspaceEntity;
 import qg.qgent.mapper.WorkspaceMapper;
 import qg.qgent.service.WorkspaceService;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -23,6 +24,7 @@ import static org.mockito.Mockito.when;
 class LocalWorkspaceCodeWriterTest {
 
     private static final int MAX_WRITE_BYTES = 256 * 1024;
+    private static final String HASH = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     private final WorkspaceMapper mapper = mock(WorkspaceMapper.class);
     private final UUID workspaceId = UUID.randomUUID();
@@ -128,5 +130,190 @@ class LocalWorkspaceCodeWriterTest {
         assertThatThrownBy(() -> writer.writeFile(broken, "A.java", "x"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("db down");
+    }
+
+    @Test
+    void patchFileAppliesSingleHunkToExistingFile(@TempDir Path baseDir) throws Exception {
+        Path file = baseDir.resolve("ws-1/README.md");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "line1\nline2\nline3\nline4\n");
+        String patch = """
+                --- a/README.md
+                +++ b/README.md
+                @@ -2,3 +2,3 @@
+                 line2
+                -line3
+                +line3 changed
+                 line4
+                """;
+
+        WorkspaceWriteResult result = new LocalWorkspaceCodeWriter(service(baseDir.toString()))
+                .patchFile(workspaceId, "README.md", hash(file), patch);
+
+        assertThat(result.isOk()).isTrue();
+        assertThat(Files.readString(file)).isEqualTo("line1\nline2\nline3 changed\nline4\n");
+    }
+
+    @Test
+    void patchFileAppliesInsertThenDeletePrecisely(@TempDir Path baseDir) throws Exception {
+        Path file = baseDir.resolve("ws-1/multi.txt");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "a\nb\nc\nd\ne\nf\n");
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+
+        WorkspaceWriteResult insert = writer.patchFile(workspaceId, "multi.txt", hash(file),
+                "@@ -2,0 +2,1 @@\n+inserted\n");
+        assertThat(insert.isOk()).isTrue();
+        assertThat(Files.readString(file)).isEqualTo("a\ninserted\nb\nc\nd\ne\nf\n");
+
+        WorkspaceWriteResult delete = writer.patchFile(workspaceId, "multi.txt", hash(file),
+                "@@ -2,1 +2,0 @@\n-inserted\n");
+        assertThat(delete.isOk()).isTrue();
+        assertThat(Files.readString(file)).isEqualTo("a\nb\nc\nd\ne\nf\n");
+    }
+
+    @Test
+    void patchFileRejectsHashMismatchLeavingFileUnchanged(@TempDir Path baseDir) throws Exception {
+        Path file = baseDir.resolve("ws-1/example.txt");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "current\n");
+
+        WorkspaceWriteResult result = new LocalWorkspaceCodeWriter(service(baseDir.toString()))
+                .patchFile(workspaceId, "example.txt", "0".repeat(64),
+                        "@@ -1,1 +1,1 @@\n-current\n+changed\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.getError()).contains("changed since read");
+        assertThat(result.isInfrastructureFailure()).isFalse();
+        assertThat(Files.readString(file)).isEqualTo("current\n");
+    }
+
+    @Test
+    void patchFileRejectsContextMismatchLeavingFileUnchanged(@TempDir Path baseDir) throws Exception {
+        Path file = baseDir.resolve("ws-1/mismatch.txt");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "aaa\nbbb\nccc\n");
+
+        WorkspaceWriteResult result = new LocalWorkspaceCodeWriter(service(baseDir.toString()))
+                .patchFile(workspaceId, "mismatch.txt", hash(file),
+                        "@@ -1,3 +1,3 @@\n aaa\n-xxx\n+yyy\n ccc\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.getError()).contains("上下文与文件不一致");
+        assertThat(result.isInfrastructureFailure()).isFalse();
+        assertThat(Files.readString(file)).isEqualTo("aaa\nbbb\nccc\n");
+    }
+
+    @Test
+    void patchFileRejectsPathTraversalAndAbsolutePaths(@TempDir Path baseDir) throws Exception {
+        Files.createDirectories(baseDir.resolve("ws-1"));
+        Files.writeString(baseDir.resolve("ws-1/safe.txt"), "a\n");
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+
+        WorkspaceWriteResult traversal = writer.patchFile(workspaceId, "../escape.txt", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+        assertThat(traversal.isOk()).isFalse();
+        assertThat(traversal.getError()).contains("escape");
+        assertThat(Files.exists(baseDir.resolve("escape.txt"))).isFalse();
+
+        String absolute = Path.of(".").toAbsolutePath().resolve("evil.txt").toString();
+        WorkspaceWriteResult abs = writer.patchFile(workspaceId, absolute, HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+        assertThat(abs.isOk()).isFalse();
+        assertThat(Files.exists(Path.of(absolute))).isFalse();
+    }
+
+    @Test
+    void patchFileRejectsMissingDirectoryAndNonUtf8Targets(@TempDir Path baseDir) throws Exception {
+        Files.createDirectories(baseDir.resolve("ws-1/docs"));
+        Path binary = baseDir.resolve("ws-1/binary.dat");
+        byte[] bytes = {(byte) 0xFF, (byte) 0xFE, 'a', '\n'};
+        Files.write(binary, bytes);
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+
+        WorkspaceWriteResult missing = writer.patchFile(workspaceId, "missing.txt", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+        assertThat(missing.isOk()).isFalse();
+        assertThat(missing.getError()).contains("regular file");
+
+        WorkspaceWriteResult directory = writer.patchFile(workspaceId, "docs", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+        assertThat(directory.isOk()).isFalse();
+        assertThat(directory.getError()).contains("regular file");
+
+        WorkspaceWriteResult nonUtf8 = writer.patchFile(workspaceId, "binary.dat", hash(binary),
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+        assertThat(nonUtf8.isOk()).isFalse();
+        assertThat(nonUtf8.getError()).contains("not UTF-8");
+        assertThat(Files.readAllBytes(binary)).containsExactly(bytes);
+    }
+
+    @Test
+    void patchFileRejectsSymlinkTarget(@TempDir Path baseDir) throws Exception {
+        Files.createDirectories(baseDir.resolve("ws-1"));
+        Path outside = baseDir.resolve("outside.txt");
+        Files.writeString(outside, "outside\n");
+        try {
+            Files.createSymbolicLink(baseDir.resolve("ws-1/link.txt"), outside);
+        } catch (UnsupportedOperationException | IOException | SecurityException e) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlink not supported on this platform");
+        }
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+
+        WorkspaceWriteResult result = writer.patchFile(workspaceId, "link.txt", hash(outside),
+                "@@ -1,1 +1,1 @@\n-outside\n+changed\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.getError()).contains("regular file");
+        assertThat(Files.readString(outside)).isEqualTo("outside\n");
+    }
+
+    @Test
+    void patchFileRejectsParentDirectorySymlinkEscape(@TempDir Path baseDir) throws Exception {
+        Files.createDirectories(baseDir.resolve("ws-1"));
+        Path outsideDir = Files.createDirectories(baseDir.resolve("outside"));
+        Path victim = outsideDir.resolve("victim.txt");
+        Files.writeString(victim, "original\n");
+        try {
+            Files.createSymbolicLink(baseDir.resolve("ws-1/sub"), outsideDir);
+        } catch (UnsupportedOperationException | IOException | SecurityException e) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlink not supported on this platform");
+        }
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+
+        WorkspaceWriteResult result = writer.patchFile(workspaceId, "sub/victim.txt", hash(victim),
+                "@@ -1,1 +1,1 @@\n-original\n+changed\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isFalse();
+        assertThat(result.getError()).contains("escape");
+        assertThat(Files.readString(victim)).isEqualTo("original\n");
+    }
+
+    @Test
+    void patchFileRejectsInvalidPathCharactersAsToolError(@TempDir Path baseDir) {
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+
+        WorkspaceWriteResult result = writer.patchFile(workspaceId, "bad\0path.txt", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isFalse();
+        assertThat(result.getError()).contains("invalid characters");
+    }
+
+    @Test
+    void patchFileRejectsBlankPatchInvalidHashAndOversize(@TempDir Path baseDir) {
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+        String patch = "@@ -1,1 +1,1 @@\n-a\n+b\n";
+
+        assertThat(writer.patchFile(workspaceId, "A.java", "not-a-hash", patch).isOk()).isFalse();
+        assertThat(writer.patchFile(workspaceId, "A.java", HASH, "  ").isOk()).isFalse();
+        assertThat(writer.patchFile(workspaceId, "A.java", HASH, "x".repeat(1024 * 1024 + 1)).isOk()).isFalse();
+        assertThat(writer.patchFile(workspaceId, "  ", HASH, patch).isOk()).isFalse();
+    }
+
+    private String hash(Path file) throws IOException {
+        return Sha256.hex(Files.readAllBytes(file));
     }
 }
