@@ -226,6 +226,7 @@ class MergeRequestServiceTest {
         githubRepository.setInstallationId(UUID.randomUUID());
         githubRepository.setOwnerLogin("owner");
         githubRepository.setName("repo");
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
         when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
 
         ProjectEntity project = new ProjectEntity();
@@ -486,6 +487,7 @@ class MergeRequestServiceTest {
         githubRepository.setInstallationId(UUID.randomUUID());
         githubRepository.setOwnerLogin("owner");
         githubRepository.setName("repo");
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
         when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
 
         ProjectEntity project = new ProjectEntity();
