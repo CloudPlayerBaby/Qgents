@@ -12,6 +12,7 @@ import qg.qgent.mapper.NotificationMapper;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -25,9 +26,11 @@ import java.util.UUID;
 public class NotificationService {
 
     private final NotificationMapper notificationMapper;
+    private final EventService eventService;
 
-    public NotificationService(NotificationMapper notificationMapper) {
+    public NotificationService(NotificationMapper notificationMapper, EventService eventService) {
         this.notificationMapper = notificationMapper;
+        this.eventService = eventService;
     }
 
     /**
@@ -95,6 +98,9 @@ public class NotificationService {
         entity.setIsRead(false);
         entity.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         notificationMapper.insert(entity);
+        // 通知级 SSE：新通知信号（前端 SSE 需求清单 ③），事件名 notification.created
+        eventService.publishNotification(recipientUserId, entity.getId(), kind,
+                Map.of("notificationId", id(entity.getId()), "kind", kind));
     }
 
     private NotificationResponse toResponse(NotificationEntity n) {

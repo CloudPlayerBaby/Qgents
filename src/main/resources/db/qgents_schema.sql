@@ -984,3 +984,15 @@ CREATE TABLE IF NOT EXISTS
         KEY idx_ghwd_status (status, received_at),
         KEY idx_ghwd_install (provider_installation_id, received_at)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'GitHub Webhook 投递幂等记录';
+
+CREATE TABLE IF NOT EXISTS notification_events (
+    id BINARY(16) PRIMARY KEY COMMENT '事件UUIDv7',
+    recipient_user_id BINARY(16) NOT NULL COMMENT '接收通知的用户ID',
+    sequence_no BIGINT NOT NULL COMMENT '用户内单调递增事件序号（SSE 游标）',
+    notification_id BINARY(16) NULL COMMENT '关联通知ID',
+    kind VARCHAR(32) NULL COMMENT '通知类型（TASK_COMPLETED/INVITED 等）',
+    payload JSON NULL COMMENT '脱敏事件载荷',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '产生时间（UTC）',
+    KEY idx_ne_recipient_seq (recipient_user_id, sequence_no),
+    CONSTRAINT fk_ne_notification FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知级 SSE 事件（用户维度游标）';

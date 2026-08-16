@@ -9,7 +9,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.entity.EventEntity;
+import qg.qgent.entity.NotificationEventEntity;
 import qg.qgent.mapper.EventMapper;
+import qg.qgent.mapper.NotificationEventMapper;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -58,11 +60,14 @@ public class EventService {
 
     private final EventMapper eventMapper;
     private final ProjectAccessService projectAccess;
+    private final NotificationEventMapper notificationEventMapper;
     private final ExecutorService executor;
 
-    public EventService(EventMapper eventMapper, ProjectAccessService projectAccess) {
+    public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
+                        NotificationEventMapper notificationEventMapper) {
         this.eventMapper = eventMapper;
         this.projectAccess = projectAccess;
+        this.notificationEventMapper = notificationEventMapper;
         AtomicInteger seq = new AtomicInteger(1);
         ThreadFactory factory = r -> {
             Thread t = new Thread(r, "sse-event-pump-" + seq.getAndIncrement());
@@ -102,6 +107,87 @@ public class EventService {
         } catch (Exception e) {
             // 清理失败不影响事件发布，留待每日定时任务兜底
             log.warn("event cleanup skipped: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 发布一条通知级事件（前端 SSE 需求清单 ③：/notifications/events）。
+     * 按用户维度分配单调递增序号；payload 必须为已脱敏内容。
+     *
+     * @param recipientUserId 接收通知的用户 ID
+     * @param notificationId  关联通知 ID（可为 null）
+     * @param kind            通知类型
+     * @param payload         脱敏事件载荷
+     */
+    public void publishNotification(UUID recipientUserId, UUID notificationId, String kind,
+                                    Map<String, Object> payload) {
+        if (recipientUserId == null) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        NotificationEventEntity event = new NotificationEventEntity();
+        event.setId(UuidV7.next());
+        event.setRecipientUserId(recipientUserId);
+        event.setSequenceNo(notificationEventMapper.maxSequence(recipientUserId) + 1);
+        event.setNotificationId(notificationId);
+        event.setKind(kind);
+        event.setPayload(payload);
+        event.setCreatedAt(now);
+        notificationEventMapper.insert(event);
+    }
+
+    /**
+     * 建立通知级 SSE 事件流（当前用户维度，无需额外鉴权——用户即本人）。
+     * 支持 Last-Event-ID 续传；无事件或游标过期时按 409 拒绝（与项目级一致）。
+     */
+    public SseEmitter notificationStream(UUID userId, Long lastEventId) {
+        if (lastEventId != null && lastEventId < 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_EVENT_CURSOR", "Last-Event-ID 必须为非负序号");
+        }
+        Long minSeq = null;
+        if (lastEventId != null) {
+            minSeq = notificationEventMapper.minSequence(userId);
+            if (minSeq == null || minSeq > lastEventId) {
+                throw new ApiException(HttpStatus.CONFLICT, "EVENT_CURSOR_EXPIRED",
+                        "续传点已过期，请重新拉取相关资源");
+            }
+        }
+        long cursor = lastEventId != null ? lastEventId
+                : notificationEventMapper.maxSequence(userId);
+        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        emitter.onTimeout(() -> log.info("SSE notification timeout, userId={}, cursor={}", userId, cursor));
+        emitter.onError(e -> log.info("SSE notification error, userId={}: {}", userId, e.getMessage()));
+        emitter.onCompletion(() -> log.info("SSE notification completed, userId={}, cursor={}", userId, cursor));
+        executor.execute(() -> notificationPump(emitter, userId, cursor));
+        return emitter;
+    }
+
+    private void notificationPump(SseEmitter emitter, UUID userId, long startCursor) {
+        long cursor = startCursor;
+        LocalDateTime lastHeartbeat = LocalDateTime.now(ZoneOffset.UTC);
+        try {
+            while (true) {
+                List<NotificationEventEntity> events = notificationEventMapper.listAfter(userId, cursor, BATCH_SIZE);
+                for (NotificationEventEntity event : events) {
+                    if (!send(emitter, SseEmitter.event()
+                            .id(String.valueOf(event.getSequenceNo()))
+                            .name("notification.created")
+                            .data(event.getPayload()))) {
+                        return;
+                    }
+                    cursor = event.getSequenceNo();
+                }
+                LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+                if (Duration.between(lastHeartbeat, now).getSeconds() >= HEARTBEAT_SECONDS) {
+                    if (!send(emitter, SseEmitter.event().comment("heartbeat"))) {
+                        return;
+                    }
+                    lastHeartbeat = now;
+                }
+                Thread.sleep(POLL_INTERVAL_MS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
