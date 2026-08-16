@@ -37,9 +37,11 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.BindProjectRepositoryRequest;
+import qg.qgent.dto.NewProjectRepositoryRequest;
 import qg.qgent.dto.ProjectRepositoryResponse;
 import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.GitHubRepositoryEntity;
+import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
@@ -48,6 +50,7 @@ import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.github.GitHubClient;
 import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
+import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
@@ -69,6 +72,7 @@ class GitHubRepositoryServiceTest {
     @Mock private ProjectMemberMapper projectMemberMapper;
     @Mock private TeamMemberMapper teamMemberMapper;
     @Mock private RepositoryBranchConfigMapper branchConfigMapper;
+    @Mock private DiffMapper diffMapper;
     @Mock private GitHubAppClient gitHubClient;
 
     private GitHubRepositoryService service;
@@ -83,6 +87,7 @@ class GitHubRepositoryServiceTest {
         TableInfoHelper.initTableInfo(assistant, ProjectRepositoryEntity.class);
         TableInfoHelper.initTableInfo(assistant, ProjectEntity.class);
         TableInfoHelper.initTableInfo(assistant, RepositoryBranchConfigEntity.class);
+        TableInfoHelper.initTableInfo(assistant, DiffEntity.class);
     }
 
     @BeforeEach
@@ -91,7 +96,7 @@ class GitHubRepositoryServiceTest {
         // lenient：仅 sync 相关测试会触发事务，其余测试该 stub 不被使用
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         service = new GitHubRepositoryService(installationMapper, repositoryMapper, projectRepositoryMapper,
-                projectMapper, projectMemberMapper, teamMemberMapper, branchConfigMapper, gitHubClient,
+                projectMapper, projectMemberMapper, teamMemberMapper, branchConfigMapper, diffMapper, gitHubClient,
                 Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), transactionManager);
     }
 
@@ -166,7 +171,7 @@ class GitHubRepositoryServiceTest {
         binding.setId(projectRepositoryId);
         binding.setProjectId(projectId);
         authorizeProjectAdmin();
-        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(binding);
+        when(projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId)).thenReturn(binding);
         when(branchConfigMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
 
         ApiException exception = assertThrows(ApiException.class,
@@ -174,6 +179,25 @@ class GitHubRepositoryServiceTest {
 
         assertEquals(HttpStatus.CONFLICT, exception.status());
         assertEquals("PROJECT_REPOSITORY_REFERENCED_BY_BRANCH_CONFIG", exception.code());
+        verify(projectRepositoryMapper, never()).deleteById(projectRepositoryId);
+    }
+
+    @Test
+    void refusesToUnbindRepositoryReferencedByDiff() {
+        UUID projectRepositoryId = UUID.randomUUID();
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(projectRepositoryId);
+        binding.setProjectId(projectId);
+        authorizeProjectAdmin();
+        when(projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId)).thenReturn(binding);
+        when(branchConfigMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(diffMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.unbindProjectRepository(actorId, projectId, projectRepositoryId));
+
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("PROJECT_REPOSITORY_REFERENCED_BY_DIFF", exception.code());
         verify(projectRepositoryMapper, never()).deleteById(projectRepositoryId);
     }
 
@@ -649,5 +673,93 @@ class GitHubRepositoryServiceTest {
         // 不查询本地 Installation（服务层只转发 client 生成的 URL）
         verify(installationMapper, never()).selectOne(any(Wrapper.class));
         verify(installationMapper, never()).selectList(any(Wrapper.class));
+    }
+
+    @Test
+    void createsRemoteRepositoryUsingTeamInstallation() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setProviderInstallationId(12345L);
+        installation.setAccountType("Organization");
+        installation.setAccountLogin("qgents-org");
+        installation.setStatus("ACTIVE");
+        when(installationMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(installation));
+
+        when(gitHubClient.createRepository(anyLong(), anyString(), anyString(), any(GitHubRepositoryCreateRequest.class)))
+                .thenReturn(new GitHubRepositoryDetails(9001L, "qgents-org", "new-repo", "main", "PRIVATE", false));
+
+        NewProjectRepositoryRequest request = new NewProjectRepositoryRequest();
+        request.setName("new-repo");
+        request.setDescription("desc");
+        request.setIsPrivate(true);
+
+        GitHubRepositoryService.RemoteRepositoryCreation creation = service.createRemoteRepository(actorId, teamId, request);
+
+        assertEquals(installation, creation.installation());
+        assertEquals("new-repo", creation.repository().getName());
+        assertEquals("main", creation.repository().getDefaultBranch());
+    }
+
+    @Test
+    void createRemoteRepositoryRejectsWhenMultipleActiveInstallations() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity first = new GitHubInstallationEntity();
+        first.setId(UUID.randomUUID());
+        first.setProviderInstallationId(12345L);
+        first.setStatus("ACTIVE");
+        GitHubInstallationEntity second = new GitHubInstallationEntity();
+        second.setId(UUID.randomUUID());
+        second.setProviderInstallationId(67890L);
+        second.setStatus("ACTIVE");
+        when(installationMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(first, second));
+
+        NewProjectRepositoryRequest request = new NewProjectRepositoryRequest();
+        request.setName("new-repo");
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.createRemoteRepository(actorId, teamId, request));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, exception.status());
+        assertEquals("GITHUB_INSTALLATION_REQUIRED", exception.code());
+        verify(gitHubClient, never()).createRepository(anyLong(), anyString(), anyString(),
+                any(GitHubRepositoryCreateRequest.class));
+    }
+
+    @Test
+    void bindsCreatedRepositoryMirrorAndProjectBinding() {
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setProviderInstallationId(12345L);
+        GitHubRepositoryDetails created = new GitHubRepositoryDetails(9001L, "qgents-org", "new-repo", "main",
+                "PRIVATE", false);
+        GitHubRepositoryService.RemoteRepositoryCreation creation =
+                new GitHubRepositoryService.RemoteRepositoryCreation(installation, created);
+
+        when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+
+        NewProjectRepositoryRequest request = new NewProjectRepositoryRequest();
+        request.setName("new-repo");
+        request.setDisplayName("Backend Repo");
+
+        ProjectRepositoryResponse response = service.bindCreatedRepository(projectId, creation, request);
+
+        ArgumentCaptor<GitHubRepositoryEntity> mirror = ArgumentCaptor.forClass(GitHubRepositoryEntity.class);
+        verify(repositoryMapper).insert(mirror.capture());
+        assertEquals("new-repo", mirror.getValue().getName());
+        assertEquals("main", mirror.getValue().getDefaultBranch());
+        assertEquals("AUTHORIZED", mirror.getValue().getAuthorizationStatus());
+
+        ArgumentCaptor<ProjectRepositoryEntity> binding = ArgumentCaptor.forClass(ProjectRepositoryEntity.class);
+        verify(projectRepositoryMapper).insert(binding.capture());
+        assertEquals(projectId, binding.getValue().getProjectId());
+        assertEquals("Backend Repo", binding.getValue().getDisplayName());
+        assertEquals("Backend Repo", response.getDisplayName());
+        assertEquals("qgents-org/new-repo", response.getFullName());
     }
 }
