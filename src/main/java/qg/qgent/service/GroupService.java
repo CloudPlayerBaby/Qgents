@@ -36,11 +36,12 @@ public class GroupService {
     private final AgentMapper agentMapper;
     private final MessageMapper messageMapper;
     private final ProjectAccessService access;
+    private final EventService eventService;
 
     public GroupService(RequirementGroupMapper groupMapper,
                         RequirementGroupRepositoryMapper groupRepositoryMapper, ProjectMemberMapper projectMemberMapper,
                         GroupAgentMapper groupAgentMapper, AgentMapper agentMapper, MessageMapper messageMapper,
-                        ProjectAccessService access) {
+                        ProjectAccessService access, EventService eventService) {
         this.groupMapper = groupMapper;
         this.groupRepositoryMapper = groupRepositoryMapper;
         this.projectMemberMapper = projectMemberMapper;
@@ -48,6 +49,7 @@ public class GroupService {
         this.agentMapper = agentMapper;
         this.messageMapper = messageMapper;
         this.access = access;
+        this.eventService = eventService;
     }
 
     /**
@@ -88,6 +90,8 @@ public class GroupService {
         group.setStatus("ACTIVE");
         group.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         groupMapper.insert(group);
+        eventService.publish(projectId, group.getId(), "group.created", id(group.getId()),
+                Map.of("projectId", id(projectId), "groupId", id(group.getId())));
         return toResponse(groupMapper.selectById(group.getId()));
     }
 
@@ -121,6 +125,8 @@ public class GroupService {
         for (UUID repositoryId : repositories) {
             groupRepositoryMapper.insertLink(group.getId(), repositoryId);
         }
+        eventService.publish(projectId, group.getId(), "group.created", id(group.getId()),
+                Map.of("projectId", id(projectId), "groupId", id(group.getId())));
         return toResponse(groupMapper.selectById(group.getId()));
     }
 
@@ -181,6 +187,8 @@ public class GroupService {
                         body.getTitle() == null ? null : body.getTitle().trim())
                 .set(body.getDescription() != null, RequirementGroupEntity::getDescription, body.getDescription())
                 .eq(RequirementGroupEntity::getId, groupId));
+        eventService.publish(projectId, groupId, "group.updated", id(groupId),
+                Map.of("projectId", id(projectId), "groupId", id(groupId)));
         return toResponse(groupMapper.selectById(groupId));
     }
 
@@ -207,6 +215,8 @@ public class GroupService {
         }
         group.setStatus("ARCHIVED");
         groupMapper.updateById(group);
+        eventService.publish(projectId, groupId, "group.archived", id(groupId),
+                Map.of("projectId", id(projectId), "groupId", id(groupId)));
         return toResponse(groupMapper.selectById(groupId));
     }
 
@@ -259,6 +269,12 @@ public class GroupService {
             }
         }
         projectMemberMapper.deleteByProjectAndUser(projectId, actor);
+        eventService.publish(projectId, groupId, "group.member.updated", id(groupId),
+                Map.of("projectId", id(projectId), "groupId", id(groupId)));
+    }
+
+    private String id(UUID value) {
+        return value == null ? null : value.toString();
     }
 
     private List<UUID> validateRepositories(UUID projectId, List<UUID> repositoryIds) {
@@ -304,9 +320,5 @@ public class GroupService {
      */
     private String iso(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC).toString();
-    }
-
-    private String id(UUID value) {
-        return value == null ? null : value.toString();
     }
 }

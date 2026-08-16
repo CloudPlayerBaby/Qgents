@@ -42,10 +42,12 @@ public class MessageService {
     private final ProjectAccessService access;
     private final TaskTriggerService taskTriggerService;
     private final ObjectMapper mapper;
+    private final EventService eventService;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                           GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
-                          ProjectAccessService access, TaskTriggerService taskTriggerService, ObjectMapper mapper) {
+                          ProjectAccessService access, TaskTriggerService taskTriggerService, ObjectMapper mapper,
+                          EventService eventService) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupAgentMapper = groupAgentMapper;
@@ -54,6 +56,7 @@ public class MessageService {
         this.access = access;
         this.taskTriggerService = taskTriggerService;
         this.mapper = mapper;
+        this.eventService = eventService;
     }
 
     /**
@@ -75,7 +78,7 @@ public class MessageService {
         if (group == null || !group.getProjectId().equals(projectId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
         }
-        MessageResponse response = doSend(groupId, actor, null, body);
+        MessageResponse response = doSend(projectId, groupId, actor, null, body);
         triggerTaskOnAgentMention(actor, projectId, groupId, response.getId() == null ? null : UUID.fromString(response.getId()),
                 body.getMentions());
         return response;
@@ -119,7 +122,7 @@ public class MessageService {
         if (group == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在");
         }
-        return doSend(groupId, null, agentId, body);
+        return doSend(group.getProjectId(), groupId, null, agentId, body);
     }
 
     private RequirementGroupEntity lockGroup(UUID groupId) {
@@ -128,7 +131,8 @@ public class MessageService {
                 .last("FOR UPDATE"));
     }
 
-    private MessageResponse doSend(UUID groupId, UUID authorUserId, UUID agentId, MessageSendRequest body) {
+    private MessageResponse doSend(UUID projectId, UUID groupId, UUID authorUserId, UUID agentId,
+                                   MessageSendRequest body) {
         String type = normalizeType(body.getType());
         validateContent(type, body.getContent());
         List<Mention> mentions = body.getMentions() == null ? List.of() : body.getMentions();
@@ -177,11 +181,21 @@ public class MessageService {
         groupMapper.update(null, Wrappers.<RequirementGroupEntity>lambdaUpdate()
                 .set(RequirementGroupEntity::getLastMessageAt, LocalDateTime.now(ZoneOffset.UTC))
                 .eq(RequirementGroupEntity::getId, groupId));
-        // Agent 首次回群后自动成为群参与者（群成员 = 真实用户 + Agent 混合）
+        // Agent 首次回群后自动成为群参与者（群成员 = 真实用户 + Agent 混合），并推送成员变化事件
         if (agentId != null) {
-            groupAgentMapper.insertAgent(groupId, agentId);
+            if (groupAgentMapper.insertAgent(groupId, agentId) > 0) {
+                eventService.publish(projectId, groupId, "group.member.updated", id(groupId),
+                        Map.of("projectId", id(projectId), "groupId", id(groupId)));
+            }
         }
+        // 项目级 SSE：新消息信号（REST 存真相，前端收到后刷新消息列表）
+        eventService.publish(projectId, groupId, "message.created", id(message.getId()),
+                Map.of("projectId", id(projectId), "groupId", id(groupId), "messageId", id(message.getId())));
         return toResponse(messageMapper.selectById(message.getId()));
+    }
+
+    private String id(UUID value) {
+        return value == null ? null : value.toString();
     }
 
     /**
