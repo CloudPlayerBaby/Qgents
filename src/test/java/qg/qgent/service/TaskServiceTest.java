@@ -100,6 +100,58 @@ class TaskServiceTest {
     }
 
     @Test
+    void createRejectsContinuationFromDifferentRequirementGroup() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID otherGroup = UUID.randomUUID(), continuationTaskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        TaskEntity continuation = task(continuationTaskId, projectId, actor);
+        continuation.setRequirementGroupId(otherGroup);
+        continuation.setWorkspaceId(workspaceId);
+        WorkspaceEntity workspace = new WorkspaceEntity();
+        workspace.setId(workspaceId);
+        workspace.setProjectId(projectId);
+        when(tasks.selectById(continuationTaskId)).thenReturn(continuation);
+        when(workspaces.selectByIdForUpdate(workspaceId)).thenReturn(workspace);
+        TaskCreateRequest request = request(groupId, List.of());
+        request.setWorkspaceId(workspaceId);
+        request.setContinuationOfTaskId(continuationTaskId);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.create(projectId, actor, request));
+
+        assertEquals("WORKSPACE_CONTINUATION_GROUP_MISMATCH", error.code());
+    }
+
+    @Test
+    void createContinuationReusesWorkspaceAndInheritsRepositories() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID continuationTaskId = UUID.randomUUID(), workspaceId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        TaskEntity continuation = task(continuationTaskId, projectId, actor);
+        continuation.setRequirementGroupId(groupId);
+        continuation.setWorkspaceId(workspaceId);
+        WorkspaceEntity workspace = new WorkspaceEntity();
+        workspace.setId(workspaceId);
+        workspace.setProjectId(projectId);
+        workspace.setStatus("READY");
+        when(tasks.selectById(continuationTaskId)).thenReturn(continuation);
+        when(workspaces.selectByIdForUpdate(workspaceId)).thenReturn(workspace);
+        when(projectRepositories.selectById(repositoryId)).thenReturn(repository(repositoryId, projectId));
+        when(repositories.selectByWorkspace(workspaceId))
+                .thenReturn(List.of(worktree(repositoryId, "repo-1", "base", "feat/task-x")));
+        TaskCreateRequest request = request(groupId, List.of());
+        request.setWorkspaceId(workspaceId);
+        request.setContinuationOfTaskId(continuationTaskId);
+
+        TaskResponse result = service.create(projectId, actor, request);
+
+        assertEquals(workspaceId.toString(), result.getWorkspaceId());
+        assertEquals(continuationTaskId.toString(), result.getContinuationOfTaskId());
+        assertEquals(List.of(repositoryId.toString()), result.getRepositoryIds());
+        verify(workspaces, never()).insert(any(WorkspaceEntity.class));
+    }
+
+    @Test
     void replaceAgentOnlyAllowsPendingStep() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID(), stepId = UUID.randomUUID();
         TaskEntity task = task(taskId, projectId, actor);

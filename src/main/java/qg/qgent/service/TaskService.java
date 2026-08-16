@@ -110,6 +110,10 @@ public class TaskService {
                 throw validation("WORKSPACE_CONTINUATION_INVALID",
                         "The continued Task and Workspace must belong to the current Project");
             }
+            if (!group.getId().equals(continuation.getRequirementGroupId())) {
+                throw validation("WORKSPACE_CONTINUATION_GROUP_MISMATCH",
+                        "The continued Task must belong to the current Requirement Group");
+            }
             repositoryIds = repositories.selectByWorkspace(workspace.getId()).stream()
                     .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
             if (repositoryIds.isEmpty()) {
@@ -166,6 +170,26 @@ public class TaskService {
         }
         eventPublisher.publishEvent(new TaskCreatedEvent(projectId, task.getId()));
         return response(task, workspace);
+    }
+
+    /**
+     * 返回项目中由指定触发消息创建的 Task；不存在时返回 null。
+     * 供显式触发端点幂等返回已有 Task，避免同一触发消息重复创建（尤其引用 DIFF 续作）。
+     *
+     * @param projectId       项目 ID（归属校验）
+     * @param triggerMessageId 触发消息 ID
+     * @param actor           当前用户 ID
+     * @return 已有 Task 视图；不存在时返回 null
+     */
+    public TaskResponse findByTriggerMessage(UUID projectId, UUID triggerMessageId, UUID actor) {
+        access.requireProjectMember(projectId, actor);
+        if (triggerMessageId == null) {
+            return null;
+        }
+        TaskEntity task = tasks.selectOne(Wrappers.<TaskEntity>lambdaQuery()
+                .eq(TaskEntity::getProjectId, projectId)
+                .eq(TaskEntity::getTriggerMessageId, triggerMessageId));
+        return task == null ? null : response(task);
     }
 
     /**
