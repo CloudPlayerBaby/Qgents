@@ -125,6 +125,8 @@ class MergeRequestServiceTest {
         githubRepository.setInstallationId(UUID.randomUUID());
         githubRepository.setOwnerLogin("owner");
         githubRepository.setName("repo");
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
+        githubRepository.setArchived(false);
         when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
 
         ProjectEntity project = new ProjectEntity();
@@ -264,6 +266,8 @@ class MergeRequestServiceTest {
         githubRepository.setInstallationId(UUID.randomUUID());
         githubRepository.setOwnerLogin("owner");
         githubRepository.setName("repo");
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
+        githubRepository.setArchived(false);
         when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
 
         ProjectEntity project = new ProjectEntity();
@@ -319,6 +323,8 @@ class MergeRequestServiceTest {
         githubRepository.setInstallationId(UUID.randomUUID());
         githubRepository.setOwnerLogin("owner");
         githubRepository.setName("repo");
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
+        githubRepository.setArchived(false);
         when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
 
         ProjectEntity project = new ProjectEntity();
@@ -441,6 +447,8 @@ class MergeRequestServiceTest {
         githubRepository.setInstallationId(UUID.randomUUID());
         githubRepository.setOwnerLogin("owner");
         githubRepository.setName("repo");
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
+        githubRepository.setArchived(false);
         when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
 
         ProjectEntity project = new ProjectEntity();
@@ -563,6 +571,8 @@ class MergeRequestServiceTest {
         githubRepository.setInstallationId(UUID.randomUUID());
         githubRepository.setOwnerLogin("owner");
         githubRepository.setName("repo");
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
+        githubRepository.setArchived(false);
         when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
 
         ProjectEntity project = new ProjectEntity();
@@ -623,6 +633,8 @@ class MergeRequestServiceTest {
         githubRepository.setInstallationId(UUID.randomUUID());
         githubRepository.setOwnerLogin("owner");
         githubRepository.setName("repo");
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
+        githubRepository.setArchived(false);
         when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
 
         ProjectEntity project = new ProjectEntity();
@@ -687,6 +699,8 @@ class MergeRequestServiceTest {
         GitHubRepositoryEntity githubRepository = new GitHubRepositoryEntity();
         githubRepository.setId(repository.getRepositoryId());
         githubRepository.setInstallationId(UUID.randomUUID());
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
+        githubRepository.setArchived(false);
         when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
 
         ProjectEntity project = new ProjectEntity();
@@ -703,6 +717,52 @@ class MergeRequestServiceTest {
 
         ApiException ex = assertThrows(ApiException.class, () -> service.create(projectId, userId, request));
         assertEquals("GITHUB_INSTALLATION_UNAVAILABLE", ex.code());
+    }
+
+    @Test
+    void createFailsWhenRepositoryRevoked() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+
+        MergeRequestCreateRequest request = new MergeRequestCreateRequest();
+        request.setTaskId(taskId);
+        request.setRepositoryId(repositoryId);
+        request.setTargetBranch("main");
+
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setCreatedBy(userId);
+        task.setWorkspaceId(workspaceId); task.setDeliveryMode("DIFF_FIRST");
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setRepositoryId(UUID.randomUUID());
+        when(projectRepositoryMapper.selectById(repositoryId)).thenReturn(repository);
+
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setWorkspaceId(workspaceId);
+        worktree.setProjectRepositoryId(repositoryId);
+        worktree.setSourceBranch("feature/test");
+        worktree.setHeadCommit("sha123");
+        when(workspaceRepositoryMapper.selectForUpdate(workspaceId, repositoryId)).thenReturn(worktree);
+
+        GitHubRepositoryEntity githubRepository = new GitHubRepositoryEntity();
+        githubRepository.setId(repository.getRepositoryId());
+        githubRepository.setInstallationId(UUID.randomUUID());
+        githubRepository.setAuthorizationStatus("REVOKED"); // 已撤权
+        githubRepository.setArchived(false);
+        when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.create(projectId, userId, request));
+        assertEquals("GITHUB_REPOSITORY_UNAVAILABLE", ex.code());
+        // 已撤权仓库不得调用 GitHub
+        verifyNoInteractions(githubClient);
     }
 
     @Test

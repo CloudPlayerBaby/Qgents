@@ -610,6 +610,9 @@ public class GitHubRepositoryService {
         return installationIds.isEmpty() ? List.of()
                 : repositoryMapper.selectList(new LambdaQueryWrapper<GitHubRepositoryEntity>()
                 .in(GitHubRepositoryEntity::getInstallationId, installationIds)
+                // 团队授权仓库列表只返回仍可用的仓库：已撤权或已归档的不再暴露给前端供绑定
+                .eq(GitHubRepositoryEntity::getAuthorizationStatus, "AUTHORIZED")
+                .eq(GitHubRepositoryEntity::getArchived, false)
                 .orderByAsc(GitHubRepositoryEntity::getOwnerLogin, GitHubRepositoryEntity::getName));
     }
 

@@ -455,6 +455,8 @@ class GitHubRepositoryServiceTest {
         entity.setProviderRepositoryId(12345L);
         entity.setOwnerLogin("owner");
         entity.setName("repo");
+        entity.setAuthorizationStatus("AUTHORIZED");
+        entity.setArchived(false);
         when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(entity));
 
         var response = service.listTeamRepositories(actorId, teamId);
