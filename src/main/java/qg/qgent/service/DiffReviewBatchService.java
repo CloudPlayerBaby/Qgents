@@ -274,11 +274,7 @@ public class DiffReviewBatchService {
             throw new ApiException(HttpStatus.CONFLICT, "DIFF_BATCH_CONTEXT_INVALID",
                     "Repository Diff no longer belongs to the claimed review batch");
         }
-        current.setDeliveryStatus("MR_CREATED");
-        current.setDeliveryFailureCode(null);
-        current.setDeliveryFailureReason(null);
-        current.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
-        diffs.updateById(current);
+        diffs.markDelivered(diffId, LocalDateTime.now(ZoneOffset.UTC));
         events.publish(task.getProjectId(), task.getRequirementGroupId(), "delivery.repository.updated", diffId.toString(),
                 Map.of("projectId", task.getProjectId(), "taskId", task.getId(), "diffId", diffId,
                         "deliveryStatus", "MR_CREATED"));
@@ -498,7 +494,6 @@ public class DiffReviewBatchService {
                     .forEach(repository -> githubById.put(repository.getId(), repository));
         }
         List<MergeRequestEntity> matchingMrs = mergeRequestMapper.selectList(Wrappers.<MergeRequestEntity>lambdaQuery()
-                .eq(MergeRequestEntity::getTaskId, batch.getTaskId())
                 .eq(MergeRequestEntity::getWorkspaceId, batch.getWorkspaceId())
                 .orderByDesc(MergeRequestEntity::getCreatedAt));
         return values.stream().map(diff -> {

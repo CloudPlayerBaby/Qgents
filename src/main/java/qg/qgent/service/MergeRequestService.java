@@ -7,6 +7,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
@@ -40,9 +42,16 @@ import java.util.function.Function;
  */
 @Service
 public class MergeRequestService {
+    private static final Logger log = LoggerFactory.getLogger(MergeRequestService.class);
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 100;
     private static final Duration MERGE_OPERATION_LEASE = Duration.ofMinutes(20);
+    /**
+     * 创建 MR 后轮询 GitHub mergeable 的最大次数与间隔；GitHub 通常在数秒内算完，
+     * 命中非 null 即提前返回。
+     */
+    private static final int MERGEABLE_POLL_ATTEMPTS = 5;
+    private static final Duration MERGEABLE_POLL_INTERVAL = Duration.ofSeconds(2);
 
     private final MergeRequestMapper mergeRequestMapper;
     private final MergeRequestGroupMapper mergeRequestGroupMapper;
@@ -179,14 +188,27 @@ public class MergeRequestService {
     public MergeRequestSummaryResponse create(UUID projectId, UUID userId, MergeRequestCreateRequest request) {
         projectAccess.requireProjectMember(projectId, userId);
         CreateClaim claim = claimCreateWithRetry(projectId, userId, request);
-        if (claim.existing() != null) return summary(claim.existing());
+        if (claim.existing() != null) {
+            if (claim.existing().getHeadCommit().equals(claim.worktree().getHeadCommit())) {
+                return summary(claim.existing());
+            }
+            return pushAndUpdateExisting(claim);
+        }
         try {
             GitHubPullRequestDetails remote = createRemote(claim);
             validateRemote(claim, remote);
             recordRemoteCreated(claim, remote);
             MergeRequestEntity mr = inTransaction(() -> finalizeCreate(claim, remote));
             publishUpdated(mr);
-            return summary(mr);
+            MergeRequestEntity refreshed;
+            try {
+                // mergeability 轮询是 best-effort：MR 已创建成功，轮询失败不得影响交付结果。
+                refreshed = pollMergeability(projectId, claim.githubRepository(), claim.installation(), mr);
+            } catch (RuntimeException failure) {
+                log.warn("mergeability poll failed for MR {}, falling back to created state", mr.getId(), failure);
+                refreshed = mr;
+            }
+            return summary(refreshed);
         } catch (RuntimeException failure) {
             markCreateFailed(claim, failure);
             throw failure;
@@ -225,15 +247,15 @@ public class MergeRequestService {
                 .eq(MergeRequestEntity::getTargetBranch, request.getTargetBranch())
                 .eq(MergeRequestEntity::getStatus, "OPEN").orderByDesc(MergeRequestEntity::getCreatedAt)
                 .last("LIMIT 1"));
-        if (existing != null) {
-            if (worktree.getHeadCommit().equals(existing.getHeadCommit())) {
-                return new CreateClaim(task, worktree, null, null, request, null, null, existing);
-            }
-            throw new ApiException(HttpStatus.CONFLICT, "OPEN_MR_ALREADY_EXISTS",
-                    "An open Pull Request already exists for this source and target branch");
+        if (existing != null && worktree.getHeadCommit().equals(existing.getHeadCommit())) {
+            return new CreateClaim(task, worktree, null, null, request, null, null, existing);
         }
         GitHubRepositoryEntity githubRepository = requireGitHubRepository(projectId, request.getRepositoryId());
         GitHubInstallationEntity installation = requireInstallation(githubRepository);
+        if (existing != null) {
+            // 已有 open MR 且 headCommit 不同：推送新 commit 后更新已有 MR，不新建 PR，也不走 delivery operation
+            return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, existing);
+        }
         if (deliveryOperationMapper == null) {
             return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, null);
         }
@@ -289,6 +311,39 @@ public class MergeRequestService {
         if (deliveryOperationMapper.selectById(operation.getId()) == null) deliveryOperationMapper.insert(operation);
         else deliveryOperationMapper.updateById(operation);
         return new CreateClaim(task, worktree, githubRepository, installation, request, operation, token, null);
+    }
+
+    /**
+     * 已有 open MR 且 headCommit 不同：推送新 commit 到已有分支（GitHub 会自动更新该 PR），
+     * 并同步本地 MR 镜像的 headCommit，不新建 PR。
+     */
+    private MergeRequestSummaryResponse pushAndUpdateExisting(CreateClaim claim) {
+        GitHubRepositoryEntity github = claim.githubRepository();
+        GitHubInstallationEntity installation = claim.installation();
+        WorkspaceRepositoryEntity worktree = claim.worktree();
+        String fullName = github.getOwnerLogin() + "/" + github.getName();
+        String grantId = credentialService.generateGrant(installation.getTeamId(), claim.task().getProjectId(),
+                installation.getProviderInstallationId(), fullName, worktree.getSourceBranch(),
+                worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
+        WorkerGitPushResponse pushed;
+        try {
+            pushed = workerClient.pushWorkspaceBranch(claim.task().getWorkspaceId(), claim.request().getRepositoryId(),
+                    new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
+                            .setCredentialGrantId(grantId));
+        } catch (ApiException failure) {
+            throw new ApiException(failure.status(), "WORKER_PUSH_FAILED",
+                    "Failed to push branch via Sandbox Worker: " + failure.getMessage());
+        }
+        if (pushed == null || !pushed.isVerified() || !worktree.getHeadCommit().equals(pushed.getHeadCommit())) {
+            throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
+                    "Sandbox Worker push verification failed or HEAD mismatch");
+        }
+        MergeRequestEntity existing = claim.existing();
+        existing.setHeadCommit(worktree.getHeadCommit());
+        existing.setSyncedAt(LocalDateTime.now(ZoneOffset.UTC));
+        mergeRequestMapper.updateById(existing);
+        publishUpdated(existing);
+        return summary(existing);
     }
 
     private GitHubPullRequestDetails createRemote(CreateClaim claim) {
@@ -575,6 +630,12 @@ public class MergeRequestService {
                     claim.installation().getProviderInstallationId(), claim.githubRepository().getOwnerLogin(),
                     claim.githubRepository().getName(), requireProviderNumber(claim.mergeRequest()));
             if (remote == null || !remote.merged()) {
+                // 用合并时重新拉取的新鲜 mergeable 状态拦截冲突，不依赖可能过期的落库值；
+                // remote 或 mergeable 为 null 表示 GitHub 尚未算完，交由 GitHub 原生合并判定。
+                if (remote != null && remote.mergeable() != null && !remote.mergeable()) {
+                    throw new ApiException(HttpStatus.CONFLICT, "MR_HAS_CONFLICTS",
+                            "MR 存在冲突或不可合并（mergeable_state=" + remote.mergeableState() + "），请解决后重试");
+                }
                 GitHubPullRequestMergeResult result = githubClient.mergePullRequest(
                         claim.installation().getProviderInstallationId(), claim.githubRepository().getOwnerLogin(),
                         claim.githubRepository().getName(), requireProviderNumber(claim.mergeRequest()),
@@ -691,9 +752,44 @@ public class MergeRequestService {
         }
         current.setProviderUpdatedAt(now);
         current.setSyncedAt(now);
+        current.setMergeable(remote.mergeable());
+        current.setMergeableState(remote.mergeableState());
+        current.setBaseSha(remote.baseSha());
         mergeRequestMapper.updateById(current);
         refreshQualityGate(current);
         return current;
+    }
+
+    /**
+     * 创建 MR 后短轮询 GitHub mergeable 状态并落库。
+     * GitHub 异步计算合并可行性，未完成时返回 null；命中非 null 即持久化并发 SSE。
+     * 返回落库后（mergeable 已刷新）的实体；超时未算完或异常时由调用方决定回退。
+     * 网络调用在事务外执行，只在两次请求之间短暂等待。
+     */
+    private MergeRequestEntity pollMergeability(UUID projectId, GitHubRepositoryEntity repo,
+                                               GitHubInstallationEntity installation, MergeRequestEntity mr) {
+        if (repo == null || installation == null || mr.getProviderNumber() == null) {
+            return mr;
+        }
+        for (int attempt = 0; attempt < MERGEABLE_POLL_ATTEMPTS; attempt++) {
+            if (attempt > 0) {
+                try {
+                    Thread.sleep(MERGEABLE_POLL_INTERVAL.toMillis());
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return mr;
+                }
+            }
+            GitHubPullRequestDetails remote = githubClient.getPullRequest(installation.getProviderInstallationId(),
+                    repo.getOwnerLogin(), repo.getName(), requireProviderNumber(mr));
+            if (remote == null || remote.mergeable() == null) {
+                continue;
+            }
+            MergeRequestEntity updated = inTransaction(() -> persistRemoteState(projectId, mr.getId(), remote));
+            publishUpdated(updated);
+            return updated;
+        }
+        return mr;
     }
 
     /**
@@ -913,6 +1009,11 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_UNAVAILABLE",
                     "The bound GitHub repository is unavailable or archived");
         }
+        // 已撤权（REVOKED）的仓库镜像不可再用于创建/同步/合并 PR，调用 GitHub 前统一拒绝
+        if (!"AUTHORIZED".equals(repository.getAuthorizationStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_UNAVAILABLE",
+                    "The bound GitHub repository authorization has been revoked");
+        }
         var project = projectMapper.selectById(projectId);
         GitHubInstallationEntity installation = repository.getInstallationId() == null ? null
                 : githubInstallationMapper.selectById(repository.getInstallationId());
@@ -973,6 +1074,8 @@ public class MergeRequestService {
         p.put("headCommit", mr.getHeadCommit());
         p.put("providerUpdatedAt", iso(mr.getProviderUpdatedAt()));
         p.put("qualityGateStatus", mr.getQualityGateStatus());
+        p.put("mergeable", mr.getMergeable());
+        p.put("mergeableState", mr.getMergeableState());
         p.put("timestamp", Instant.now().toString());
         eventService.publish(repo == null ? null : repo.getProjectId(), null, "merge-request.updated",
                 mr.getId().toString(), p);
@@ -1063,15 +1166,16 @@ public class MergeRequestService {
                                                   QualityGateResponse gate, String webUrl) {
         return new MergeRequestSummaryResponse(id(mr.getId()), id(mr.getProjectRepositoryId()), groupIds,
                 mr.getProvider(), mr.getProviderNumber(), mr.getSourceBranch(), mr.getTargetBranch(), mr.getStatus(),
-                mr.getHeadCommit(), gate, mr.getTitle(), webUrl, iso(mr.getCreatedAt()));
+                mr.getHeadCommit(), mr.getMergeable(), mr.getMergeableState(), gate, mr.getTitle(), webUrl,
+                iso(mr.getCreatedAt()));
     }
 
     private MergeRequestDetailResponse toDetail(MergeRequestEntity mr, List<String> groupIds,
                                                 QualityGateResponse gate, String webUrl, String diffId) {
         return new MergeRequestDetailResponse(id(mr.getId()), id(mr.getProjectRepositoryId()), groupIds,
                 mr.getProvider(), mr.getProviderNumber(), mr.getSourceBranch(), mr.getTargetBranch(), mr.getStatus(),
-                mr.getHeadCommit(), mr.getTitle(), null, webUrl, diffId, gate, id(mr.getAuthorUserId()),
-                iso(mr.getSyncedAt()), iso(mr.getCreatedAt()));
+                mr.getHeadCommit(), mr.getMergeable(), mr.getMergeableState(), mr.getTitle(), null, webUrl, diffId,
+                gate, id(mr.getAuthorUserId()), iso(mr.getSyncedAt()), iso(mr.getCreatedAt()));
     }
 
     private MergeRequestCheckResponse toCheck(QualityCheckResultEntity c) {
