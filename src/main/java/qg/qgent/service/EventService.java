@@ -10,8 +10,10 @@ import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.entity.EventEntity;
 import qg.qgent.entity.NotificationEventEntity;
+import qg.qgent.entity.TeamEventEntity;
 import qg.qgent.mapper.EventMapper;
 import qg.qgent.mapper.NotificationEventMapper;
+import qg.qgent.mapper.TeamEventMapper;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -61,13 +63,15 @@ public class EventService {
     private final EventMapper eventMapper;
     private final ProjectAccessService projectAccess;
     private final NotificationEventMapper notificationEventMapper;
+    private final TeamEventMapper teamEventMapper;
     private final ExecutorService executor;
 
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
-                        NotificationEventMapper notificationEventMapper) {
+                        NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper) {
         this.eventMapper = eventMapper;
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
+        this.teamEventMapper = teamEventMapper;
         AtomicInteger seq = new AtomicInteger(1);
         ThreadFactory factory = r -> {
             Thread t = new Thread(r, "sse-event-pump-" + seq.getAndIncrement());
@@ -172,6 +176,86 @@ public class EventService {
                     if (!send(emitter, SseEmitter.event()
                             .id(String.valueOf(event.getSequenceNo()))
                             .name("notification.created")
+                            .data(event.getPayload()))) {
+                        return;
+                    }
+                    cursor = event.getSequenceNo();
+                }
+                LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+                if (Duration.between(lastHeartbeat, now).getSeconds() >= HEARTBEAT_SECONDS) {
+                    if (!send(emitter, SseEmitter.event().comment("heartbeat"))) {
+                        return;
+                    }
+                    lastHeartbeat = now;
+                }
+                Thread.sleep(POLL_INTERVAL_MS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * 发布一条团队级事件（前端 SSE 需求清单 ②：/teams/{teamId}/events）。
+     * 按团队维度分配单调递增序号；payload 必须为已脱敏内容。
+     *
+     * @param teamId     所属团队 ID（调用方应已校验团队归属）
+     * @param eventType  事件类型（project.member.added/team.member.updated/activity.created）
+     * @param resourceId 关联资源 ID（可为 null）
+     * @param payload    脱敏事件载荷
+     */
+    public void publishTeamEvent(UUID teamId, String eventType, String resourceId, Map<String, Object> payload) {
+        if (teamId == null) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        TeamEventEntity event = new TeamEventEntity();
+        event.setId(UuidV7.next());
+        event.setTeamId(teamId);
+        event.setSequenceNo(teamEventMapper.maxSequence(teamId) + 1);
+        event.setEventType(eventType);
+        event.setResourceId(resourceId);
+        event.setPayload(payload);
+        event.setCreatedAt(now);
+        teamEventMapper.insert(event);
+    }
+
+    /**
+     * 建立团队级 SSE 事件流（需调用者为团队成员）。
+     * 支持 Last-Event-ID 续传；游标过期返回 409。
+     */
+    public SseEmitter teamStream(UUID teamId, UUID userId, Long lastEventId) {
+        projectAccess.requireTeamMember(teamId, userId);
+        if (lastEventId != null && lastEventId < 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_EVENT_CURSOR", "Last-Event-ID 必须为非负序号");
+        }
+        Long minSeq = null;
+        if (lastEventId != null) {
+            minSeq = teamEventMapper.minSequence(teamId);
+            if (minSeq == null || minSeq > lastEventId) {
+                throw new ApiException(HttpStatus.CONFLICT, "EVENT_CURSOR_EXPIRED",
+                        "续传点已过期，请重新拉取相关资源");
+            }
+        }
+        long cursor = lastEventId != null ? lastEventId : teamEventMapper.maxSequence(teamId);
+        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        emitter.onTimeout(() -> log.info("SSE team timeout, teamId={}, cursor={}", teamId, cursor));
+        emitter.onError(e -> log.info("SSE team error, teamId={}: {}", teamId, e.getMessage()));
+        emitter.onCompletion(() -> log.info("SSE team completed, teamId={}, cursor={}", teamId, cursor));
+        executor.execute(() -> teamPump(emitter, teamId, cursor));
+        return emitter;
+    }
+
+    private void teamPump(SseEmitter emitter, UUID teamId, long startCursor) {
+        long cursor = startCursor;
+        LocalDateTime lastHeartbeat = LocalDateTime.now(ZoneOffset.UTC);
+        try {
+            while (true) {
+                List<TeamEventEntity> events = teamEventMapper.listAfter(teamId, cursor, BATCH_SIZE);
+                for (TeamEventEntity event : events) {
+                    if (!send(emitter, SseEmitter.event()
+                            .id(String.valueOf(event.getSequenceNo()))
+                            .name(event.getEventType())
                             .data(event.getPayload()))) {
                         return;
                     }

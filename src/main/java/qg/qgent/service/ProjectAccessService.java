@@ -117,6 +117,15 @@ public class ProjectAccessService {
         }
     }
 
+    /**
+     * 校验调用者为团队成员（团队不存在或非成员返回 404，防枚举）。
+     */
+    public void requireTeamMember(UUID teamId, UUID userId) {
+        if (teamMemberMapper.selectByTeamAndUser(teamId, userId) == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "TEAM_RESOURCE_NOT_FOUND", "团队资源不存在或不可见");
+        }
+    }
+
     private ProjectEntity requireProject(UUID projectId, boolean allowArchived) {
         ProjectEntity project = projectMapper.selectById(projectId);
         if (project == null || (!allowArchived && !"ACTIVE".equals(project.getStatus()))) {
