@@ -1,5 +1,6 @@
 package qg.qgent.controller;
 
+import io.swagger.v3.oas.annotations.Parameter;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -44,12 +45,15 @@ public class AgentController {
     }
 
     /**
-     * 契约 v1.8.0 §22（前端联调）：获取单张 Agent 卡；projectId 可选，
-     * 传了则校验该 Agent 属于此项目的 Team 且调用者为项目成员。
+     * 契约 v1.8.0 §22.4（前端联调）：获取单张 Agent 卡。
+     * <p>
+     * projectId 为可选 query：传了仅做两项校验——① 项目属于该 Agent 的团队（agents.team_id == projects.team_id）；
+     * ② 当前用户对该项目有访问权（项目成员或 Team Owner 兜底）。校验失败返回 404（资源不可见），
+     * 非法 UUID 返回 400，不返回 500。
      */
     @GetMapping("/teams/{teamId}/agents/{agentId}")
     public ApiResponse<AgentResponse> get(@PathVariable UUID teamId, @PathVariable UUID agentId,
-                                          @RequestParam(required = false) UUID projectId,
+                                          @Parameter(description = "可选：项目 ID，仅校验「项目属于该团队 + 当前用户有项目访问权」") @RequestParam(required = false) UUID projectId,
                                           HttpServletRequest request) {
         return ApiResponse.ok(service.get(teamId, agentId, currentActor.currentUserId(), projectId),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
