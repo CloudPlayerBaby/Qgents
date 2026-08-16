@@ -41,6 +41,7 @@ import qg.qgent.dto.NewProjectRepositoryRequest;
 import qg.qgent.dto.ProjectRepositoryResponse;
 import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.GitHubRepositoryEntity;
+import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
@@ -49,6 +50,7 @@ import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.github.GitHubClient;
 import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
+import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
@@ -70,6 +72,7 @@ class GitHubRepositoryServiceTest {
     @Mock private ProjectMemberMapper projectMemberMapper;
     @Mock private TeamMemberMapper teamMemberMapper;
     @Mock private RepositoryBranchConfigMapper branchConfigMapper;
+    @Mock private DiffMapper diffMapper;
     @Mock private GitHubAppClient gitHubClient;
 
     private GitHubRepositoryService service;
@@ -84,6 +87,7 @@ class GitHubRepositoryServiceTest {
         TableInfoHelper.initTableInfo(assistant, ProjectRepositoryEntity.class);
         TableInfoHelper.initTableInfo(assistant, ProjectEntity.class);
         TableInfoHelper.initTableInfo(assistant, RepositoryBranchConfigEntity.class);
+        TableInfoHelper.initTableInfo(assistant, DiffEntity.class);
     }
 
     @BeforeEach
@@ -92,7 +96,7 @@ class GitHubRepositoryServiceTest {
         // lenient：仅 sync 相关测试会触发事务，其余测试该 stub 不被使用
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         service = new GitHubRepositoryService(installationMapper, repositoryMapper, projectRepositoryMapper,
-                projectMapper, projectMemberMapper, teamMemberMapper, branchConfigMapper, gitHubClient,
+                projectMapper, projectMemberMapper, teamMemberMapper, branchConfigMapper, diffMapper, gitHubClient,
                 Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), transactionManager);
     }
 
@@ -167,7 +171,7 @@ class GitHubRepositoryServiceTest {
         binding.setId(projectRepositoryId);
         binding.setProjectId(projectId);
         authorizeProjectAdmin();
-        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(binding);
+        when(projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId)).thenReturn(binding);
         when(branchConfigMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
 
         ApiException exception = assertThrows(ApiException.class,
@@ -175,6 +179,25 @@ class GitHubRepositoryServiceTest {
 
         assertEquals(HttpStatus.CONFLICT, exception.status());
         assertEquals("PROJECT_REPOSITORY_REFERENCED_BY_BRANCH_CONFIG", exception.code());
+        verify(projectRepositoryMapper, never()).deleteById(projectRepositoryId);
+    }
+
+    @Test
+    void refusesToUnbindRepositoryReferencedByDiff() {
+        UUID projectRepositoryId = UUID.randomUUID();
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(projectRepositoryId);
+        binding.setProjectId(projectId);
+        authorizeProjectAdmin();
+        when(projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId)).thenReturn(binding);
+        when(branchConfigMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(diffMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.unbindProjectRepository(actorId, projectId, projectRepositoryId));
+
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("PROJECT_REPOSITORY_REFERENCED_BY_DIFF", exception.code());
         verify(projectRepositoryMapper, never()).deleteById(projectRepositoryId);
     }
 

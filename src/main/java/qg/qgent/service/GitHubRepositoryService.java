@@ -42,6 +42,7 @@ public class GitHubRepositoryService {
     private final ProjectMemberMapper projectMemberMapper;
     private final TeamMemberMapper teamMemberMapper;
     private final RepositoryBranchConfigMapper branchConfigMapper;
+    private final DiffMapper diffMapper;
     private final GitHubAppClient gitHubClient;
     private final Clock clock;
     private final TransactionTemplate required;
@@ -50,6 +51,7 @@ public class GitHubRepositoryService {
                                    ProjectRepositoryMapper projectRepositoryMapper,
                                    ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
                                    TeamMemberMapper teamMemberMapper, RepositoryBranchConfigMapper branchConfigMapper,
+                                   DiffMapper diffMapper,
                                    GitHubAppClient gitHubClient, Clock clock,
                                    PlatformTransactionManager transactionManager) {
         this.installationMapper = installationMapper;
@@ -59,6 +61,7 @@ public class GitHubRepositoryService {
         this.projectMemberMapper = projectMemberMapper;
         this.teamMemberMapper = teamMemberMapper;
         this.branchConfigMapper = branchConfigMapper;
+        this.diffMapper = diffMapper;
         this.gitHubClient = gitHubClient;
         this.clock = clock;
         this.required = new TransactionTemplate(transactionManager);
@@ -389,7 +392,7 @@ public class GitHubRepositoryService {
 
     /**
      * 解除项目与某个 GitHub 仓库的绑定关系。
-     * 若该绑定已被应用于流水线分支配置，则拒绝解绑（需先删除分支配置）。
+     * 若该绑定仍被配置或不可变项目历史引用，则拒绝解绑，避免删除历史记录。
      *
      * @param actorId             操作人的用户 ID
      * @param projectId           项目 ID
@@ -400,7 +403,8 @@ public class GitHubRepositoryService {
         // 权限校验：必须是项目管理员
         requireProjectAdmin(actorId, projectId);
         // 查找对应的绑定记录
-        ProjectRepositoryEntity current = projectRepositoryMapper.selectById(projectRepositoryId);
+        // 锁定父记录，避免预检通过后新增 Diff 造成删除时再次触发外键异常。
+        ProjectRepositoryEntity current = projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId);
         // 防越权校验
         if (current == null || !projectId.equals(current.getProjectId())) {
             throw notFound("Project repository binding does not exist");
@@ -410,6 +414,11 @@ public class GitHubRepositoryService {
                 .eq(RepositoryBranchConfigEntity::getProjectRepositoryId, projectRepositoryId)) > 0) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_REFERENCED_BY_BRANCH_CONFIG",
                     "Delete branch configuration before unbinding this repository");
+        }
+        if (diffMapper.selectCount(new LambdaQueryWrapper<DiffEntity>()
+                .eq(DiffEntity::getProjectRepositoryId, projectRepositoryId)) > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_REFERENCED_BY_DIFF",
+                    "Project repository has immutable Diff history and cannot be unbound");
         }
         // 否则删除
         projectRepositoryMapper.deleteById(projectRepositoryId);
