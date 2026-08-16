@@ -36,9 +36,10 @@ public class MessageSendRequest {
     private Map<String, Object> content;
 
     /**
-     * 提及对象列表（可空）。
+     * 提及对象列表（可空）：对象数组 {@code Mention[]}，每项 {@code { type: "USER"|"AGENT", id: <UUID> }}。
+     * 禁止使用仅含 ID 的字符串数组（契约 chat-task-trigger-contract §mentions 冻结）。
      */
-    @Schema(description = "提及对象列表")
+    @Schema(description = "提及对象列表 Mention[]，每项 { type: USER|AGENT, id: UUID }；不提及传 null 或 []")
     private List<Mention> mentions;
 
     /**

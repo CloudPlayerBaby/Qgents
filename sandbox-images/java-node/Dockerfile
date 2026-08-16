@@ -6,6 +6,8 @@ ARG GROUP_ID=10001
 
 ENV DEBIAN_FRONTEND=noninteractive \
     MAVEN_VERSION=3.9.11 \
+    HOME=/home/developer \
+    MAVEN_USER_HOME=/home/developer/.m2 \
     PNPM_HOME=/opt/pnpm \
     PATH=/opt/pnpm:$PATH
 

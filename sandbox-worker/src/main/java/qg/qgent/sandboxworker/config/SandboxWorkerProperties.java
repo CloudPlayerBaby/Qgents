@@ -126,6 +126,12 @@ public class SandboxWorkerProperties {
     private int maxOutputBytes = 1024 * 1024;
 
     /**
+     * 单个 Sandbox 的 Maven / Maven Wrapper 临时缓存容量上限（Docker tmpfs size，如 2g、512m 或字节数）。
+     * 只作为本 Sandbox 的可写 tmpfs，Sandbox 销毁后即清理，不是宿主机持久缓存，也不与其他 Sandbox 或 Project 共享。
+     */
+    private String mavenCacheSize = "2g";
+
+    /**
      * 主后端地址，供 Worker 访问内部接口。
      */
     private String backendUrl = "http://qgents-backend:8080";
