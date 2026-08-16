@@ -35,6 +35,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -238,7 +239,7 @@ class GitHubWebhookServiceTest {
         binding.setId(UUID.randomUUID());
         binding.setProjectId(project.getId());
         binding.setRepositoryId(mirror.getId());
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
         // 该安装下有一个仓库，且仓库只绑定到 project：SSE 只发 project，不按 Team 广播
         when(repositoryMapper.selectList(any())).thenReturn(List.of(mirror));
         when(projectRepositoryMapper.selectList(any())).thenReturn(List.of(binding));
@@ -250,6 +251,8 @@ class GitHubWebhookServiceTest {
 
         assertEquals("ACTIVE", installation.getStatus());
         verify(installationMapper).updateById(installation);
+        // 安装事件必须通过行锁按 Installation 串行读取状态（防止与 added/suspend 交错）
+        verify(installationMapper).selectByProviderInstallationIdForUpdate(100L);
         verify(eventService).publish(eq(project.getId()), isNull(), eq("github-installation.updated"),
                 eq(installation.getId().toString()),
                 argThat(p -> "ACTIVE".equals(p.get("status"))
@@ -260,7 +263,7 @@ class GitHubWebhookServiceTest {
     @Test
     void installationWithoutRepositoryBindingPublishesNoSse() {
         GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
         // 该安装下没有任何仓库：没有项目归属，不发布 SSE
         when(repositoryMapper.selectList(any())).thenReturn(List.of());
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
@@ -277,7 +280,7 @@ class GitHubWebhookServiceTest {
     @Test
     void installationSuspendAndDeleteMapStates() {
         GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
         when(repositoryMapper.selectList(any())).thenReturn(List.of());
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
@@ -310,7 +313,7 @@ class GitHubWebhookServiceTest {
         binding.setProjectId(UUID.randomUUID());
         binding.setRepositoryId(authorized.getId());
 
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
         // revokeAllRepositories 查询安装下全部仓库
         when(repositoryMapper.selectList(any())).thenReturn(List.of(authorized, alreadyRevoked));
         when(projectRepositoryMapper.selectList(any())).thenReturn(List.of(binding));
@@ -333,7 +336,7 @@ class GitHubWebhookServiceTest {
 
     @Test
     void installationUnknownIsIgnored() {
-        when(installationMapper.selectOne(any())).thenReturn(null);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(null);
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
         service.handle(bodyBytes("{\"action\":\"created\",\"installation\":{\"id\":999}}"),
@@ -362,7 +365,8 @@ class GitHubWebhookServiceTest {
         binding.setProjectId(UUID.randomUUID());
         binding.setRepositoryId(mirror.getId());
 
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
+        when(installationMapper.selectOne(any())).thenReturn(installation); // prefetch 锁外判断 ACTIVE
         when(repositoryMapper.selectOne(any())).thenReturn(null); // 本地无镜像
         when(repositoryMapper.selectList(any())).thenReturn(List.of()); // prefetch 时本地缺失
         when(gitHubClient.listRepositories(100L)).thenReturn(List.of(details));
@@ -393,7 +397,8 @@ class GitHubWebhookServiceTest {
         binding.setProjectId(UUID.randomUUID());
         binding.setRepositoryId(mirror.getId());
 
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
+        when(installationMapper.selectOne(any())).thenReturn(installation); // prefetch 锁外判断 ACTIVE
         when(repositoryMapper.selectOne(any())).thenReturn(mirror);
         when(projectRepositoryMapper.selectList(any())).thenReturn(List.of(binding));
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
@@ -412,7 +417,8 @@ class GitHubWebhookServiceTest {
     @Test
     void repositoryAddedForNonActiveInstallationIsIgnoredWithoutCallingGithub() {
         GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "SUSPENDED");
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
+        when(installationMapper.selectOne(any())).thenReturn(installation); // prefetch 锁外判断 ACTIVE
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate(anyString())).thenReturn(null);
 
         String body = "{\"action\":\"added\",\"installation\":{\"id\":100},\"repositories_added\":[{\"id\":500,\"name\":\"Hello-World\",\"full_name\":\"octocat/Hello-World\"}]}";
@@ -440,7 +446,8 @@ class GitHubWebhookServiceTest {
         binding.setProjectId(UUID.randomUUID());
         binding.setRepositoryId(mirror.getId());
 
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
+        when(installationMapper.selectOne(any())).thenReturn(installation); // prefetch 锁外判断 ACTIVE
         when(repositoryMapper.selectOne(any())).thenReturn(mirror);
         // GitHub 当前授权列表为空（仓库已不在授权范围），延迟的 added 不得重新授权
         when(gitHubClient.listRepositories(100L)).thenReturn(List.of());
@@ -466,7 +473,8 @@ class GitHubWebhookServiceTest {
         mirror.setProviderRepositoryId(500L);
         mirror.setAuthorizationStatus("AUTHORIZED");
 
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
+        when(installationMapper.selectOne(any())).thenReturn(installation); // prefetch 锁外判断 ACTIVE
         when(repositoryMapper.selectOne(any())).thenReturn(mirror);
         // claim 时查不到（新建 RECEIVED）；markFailed 时能查到该记录并标记 FAILED
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate("d1")).thenReturn(null, deliveryRow("d1", "RECEIVED"));
@@ -491,7 +499,8 @@ class GitHubWebhookServiceTest {
         mirror.setProviderRepositoryId(500L);
         mirror.setAuthorizationStatus("AUTHORIZED");
 
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
+        when(installationMapper.selectOne(any())).thenReturn(installation); // prefetch 锁外判断 ACTIVE
         when(repositoryMapper.selectOne(any())).thenReturn(mirror);
         when(deliveryMapper.selectByProviderDeliveryIdForUpdate("d1")).thenReturn(null, deliveryRow("d1", "RECEIVED"));
 
@@ -508,7 +517,8 @@ class GitHubWebhookServiceTest {
     @Test
     void repositoryPrefetchFailureMarksDeliveryFailed() {
         GitHubInstallationEntity installation = installationEntity(100L, UUID.randomUUID(), "ACTIVE");
-        when(installationMapper.selectOne(any())).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(installation);
+        when(installationMapper.selectOne(any())).thenReturn(installation); // prefetch 锁外判断 ACTIVE
         // 本地无镜像 -> 需要补齐；GitHub 客户端调用失败 -> 整单 FAILED，等待重投
         when(repositoryMapper.selectOne(any())).thenReturn(null);
         when(repositoryMapper.selectList(any())).thenReturn(List.of());

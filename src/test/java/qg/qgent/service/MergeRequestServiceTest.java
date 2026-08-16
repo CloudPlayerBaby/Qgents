@@ -766,6 +766,76 @@ class MergeRequestServiceTest {
     }
 
     @Test
+    void syncFailsWhenRepositoryRevoked() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID mergeRequestId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(mergeRequestId);
+        mr.setProjectRepositoryId(repositoryId);
+        mr.setStatus("OPEN");
+        mr.setProviderNumber(100L);
+        mr.setHeadCommit("sha123");
+        mr.setTargetBranch("main");
+        when(mergeRequestMapper.selectById(mergeRequestId)).thenReturn(mr);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setRepositoryId(UUID.randomUUID());
+        when(projectRepositoryMapper.selectById(repositoryId)).thenReturn(repository);
+
+        GitHubRepositoryEntity githubRepository = new GitHubRepositoryEntity();
+        githubRepository.setId(repository.getRepositoryId());
+        githubRepository.setInstallationId(UUID.randomUUID());
+        githubRepository.setAuthorizationStatus("REVOKED"); // 已撤权
+        githubRepository.setArchived(false);
+        when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.sync(projectId, mergeRequestId, userId));
+        assertEquals("GITHUB_REPOSITORY_UNAVAILABLE", ex.code());
+        // 已撤权仓库不得调用 GitHub
+        verifyNoInteractions(githubClient);
+    }
+
+    @Test
+    void mergeFailsWhenRepositoryRevoked() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID mergeRequestId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(mergeRequestId);
+        mr.setProjectRepositoryId(repositoryId);
+        mr.setStatus("OPEN");
+        mr.setProviderNumber(100L);
+        mr.setHeadCommit("sha123");
+        mr.setTargetBranch("main");
+        when(mergeRequestMapper.selectById(mergeRequestId)).thenReturn(mr);
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setRepositoryId(UUID.randomUUID());
+        when(projectRepositoryMapper.selectById(repositoryId)).thenReturn(repository);
+
+        GitHubRepositoryEntity githubRepository = new GitHubRepositoryEntity();
+        githubRepository.setId(repository.getRepositoryId());
+        githubRepository.setInstallationId(UUID.randomUUID());
+        githubRepository.setAuthorizationStatus("REVOKED"); // 已撤权
+        githubRepository.setArchived(false);
+        when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.merge(projectId, mergeRequestId, userId));
+        assertEquals("GITHUB_REPOSITORY_UNAVAILABLE", ex.code());
+        // 已撤权仓库不得调用 GitHub
+        verifyNoInteractions(githubClient);
+    }
+
+    @Test
     void cqRejectionSuccess() {
         UUID projectId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();

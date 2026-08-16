@@ -300,9 +300,8 @@ public class GitHubWebhookService {
             complete(row, STATUS_IGNORED);
             return;
         }
-        GitHubInstallationEntity installation = installationMapper.selectOne(Wrappers
-                .<GitHubInstallationEntity>lambdaQuery()
-                .eq(GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+        // 行锁内读取：不同 Delivery 的事件按 Installation 串行，避免与 added/suspend 交错
+        GitHubInstallationEntity installation = installationMapper.selectByProviderInstallationIdForUpdate(providerInstallationId);
         if (installation == null) {
             // 本地无安装记录时不根据 payload 猜测 team
             complete(row, STATUS_IGNORED);
@@ -382,9 +381,9 @@ public class GitHubWebhookService {
             complete(row, STATUS_IGNORED);
             return;
         }
-        GitHubInstallationEntity installation = installationMapper.selectOne(Wrappers
-                .<GitHubInstallationEntity>lambdaQuery()
-                .eq(GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+        // 行锁内读取并判断状态：拿锁后以状态复查为最终判定。
+        // 外部 GitHub 查询（prefetch）在锁外，此处状态可能已被 suspend 等事件更新，必须按锁内最新值决定。
+        GitHubInstallationEntity installation = installationMapper.selectByProviderInstallationIdForUpdate(providerInstallationId);
         if (installation == null) {
             complete(row, STATUS_IGNORED);
             return;
