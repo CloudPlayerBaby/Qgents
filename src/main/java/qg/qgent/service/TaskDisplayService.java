@@ -226,11 +226,16 @@ public class TaskDisplayService {
         Map<UUID, WorkspaceRepositoryEntity> worktreeByRepo = worktreeData.worktrees.stream()
                 .collect(Collectors.toMap(WorkspaceRepositoryEntity::getProjectRepositoryId, Function.identity()));
 
-        return stepList.stream().map(step -> toStepItem(task, step,
-                runsByStep.getOrDefault(step.getId(), List.of()),
-                depsByStep.getOrDefault(step.getId(), List.of()),
-                scopesByStep.getOrDefault(step.getId(), List.of()),
-                agentById.get(step.getAssignedAgentId()), worktreeData, worktreeByRepo)).toList();
+        List<TaskStepListItemResponse> result = new ArrayList<>(stepList.size());
+        for (int index = 0; index < stepList.size(); index++) {
+            TaskStepEntity step = stepList.get(index);
+            result.add(toStepItem(task, step, index + 1,
+                    runsByStep.getOrDefault(step.getId(), List.of()),
+                    depsByStep.getOrDefault(step.getId(), List.of()),
+                    scopesByStep.getOrDefault(step.getId(), List.of()),
+                    agentById.get(step.getAssignedAgentId()), worktreeData, worktreeByRepo));
+        }
+        return result;
     }
 
     // ---------- 列表批量组装 ----------
@@ -585,7 +590,8 @@ public class TaskDisplayService {
 
     // ---------- 步骤组装 ----------
 
-    private TaskStepListItemResponse toStepItem(TaskEntity task, TaskStepEntity step, List<TaskRunEntity> stepRuns,
+    private TaskStepListItemResponse toStepItem(TaskEntity task, TaskStepEntity step, int displaySequence,
+                                                List<TaskRunEntity> stepRuns,
                                                 List<UUID> dependencyIds, List<UUID> scopedRepoIds, AgentEntity agent, WorktreeData worktreeData,
                                                 Map<UUID, WorkspaceRepositoryEntity> worktreeByRepo) {
         TaskRunEntity latest = latestRun(stepRuns);
@@ -597,7 +603,7 @@ public class TaskDisplayService {
                 .min(Comparator.naturalOrder()).orElse(null);
         LocalDateTime finishedAt = stepRuns.stream().map(TaskRunEntity::getFinishedAt).filter(Objects::nonNull)
                 .max(Comparator.naturalOrder()).orElse(null);
-        return new TaskStepListItemResponse(id(step.getId()), id(task.getId()), step.getSequenceNo(), step.getTitle(),
+        return new TaskStepListItemResponse(id(step.getId()), id(task.getId()), displaySequence, step.getTitle(),
                 step.getInstruction(), step.getRole(), step.getRequiredCapabilities(), agentSummary(agent), repository,
                 dependencyIds.stream().map(this::id).toList(), step.getStatus(), step.getAcceptanceCriteria(),
                 latestRun, stepRuns.size(), iso(startedAt), iso(finishedAt), iso(step.getCreatedAt()),

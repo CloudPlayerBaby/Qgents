@@ -356,6 +356,36 @@ class TaskDisplayServiceTest {
     }
 
     @Test
+    void stepsRenumberVisibleExecutionStepsAfterFilteringPlanner() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, UUID.randomUUID(), actor, workspaceId, "RUNNING");
+        when(tasks.selectById(task.getId())).thenReturn(task);
+
+        TaskStepEntity planner = step(UUID.randomUUID(), task.getId(), "SUCCEEDED");
+        planner.setRole("PLANNER");
+        planner.setSequenceNo(1);
+        TaskStepEntity developer = step(UUID.randomUUID(), task.getId(), "RUNNING");
+        developer.setSequenceNo(2);
+        TaskStepEntity tester = step(UUID.randomUUID(), task.getId(), "PENDING");
+        tester.setSequenceNo(3);
+        tester.setTitle("Verify");
+        tester.setRole("TESTER");
+        TaskStepEntity reviewer = step(UUID.randomUUID(), task.getId(), "PENDING");
+        reviewer.setSequenceNo(4);
+        reviewer.setTitle("Review");
+        reviewer.setRole("REVIEWER");
+        when(steps.selectList(any())).thenReturn(List.of(planner, developer, tester, reviewer));
+
+        PagedApiResponse<TaskStepListItemResponse> page = service.steps(projectId, task.getId(), actor, "req");
+
+        assertThat(page.data()).extracting(TaskStepListItemResponse::getSequenceNo)
+                .containsExactly(1, 2, 3);
+        assertThat(page.data()).extracting(TaskStepListItemResponse::getRole)
+                .containsExactly("DEVELOPER", "TESTER", "REVIEWER");
+    }
+
+    @Test
     void planningExecutionSummaryExcludesPlannerStep() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
         UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();

@@ -32,7 +32,7 @@ public class TaskStepListItemResponse {
     private String taskId;
 
     /**
-     * 任务内步骤序号，从 1 开始。
+     * 用户可见执行步骤序号，从 1 开始；不包含内部 PLANNER 步骤。
      */
     @Schema(description = "步骤序号")
     private Integer sequenceNo;
