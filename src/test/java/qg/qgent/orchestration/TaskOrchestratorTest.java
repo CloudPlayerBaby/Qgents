@@ -207,6 +207,50 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void emptyFinalDiffCompletesWithNoCodeChangesCardAndSkippedEvent() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+        when(fixture.diffs.createPendingBatch(eq(task.getProjectId()), eq(task.getId()), any()))
+                .thenThrow(new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                        "FINAL_DIFF_EMPTY", "no uncommitted changes"));
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        verify(fixture.diffs).createPendingBatch(eq(task.getProjectId()), eq(task.getId()), any());
+        verify(fixture.diffMapper, never()).selectList(any());
+        ArgumentCaptor<Map> eventPayload = ArgumentCaptor.forClass(Map.class);
+        verify(fixture.events).publish(eq(task.getProjectId()), eq(task.getRequirementGroupId()),
+                eq("diff-review.skipped"), eq(task.getId().toString()), eventPayload.capture());
+        assertThat(eventPayload.getValue()).containsEntry("projectId", task.getProjectId())
+                .containsEntry("taskId", task.getId()).containsEntry("reason", "FINAL_DIFF_EMPTY");
+        verify(fixture.events, never()).publish(any(), any(), eq("diff.created"), any(), any());
+        verify(fixture.events, never()).publish(any(), any(), eq("diff-review.created"), any(), any());
+        verify(fixture.events, never()).publish(any(), any(), eq("delivery.failed"), any(), any());
+        verify(fixture.events, never()).publish(any(), any(), eq("delivery.completed"), any(), any());
+
+        ArgumentCaptor<MessageSendRequest> cards = ArgumentCaptor.forClass(MessageSendRequest.class);
+        verify(fixture.messages, atLeastOnce()).sendAsAgent(eq(task.getRequirementGroupId()), any(), cards.capture());
+        MessageSendRequest completed = cards.getAllValues().stream()
+                .filter(card -> "TASK_STATUS".equals(card.getType()))
+                .filter(card -> "SUCCEEDED".equals(card.getContent().get("status")))
+                .filter(card -> !card.getContent().containsKey("node"))
+                .findFirst().orElseThrow();
+        assertThat(completed.getContent().get("message"))
+                .isEqualTo("任务已完成，但未检测到代码变更，因此没有生成 Diff 或 MR。");
+        verify(fixture.notifications).notify(eq(task.getCreatedBy()), eq(task.getProjectId()),
+                eq(task.getRequirementGroupId()), eq("TASK_COMPLETED"), any(), any(), eq(task.getId().toString()));
+        verify(fixture.notifications, never()).notify(any(), any(), any(), eq("TASK_FAILED"), any(), any(), any());
+    }
+
+    @Test
     void planCompleteButConcurrentClaimFailsSkipsFormalExecution() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
@@ -275,6 +319,7 @@ class TaskOrchestratorTest {
         private final TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
         private final DiffMapper diffMapper = mock(DiffMapper.class);
         private final MessageService messages = mock(MessageService.class);
+        private final NotificationService notifications = mock(NotificationService.class);
         private final OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
         private final ThreadLocal<Agent> currentAgent = new ThreadLocal<>();
 
@@ -327,7 +372,7 @@ class TaskOrchestratorTest {
             currentAgent.set(agent);
             return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry, context,
                     taskRuns, tasks, steps, events,
-                    mock(NotificationService.class), mock(SandboxSessionManager.class), artifacts, diffs,
+                    notifications, mock(SandboxSessionManager.class), artifacts, diffs,
                     diffMapper, messages, orchestratorAgents,
                     materialization);
         }

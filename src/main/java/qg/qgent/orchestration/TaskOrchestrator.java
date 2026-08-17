@@ -55,6 +55,7 @@ public class TaskOrchestrator {
      * 终态中等待用户确认的 Diff 审核状态；确认后的交付由 DiffReviewBatchService 驱动。
      */
     private static final String WAITING_DIFF_CONFIRMATION = "WAITING_DIFF_CONFIRMATION";
+    private static final String NO_CODE_CHANGES_MESSAGE = "任务已完成，但未检测到代码变更，因此没有生成 Diff 或 MR。";
 
     private final OrchestrationStateMachine stateMachine;
     private final WorkflowGraphBuilder workflowGraphBuilder;
@@ -592,14 +593,14 @@ public class TaskOrchestrator {
     private void finishTask(TaskEntity task, TaskExecutionContext ctx, StateMachineDecision.Action action) {
         FinishingStatus finishing = switch (action) {
             case COMPLETE_SUCCESS -> completeSuccess(task, ctx);
-            case COMPLETE_CANCELLED -> new FinishingStatus("CANCELLED", null);
-            default -> new FinishingStatus("FAILED", null);
+            case COMPLETE_CANCELLED -> new FinishingStatus("CANCELLED", null, null);
+            default -> new FinishingStatus("FAILED", null, null);
         };
         updateTaskStatus(task, finishing.status());
         if (finishing.reviewBatchId() != null) {
             sendDiffCard(task, finishing.reviewBatchId());
         }
-        sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, taskResultMessage(finishing.status()));
+        sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, taskResultMessage(finishing));
     }
 
     /**
@@ -634,21 +635,21 @@ public class TaskOrchestrator {
             // SYSTEM 批次只承载快照、租约和交付审计，不能复用 DIFF_FIRST 的用户确认卡片。
             // MR_FIRST 的用户可见进度由 delivery.started / delivery.repository.updated / MR 卡片提供。
             log.info("mr-first system batch materialized taskId={} reviewBatchId={}", task.getId(), reviewBatchId);
-            return new FinishingStatus("DELIVERING", null);
+            return new FinishingStatus("DELIVERING", null, null);
         } catch (ApiException e) {
             if ("FINAL_DIFF_EMPTY".equals(e.code())) {
                 log.warn("mr-first final diff empty, task finishes SUCCEEDED, taskId={}: {}", task.getId(),
                         e.getMessage());
                 publishDiffReviewSkipped(task, e.code());
-                return new FinishingStatus("SUCCEEDED", null);
+                return new FinishingStatus("SUCCEEDED", null, NO_CODE_CHANGES_MESSAGE);
             }
             log.warn("mr-first batch creation failed, task finishes FAILED, taskId={}, code={}: {}",
                     task.getId(), e.code(), e.getMessage());
-            return new FinishingStatus("FAILED", null);
+            return new FinishingStatus("FAILED", null, null);
         } catch (RuntimeException e) {
             log.error("mr-first batch creation failed, task finishes FAILED, taskId={}: {}",
                     task.getId(), e.getMessage(), e);
-            return new FinishingStatus("FAILED", null);
+            return new FinishingStatus("FAILED", null, null);
         }
     }
 
@@ -669,20 +670,20 @@ public class TaskOrchestrator {
                 }
             }
             UUID reviewBatchId = finalDiffBundles.createPendingBatch(task.getProjectId(), task.getId(), finalCodingRunId);
-            return new FinishingStatus(WAITING_DIFF_CONFIRMATION, reviewBatchId);
+            return new FinishingStatus(WAITING_DIFF_CONFIRMATION, reviewBatchId, null);
         } catch (ApiException e) {
             if ("FINAL_DIFF_EMPTY".equals(e.code())) {
                 log.warn("final diff empty, task finishes SUCCEEDED, taskId={}: {}", task.getId(), e.getMessage());
                 publishDiffReviewSkipped(task, e.code());
-                return new FinishingStatus("SUCCEEDED", null);
+                return new FinishingStatus("SUCCEEDED", null, NO_CODE_CHANGES_MESSAGE);
             }
             log.warn("final diff batch creation failed, task finishes FAILED, taskId={}, code={}: {}",
                     task.getId(), e.code(), e.getMessage());
-            return new FinishingStatus("FAILED", null);
+            return new FinishingStatus("FAILED", null, null);
         } catch (RuntimeException e) {
             log.error("final diff batch creation failed, task finishes FAILED, taskId={}: {}",
                     task.getId(), e.getMessage(), e);
-            return new FinishingStatus("FAILED", null);
+            return new FinishingStatus("FAILED", null, null);
         }
     }
 
@@ -799,14 +800,17 @@ public class TaskOrchestrator {
     /**
      * 任务结果卡片文案：按终态表达交付确认、完成、失败或取消。
      */
-    private String taskResultMessage(String status) {
-        return switch (status) {
+    private String taskResultMessage(FinishingStatus finishing) {
+        if (finishing.message() != null) {
+            return finishing.message();
+        }
+        return switch (finishing.status()) {
             case WAITING_DIFF_CONFIRMATION -> "任务开发完成，等待你对 Diff 的确认";
             case "DELIVERING" -> "任务开发完成，已提交 PR 进入代码审查流程";
             case "SUCCEEDED" -> "任务已完成";
             case "FAILED" -> "任务执行失败";
             case "CANCELLED" -> "任务已取消";
-            default -> "任务状态更新：" + status;
+            default -> "任务状态更新：" + finishing.status();
         };
     }
 
@@ -859,10 +863,10 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 终态判定结果：终态状态码，以及（仅 WAITING_DIFF_CONFIRMATION 时）新生成的待确认 Diff 批次号，
-     * 供后续回 DIFF 卡定位批次内首个 Diff。
+     * 终态判定结果：终态状态码、仅 WAITING_DIFF_CONFIRMATION 时的 Diff 批次号，以及只用于本次
+     * TASK_STATUS 卡片的结果文案。文案不持久化，避免无代码变更结果泄漏到其他异步任务。
      */
-    private record FinishingStatus(String status, UUID reviewBatchId) {
+    private record FinishingStatus(String status, UUID reviewBatchId, String message) {
     }
 
     /**
