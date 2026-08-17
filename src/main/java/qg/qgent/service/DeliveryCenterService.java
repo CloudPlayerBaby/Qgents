@@ -345,6 +345,8 @@ public class DeliveryCenterService {
         return skills.selectList(Wrappers.<SkillEntity>lambdaQuery()
                         .eq(SkillEntity::getProjectId, projectId))
                 .stream()
+                // 交付中心只展示共享流程相关的 Skill：PRIVATE（仅创建者自己用）不进入交付中心
+                .filter(s -> !"PRIVATE".equals(s.getVisibility()))
                 .filter(s -> creatorUuid == null || creatorUuid.equals(s.getCreatedBy()))
                 .map(s -> toSkillItem(projectId, s, actor))
                 .filter(i -> displayStatus == null || displayStatus.equals(i.getDisplayStatus()))
@@ -602,9 +604,7 @@ public class DeliveryCenterService {
         boolean admin = access.isProjectAdmin(skill.getProjectId(), actor);
         boolean creatorOrAdmin = admin || skill.getCreatedBy().equals(actor);
         String status = skill.getStatus();
-        // 可提交审核：DRAFT/REJECTED，或 PUBLISHED 的 PRIVATE（申请转共享）
-        boolean submittable = creatorOrAdmin && ("DRAFT".equals(status) || "REJECTED".equals(status)
-                || ("PUBLISHED".equals(status) && "PRIVATE".equals(skill.getVisibility())));
+        boolean submittable = creatorOrAdmin && ("DRAFT".equals(status) || "REJECTED".equals(status));
         boolean decidable = admin && "PENDING_REVIEW".equals(status);
         boolean archivable = admin && "PUBLISHED".equals(status);
 

@@ -130,35 +130,6 @@ class SkillMemoryAdminAutoPublishTest {
         verify(eventService, never()).publish(any(), any(), eq("memory.approved"), any(), any());
     }
 
-    @Test
-    void privatePublishedSkillCanBeSubmittedForSharing() {
-        // PRIVATE 已发布技能可提交审核转共享：PENDING_REVIEW → Admin 批准后 PROJECT_SHARED
-        SkillEntity skill = skillEntity();
-        skill.setStatus("PUBLISHED");
-        skill.setVisibility("PRIVATE");
-        when(skillMapper.selectById(skill.getId())).thenReturn(skill);
-        when(skillMapper.updateById(any(SkillEntity.class))).thenReturn(1);
-
-        SkillResponse response = skillService.submitReview(member, projectId, skill.getId());
-
-        assertEquals("PENDING_REVIEW", response.getStatus());
-        verify(eventService).publish(eq(projectId), isNull(), eq("skill.submit-review"), any(), any());
-    }
-
-    @Test
-    void sharedPublishedSkillCannotBeResubmitted() {
-        // 已共享（PROJECT_SHARED PUBLISHED）的技能不可重复提交转共享
-        SkillEntity skill = skillEntity();
-        skill.setStatus("PUBLISHED");
-        skill.setVisibility("PROJECT_SHARED");
-        when(skillMapper.selectById(skill.getId())).thenReturn(skill);
-
-        ApiException ex = org.junit.jupiter.api.Assertions.assertThrows(ApiException.class,
-                () -> skillService.submitReview(member, projectId, skill.getId()));
-        assertEquals(org.springframework.http.HttpStatus.CONFLICT, ex.status());
-        verify(eventService, never()).publish(any(), any(), eq("skill.submit-review"), any(), any());
-    }
-
     private SkillCreateRequest skillRequest(String name, String visibility) {
         SkillCreateRequest request = new SkillCreateRequest();
         request.setName(name);

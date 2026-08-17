@@ -149,16 +149,13 @@ public class SkillService {
     }
 
     /**
-     * 提交审核；仅创建者或 Project Admin。可提交的状态：
-     * DRAFT/REJECTED（新技能或重新提交），或 PUBLISHED 的 PRIVATE（申请转共享——私有技能
-     * 已直接可用，创建者想共享给项目时提交审核，Admin 批准后转为 PROJECT_SHARED）。
+     * 提交审核；仅创建者或 Project Admin，且状态为 DRAFT/REJECTED。
+     * PRIVATE Skill 创建即 PUBLISHED（仅自己用，不进交付中心），不支持转共享审核。
      */
     @Transactional
     public SkillResponse submitReview(UUID actor, UUID projectId, UUID skillId) {
         SkillEntity skill = requireOwned(actor, projectId, skillId);
-        boolean submittable = SUBMITTABLE.contains(skill.getStatus())
-                || ("PUBLISHED".equals(skill.getStatus()) && "PRIVATE".equals(skill.getVisibility()));
-        if (!submittable) {
+        if (!SUBMITTABLE.contains(skill.getStatus())) {
             throw stateConflict(skill.getStatus());
         }
         skill.setStatus("PENDING_REVIEW");
