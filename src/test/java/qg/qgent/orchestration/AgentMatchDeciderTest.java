@@ -1,6 +1,7 @@
 package qg.qgent.orchestration;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.orchestration.llm.LlmClient;
 
@@ -45,15 +46,15 @@ class AgentMatchDeciderTest {
 
     @Test
     void emptyOrNullCandidatesReturnEmpty() {
-        assertThat(decider.decide("DEVELOPER", null, creatorId)).isEmpty();
-        assertThat(decider.decide("DEVELOPER", List.of(), creatorId)).isEmpty();
+        assertThat(decider.decide("DEVELOPER", null, creatorId, null)).isEmpty();
+        assertThat(decider.decide("DEVELOPER", List.of(), creatorId, null)).isEmpty();
     }
 
     @Test
     void singleCandidateReturnsWithoutLlmCall() {
         AgentEntity only = team(UUID.randomUUID(), "唯一开发", "负责写代码");
 
-        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(only), creatorId);
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(only), creatorId, null);
 
         assertThat(best).containsSame(only);
         verify(llm, never()).complete(anyString(), anyString());
@@ -65,7 +66,7 @@ class AgentMatchDeciderTest {
         AgentEntity b = team(UUID.randomUUID(), "B", "Java 专家，负责后端实现");
         when(llm.complete(anyString(), anyString())).thenReturn(b.getId().toString());
 
-        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(a, b), creatorId);
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(a, b), creatorId, null);
 
         assertThat(best).containsSame(b);
     }
@@ -76,7 +77,7 @@ class AgentMatchDeciderTest {
         AgentEntity b = team(UUID.randomUUID(), "B", "Java 专家");
         when(llm.complete(anyString(), anyString())).thenReturn("```\n" + b.getId() + "\n```");
 
-        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(a, b), creatorId);
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(a, b), creatorId, null);
 
         assertThat(best).containsSame(b);
     }
@@ -87,7 +88,7 @@ class AgentMatchDeciderTest {
         AgentEntity t = team(UUID.randomUUID(), "团队开发", "通用开发");
         when(llm.complete(anyString(), anyString())).thenReturn("NONE");
 
-        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(t, personal), creatorId);
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(t, personal), creatorId, null);
 
         assertThat(best).containsSame(personal);
     }
@@ -98,7 +99,7 @@ class AgentMatchDeciderTest {
         AgentEntity b = team(UUID.randomUUID(), "B", "通用开发");
         when(llm.complete(anyString(), anyString())).thenReturn("this is not an agent id");
 
-        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(b, a), creatorId);
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(b, a), creatorId, null);
 
         assertThat(best).containsSame(a);
     }
@@ -109,7 +110,7 @@ class AgentMatchDeciderTest {
         AgentEntity b = team(UUID.randomUUID(), "B", "通用开发");
         when(llm.complete(anyString(), anyString())).thenReturn(UUID.randomUUID().toString());
 
-        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(a, b), creatorId);
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(a, b), creatorId, null);
 
         assertThat(best).isPresent();
         assertThat(best.get()).isSameAs(a);
@@ -121,7 +122,7 @@ class AgentMatchDeciderTest {
         AgentEntity p = privateAgent(UUID.randomUUID(), "A个人", "通用开发");
         when(llm.complete(anyString(), anyString())).thenThrow(new IllegalStateException("llm down"));
 
-        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(t, p), creatorId);
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(t, p), creatorId, null);
 
         assertThat(best).containsSame(p);
     }
@@ -132,8 +133,23 @@ class AgentMatchDeciderTest {
         AgentEntity pB = privateAgent(UUID.randomUUID(), "B个人", "通用开发");
         when(llm.complete(anyString(), anyString())).thenReturn(null);
 
-        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(tA, pB), creatorId);
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(tA, pB), creatorId, null);
 
         assertThat(best).containsSame(pB);
+    }
+
+    @Test
+    void stepRequirementsArePassedToDecisionAgent() {
+        AgentEntity a = team(UUID.randomUUID(), "A", "通用开发");
+        AgentEntity b = team(UUID.randomUUID(), "B", "Java 后端专家");
+        when(llm.complete(anyString(), anyString())).thenReturn(b.getId().toString());
+
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(a, b), creatorId,
+                List.of("java", "spring"));
+
+        assertThat(best).containsSame(b);
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(llm).complete(anyString(), captor.capture());
+        assertThat(captor.getValue()).contains("步骤能力要求：java、spring");
     }
 }

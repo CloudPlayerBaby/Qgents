@@ -1,13 +1,11 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.api.ApiException;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.TaskEntity;
@@ -20,7 +18,7 @@ import qg.qgent.mapper.TaskStepDependencyMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.mapper.TaskStepRepositoryMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
-import qg.qgent.orchestration.AgentCapabilityMatcher;
+import qg.qgent.orchestration.AgentMatchDecider;
 import qg.qgent.orchestration.result.PlanResult;
 
 import java.time.LocalDateTime;
@@ -47,11 +45,13 @@ public class TaskPlanMaterializationService {
     private final AgentMapper agents;
     private final TaskExecutionArtifactService artifacts;
     private final EventService events;
+    private final AgentMatchDecider agentMatchDecider;
 
     public TaskPlanMaterializationService(TaskMapper tasks, TaskStepMapper steps, TaskStepDependencyMapper dependencies,
                                           TaskStepRepositoryMapper scopes, WorkspaceRepositoryMapper worktrees,
                                           ProjectMapper projects, AgentMapper agents,
-                                          TaskExecutionArtifactService artifacts, EventService events) {
+                                          TaskExecutionArtifactService artifacts, EventService events,
+                                          AgentMatchDecider agentMatchDecider) {
         this.tasks = tasks;
         this.steps = steps;
         this.dependencies = dependencies;
@@ -61,6 +61,7 @@ public class TaskPlanMaterializationService {
         this.agents = agents;
         this.artifacts = artifacts;
         this.events = events;
+        this.agentMatchDecider = agentMatchDecider;
     }
 
     /**
@@ -183,13 +184,12 @@ public class TaskPlanMaterializationService {
                 .and(visibility -> visibility.eq(AgentEntity::getVisibility, "TEAM")
                         .or(owner -> owner.eq(AgentEntity::getVisibility, "PRIVATE")
                                 .eq(AgentEntity::getCreatedBy, task.getCreatedBy()))));
-        AgentEntity selected = AgentCapabilityMatcher.pickBest(role, requiredCapabilities, candidates, task.getCreatedBy());
-        if ("DEVELOPER".equals(role) && requiredCapabilities != null && !requiredCapabilities.isEmpty()
-                && selected == null) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PLAN_STEP_AGENT_UNMATCHED",
-                    "未找到满足步骤能力要求的开发 Agent：" + String.join(", ", requiredCapabilities));
-        }
-        return selected == null ? null : selected.getId();
+        // 选用决策交由 AgentMatchDecider：把 role + 候选的 name/description + 步骤能力要求丢给决策
+        // Agent（LLM）判断；查不到候选/决策失败时返回 null，执行期由 AgentRegistry 内置兜底或跳步，
+        // 不使任务失败。
+        return agentMatchDecider.decide(role, candidates, task.getCreatedBy(), requiredCapabilities)
+                .map(AgentEntity::getId)
+                .orElse(null);
     }
 
     private void insertScopes(UUID stepId, List<UUID> repositories, String mode) {

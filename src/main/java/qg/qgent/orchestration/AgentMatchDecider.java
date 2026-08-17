@@ -41,18 +41,21 @@ public class AgentMatchDecider {
     /**
      * 从候选池中选出最适合步骤角色的 Agent；候选为空返回空 Optional。
      *
-     * @param role       步骤角色（PLANNER/DEVELOPER/TESTER/REVIEWER 或自定义标签）。
-     * @param candidates 已通过团队/角色/ACTIVE/可见性查询过滤的候选池（PRIVATE 均属任务创建人本人）。
-     * @param creatorId  任务创建人 ID（仅用于确定性兜底的 PRIVATE 优先级）。
+     * @param role             步骤角色（PLANNER/DEVELOPER/TESTER/REVIEWER 或自定义标签）。
+     * @param candidates       已通过团队/角色/ACTIVE/可见性查询过滤的候选池（PRIVATE 均属任务创建人本人）。
+     * @param creatorId        任务创建人 ID（仅用于确定性兜底的 PRIVATE 优先级）。
+     * @param stepRequirements 步骤声明的能力要求（如 Plan 物化的 requiredCapabilities），作为决策
+     *                         Agent 的额外参考上下文，不参与结构化打分；可为 null。
      */
-    public Optional<AgentEntity> decide(String role, List<AgentEntity> candidates, UUID creatorId) {
+    public Optional<AgentEntity> decide(String role, List<AgentEntity> candidates, UUID creatorId,
+                                        List<String> stepRequirements) {
         if (candidates == null || candidates.isEmpty()) {
             return Optional.empty();
         }
         if (candidates.size() == 1) {
             return Optional.of(candidates.get(0));
         }
-        Optional<UUID> chosen = askDecisionAgent(role, candidates);
+        Optional<UUID> chosen = askDecisionAgent(role, candidates, stepRequirements);
         if (chosen.isPresent()) {
             Optional<AgentEntity> match = candidates.stream()
                     .filter(candidate -> candidate.getId() != null && candidate.getId().equals(chosen.get()))
@@ -69,12 +72,17 @@ public class AgentMatchDecider {
     /**
      * 调决策 Agent 选出最合适的候选 id。失败/无法解析返回空，由调用方走确定性兜底。
      */
-    private Optional<UUID> askDecisionAgent(String role, List<AgentEntity> candidates) {
+    private Optional<UUID> askDecisionAgent(String role, List<AgentEntity> candidates,
+                                            List<String> stepRequirements) {
         String system = "你是 Qgents 的 Agent 分配决策器。给定一个步骤角色和一组候选 Agent（各含名称、"
                 + "角色与用途描述），请选出最合适完成该步骤角色的一个 Agent。判断依据：候选的 role 是否"
-                + "匹配步骤角色，以及 description 描述的职责与步骤角色期望是否一致。只输出选中 Agent 的 id"
+                + "匹配步骤角色，以及 description 描述的职责与步骤角色期望是否一致；若步骤声明了能力要求，"
+                + "还需判断候选是否具备相应能力。只输出选中 Agent 的 id"
                 + "（UUID 字符串），不要任何解释、标点或代码围栏；若所有候选都无法胜任，只输出 NONE。";
         StringBuilder user = new StringBuilder("步骤角色：").append(role);
+        if (stepRequirements != null && !stepRequirements.isEmpty()) {
+            user.append("\n步骤能力要求：").append(String.join("、", stepRequirements));
+        }
         user.append("\n候选 Agent：");
         for (AgentEntity candidate : candidates) {
             user.append("\n- id: ").append(candidate.getId());
