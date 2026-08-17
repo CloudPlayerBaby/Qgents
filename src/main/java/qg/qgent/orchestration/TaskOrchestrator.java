@@ -44,7 +44,6 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Service
 public class TaskOrchestrator {
-    private static final Set<String> STARTABLE_TASK_STATUSES = Set.of("PLANNING", "PENDING", "RUNNING");
 
     /**
      * 模板步骤的通用指令（PLANNER 产出计划后回填 DEVELOPER/TESTER 指令；
@@ -117,25 +116,66 @@ public class TaskOrchestrator {
      * <p>
      * 入口为整条链路准备一次 Sandbox 会话（Worker 端口启用时），并在终态后释放；
      * 未启用 Worker 时会话管理器为 no-op，不影响本地端口链路。
+     * <p>
+     * 并发防护：任务以 {@link TaskMapper#claimForOrchestration} 原子认领（PLANNING/PENDING →
+     * RUNNING），认领失败说明已被并发编排/已到终态，直接拒绝，杜绝同一 Task 被反复调用。
      *
      * @param projectId 项目 ID（Task 归属校验）
      * @param taskId    要编排的 Task ID
      * @throws IllegalStateException Task 不存在、不属于该项目或状态不可启动时抛出
      */
     public void orchestrate(UUID projectId, UUID taskId) {
-        log.info("orchestrate start taskId={} projectId={}", taskId, projectId);
+        orchestrate(projectId, taskId, null, null);
+    }
+
+    /**
+     * 从指定步骤续跑的编排入口（失败步骤重试 / 崩溃恢复调度器使用）：
+     * 与 {@link #orchestrate(UUID, UUID)} 相同，但用 {@link TaskMapper#claimForResume}
+     * 认领（允许 FAILED 回到 RUNNING），且图从 startStepId 节点开始执行。
+     * <p>
+     * 从任意 step 开始上下文为空是安全的：PLAN 不需要前序；CODING 靠 feedback；
+     * TESTING 靠文件树；REVIEWING 直接读 Workspace Git Diff，均不依赖前序结果对象。
+     *
+     * @param projectId  项目 ID
+     * @param taskId     要续跑的 Task ID
+     * @param startStepId 起始步骤 ID；null 等价于全量 {@link #orchestrate(UUID, UUID)}
+     * @throws IllegalStateException 认领失败（任务 RUNNING 中、或已是终态）
+     */
+    public void orchestrate(UUID projectId, UUID taskId, UUID startStepId) {
+        orchestrate(projectId, taskId, startStepId, null);
+    }
+
+    /**
+     * 续跑编排入口（带重试来源）：{@code retryOfTaskRunId} 为续跑产生的首个 TaskRun 记录重试来源
+     * （指向用户重试的那个 FAILED/CANCELLED/BLOCKED run），保证审计链可追溯；崩溃恢复时为 null。
+     */
+    public void orchestrate(UUID projectId, UUID taskId, UUID startStepId, UUID retryOfTaskRunId) {
+        log.info("orchestrate start taskId={} projectId={} startStepId={} retryOfTaskRunId={}",
+                taskId, projectId, startStepId, retryOfTaskRunId);
         TaskEntity task = requireTask(projectId, taskId);
-        requireStartable(task);
+        int claimed = startStepId == null
+                ? taskMapper.claimForOrchestration(projectId, taskId)
+                : taskMapper.claimForResume(projectId, taskId);
+        if (claimed != 1) {
+            throw new IllegalStateException("Task " + taskId + " already claimed or not startable (status="
+                    + task.getStatus() + ")");
+        }
         TaskExecutionContext ctx = new TaskExecutionContext(task);
-        executions.put(taskId, ctx);
+        // 续跑来源：首个 TaskRun 的 retryOfTaskRunId 指向被重试的失败运行
+        ctx.retryOf = retryOfTaskRunId;
+        TaskExecutionContext previous = executions.putIfAbsent(taskId, ctx);
+        if (previous != null) {
+            throw new IllegalStateException("Task " + taskId + " is already being orchestrated in this process");
+        }
         try {
             sandboxSessionManager.acquire(task.getId(), task.getProjectId(), task.getWorkspaceId());
             List<TaskStepEntity> steps = ensureSteps(task);
             ctx.steps = steps;
             // 群聊/Skill/Memory 上下文快照：一次 orchestrate 组装一次，跨节点复用（失败不阻断）
             ctx.groupContext = contextAssembler.buildGroupContext(task);
+            String startNodeId = startStepId == null ? null : startStepId.toString();
             CompiledGraph<TaskOrchestrationState> graph = workflowGraphBuilder.build(steps,
-                    (step, state) -> runStepNode(step, state), developerNodeId(steps));
+                    (step, state) -> runStepNode(step, state), developerNodeId(steps), startNodeId);
             log.info("orchestrate sandbox acquired taskId={}", taskId);
             graph.invoke(Map.of("projectId", projectId.toString(), "taskId", taskId.toString()));
             log.info("orchestrate graph completed taskId={}", taskId);
@@ -563,7 +603,16 @@ public class TaskOrchestrator {
      */
     private String completeWithDiffBatch(TaskEntity task, TaskExecutionContext ctx) {
         try {
-            finalDiffBundles.createPendingBatch(task.getProjectId(), task.getId(), ctx.lastCodingRunId);
+            UUID finalCodingRunId = ctx.lastCodingRunId;
+            if (finalCodingRunId == null) {
+                // 续跑（如从 REVIEWER 恢复）本次可能没有成功的 CODING run：回退到任务最近一次
+                // SUCCEEDED 的 DEVELOPER 运行，作为最终 Diff 批次的来源；仍无则走 FINAL_CODING_RUN_INVALID。
+                finalCodingRunId = taskMapper.selectLastSucceededCodingRunId(task.getId());
+                if (finalCodingRunId != null) {
+                    ctx.lastCodingRunId = finalCodingRunId;
+                }
+            }
+            finalDiffBundles.createPendingBatch(task.getProjectId(), task.getId(), finalCodingRunId);
             return WAITING_DIFF_CONFIRMATION;
         } catch (ApiException e) {
             if ("FINAL_DIFF_EMPTY".equals(e.code())) {
@@ -692,12 +741,6 @@ public class TaskOrchestrator {
             throw new IllegalStateException("Task " + taskId + " not found in project " + projectId);
         }
         return task;
-    }
-
-    private void requireStartable(TaskEntity task) {
-        if (!STARTABLE_TASK_STATUSES.contains(task.getStatus())) {
-            throw new IllegalStateException("Task " + task.getId() + " is not startable from status " + task.getStatus());
-        }
     }
 
     /**

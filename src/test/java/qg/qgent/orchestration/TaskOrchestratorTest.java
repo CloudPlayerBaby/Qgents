@@ -89,6 +89,8 @@ class TaskOrchestratorTest {
 
     private TaskOrchestrator orchestrator(AgentRegistry registry) {
         when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenReturn(UUID.randomUUID());
+        when(taskMapper.claimForOrchestration(any(), any())).thenReturn(1);
+        when(taskMapper.claimForResume(any(), any())).thenReturn(1);
         return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry,
                 contextAssembler, taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
                 mock(NotificationService.class), sessionManager, artifactService, finalDiffBundles, messageService,
@@ -160,8 +162,8 @@ class TaskOrchestratorTest {
     }
 
     /** 预置 4 个规范步骤（PLANNER/DEVELOPER/TESTER/REVIEWER，assignedAgentId=AGENT_ID），
-     * 使 ensureSteps 跳过模板创建，selectById 按 stepId 回查。 */
-    private void stubSteps(TaskEntity task) {
+     * 使 ensureSteps 跳过模板创建，selectById 按 stepId 回查。返回被 stub 的步骤列表。 */
+    private List<TaskStepEntity> stubSteps(TaskEntity task) {
         List<TaskStepEntity> steps = canonicalSteps(task.getId());
         Map<UUID, TaskStepEntity> byId = new HashMap<>();
         for (TaskStepEntity s : steps) {
@@ -169,6 +171,7 @@ class TaskOrchestratorTest {
         }
         when(stepMapper.selectList(any())).thenReturn(steps);
         when(stepMapper.selectById(any())).thenAnswer(inv -> byId.get(inv.getArgument(0)));
+        return steps;
     }
 
     private void stubRunCreation(UUID projectId, UUID taskId) {
@@ -592,17 +595,113 @@ class TaskOrchestratorTest {
         assertTerminalStatus("FAILED");
         verify(taskRunService, times(1)).createForStep(any(), any(), any(), any(), any(), any(), any());
     }
-
-    @Test void notStartableTaskRejected() {
+    @Test
+    void notStartableTaskRejected() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         task.setStatus("SUCCEEDED");
         when(taskMapper.selectById(taskId)).thenReturn(task);
+        TaskOrchestrator orch = orchestrator(mock(AgentRegistry.class));
+        // 终态任务认领失败（claimForOrchestration 返回 0）→ 拒绝
+        when(taskMapper.claimForOrchestration(projectId, taskId)).thenReturn(0);
 
-        assertThatThrownBy(() -> orchestrator(mock(AgentRegistry.class)).orchestrate(projectId, taskId))
+        assertThatThrownBy(() -> orch.orchestrate(projectId, taskId))
                 .isInstanceOf(IllegalStateException.class);
         verify(taskRunService, never()).createForStep(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    /** 认领防重：同一任务被并发认领时（claim 返回 0）编排拒绝，杜绝任务被反复调用。 */
+    @Test
+    void alreadyClaimedTaskRejected() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        task.setStatus("RUNNING");
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        TaskOrchestrator orch = orchestrator(mock(AgentRegistry.class));
+        when(taskMapper.claimForOrchestration(projectId, taskId)).thenReturn(0);
+
+        assertThatThrownBy(() -> orch.orchestrate(projectId, taskId))
+                .isInstanceOf(IllegalStateException.class);
+        verify(taskRunService, never()).createForStep(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    /** 失败任务续跑：从指定 step 开始执行，仍走完整状态机与终态 diff-batch；首个 run 携带 retryOfTaskRunId。 */
+    @Test
+    void resumeFromFailedStepCompletesToDiffConfirmation() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        task.setStatus("FAILED");
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        List<TaskStepEntity> steps = stubSteps(task);
+        stubRunCreation(projectId, taskId);
+        UUID reviewerStepId = steps.get(3).getId();
+
+        // 从 REVIEWER 开始，本次无成功 CODING run → 终态兜底查询最近一次 SUCCEEDED DEVELOPER run
+        TaskRunEntity lastCoding = new TaskRunEntity();
+        lastCoding.setId(UUID.randomUUID());
+        lastCoding.setTaskId(taskId);
+        lastCoding.setRole("DEVELOPER");
+        lastCoding.setStatus("SUCCEEDED");
+        when(taskMapper.selectLastSucceededCodingRunId(taskId)).thenReturn(lastCoding.getId());
+
+        UUID sourceRunId = UUID.randomUUID();
+        Agent agent = sequenceAgent(List.of(
+                outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
+        orchestrator(registryOf(agent)).orchestrate(projectId, taskId, reviewerStepId, sourceRunId);
+
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        // 续跑只执行该 step 一次，requeue 目标节点仍指向 DEVELOPER（不因 startStep 改变）
+        verify(taskRunService, times(1)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(), any());
+        // 续跑产生的首个 run 的 retryOfTaskRunId 指向被重试的源失败运行
+        ArgumentCaptor<UUID> retryCaptor = ArgumentCaptor.forClass(UUID.class);
+        verify(taskRunService).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(),
+                retryCaptor.capture());
+        assertThat(retryCaptor.getValue()).isEqualTo(sourceRunId);
+        // 终态 diff-batch 使用兜底的最近成功 CODING run
+        verify(finalDiffBundles).createPendingBatch(eq(projectId), eq(taskId), eq(lastCoding.getId()));
+    }
+
+    /** 续跑时任务仍 RUNNING（编排中）→ 认领拒绝，不重复编排。 */
+    @Test
+    void resumeRejectedWhileTaskRunning() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        task.setStatus("RUNNING");
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        TaskOrchestrator orch = orchestrator(mock(AgentRegistry.class));
+        when(taskMapper.claimForResume(projectId, taskId)).thenReturn(0);
+
+        assertThatThrownBy(() -> orch.orchestrate(projectId, taskId, stepId))
+                .isInstanceOf(IllegalStateException.class);
+        verify(taskRunService, never()).createForStep(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    /** 终态兜底：上下文无 lastCodingRunId 且 DB 也查不到成功 CODING run → FINAL_CODING_RUN_INVALID 落 FAILED。 */
+    @Test
+    void resumeWithoutAnyCodingRunFailsWhenDiffBatchNeedsCodingRun() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        task.setStatus("FAILED");
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        List<TaskStepEntity> steps = stubSteps(task);
+        stubRunCreation(projectId, taskId);
+        UUID reviewerStepId = steps.get(3).getId();
+        when(taskMapper.selectLastSucceededCodingRunId(taskId)).thenReturn(null);
+        TaskOrchestrator orch = orchestrator(registryOf(sequenceAgent(
+                List.of(outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)))));
+        when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenThrow(
+                new ApiException(HttpStatus.CONFLICT, "FINAL_CODING_RUN_INVALID",
+                        "A successful final coding run is required"));
+
+        orch.orchestrate(projectId, taskId, reviewerStepId, null);
+
+        assertTerminalStatus("FAILED");
     }
 
     private List<AgentRunOutcome> fullSuccessSequence() {

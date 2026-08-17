@@ -6,12 +6,14 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.ApiPageResponse;
 import qg.qgent.dto.InputRequestResponse;
 import qg.qgent.dto.LogEntryResponse;
 import qg.qgent.dto.TaskRunDetailResponse;
 import qg.qgent.dto.TaskRunListItemResponse;
+import qg.qgent.dto.TaskRunSummaryResponse;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.ExecutionLogEntity;
@@ -60,9 +62,10 @@ class TaskRunServiceTest {
     private final WorkspaceRepositoryMapper workspaceRepositories = mock(WorkspaceRepositoryMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final EventService events = mock(EventService.class);
+    private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
     private final TaskRunService service = new TaskRunService(runs, logs, inputRequests, diffs, steps, agents,
             artifacts, tasks, groups, projectRepositories, workspaceRepositories, access, events,
-            mock(NotificationService.class));
+            mock(NotificationService.class), eventPublisher);
 
     @BeforeAll
     static void registerTableInfos() {
@@ -88,6 +91,8 @@ class TaskRunServiceTest {
         // MyBatis-Plus selectCount 返回包装 Long，默认 mock 返回 null，未拆箱 NPE；统一补 0。
         when(artifacts.selectCount(any())).thenReturn(0L);
         when(diffs.selectCount(any())).thenReturn(0L);
+        // 运行发起人操作校验放行（requireOwner 基于 isOwnerOrAdmin）
+        when(access.isOwnerOrAdmin(any(), any(), any())).thenReturn(true);
     }
 
     @Test
@@ -230,6 +235,73 @@ class TaskRunServiceTest {
                 () -> service.createInputRequest(projectId, taskId, stepId, runId, "APPROVAL", "p", null,
                         UUID.randomUUID()));
         assertEquals("TASK_RUN_NOT_WAITABLE", notWaitable.code());
+    }
+
+    /** 重试受理：失败运行从源步骤发布续跑事件（携带 retryOfTaskRunId），不再创建无人消费的 QUEUED run。 */
+    @Test
+    void retryPublishesResumeEventInsteadOfOrphanQueuedRun() {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskRunEntity failed = run(projectId, runId);
+        failed.setTaskId(taskId);
+        failed.setTaskStepId(stepId);
+        failed.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(failed);
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("FAILED");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        TaskRunSummaryResponse response = service.retry(projectId, runId, UUID.randomUUID());
+
+        assertEquals(runId.toString(), response.getId());
+        assertEquals("FAILED", response.getStatus());
+        verify(runs, never()).insert(any(TaskRunEntity.class));
+        verify(eventPublisher).publishEvent(argThat((TaskResumeRequestedEvent e) -> e.taskId().equals(taskId)
+                && e.projectId().equals(projectId) && e.startStepId().equals(stepId)
+                && e.retryOfTaskRunId().equals(runId)));
+    }
+
+    /** 任务 RUNNING（编排中）不接受外部续跑，避免与进行中的编排冲突。 */
+    @Test
+    void retryRejectsTaskAlreadyRunning() {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskRunEntity failed = run(projectId, runId);
+        failed.setTaskId(taskId);
+        failed.setTaskStepId(UUID.randomUUID());
+        failed.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(failed);
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("RUNNING");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        ApiException e = assertThrows(ApiException.class,
+                () -> service.retry(projectId, runId, UUID.randomUUID()));
+
+        assertEquals("TASK_NOT_RESUMABLE", e.code());
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    /** 非 FAILED/CANCELLED/BLOCKED 的运行不可重试。 */
+    @Test
+    void retryRejectsNonRetryableRun() {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        TaskRunEntity succeeded = run(projectId, runId);
+        succeeded.setStatus("SUCCEEDED");
+        when(runs.selectById(runId)).thenReturn(succeeded);
+
+        ApiException e = assertThrows(ApiException.class,
+                () -> service.retry(projectId, runId, UUID.randomUUID()));
+
+        assertEquals("TASK_RUN_NOT_RETRYABLE", e.code());
     }
 
     private ExecutionLogEntity log(UUID runId, long sequence, String node, String content) {

@@ -104,4 +104,72 @@ class WorkflowGraphBuilderTest {
         assertThat(visits.get(a.getId()).get()).isEqualTo(1);
         assertThat(visits.get(b.getId()).get()).isEqualTo(2);
     }
+
+    /** 续跑：START 指向指定 step，之前步骤不执行；requeue 边仍回 DEVELOPER 节点。 */
+    @Test
+    void startFromSpecifiedStepSkipsPrecedingNodes() throws Exception {
+        TaskStepEntity a = step(UUID.randomUUID(), "PLANNER");
+        TaskStepEntity b = step(UUID.randomUUID(), "DEVELOPER");
+        TaskStepEntity c = step(UUID.randomUUID(), "TESTER");
+        TaskStepEntity d = step(UUID.randomUUID(), "REVIEWER");
+        List<UUID> ran = new ArrayList<>();
+
+        CompiledGraph<TaskOrchestrationState> graph = builder.build(List.of(a, b, c, d),
+                (s, state) -> {
+                    ran.add(s.getId());
+                    return route("next");
+                },
+                b.getId().toString(), c.getId().toString());
+
+        graph.invoke(Map.of("projectId", PID, "taskId", TID));
+
+        // 只执行 startStep 及其后续节点
+        assertThat(ran).containsExactly(c.getId(), d.getId());
+        assertThat(ran).doesNotContain(a.getId(), b.getId());
+    }
+
+    /** 续跑 + 质量失败：从 TESTER 开始，requeue 仍回到 DEVELOPER 节点（全部节点保持可路由）。 */
+    @Test
+    void startFromSpecifiedStepRequeuesBackToDeveloperNode() throws Exception {
+        TaskStepEntity a = step(UUID.randomUUID(), "PLANNER");
+        TaskStepEntity b = step(UUID.randomUUID(), "DEVELOPER");
+        TaskStepEntity c = step(UUID.randomUUID(), "TESTER");
+        TaskStepEntity d = step(UUID.randomUUID(), "REVIEWER");
+        Map<UUID, AtomicInteger> visits = new ConcurrentHashMap<>();
+
+        CompiledGraph<TaskOrchestrationState> graph = builder.build(List.of(a, b, c, d), (s, state) -> {
+            int n = visits.computeIfAbsent(s.getId(), k -> new AtomicInteger()).incrementAndGet();
+            if (s.getId().equals(c.getId()) && n == 1) {
+                return route("requeue");
+            }
+            return route("next");
+        }, b.getId().toString(), c.getId().toString());
+
+        graph.invoke(Map.of("projectId", PID, "taskId", TID));
+
+        // PLANNER 不执行；TESTER requeue 回 DEVELOPER，再沿 TESTER→REVIEWER
+        assertThat(visits.keySet()).doesNotContain(a.getId());
+        assertThat(visits.get(b.getId()).get()).isEqualTo(1);
+        assertThat(visits.get(c.getId()).get()).isEqualTo(2);
+        assertThat(visits.get(d.getId()).get()).isEqualTo(1);
+    }
+
+    /** startStepId 为 null 时等价全量（START 指向首个步骤）。 */
+    @Test
+    void nullStartStepFallsBackToFirstStep() throws Exception {
+        TaskStepEntity a = step(UUID.randomUUID(), "PLANNER");
+        TaskStepEntity b = step(UUID.randomUUID(), "DEVELOPER");
+        List<UUID> ran = new ArrayList<>();
+
+        CompiledGraph<TaskOrchestrationState> graph = builder.build(List.of(a, b),
+                (s, state) -> {
+                    ran.add(s.getId());
+                    return route("next");
+                },
+                b.getId().toString(), null);
+
+        graph.invoke(Map.of("projectId", PID, "taskId", TID));
+
+        assertThat(ran).containsExactly(a.getId(), b.getId());
+    }
 }
