@@ -514,6 +514,16 @@ CREATE TABLE IF NOT EXISTS group_agents (
     CONSTRAINT fk_ga_agent FOREIGN KEY(agent_id) REFERENCES agents(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='群聊 Agent 参与者（Agent 首次回群时自动加入）';
 
+CREATE TABLE IF NOT EXISTS group_members (
+    requirement_group_id BINARY(16) NOT NULL COMMENT '需求群ID',
+    user_id BINARY(16) NOT NULL COMMENT '项目成员用户ID',
+    joined_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '加入时间（UTC）',
+    PRIMARY KEY (requirement_group_id, user_id),
+    KEY idx_gm_user (user_id),
+    CONSTRAINT fk_gm_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id) ON DELETE CASCADE,
+    CONSTRAINT fk_gm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='需求群显式成员（用户）；PROJECT_MAIN 主群不写入，成员恒为全部项目成员';
+
 CREATE TABLE IF NOT EXISTS
     agent_skill_bindings (
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID（隔离同一 Agent 在不同项目的技能集）',

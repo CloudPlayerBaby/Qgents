@@ -43,4 +43,12 @@ public class GroupCreateRequest {
     @Size(max = 32)
     @Schema(description = "群类型：REQUIREMENT 或省略；传 PROJECT_MAIN 返回 422", maxLength = 32)
     private String type;
+
+    /**
+     * 初始群成员（项目成员 userId 列表，可空）；每项必须是该项目成员，
+     * 非项目成员返回 422 GROUP_MEMBER_NOT_PROJECT_MEMBER。创建者自动入群（无论是否在此列表），
+     * 与 memberIds 重复项去重；空/不传时群内仅创建者。Agent 成员不在此接口管理。
+     */
+    @Schema(description = "初始群成员（项目成员 userId）；创建者自动入群")
+    private List<UUID> memberIds;
 }

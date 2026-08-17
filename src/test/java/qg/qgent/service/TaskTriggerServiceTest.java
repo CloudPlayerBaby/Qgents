@@ -34,10 +34,11 @@ class TaskTriggerServiceTest {
     private final TaskMapper tasks = mock(TaskMapper.class);
     private final DiffMapper diffs = mock(DiffMapper.class);
     private final TaskService taskService = mock(TaskService.class);
+    private final GroupService groupService = mock(GroupService.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final ObjectMapper mapper = new ObjectMapper();
     private final TaskTriggerService service = new TaskTriggerService(messages, groups, groupRepos, tasks, diffs,
-            taskService, access, mapper);
+            taskService, groupService, access, mapper);
 
     @Test
     void triggerAssemblesRequestFromMessageAndGroup() {

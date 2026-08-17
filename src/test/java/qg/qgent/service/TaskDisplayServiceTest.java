@@ -54,6 +54,7 @@ import qg.qgent.mapper.WorkspaceRepositoryMapper;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -91,11 +92,13 @@ class TaskDisplayServiceTest {
     private final MessageMapper messages = mock(MessageMapper.class);
     private final TaskAcceptanceCriterionMapper acceptanceCriteria = mock(TaskAcceptanceCriterionMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
+    private final GroupService groupService = mock(GroupService.class);
     private final ObjectMapper json = new ObjectMapper();
 
     private final TaskDisplayService service = new TaskDisplayService(tasks, steps, runs, dependencies,
             stepRepositories, worktrees, workspaces, projectRepositories, githubRepositories, users, agents, groups,
-            inputRequests, artifacts, diffBatches, diffs, mergeRequests, messages, acceptanceCriteria, access, json);
+            inputRequests, artifacts, diffBatches, diffs, mergeRequests, messages, acceptanceCriteria, access,
+            groupService, json);
 
     @BeforeAll
     static void registerTableInfos() {
@@ -132,6 +135,8 @@ class TaskDisplayServiceTest {
         when(diffs.selectList(any())).thenReturn(List.of());
         when(agents.selectList(any())).thenReturn(List.of());
         when(mergeRequests.selectList(any())).thenReturn(List.of());
+        // 群成员可见性：默认无可见群（空页）；具体测试按自己的 groupId 覆盖
+        when(groupService.visibleGroupIds(any(), any())).thenReturn(new ArrayList<>());
     }
 
     @Test
@@ -163,6 +168,7 @@ class TaskDisplayServiceTest {
         group.setName("登录功能");
         group.setStatus("ACTIVE");
         when(groups.selectList(any())).thenReturn(List.of(group));
+        when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
         PagedApiResponse<TaskListItemResponse> page = service.list(projectId, actor, null, null, null, null, null, null,
                 null, "req");
@@ -197,6 +203,7 @@ class TaskDisplayServiceTest {
         group.setId(groupId);
         group.setName("登录功能");
         when(groups.selectList(any())).thenReturn(List.of(group));
+        when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
         TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
@@ -220,6 +227,7 @@ class TaskDisplayServiceTest {
         batch.setTaskId(task.getId());
         batch.setReviewStatus("REJECTED");
         when(diffBatches.selectList(any())).thenReturn(List.of(batch));
+        when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
         TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
@@ -403,6 +411,7 @@ class TaskDisplayServiceTest {
         group.setId(groupId);
         group.setName("登录功能");
         when(groups.selectList(any())).thenReturn(List.of(group));
+        when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
         TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
@@ -440,6 +449,7 @@ class TaskDisplayServiceTest {
         UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
         TaskEntity task = task(projectId, groupId, creatorId, workspaceId, "RUNNING");
         when(tasks.selectList(any())).thenReturn(List.of(task));
+        when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
         service.list(projectId, actor, null, null, null, null, "登录", null, null, "req");
 
@@ -466,6 +476,7 @@ class TaskDisplayServiceTest {
         UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
         TaskEntity task = task(projectId, groupId, creatorId, workspaceId, "RUNNING");
         when(tasks.selectList(any())).thenReturn(List.of(task));
+        when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
         service.list(projectId, actor, null, null, null, null, "   ", null, null, "req");
 

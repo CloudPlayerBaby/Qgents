@@ -53,14 +53,15 @@ public interface ProjectMemberMapper extends BaseMapper<ProjectMemberEntity> {
     int countAdmins(@Param("projectId") UUID projectId);
 
     /**
-     * 查询项目成员列表（含昵称、头像），按加入时间排序（群成员即项目成员）。
+     * 查询项目成员列表（含昵称、头像、邮箱），按加入时间排序（主群成员 = 项目成员）。
      */
-    @Select("SELECT u.id AS user_id, u.display_name, u.avatar_url FROM project_members pm"
+    @Select("SELECT u.id AS user_id, u.display_name, u.avatar_url, u.email FROM project_members pm"
             + " JOIN users u ON u.id = pm.user_id WHERE pm.project_id = #{projectId} ORDER BY pm.joined_at")
     @Results({
             @Result(column = "user_id", property = "userId", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "display_name", property = "displayName"),
-            @Result(column = "avatar_url", property = "avatarUrl")
+            @Result(column = "avatar_url", property = "avatarUrl"),
+            @Result(column = "email", property = "email")
     })
     List<GroupMemberRow> selectMembers(@Param("projectId") UUID projectId);
 

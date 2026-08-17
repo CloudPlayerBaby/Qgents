@@ -34,6 +34,12 @@ public class GroupMemberResponse {
     private String avatarUrl;
 
     /**
+     * 成员登录邮箱；仅 USER 成员返回，AGENT 成员为 null（前端按成员类型隐藏邮箱行）。
+     */
+    @Schema(description = "成员登录邮箱（仅 USER；AGENT 为 null）")
+    private String email;
+
+    /**
      * 成员类型：USER / AGENT。
      */
     @Schema(description = "成员类型：USER / AGENT")

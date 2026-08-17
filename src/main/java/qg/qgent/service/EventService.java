@@ -1,5 +1,6 @@
 package qg.qgent.service;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -12,10 +13,13 @@ import qg.qgent.auth.UuidV7;
 import qg.qgent.config.MdcTaskDecorator;
 import qg.qgent.entity.EventEntity;
 import qg.qgent.entity.NotificationEventEntity;
+import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.TeamEventEntity;
 import qg.qgent.mapper.EventMapper;
+import qg.qgent.mapper.GroupMemberMapper;
 import qg.qgent.mapper.NotificationEventMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
+import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.service.event.DeliveryStartedDomainEvent;
@@ -25,6 +29,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -77,11 +82,14 @@ public class EventService {
     private final RealtimeHub realtimeHub;
     private final ProjectMemberMapper projectMemberMapper;
     private final TeamMemberMapper teamMemberMapper;
+    private final RequirementGroupMapper groupMapper;
+    private final GroupMemberMapper groupMemberMapper;
 
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
                         NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
                         ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
-                        ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper) {
+                        ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
+                        RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper) {
         this.eventMapper = eventMapper;
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
@@ -90,6 +98,8 @@ public class EventService {
         this.realtimeHub = realtimeHub;
         this.projectMemberMapper = projectMemberMapper;
         this.teamMemberMapper = teamMemberMapper;
+        this.groupMapper = groupMapper;
+        this.groupMemberMapper = groupMemberMapper;
         // SSE 泵线程执行期间保留提交线程的 MDC（requestId），便于按请求串联日志
         MdcTaskDecorator mdcDecorator = new MdcTaskDecorator();
         AtomicInteger seq = new AtomicInteger(1);
@@ -130,10 +140,32 @@ public class EventService {
         event.setCreatedAt(now);
         eventMapper.insert(event);
         publishDomainEvent(projectId, eventType, resourceId, payload);
-        // WebSocket 用户级聚合：推送给本项目所有成员（多设备/多标签在线都收到）
-        Set<UUID> members = projectMemberMapper.selectMembers(projectId).stream()
-                .map(m -> m.getUserId()).collect(Collectors.toSet());
+        // 推送目标（契约 2026-08-17 群成员可见性收紧）：
+        //   groupId 为空（项目级事件）→ 本项目全部成员；
+        //   groupId 为主群 → 本项目全部成员（主群不写入 group_members）；
+        //   groupId 为需求群 → 仅该群显式成员。
+        Set<UUID> members = broadcastMembers(projectId, groupId);
         fan(members, "project", id(projectId), id(groupId), null, null, resourceId, eventType, payload);
+    }
+
+    /**
+     * 计算事件广播成员集合：项目级事件与 PROJECT_MAIN 主群事件广播全部项目成员；
+     * REQUIREMENT 需求群事件仅广播群显式成员（group_members）。
+     */
+    private Set<UUID> broadcastMembers(UUID projectId, UUID groupId) {
+        if (groupId == null) {
+            return projectMembers(projectId);
+        }
+        RequirementGroupEntity group = groupMapper.selectById(groupId);
+        if (group != null && "PROJECT_MAIN".equals(group.getGroupType())) {
+            return projectMembers(projectId);
+        }
+        return new java.util.HashSet<>(groupMemberMapper.selectUserIds(groupId));
+    }
+
+    private Set<UUID> projectMembers(UUID projectId) {
+        return projectMemberMapper.selectMembers(projectId).stream()
+                .map(m -> m.getUserId()).collect(Collectors.toSet());
     }
 
     /**
@@ -355,28 +387,40 @@ public class EventService {
         emitter.onError(e -> log.info("SSE error, projectId={}: {}", projectId, e.getMessage()));
         emitter.onCompletion(() -> log.info("SSE completed, projectId={}, cursor={}", projectId, cursor));
 
-        executor.execute(() -> pump(emitter, projectId, cursor));
+        // 群成员可见性（契约 2026-08-17 严格收紧）：SSE 仅推送用户可见群（主群 + 已加入需求群）的事件
+        Set<UUID> visibleGroups = new HashSet<>();
+        groupMapper.selectList(Wrappers.<RequirementGroupEntity>lambdaQuery()
+                        .eq(RequirementGroupEntity::getProjectId, projectId)
+                        .eq(RequirementGroupEntity::getGroupType, "PROJECT_MAIN"))
+                .forEach(group -> visibleGroups.add(group.getId()));
+        visibleGroups.addAll(groupMemberMapper.selectGroupIdsByUser(projectId, userId));
+
+        executor.execute(() -> pump(emitter, projectId, cursor, visibleGroups));
         return emitter;
     }
 
     /**
      * 轮询推送增量事件。线程退出条件：客户端断开/超时导致 send 失败，或线程被中断。
-     * 游标本地推进，成功发送的事件序号即新的续传点。
+     * 游标本地推进，成功发送的事件序号即新的续传点；不可见群的事件跳过发送但同样推进游标
+     * （不可见事件无需重试，避免重复拉取同一批）。
      */
-    private void pump(SseEmitter emitter, UUID projectId, long startCursor) {
+    private void pump(SseEmitter emitter, UUID projectId, long startCursor, Set<UUID> visibleGroups) {
         long cursor = startCursor;
         LocalDateTime lastHeartbeat = LocalDateTime.now(ZoneOffset.UTC);
         try {
             while (true) {
                 List<EventEntity> events = eventMapper.listAfter(projectId, cursor, BATCH_SIZE);
                 for (EventEntity event : events) {
-                    if (!send(emitter, SseEmitter.event()
-                            .id(String.valueOf(event.getSequenceNo()))
-                            .name(event.getEventType())
-                            .data(event.getPayload()))) {
-                        return;
-                    }
                     cursor = event.getSequenceNo();
+                    if (event.getRequirementGroupId() == null
+                            || visibleGroups.contains(event.getRequirementGroupId())) {
+                        if (!send(emitter, SseEmitter.event()
+                                .id(String.valueOf(event.getSequenceNo()))
+                                .name(event.getEventType())
+                                .data(event.getPayload()))) {
+                            return;
+                        }
+                    }
                 }
                 LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
                 if (Duration.between(lastHeartbeat, now).getSeconds() >= HEARTBEAT_SECONDS) {

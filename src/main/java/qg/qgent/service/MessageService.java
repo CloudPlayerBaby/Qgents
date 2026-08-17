@@ -40,13 +40,15 @@ public class MessageService {
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
     private final ProjectAccessService access;
+    private final GroupService groupService;
     private final TaskTriggerService taskTriggerService;
     private final ObjectMapper mapper;
     private final EventService eventService;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                           GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
-                          ProjectAccessService access, TaskTriggerService taskTriggerService, ObjectMapper mapper,
+                          ProjectAccessService access, GroupService groupService,
+                          TaskTriggerService taskTriggerService, ObjectMapper mapper,
                           EventService eventService) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
@@ -54,6 +56,7 @@ public class MessageService {
         this.userMapper = userMapper;
         this.agentMapper = agentMapper;
         this.access = access;
+        this.groupService = groupService;
         this.taskTriggerService = taskTriggerService;
         this.mapper = mapper;
         this.eventService = eventService;
@@ -73,7 +76,8 @@ public class MessageService {
      */
     @Transactional
     public MessageResponse send(UUID actor, UUID projectId, UUID groupId, MessageSendRequest body) {
-        access.requireProjectMember(projectId, actor);
+        // 群成员可见性（契约 2026-08-17 严格收紧）：主群=项目成员，需求群=群成员
+        groupService.requireGroupMember(projectId, groupId, actor);
         RequirementGroupEntity group = lockGroup(groupId);
         if (group == null || !group.getProjectId().equals(projectId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
@@ -233,7 +237,8 @@ public class MessageService {
      * @return 消息分页结果
      */
     public PageSlice<MessageResponse> list(UUID actor, UUID projectId, UUID groupId, String cursor, int limit) {
-        access.requireProjectMember(projectId, actor);
+        // 群成员可见性（契约 2026-08-17 严格收紧）：主群=项目成员，需求群=群成员
+        groupService.requireGroupMember(projectId, groupId, actor);
         RequirementGroupEntity group = groupMapper.selectById(groupId);
         if (group == null || !group.getProjectId().equals(projectId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");

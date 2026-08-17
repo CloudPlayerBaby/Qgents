@@ -59,6 +59,7 @@ public class TaskDisplayService {
     private final MessageMapper messages;
     private final TaskAcceptanceCriterionMapper acceptanceCriteria;
     private final ProjectAccessService access;
+    private final GroupService groupService;
     private final ObjectMapper json;
 
     public TaskDisplayService(TaskMapper tasks, TaskStepMapper steps, TaskRunMapper runs,
@@ -68,7 +69,8 @@ public class TaskDisplayService {
                               AgentMapper agents, RequirementGroupMapper groups, InputRequestMapper inputRequests,
                               TaskExecutionArtifactMapper artifacts, DiffReviewBatchMapper diffBatches, DiffMapper diffs,
                               MergeRequestMapper mergeRequests, MessageMapper messages,
-                              TaskAcceptanceCriterionMapper acceptanceCriteria, ProjectAccessService access, ObjectMapper json) {
+                              TaskAcceptanceCriterionMapper acceptanceCriteria, ProjectAccessService access,
+                              GroupService groupService, ObjectMapper json) {
         this.tasks = tasks;
         this.steps = steps;
         this.runs = runs;
@@ -89,6 +91,7 @@ public class TaskDisplayService {
         this.messages = messages;
         this.acceptanceCriteria = acceptanceCriteria;
         this.access = access;
+        this.groupService = groupService;
         this.json = json;
     }
 
@@ -110,8 +113,18 @@ public class TaskDisplayService {
         UUID creatorUuid = parseOptionalUuid(createdBy, "INVALID_CREATEDBY_FILTER");
         UUID repositoryUuid = parseOptionalUuid(repositoryId, "INVALID_REPOSITORY_FILTER");
         String normalizedKeyword = normalizeKeyword(keyword);
+        // 群成员可见性（契约 2026-08-17 严格收紧）：任务中心只展示用户可见群的任务
+        // （主群 + 用户已加入的需求群）；显式 groupId 过滤时再按该群可见性校验。
+        List<UUID> visibleGroups = groupService.visibleGroupIds(projectId, actor);
+        if (groupUuid != null) {
+            groupService.requireGroupMember(projectId, groupUuid, actor);
+        }
+        if (visibleGroups.isEmpty()) {
+            return new PagedApiResponse<>(List.of(), new PageInfo(null, false), requestId);
+        }
         var wrapper = Wrappers.<TaskEntity>lambdaQuery()
                 .eq(TaskEntity::getProjectId, projectId)
+                .in(TaskEntity::getRequirementGroupId, visibleGroups)
                 .eq(groupUuid != null, TaskEntity::getRequirementGroupId, groupUuid)
                 .in(!splitStatuses(status).isEmpty(), TaskEntity::getStatus, splitStatuses(status))
                 .eq(creatorUuid != null, TaskEntity::getCreatedBy, creatorUuid)
@@ -150,6 +163,10 @@ public class TaskDisplayService {
     public TaskDetailResponse detail(UUID projectId, UUID taskId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         TaskEntity task = requireTask(projectId, taskId);
+        // 群成员可见性（契约 2026-08-17 严格收紧）：任务详情仅其所属群成员可见
+        if (task.getRequirementGroupId() != null) {
+            groupService.requireGroupMember(projectId, task.getRequirementGroupId(), actor);
+        }
         List<TaskStepEntity> stepList = steps.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
                 .eq(TaskStepEntity::getTaskId, taskId).orderByAsc(TaskStepEntity::getSequenceNo));
         List<TaskRunEntity> allRuns = runs.selectList(Wrappers.<TaskRunEntity>lambdaQuery()
@@ -197,6 +214,10 @@ public class TaskDisplayService {
     private List<TaskStepListItemResponse> stepsList(UUID projectId, UUID taskId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         TaskEntity task = requireTask(projectId, taskId);
+        // 群成员可见性（契约 2026-08-17 严格收紧）：步骤列表仅其所属群成员可见
+        if (task.getRequirementGroupId() != null) {
+            groupService.requireGroupMember(projectId, task.getRequirementGroupId(), actor);
+        }
         List<TaskStepEntity> stepList = withoutPlanner(steps.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
                 .eq(TaskStepEntity::getTaskId, taskId).orderByAsc(TaskStepEntity::getSequenceNo)));
         // 规划期仅存在 PLANNER bootstrap 步骤，过滤后为空列表（前端以 status=PLANNING 渲染规划中）

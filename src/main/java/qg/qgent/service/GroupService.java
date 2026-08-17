@@ -11,6 +11,7 @@ import qg.qgent.dto.*;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.RequirementGroupEntity;
+import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.*;
 
 import java.time.LocalDateTime;
@@ -34,7 +35,9 @@ public class GroupService {
     private final ProjectMemberMapper projectMemberMapper;
     private final ProjectMapper projectMapper;
     private final GroupAgentMapper groupAgentMapper;
+    private final GroupMemberMapper groupMemberMapper;
     private final AgentMapper agentMapper;
+    private final UserMapper userMapper;
     private final MessageMapper messageMapper;
     private final GroupReadStateMapper groupReadStateMapper;
     private final ProjectAccessService access;
@@ -43,7 +46,8 @@ public class GroupService {
 
     public GroupService(RequirementGroupMapper groupMapper,
                         RequirementGroupRepositoryMapper groupRepositoryMapper, ProjectMemberMapper projectMemberMapper,
-                        ProjectMapper projectMapper, GroupAgentMapper groupAgentMapper, AgentMapper agentMapper,
+                        ProjectMapper projectMapper, GroupAgentMapper groupAgentMapper, GroupMemberMapper groupMemberMapper,
+                        AgentMapper agentMapper, UserMapper userMapper,
                         MessageMapper messageMapper, GroupReadStateMapper groupReadStateMapper,
                         ProjectAccessService access, EventService eventService, IdempotencyService idempotencyService) {
         this.groupMapper = groupMapper;
@@ -51,7 +55,9 @@ public class GroupService {
         this.projectMemberMapper = projectMemberMapper;
         this.projectMapper = projectMapper;
         this.groupAgentMapper = groupAgentMapper;
+        this.groupMemberMapper = groupMemberMapper;
         this.agentMapper = agentMapper;
+        this.userMapper = userMapper;
         this.messageMapper = messageMapper;
         this.groupReadStateMapper = groupReadStateMapper;
         this.access = access;
@@ -104,6 +110,11 @@ public class GroupService {
 
     /**
      * 创建 REQUIREMENT 需求群；type 传 PROJECT_MAIN 返回 422 SYSTEM_GROUP_MANAGED。
+     * <p>
+     * 初始成员（契约 2026-08-17 群成员选择与管理）：{@code memberIds} 可选，每项必须是
+     * 该项目成员（非项目成员 422 GROUP_MEMBER_NOT_PROJECT_MEMBER）；创建者自动入群
+     * （无论是否在 memberIds 中），与 memberIds 去重；空/不传时群内仅创建者。
+     * Agent 成员不在此接口管理（由编排按需加入 group_agents）。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -119,6 +130,7 @@ public class GroupService {
                     "项目主群由系统管理，不能通过该接口创建");
         }
         List<UUID> repositories = validateRepositories(projectId, body.getRepositoryIds());
+        List<UUID> initialMembers = validateGroupMembers(projectId, body.getMemberIds());
         RequirementGroupEntity group = new RequirementGroupEntity();
         group.setId(UuidV7.next());
         group.setProjectId(projectId);
@@ -131,6 +143,13 @@ public class GroupService {
         groupMapper.insert(group);
         for (UUID repositoryId : repositories) {
             groupRepositoryMapper.insertLink(group.getId(), repositoryId);
+        }
+        // 初始群成员：创建者自动入群（去重），memberIds 其余项逐一写入
+        groupMemberMapper.insertMember(group.getId(), actor);
+        for (UUID memberId : initialMembers) {
+            if (!memberId.equals(actor)) {
+                groupMemberMapper.insertMember(group.getId(), memberId);
+            }
         }
         eventService.publish(projectId, group.getId(), "group.created", id(group.getId()),
                 Map.of("projectId", id(projectId), "groupId", id(group.getId())));
@@ -273,7 +292,10 @@ public class GroupService {
     }
 
     /**
-     * 获取群成员列表（= 项目成员 + 参与群聊的 Agent，群内成员平等、无角色）。
+     * 获取群成员列表（群成员 = 显式群用户成员 + 参与群聊的 Agent，群内成员平等、无角色）。
+     * <p>
+     * PROJECT_MAIN 主群成员恒为全部项目成员（系统管理，不查 group_members）；
+     * REQUIREMENT 需求群成员 = group_members（join 用户基础信息，含 email）+ group_agents。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -282,21 +304,188 @@ public class GroupService {
      */
     public List<GroupMemberResponse> members(UUID actor, UUID projectId, UUID groupId) {
         access.requireProjectMember(projectId, actor);
-        requireGroupInProject(projectId, groupId);
+        RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
         List<GroupMemberResponse> members = new ArrayList<>();
-        projectMemberMapper.selectMembers(projectId).stream()
-                .map(m -> new GroupMemberResponse(m.getUserId().toString(), m.getDisplayName(), m.getAvatarUrl(),
-                        "USER"))
-                .forEach(members::add);
+        if ("PROJECT_MAIN".equals(group.getGroupType())) {
+            projectMemberMapper.selectMembers(projectId).stream()
+                    .map(m -> new GroupMemberResponse(m.getUserId().toString(), m.getDisplayName(), m.getAvatarUrl(),
+                            null, "USER"))
+                    .forEach(members::add);
+        } else {
+            groupMemberMapper.selectMembersWithUsers(groupId).stream()
+                    .map(m -> new GroupMemberResponse(m.getUserId().toString(), m.getDisplayName(), m.getAvatarUrl(),
+                            m.getEmail(), "USER"))
+                    .forEach(members::add);
+        }
         // 群内参与聊天的 Agent 一并作为成员返回（群成员 = 真实用户 + Agent 混合）
         for (UUID agentId : groupAgentMapper.selectAgentIds(groupId)) {
             AgentEntity agent = agentMapper.selectById(agentId);
             if (agent != null) {
                 members.add(new GroupMemberResponse(agent.getId().toString(), agent.getName(), agent.getAvatar(),
-                        "AGENT"));
+                        null, "AGENT"));
             }
         }
         return members;
+    }
+
+    /**
+     * 邀请项目成员入群（契约 2026-08-17 群成员选择与管理）。
+     * <p>
+     * 权限：群创建者或 Project Admin；被邀请人必须是该项目成员（否则 422
+     * GROUP_MEMBER_NOT_PROJECT_MEMBER）；已在群内时幂等返回；PROJECT_MAIN 主群
+     * 422 SYSTEM_GROUP_MANAGED；Agent 不在此接口管理。
+     *
+     * @param actor     当前用户 ID
+     * @param projectId 项目 ID
+     * @param groupId   群 ID
+     * @param userId    被邀请的项目成员用户 ID
+     * @return 被邀请成员视图（含 email）
+     */
+    @Transactional
+    public GroupMemberResponse addMember(UUID actor, UUID projectId, UUID groupId, UUID userId) {
+        access.requireProjectMember(projectId, actor);
+        RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
+        if ("PROJECT_MAIN".equals(group.getGroupType())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SYSTEM_GROUP_MANAGED",
+                    "项目主群成员由系统管理，不能邀请");
+        }
+        requireGroupAdmin(projectId, group, actor);
+        if (projectMemberMapper.selectByProjectAndUser(projectId, userId) == null) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GROUP_MEMBER_NOT_PROJECT_MEMBER",
+                    "被邀请人不是该项目成员");
+        }
+        groupMemberMapper.insertMember(groupId, userId);
+        UserEntity user = userMapper.selectById(userId);
+        eventService.publish(projectId, groupId, "group.member.updated", id(groupId),
+                Map.of("projectId", id(projectId), "groupId", id(groupId)));
+        return new GroupMemberResponse(id(userId), user == null ? null : user.getDisplayName(),
+                user == null ? null : user.getAvatarUrl(), user == null ? null : user.getEmail(), "USER");
+    }
+
+    /**
+     * 移出群聊（契约 2026-08-17 群成员选择与管理；与 leave「退出项目」语义不同，本接口只移出群）。
+     * <p>
+     * 权限：群创建者或 Project Admin；群创建者本人不可被移出（422 GROUP_CREATOR_NOT_REMOVABLE）；
+     * 目标不在群内 404 GROUP_MEMBER_NOT_FOUND；PROJECT_MAIN 主群 422 SYSTEM_GROUP_MANAGED；
+     * Agent 不在此接口管理。
+     * 移出后该成员失去该群（及其消息/任务卡片）的访问权限，但保留项目成员身份。
+     *
+     * @param actor     当前用户 ID
+     * @param projectId 项目 ID
+     * @param groupId   群 ID
+     * @param userId    被移出的用户 ID
+     */
+    @Transactional
+    public void removeMember(UUID actor, UUID projectId, UUID groupId, UUID userId) {
+        access.requireProjectMember(projectId, actor);
+        RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
+        if ("PROJECT_MAIN".equals(group.getGroupType())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SYSTEM_GROUP_MANAGED",
+                    "项目主群成员由系统管理，不能移出");
+        }
+        requireGroupAdmin(projectId, group, actor);
+        if (group.getCreatedBy().equals(userId)) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GROUP_CREATOR_NOT_REMOVABLE",
+                    "群创建者不可被移出");
+        }
+        if (groupMemberMapper.deleteMember(groupId, userId) == 0) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_MEMBER_NOT_FOUND", "目标用户不在群内");
+        }
+        eventService.publish(projectId, groupId, "group.member.updated", id(groupId),
+                Map.of("projectId", id(projectId), "groupId", id(groupId)));
+    }
+
+    /**
+     * 校验当前用户可访问该群（消息/任务卡片可见性，契约 2026-08-17 严格收紧）：
+     * 必须是项目成员；PROJECT_MAIN 主群所有项目成员可见；REQUIREMENT 需求群仅群成员
+     * （group_members 或创建者兜底）可见，否则 403 GROUP_MEMBER_REQUIRED。
+     *
+     * @param projectId 项目 ID
+     * @param groupId   群 ID
+     * @param actor     当前用户 ID
+     */
+    public void requireGroupMember(UUID projectId, UUID groupId, UUID actor) {
+        access.requireProjectMember(projectId, actor);
+        RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
+        if ("PROJECT_MAIN".equals(group.getGroupType())) {
+            return;
+        }
+        if (isGroupMember(groupId, actor)) {
+            return;
+        }
+        throw new ApiException(HttpStatus.FORBIDDEN, "GROUP_MEMBER_REQUIRED",
+                "你不是该需求群成员，无法访问");
+    }
+
+    /**
+     * 判断用户是否为需求群显式成员（创建者兜底为成员；PROJECT_MAIN 由调用方另行处理）。
+     *
+     * @param groupId 群 ID
+     * @param userId  用户 ID
+     * @return 是否群成员
+     */
+    public boolean isGroupMember(UUID groupId, UUID userId) {
+        if (groupMemberMapper.countMember(groupId, userId) > 0) {
+            return true;
+        }
+        RequirementGroupEntity group = groupMapper.selectById(groupId);
+        return group != null && group.getCreatedBy().equals(userId);
+    }
+
+    /**
+     * 校验用户可见的需求群 ID 列表（任务中心等按群过滤用）：用户是群成员的需求群
+     * （含创建者兜底）；PROJECT_MAIN 主群单独由项目成员可见性覆盖，不在此列表。
+     *
+     * @param projectId 项目 ID
+     * @param userId    用户 ID
+     * @return 用户可见的需求群 ID 列表
+     */
+    public List<UUID> visibleRequirementGroupIds(UUID projectId, UUID userId) {
+        return groupMemberMapper.selectGroupIdsByUser(projectId, userId);
+    }
+
+    /**
+     * 用户在该项目全部可见群 ID（任务中心按群过滤）：项目全部 PROJECT_MAIN 主群
+     * （主群恒对项目成员可见）+ 用户已加入的 REQUIREMENT 需求群。
+     *
+     * @param projectId 项目 ID
+     * @param userId    用户 ID
+     * @return 可见群 ID 列表
+     */
+    public List<UUID> visibleGroupIds(UUID projectId, UUID userId) {
+        List<UUID> result = new ArrayList<>();
+        groupMapper.selectList(Wrappers.<RequirementGroupEntity>lambdaQuery()
+                        .eq(RequirementGroupEntity::getProjectId, projectId)
+                        .eq(RequirementGroupEntity::getGroupType, "PROJECT_MAIN"))
+                .forEach(group -> result.add(group.getId()));
+        result.addAll(groupMemberMapper.selectGroupIdsByUser(projectId, userId));
+        return result;
+    }
+
+    /**
+     * 群管理权限：群创建者或 Project Admin，否则 403 FORBIDDEN（与归档权限一致）。
+     */
+    private void requireGroupAdmin(UUID projectId, RequirementGroupEntity group, UUID actor) {
+        if (!group.getCreatedBy().equals(actor)) {
+            access.requireProjectAdmin(projectId, actor);
+        }
+    }
+
+    /**
+     * 校验初始成员列表全部为项目成员；空/不传返回空列表。
+     */
+    private List<UUID> validateGroupMembers(UUID projectId, List<UUID> memberIds) {
+        if (memberIds == null || memberIds.isEmpty()) {
+            return List.of();
+        }
+        List<UUID> distinct = memberIds.stream().distinct().toList();
+        for (UUID memberId : distinct) {
+            if (projectMemberMapper.selectByProjectAndUser(projectId, memberId) == null) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GROUP_MEMBER_NOT_PROJECT_MEMBER",
+                        "初始成员不是该项目成员");
+            }
+        }
+        return distinct;
     }
 
     /**
@@ -398,7 +587,10 @@ public class GroupService {
     private GroupResponse toResponse(RequirementGroupEntity g, GroupLatestMessageRow latest, Long unreadCount) {
         GroupLatestMessage latestMessage = latest == null ? null
                 : new GroupLatestMessage(latest.getSenderName(), latest.getText(), latest.getMessageType());
-        long members = projectMemberMapper.countMembers(g.getProjectId())
+        // 群成员数（契约 2026-08-17）：PROJECT_MAIN 主群 = 全部项目成员；REQUIREMENT 需求群 = 显式群成员
+        long members = ("PROJECT_MAIN".equals(g.getGroupType())
+                ? projectMemberMapper.countMembers(g.getProjectId())
+                : groupMemberMapper.countMembers(g.getId()))
                 + groupAgentMapper.selectAgentIds(g.getId()).size();
         return new GroupResponse(g.getId().toString(), g.getProjectId().toString(), g.getGroupType(),
                 g.getName(), g.getDescription(), g.getStatus(), id(g.getCreatedBy()), iso(g.getLastMessageAt()),

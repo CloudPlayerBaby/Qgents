@@ -4,8 +4,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.entity.EventEntity;
 import qg.qgent.mapper.EventMapper;
+import qg.qgent.mapper.GroupMemberMapper;
 import qg.qgent.mapper.NotificationEventMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
+import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.service.event.DeliveryStartedDomainEvent;
@@ -86,6 +88,7 @@ class EventServiceTest {
     private EventService service(EventMapper events, ApplicationEventPublisher publisher) {
         return new EventService(events, mock(ProjectAccessService.class), mock(NotificationEventMapper.class),
                 mock(TeamEventMapper.class), publisher, mock(RealtimeHub.class),
-                mock(ProjectMemberMapper.class), mock(TeamMemberMapper.class));
+                mock(ProjectMemberMapper.class), mock(TeamMemberMapper.class),
+                mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class));
     }
 }

@@ -49,12 +49,13 @@ public class TaskTriggerService {
     private final TaskMapper taskMapper;
     private final DiffMapper diffMapper;
     private final TaskService taskService;
+    private final GroupService groupService;
     private final ProjectAccessService access;
     private final ObjectMapper mapper;
 
     public TaskTriggerService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                               RequirementGroupRepositoryMapper groupRepoMapper, TaskMapper taskMapper,
-                              DiffMapper diffMapper, TaskService taskService,
+                              DiffMapper diffMapper, TaskService taskService, GroupService groupService,
                               ProjectAccessService access, ObjectMapper mapper) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
@@ -62,6 +63,7 @@ public class TaskTriggerService {
         this.taskMapper = taskMapper;
         this.diffMapper = diffMapper;
         this.taskService = taskService;
+        this.groupService = groupService;
         this.access = access;
         this.mapper = mapper;
     }
@@ -81,7 +83,8 @@ public class TaskTriggerService {
      */
     @Transactional
     public TaskResponse trigger(UUID actor, UUID projectId, UUID groupId, UUID messageId, TaskTriggerRequest body) {
-        access.requireProjectMember(projectId, actor);
+        // 群成员可见性（契约 2026-08-17 严格收紧）：触发任务者必须是群成员
+        groupService.requireGroupMember(projectId, groupId, actor);
         MessageEntity message = requireMessageInGroup(groupId, messageId);
         RequirementGroupEntity group = requireActiveRequirementGroup(projectId, groupId);
         // 幂等：同一触发消息只建一次 Task（引用 DIFF 续作尤其要防重复点击创建多个续作 Task）

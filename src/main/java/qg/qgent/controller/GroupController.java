@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.GroupCreateRequest;
+import qg.qgent.dto.GroupMemberAddRequest;
 import qg.qgent.dto.GroupUpdateRequest;
 import qg.qgent.service.GroupService;
 
@@ -90,6 +91,28 @@ public class GroupController {
     public ApiResponse<?> members(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
                                   @PathVariable UUID groupId, HttpServletRequest request) {
         return ok(groupService.members(userId, projectId, groupId), request);
+    }
+
+    /**
+     * 契约 2026-08-17：邀请项目成员入群（群创建者或 Project Admin；主群 422）。
+     */
+    @PostMapping("/projects/{projectId}/groups/{groupId}/members")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<?> addMember(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
+                                    @PathVariable UUID groupId, @Valid @RequestBody GroupMemberAddRequest body,
+                                    HttpServletRequest request) {
+        return ok(groupService.addMember(userId, projectId, groupId, body.getUserId()), request);
+    }
+
+    /**
+     * 契约 2026-08-17：移出群聊（群创建者或 Project Admin；创建者本人不可移出；主群 422）。
+     */
+    @DeleteMapping("/projects/{projectId}/groups/{groupId}/members/{memberUserId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void removeMember(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
+                             @PathVariable UUID groupId, @PathVariable UUID memberUserId,
+                             HttpServletRequest request) {
+        groupService.removeMember(userId, projectId, groupId, memberUserId);
     }
 
     /**
