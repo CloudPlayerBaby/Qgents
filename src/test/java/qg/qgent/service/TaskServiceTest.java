@@ -276,7 +276,7 @@ class TaskServiceTest {
 
     private ProjectRepositoryEntity repository(UUID id, UUID projectId) {
         ProjectRepositoryEntity repository = new ProjectRepositoryEntity(); repository.setId(id);
-        repository.setProjectId(projectId); return repository;
+        repository.setProjectId(projectId); repository.setStatus("ACTIVE"); return repository;
     }
 
     private WorkspaceRepositoryEntity worktree(UUID repositoryId, String path, String baseCommit, String sourceBranch) {

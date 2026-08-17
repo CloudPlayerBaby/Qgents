@@ -268,6 +268,11 @@ public class RepositoryBranchConfigService {
             throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_REPOSITORY_NOT_FOUND",
                     "Project repository binding not found");
         }
+        // 软解绑后的仓库不再可配置：历史配置保留只读，写入需先重新绑定
+        if ("UNBOUND".equals(projectRepo.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_UNBOUND",
+                    "Project repository binding is unbound");
+        }
         return projectRepo;
     }
 

@@ -136,6 +136,11 @@ public class TaskService {
                 throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REPOSITORY_NOT_IN_PROJECT",
                         "仓库未绑定到当前项目");
             }
+            // 软解绑（UNBOUND）的仓库不得用于新任务；历史任务按原 ID 读取不受影响
+            if (!"ACTIVE".equals(repository.getStatus())) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PROJECT_REPOSITORY_UNBOUND",
+                        "仓库已从项目解绑，不能创建新任务");
+            }
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         if (!reuseWorkspace) {
