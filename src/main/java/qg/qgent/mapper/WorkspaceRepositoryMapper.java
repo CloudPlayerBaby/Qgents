@@ -41,6 +41,19 @@ public interface WorkspaceRepositoryMapper {
     List<WorkspaceRepositoryEntity> selectByWorkspaces(@Param("workspaceIds") List<UUID> workspaceIds);
 
     /**
+     * 查询项目内可追溯的 Workspace worktree；不访问 GitHub 的全量远端分支。
+     */
+    @Select({"<script>",
+            "select wr.workspace_id,wr.project_repository_id,wr.workspace_path,wr.base_commit,wr.source_branch,",
+            "wr.head_commit,wr.created_at,wr.updated_at ",
+            "from workspace_repositories wr join workspaces w on w.id=wr.workspace_id ",
+            "where w.project_id=#{projectId}",
+            "<if test='repositoryId != null'> and wr.project_repository_id=#{repositoryId}</if>",
+            "</script>"})
+    List<WorkspaceRepositoryEntity> selectByProject(@Param("projectId") UUID projectId,
+                                                     @Param("repositoryId") UUID repositoryId);
+
+    /**
      * Locks one worktree before accepting a Diff or creating an MR.
      */
     @Select("select workspace_id,project_repository_id,workspace_path,base_commit,source_branch,head_commit,created_at,updated_at "
