@@ -190,8 +190,14 @@ public class MergeRequestService {
         CreateClaim claim = claimCreateWithRetry(projectId, userId, request);
         if (claim.existing() != null) {
             if (claim.existing().getHeadCommit().equals(claim.worktree().getHeadCommit())) {
+                log.info("merge request push skipped projectId={} taskId={} repositoryId={} branch={} reason=existing_open_mr_same_head headCommit={} mrId={}",
+                        projectId, request.getTaskId(), request.getRepositoryId(), claim.worktree().getSourceBranch(),
+                        claim.worktree().getHeadCommit(), claim.existing().getId());
                 return summary(claim.existing());
             }
+            log.info("merge request push required projectId={} taskId={} repositoryId={} branch={} reason=existing_open_mr_head_changed expectedHeadCommit={} mrId={}",
+                    projectId, request.getTaskId(), request.getRepositoryId(), claim.worktree().getSourceBranch(),
+                    claim.worktree().getHeadCommit(), claim.existing().getId());
             return pushAndUpdateExisting(claim);
         }
         try {
@@ -325,12 +331,18 @@ public class MergeRequestService {
         String grantId = credentialService.generateGrant(installation.getTeamId(), claim.task().getProjectId(),
                 installation.getProviderInstallationId(), fullName, worktree.getSourceBranch(),
                 worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
+        log.info("merge request push starting projectId={} taskId={} repositoryId={} branch={} mode=existing_mr expectedHeadCommit={}",
+                claim.task().getProjectId(), claim.task().getId(), claim.request().getRepositoryId(),
+                worktree.getSourceBranch(), worktree.getHeadCommit());
         WorkerGitPushResponse pushed;
         try {
             pushed = workerClient.pushWorkspaceBranch(claim.task().getWorkspaceId(), claim.request().getRepositoryId(),
                     new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
                             .setCredentialGrantId(grantId));
         } catch (ApiException failure) {
+            log.warn("merge request worker push request failed projectId={} taskId={} repositoryId={} branch={} status={} code={} message={}",
+                    claim.task().getProjectId(), claim.task().getId(), claim.request().getRepositoryId(),
+                    worktree.getSourceBranch(), failure.status(), failure.code(), failure.getMessage());
             throw new ApiException(failure.status(), "WORKER_PUSH_FAILED",
                     "Failed to push branch via Sandbox Worker: " + failure.getMessage());
         }
@@ -338,6 +350,9 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
                     "Sandbox Worker push verification failed or HEAD mismatch");
         }
+        log.info("merge request push verified projectId={} taskId={} repositoryId={} branch={} headCommit={}",
+                claim.task().getProjectId(), claim.task().getId(), claim.request().getRepositoryId(),
+                worktree.getSourceBranch(), pushed.getHeadCommit());
         MergeRequestEntity existing = claim.existing();
         existing.setHeadCommit(worktree.getHeadCommit());
         existing.setSyncedAt(LocalDateTime.now(ZoneOffset.UTC));
@@ -353,17 +368,28 @@ public class MergeRequestService {
         MergeRequestCreateRequest request = claim.request();
         GitHubPullRequestDetails remote = githubClient.findOpenPullRequest(installation.getProviderInstallationId(),
                 github.getOwnerLogin(), github.getName(), worktree.getSourceBranch(), request.getTargetBranch());
-        if (remote != null) return remote;
+        if (remote != null) {
+            log.info("merge request push skipped projectId={} taskId={} repositoryId={} branch={} reason=remote_open_pr_found remoteNumber={} remoteHead={}",
+                    claim.task().getProjectId(), claim.task().getId(), request.getRepositoryId(),
+                    worktree.getSourceBranch(), remote.number(), remote.headSha());
+            return remote;
+        }
         String fullName = github.getOwnerLogin() + "/" + github.getName();
         String grantId = credentialService.generateGrant(installation.getTeamId(), claim.task().getProjectId(),
                 installation.getProviderInstallationId(), fullName, worktree.getSourceBranch(),
                 worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
+        log.info("merge request push starting projectId={} taskId={} repositoryId={} branch={} mode=new_pr expectedHeadCommit={}",
+                claim.task().getProjectId(), claim.task().getId(), request.getRepositoryId(),
+                worktree.getSourceBranch(), worktree.getHeadCommit());
         WorkerGitPushResponse pushed;
         try {
             pushed = workerClient.pushWorkspaceBranch(claim.task().getWorkspaceId(), request.getRepositoryId(),
                     new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
                             .setCredentialGrantId(grantId));
         } catch (ApiException failure) {
+            log.warn("merge request worker push request failed projectId={} taskId={} repositoryId={} branch={} status={} code={} message={}",
+                    claim.task().getProjectId(), claim.task().getId(), request.getRepositoryId(),
+                    worktree.getSourceBranch(), failure.status(), failure.code(), failure.getMessage());
             throw new ApiException(failure.status(), "WORKER_PUSH_FAILED",
                     "Failed to push branch via Sandbox Worker: " + failure.getMessage());
         }
@@ -371,6 +397,9 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
                     "Sandbox Worker push verification failed or HEAD mismatch");
         }
+        log.info("merge request push verified projectId={} taskId={} repositoryId={} branch={} headCommit={}",
+                claim.task().getProjectId(), claim.task().getId(), request.getRepositoryId(),
+                worktree.getSourceBranch(), pushed.getHeadCommit());
         return githubClient.createPullRequest(installation.getProviderInstallationId(), github.getOwnerLogin(),
                 github.getName(), new GitHubPullRequestCreateRequest(request.getTitle(), null,
                         worktree.getSourceBranch(), request.getTargetBranch()));

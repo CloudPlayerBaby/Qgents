@@ -53,3 +53,6 @@ src/main/resources/rsa/private_key.pem
 
 # Private keys
 *.pem
+
+# 脚本文件
+scripts/

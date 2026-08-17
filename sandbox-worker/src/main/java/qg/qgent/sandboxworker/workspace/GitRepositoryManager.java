@@ -341,13 +341,19 @@ public class GitRepositoryManager {
     public GitPushResponse push(UUID repositoryId, Path repository, String sourceBranch, GitPushRequest request) {
         return locked(repositoryId, () -> {
             String currentHead = head(repository);
+            log.info("git push starting repositoryId={} branch={} currentHead={} expectedHeadCommit={}",
+                    repositoryId, sourceBranch, currentHead, request.getExpectedHeadCommit());
             if (!currentHead.equals(request.getExpectedHeadCommit())) {
+                log.warn("git push rejected repositoryId={} branch={} reason=head_mismatch currentHead={} expectedHeadCommit={}",
+                        repositoryId, sourceBranch, currentHead, request.getExpectedHeadCommit());
                 throw conflict("GIT_HEAD_MISMATCH", "Workspace HEAD has changed");
             }
             Path store = gitStore(repositoryId);
             CommandResult origin = run(List.of("git", "--git-dir", store.toString(), "remote", "get-url", "origin"),
                     Map.of());
             if (origin.exitCode() != 0) {
+                log.warn("git push rejected repositoryId={} branch={} reason=origin_not_configured", repositoryId,
+                        sourceBranch);
                 throw invalid("GIT_ORIGIN_NOT_CONFIGURED", "Controlled Git origin is not configured");
             }
 
@@ -362,15 +368,23 @@ public class GitRepositoryManager {
                         "QGENTS_GIT_TOKEN", token
                 );
 
+                log.info("git push command starting repositoryId={} branch={} headCommit={}",
+                        repositoryId, sourceBranch, currentHead);
                 requireSuccess(run(List.of("git", "--git-dir", store.toString(), "push", "origin",
                                 "refs/heads/" + sourceBranch + ":refs/heads/" + sourceBranch), env),
                         "GIT_PUSH_FAILED", "Git push failed");
+                log.info("git push command succeeded repositoryId={} branch={} headCommit={}",
+                        repositoryId, sourceBranch, currentHead);
                 CommandResult remote = requireSuccess(run(List.of("git", "--git-dir", store.toString(), "ls-remote",
                         "origin", "refs/heads/" + sourceBranch), env), "GIT_REMOTE_VERIFY_FAILED", "Remote verify failed");
                 String remoteCommit = remote.stdout().isBlank() ? "" : remote.stdout().trim().split("\\s+")[0];
                 if (!currentHead.equals(remoteCommit)) {
+                    log.warn("git push verification failed repositoryId={} branch={} expectedHeadCommit={} remoteHead={}",
+                            repositoryId, sourceBranch, currentHead, remoteCommit);
                     throw new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_REMOTE_SHA_MISMATCH", "Remote SHA mismatch");
                 }
+                log.info("git push remote verified repositoryId={} branch={} remoteHead={}",
+                        repositoryId, sourceBranch, remoteCommit);
             } finally {
                 if (askpassScript != null) {
                     try {

@@ -177,6 +177,8 @@ public class WorkspaceManagerService {
     public GitPushResponse gitPush(UUID workspaceId, UUID repositoryId, GitPushRequest request) {
         return workspaceLock.execute(storageKey(workspaceId), () -> {
             WorkspaceRepositoryResponse repository = requireRepository(get(workspaceId), repositoryId);
+            log.info("git push requested workspaceId={} repositoryId={} branch={} expectedHeadCommit={}",
+                    workspaceId, repositoryId, repository.getSourceBranch(), request.getExpectedHeadCommit());
             GitPushResponse pushed = repositories.push(repositoryId, repositoryPath(workspaceId, repository),
                     repository.getSourceBranch(), request);
             log.info("git push workspaceId={} repositoryId={} branch={} head={} verified={}",

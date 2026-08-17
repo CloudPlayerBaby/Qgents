@@ -47,14 +47,15 @@ public class AgentController {
     /**
      * 契约 v1.8.0 §22.4（前端联调）：获取单张 Agent 卡。
      * <p>
-     * projectId 为可选 query：传了仅做两项校验——① 项目属于该 Agent 的团队（agents.team_id == projects.team_id）；
+     * projectId 为可选 query：传了仅做两项校验——① 项目属于该 Agent 的团队（agents.team_id ==
+     * projects.team_id）；
      * ② 当前用户对该项目有访问权（项目成员或 Team Owner 兜底）。校验失败返回 404（资源不可见），
      * 非法 UUID 返回 400，不返回 500。
      */
     @GetMapping("/teams/{teamId}/agents/{agentId}")
     public ApiResponse<AgentResponse> get(@PathVariable UUID teamId, @PathVariable UUID agentId,
-                                          @Parameter(description = "可选：项目 ID，仅校验「项目属于该团队 + 当前用户有项目访问权」") @RequestParam(required = false) UUID projectId,
-                                          HttpServletRequest request) {
+            @Parameter(description = "可选：项目 ID，仅校验「项目属于该团队 + 当前用户有项目访问权」") @RequestParam(required = false) UUID projectId,
+            HttpServletRequest request) {
         return ApiResponse.ok(service.get(teamId, agentId, currentActor.currentUserId(), projectId),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
@@ -64,12 +65,12 @@ public class AgentController {
      */
     @GetMapping("/projects/{projectId}/agents/{agentId}/assignments")
     public PagedApiResponse<AgentAssignmentListItem> assignments(@PathVariable UUID projectId,
-                                                                 @PathVariable UUID agentId,
-                                                                 @AuthenticationPrincipal UUID userId,
-                                                                 @RequestParam(required = false) String type,
-                                                                 @RequestParam(required = false) String cursor,
-                                                                 @RequestParam(required = false) Integer limit,
-                                                                 HttpServletRequest request) {
+            @PathVariable UUID agentId,
+            @AuthenticationPrincipal UUID userId,
+            @RequestParam(required = false) String type,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer limit,
+            HttpServletRequest request) {
         return service.assignments(projectId, agentId, userId, type, cursor, limit,
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
@@ -79,8 +80,8 @@ public class AgentController {
      */
     @GetMapping("/projects/{projectId}/agents/{agentId}/runtime")
     public ApiResponse<AgentRuntimeSummary> runtime(@PathVariable UUID projectId, @PathVariable UUID agentId,
-                                                    @AuthenticationPrincipal UUID userId,
-                                                    HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId,
+            HttpServletRequest request) {
         return ApiResponse.ok(service.runtime(projectId, agentId, userId),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
