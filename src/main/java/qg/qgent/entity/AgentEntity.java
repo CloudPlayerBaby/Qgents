@@ -54,4 +54,9 @@ public class AgentEntity {
      * Lifecycle state; only ACTIVE Agents are assignable.
      */
     private String status;
+    /**
+     * 是否为团队默认 Agent（系统预置）：每个团队每个角色至多一条，
+     * 由 uk_agents_team_default_role 唯一索引在 DB 层保证；自定义 Agent 恒为 false。
+     */
+    private Boolean isDefault;
 }

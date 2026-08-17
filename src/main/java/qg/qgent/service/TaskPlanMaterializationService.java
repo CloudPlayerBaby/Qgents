@@ -6,19 +6,15 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import qg.qgent.auth.UuidV7;
-import qg.qgent.entity.AgentEntity;
-import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
-import qg.qgent.mapper.AgentMapper;
-import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepDependencyMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.mapper.TaskStepRepositoryMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
-import qg.qgent.orchestration.AgentMatchDecider;
+import qg.qgent.orchestration.AgentDispatcher;
 import qg.qgent.orchestration.result.PlanResult;
 
 import java.time.LocalDateTime;
@@ -32,6 +28,7 @@ import java.util.UUID;
 /**
  * 将已完成的 Planner 结果一次性固化为 Task 的正式执行步骤。
  * Agent 调用已在事务外完成；本服务仅执行数据库写入，并以 Task 行锁和 materialized 标记保证幂等。
+ * 步骤的 Agent 选用统一委托给调度 Agent（{@link AgentDispatcher}），本服务不持有任何 Agent 选择逻辑。
  */
 @Service
 public class TaskPlanMaterializationService {
@@ -41,27 +38,22 @@ public class TaskPlanMaterializationService {
     private final TaskStepDependencyMapper dependencies;
     private final TaskStepRepositoryMapper scopes;
     private final WorkspaceRepositoryMapper worktrees;
-    private final ProjectMapper projects;
-    private final AgentMapper agents;
     private final TaskExecutionArtifactService artifacts;
     private final EventService events;
-    private final AgentMatchDecider agentMatchDecider;
+    private final AgentDispatcher agentDispatcher;
 
     public TaskPlanMaterializationService(TaskMapper tasks, TaskStepMapper steps, TaskStepDependencyMapper dependencies,
                                           TaskStepRepositoryMapper scopes, WorkspaceRepositoryMapper worktrees,
-                                          ProjectMapper projects, AgentMapper agents,
                                           TaskExecutionArtifactService artifacts, EventService events,
-                                          AgentMatchDecider agentMatchDecider) {
+                                          AgentDispatcher agentDispatcher) {
         this.tasks = tasks;
         this.steps = steps;
         this.dependencies = dependencies;
         this.scopes = scopes;
         this.worktrees = worktrees;
-        this.projects = projects;
-        this.agents = agents;
         this.artifacts = artifacts;
         this.events = events;
-        this.agentMatchDecider = agentMatchDecider;
+        this.agentDispatcher = agentDispatcher;
     }
 
     /**
@@ -174,21 +166,8 @@ public class TaskPlanMaterializationService {
     }
 
     private UUID resolveAgent(TaskEntity task, String role, List<String> requiredCapabilities) {
-        ProjectEntity project = projects.selectById(task.getProjectId());
-        if (project == null || project.getTeamId() == null) {
-            return null;
-        }
-        List<AgentEntity> candidates = agents.selectList(Wrappers.<AgentEntity>lambdaQuery()
-                .eq(AgentEntity::getTeamId, project.getTeamId()).eq(AgentEntity::getRole, role)
-                .eq(AgentEntity::getStatus, "ACTIVE")
-                .and(visibility -> visibility.eq(AgentEntity::getVisibility, "TEAM")
-                        .or(owner -> owner.eq(AgentEntity::getVisibility, "PRIVATE")
-                                .eq(AgentEntity::getCreatedBy, task.getCreatedBy()))));
-        // 选用决策交由 AgentMatchDecider：把 role + 候选的 name/description + 步骤能力要求丢给决策
-        // Agent（LLM）判断；查不到候选/决策失败时返回 null，执行期由 AgentRegistry 内置兜底或跳步，
-        // 不使任务失败。
-        return agentMatchDecider.decide(role, candidates, task.getCreatedBy(), requiredCapabilities)
-                .map(AgentEntity::getId)
+        return agentDispatcher.dispatch(task, role, requiredCapabilities)
+                .map(agent -> agent.getId())
                 .orElse(null);
     }
 

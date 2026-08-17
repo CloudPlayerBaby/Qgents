@@ -33,8 +33,9 @@ class TaskServiceTest {
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final EventService events = mock(EventService.class);
     private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
+    private final DefaultAgentProvisioner defaultAgents = mock(DefaultAgentProvisioner.class);
     private final TaskService service = new TaskService(tasks, workspaces, repositories, steps, dependencies, scopes,
-            groups, projectRepositories, projects, messages, agents, access, events, eventPublisher);
+            groups, projectRepositories, projects, messages, agents, access, events, eventPublisher, defaultAgents);
 
     @Test
     void createPersistsOneWorkspaceAndMultipleRepositories() {
