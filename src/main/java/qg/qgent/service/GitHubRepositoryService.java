@@ -215,6 +215,17 @@ public class GitHubRepositoryService {
     }
 
     /**
+     * 项目本地事务回滚时，补偿删除本次刚创建的远端仓库。该操作不持有数据库事务或行锁。
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void deleteRemoteRepository(RemoteRepositoryCreation creation) {
+        GitHubInstallationEntity installation = creation.installation();
+        GitHubRepositoryDetails repository = creation.repository();
+        gitHubClient.deleteRepository(installation.getProviderInstallationId(), repository.getOwnerLogin(),
+                repository.getName());
+    }
+
+    /**
      * 在建仓成功后、调用方事务内落库：写入仓库镜像并绑定到项目。不自行开启事务，
      * 由调用方（项目创建事务）保证与项目落库的原子性。
      */

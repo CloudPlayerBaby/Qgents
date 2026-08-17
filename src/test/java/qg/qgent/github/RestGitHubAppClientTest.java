@@ -120,6 +120,18 @@ class RestGitHubAppClientTest {
     }
 
     @Test
+    void deletesCompensationRepositoryWithInstallationToken() {
+        server.expect(once(), requestTo("https://api.github.com/repos/owner/created-repo"))
+                .andExpect(method(HttpMethod.DELETE))
+                .andExpect(header("Authorization", "Bearer test-token"))
+                .andRespond(withStatus(HttpStatus.NO_CONTENT));
+
+        client.deleteRepository(12345L, "owner", "created-repo");
+
+        server.verify();
+    }
+
+    @Test
     void getsPullRequest() {
         server.expect(once(), requestTo("https://api.github.com/repos/owner/repo/pulls/42"))
                 .andExpect(method(HttpMethod.GET))

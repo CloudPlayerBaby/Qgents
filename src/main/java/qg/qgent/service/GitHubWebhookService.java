@@ -336,7 +336,8 @@ public class GitHubWebhookService {
         Set<UUID> affectedProjectIds = new java.util.LinkedHashSet<>();
         for (GitHubRepositoryEntity mirror : installationRepositories) {
             projectRepositoryMapper.selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
-                            .eq(ProjectRepositoryEntity::getRepositoryId, mirror.getId()))
+                            .eq(ProjectRepositoryEntity::getRepositoryId, mirror.getId())
+                            .eq(ProjectRepositoryEntity::getStatus, "ACTIVE"))
                     .forEach(binding -> affectedProjectIds.add(binding.getProjectId()));
         }
         for (UUID projectId : affectedProjectIds) {
@@ -502,7 +503,8 @@ public class GitHubWebhookService {
     private void publishRepositoryUpdated(GitHubInstallationEntity installation, GitHubRepositoryEntity mirror) {
         List<ProjectRepositoryEntity> bindings = projectRepositoryMapper.selectList(Wrappers
                 .<ProjectRepositoryEntity>lambdaQuery()
-                .eq(ProjectRepositoryEntity::getRepositoryId, mirror.getId()));
+                .eq(ProjectRepositoryEntity::getRepositoryId, mirror.getId())
+                .eq(ProjectRepositoryEntity::getStatus, "ACTIVE"));
         for (ProjectRepositoryEntity binding : bindings) {
             eventService.publish(binding.getProjectId(), null, "github-repository.updated",
                     mirror.getId().toString(),
@@ -553,7 +555,8 @@ public class GitHubWebhookService {
         }
         List<ProjectRepositoryEntity> bindings = projectRepositoryMapper.selectList(Wrappers
                 .<ProjectRepositoryEntity>lambdaQuery()
-                .eq(ProjectRepositoryEntity::getRepositoryId, githubRepository.getId()));
+                .eq(ProjectRepositoryEntity::getRepositoryId, githubRepository.getId())
+                .eq(ProjectRepositoryEntity::getStatus, "ACTIVE"));
         if (bindings.isEmpty()) {
             complete(row, STATUS_IGNORED); // 没有项目绑定：不创建伪造 MR
             return;

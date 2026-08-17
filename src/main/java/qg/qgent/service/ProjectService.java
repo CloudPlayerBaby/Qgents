@@ -4,6 +4,10 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
@@ -22,6 +26,7 @@ import java.util.function.Function;
 
 @Service
 public class ProjectService {
+    private static final Logger log = LoggerFactory.getLogger(ProjectService.class);
     private final ProjectMapper projectMapper;
     private final ProjectMemberMapper memberMapper;
     private final TeamMapper teamMapper;
@@ -61,7 +66,9 @@ public class ProjectService {
         // 确保 GitHub 建仓 HTTP 不持有数据库事务或行锁（AGENTS §3.4）。
         GitHubRepositoryService.RemoteRepositoryCreation createdRepository = null;
         if (request.getNewRepository() != null) {
+            validateCreatePrerequisites(actor, teamId, request);
             createdRepository = githubRepositoryService.createRemoteRepository(actor, teamId, request.getNewRepository());
+            registerRemoteRepositoryRollbackCompensation(createdRepository);
         }
 
         // 查询到team
@@ -97,6 +104,44 @@ public class ProjectService {
         eventService.publish(project.getId(), null, "project.created", project.getId().toString(),
                 Map.of("projectId", project.getId(), "name", project.getName(), "createdBy", actor));
         return response(project, "PROJECT_ADMIN");
+    }
+
+    /**
+     * 在调用 GitHub 建仓前先完成所有可本地判断的失败条件，缩小补偿删除的触发范围。
+     */
+    private void validateCreatePrerequisites(UUID actor, UUID teamId, CreateProjectRequest request) {
+        TeamEntity team = requireTeam(teamId);
+        requireCanonicalTeamOwner(team, actor);
+        for (UUID userId : new LinkedHashSet<>(request.getMemberIds() == null ? List.of() : request.getMemberIds())) {
+            if (!actor.equals(userId)) {
+                requireTeamMember(teamId, userId);
+            }
+        }
+    }
+
+    /**
+     * GitHub 建仓无法与本地项目事务组成分布式事务。仅在本地事务回滚后执行补偿，避免留下
+     * 用户不可见、且会阻塞同名重试的远端仓库。
+     */
+    private void registerRemoteRepositoryRollbackCompensation(
+            GitHubRepositoryService.RemoteRepositoryCreation creation) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_ROLLED_BACK) {
+                    return;
+                }
+                try {
+                    githubRepositoryService.deleteRemoteRepository(creation);
+                } catch (RuntimeException exception) {
+                    log.error("项目创建回滚后的 GitHub 仓库补偿删除失败，repository={}/{}",
+                            creation.repository().getOwnerLogin(), creation.repository().getName(), exception);
+                }
+            }
+        });
     }
 
     public PageSlice<ProjectResponse> list(UUID actor, UUID teamId, String cursor, Integer limit) {

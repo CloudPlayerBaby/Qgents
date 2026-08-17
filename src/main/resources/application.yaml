@@ -119,7 +119,8 @@ springdoc:
     path: /swagger-ui.html
 
 sandbox:
-  backend-service-token: ${SANDBOX_BACKEND_SERVICE_TOKEN:dev-only-secret-token}
+  # 内部 Git 凭据接口没有安全默认值；生产与联调均必须显式注入随机 service token。
+  backend-service-token: ${SANDBOX_BACKEND_SERVICE_TOKEN:}
 
 
 mybatis-plus:

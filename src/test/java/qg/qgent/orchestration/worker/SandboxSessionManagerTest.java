@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -95,6 +96,7 @@ class SandboxSessionManagerTest {
         projectRepo.setId(REPO);
         projectRepo.setRepositoryId(UUID.randomUUID());
         projectRepo.setDefaultBranch("main");
+        projectRepo.setStatus("ACTIVE");
         when(projectRepositoryMapper.selectById(REPO)).thenReturn(projectRepo);
 
         GitHubRepositoryEntity ghRepo = new GitHubRepositoryEntity();
@@ -194,6 +196,23 @@ class SandboxSessionManagerTest {
         
         assertThrows(qg.qgent.api.ApiException.class, () -> enabledManager().acquire(TASK, PROJECT, WORKSPACE));
     }
+
+    @Test
+    void acquireFailsWhenProjectRepositoryIsUnbound() {
+        mockDependenciesForAcquire();
+        ProjectRepositoryEntity unbound = new ProjectRepositoryEntity();
+        unbound.setId(REPO);
+        unbound.setStatus("UNBOUND");
+        when(projectRepositoryMapper.selectById(REPO)).thenReturn(unbound);
+
+        qg.qgent.api.ApiException exception = assertThrows(qg.qgent.api.ApiException.class,
+                () -> enabledManager().acquire(TASK, PROJECT, WORKSPACE));
+
+        assertEquals("PROJECT_REPOSITORY_NOT_BOUND", exception.code());
+        verify(githubAppClient, never()).getBranch(anyLong(), any(), any(), any());
+        verify(client, never()).syncGitStore(any(), any());
+        verify(client, never()).provisionWorkspace(any(), any());
+    }
     
     @Test
     void acquireFailsWhenGitHubRepositoryNotFound() {
@@ -225,6 +244,7 @@ class SandboxSessionManagerTest {
         binding.setId(REPO);
         binding.setRepositoryId(UUID.randomUUID());
         binding.setDefaultBranch("main");
+        binding.setStatus("ACTIVE");
         when(projectRepositoryMapper.selectById(REPO)).thenReturn(binding);
         
         GitHubRepositoryEntity ghRepo = new GitHubRepositoryEntity();

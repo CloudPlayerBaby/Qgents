@@ -2,6 +2,8 @@ package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.CreateProjectRequest;
 import qg.qgent.dto.AddProjectMemberRequest;
@@ -74,6 +76,7 @@ class ProjectServiceTest {
     void createAutoProvisionsNewRepository() {
         UUID teamId = UUID.randomUUID();
         UUID owner = UUID.randomUUID();
+        when(teams.selectById(teamId)).thenReturn(team(teamId, owner));
         when(teams.selectByIdForUpdate(teamId)).thenReturn(team(teamId, owner));
         TeamMemberEntity ownerMember = teamMember(teamId, owner);
         ownerMember.setRole("TEAM_OWNER");
@@ -95,6 +98,39 @@ class ProjectServiceTest {
         verify(githubRepositoryService).bindCreatedRepository(any(UUID.class), eq(creation), eq(newRepo));
         verify(githubRepositoryService, never()).bindRepositoriesOnCreate(any(UUID.class), any(UUID.class),
                 any(UUID.class), any());
+    }
+
+    @Test
+    void createCompensatesRemoteRepositoryWhenLocalBindingRollsBack() {
+        UUID teamId = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        when(teams.selectById(teamId)).thenReturn(team(teamId, owner));
+        when(teams.selectByIdForUpdate(teamId)).thenReturn(team(teamId, owner));
+        TeamMemberEntity ownerMember = teamMember(teamId, owner);
+        ownerMember.setRole("TEAM_OWNER");
+        when(teamMembers.selectByTeamAndUser(teamId, owner)).thenReturn(ownerMember);
+
+        NewProjectRepositoryRequest newRepo = new NewProjectRepositoryRequest();
+        newRepo.setName("auto-repo");
+        CreateProjectRequest request = new CreateProjectRequest();
+        request.setName("project");
+        request.setNewRepository(newRepo);
+        GitHubRepositoryService.RemoteRepositoryCreation creation = new GitHubRepositoryService.RemoteRepositoryCreation(
+                new GitHubInstallationEntity(), new GitHubRepositoryDetails());
+        when(githubRepositoryService.createRemoteRepository(owner, teamId, newRepo)).thenReturn(creation);
+        doThrow(new IllegalStateException("local binding failed")).when(githubRepositoryService)
+                .bindCreatedRepository(any(UUID.class), eq(creation), eq(newRepo));
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertThrows(IllegalStateException.class, () -> service.create(owner, teamId, request));
+            TransactionSynchronizationManager.getSynchronizations().forEach(
+                    synchronization -> synchronization.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+
+        verify(githubRepositoryService).deleteRemoteRepository(creation);
     }
 
     @Test

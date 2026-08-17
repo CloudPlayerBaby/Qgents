@@ -137,6 +137,38 @@ class GitCredentialServiceTest {
     }
 
     @Test
+    void exchangeGrantRejectsUnboundProjectRepository() {
+        when(credentialGrantMapper.exchangeGrant(anyString(), eq(HEAD), eq("owner/repo"), eq("main"),
+                eq(GitCredentialPurpose.PUSH), any())).thenReturn(1);
+        GitCredentialGrant grant = new GitCredentialGrant();
+        grant.setInstallationId(12345L);
+        grant.setTeamId(TEAM);
+        grant.setProjectId(PROJECT);
+        grant.setRepositoryFullName("owner/repo");
+        when(credentialGrantMapper.selectOne(any())).thenReturn(grant);
+
+        qg.qgent.entity.GitHubInstallationEntity installation = new qg.qgent.entity.GitHubInstallationEntity();
+        installation.setId(UUID.randomUUID());
+        installation.setStatus("ACTIVE");
+        installation.setTeamId(TEAM);
+        when(installationMapper.selectOne(any())).thenReturn(installation);
+
+        qg.qgent.entity.GitHubRepositoryEntity repository = new qg.qgent.entity.GitHubRepositoryEntity();
+        repository.setId(UUID.randomUUID());
+        repository.setInstallationId(installation.getId());
+        repository.setAuthorizationStatus("AUTHORIZED");
+        when(gitHubRepositoryMapper.selectOne(any())).thenReturn(repository);
+        when(projectRepositoryMapper.selectOne(any())).thenReturn(null);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.exchangeGrant(UUID.randomUUID().toString(), HEAD, "owner/repo", "main",
+                        GitCredentialPurpose.PUSH));
+
+        assertEquals("PROJECT_REPOSITORY_NOT_BOUND", exception.code());
+        verifyNoInteractions(githubAppClient);
+    }
+
+    @Test
     void testExchangeGrantFailure_TokenGenerationFails() {
         String grantId = UUID.randomUUID().toString();
         when(credentialGrantMapper.exchangeGrant(anyString(), eq(HEAD), eq("owner/repo"), eq("main"),

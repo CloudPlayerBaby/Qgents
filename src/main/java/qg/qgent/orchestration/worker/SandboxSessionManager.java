@@ -140,9 +140,9 @@ public class SandboxSessionManager {
         // Fetch Grants and Sync bare Git Stores for each repository
         for (WorkspaceRepositoryEntity repository : repositories) {
             ProjectRepositoryEntity projectRepo = projectRepositoryMapper.selectById(repository.getProjectRepositoryId());
-            if (projectRepo == null) {
+            if (projectRepo == null || !"ACTIVE".equals(projectRepo.getStatus())) {
                 throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "PROJECT_REPOSITORY_NOT_BOUND",
-                        "Repository binding not found for workspace repository");
+                        "Repository binding is not active for workspace repository");
             }
             String configuredBaseRef = repository.getBaseCommit();
             String defaultBranch = projectRepo.getDefaultBranch();

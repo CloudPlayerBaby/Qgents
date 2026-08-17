@@ -75,6 +75,11 @@ public interface GitHubAppClient {
                                              GitHubRepositoryCreateRequest request);
 
     /**
+     * 删除刚由 Qgents 创建、但未能完成本地项目绑定的远端仓库。
+     */
+    void deleteRepository(long installationId, String owner, String repository);
+
+    /**
      * 创建 Pull Request
      *
      * @param installationId 安装 ID

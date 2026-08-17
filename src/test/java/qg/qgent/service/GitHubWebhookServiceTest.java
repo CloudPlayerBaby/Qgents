@@ -2,10 +2,13 @@ package qg.qgent.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
@@ -575,6 +578,12 @@ class GitHubWebhookServiceTest {
                         && "0123456789abcdef0123456789abcdef01234567".equals(p.get("headCommit"))
                         && "2026-08-15T03:00:00Z".equals(p.get("providerUpdatedAt"))
                         && !p.containsKey("sequence")));
+
+        ArgumentCaptor<Wrapper> bindingQuery = ArgumentCaptor.forClass(Wrapper.class);
+        verify(projectRepositoryMapper).selectList(bindingQuery.capture());
+        assertTrue(bindingQuery.getValue().getSqlSegment().contains("status"));
+        assertTrue(((AbstractWrapper<?, ?, ?>) bindingQuery.getValue()).getParamNameValuePairs()
+                .containsValue("ACTIVE"));
     }
 
     @Test

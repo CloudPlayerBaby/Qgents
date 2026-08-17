@@ -159,6 +159,7 @@ public class GitCredentialService {
                 com.baomidou.mybatisplus.core.toolkit.Wrappers.<qg.qgent.entity.ProjectRepositoryEntity>lambdaQuery()
                         .eq(qg.qgent.entity.ProjectRepositoryEntity::getProjectId, grant.getProjectId())
                         .eq(qg.qgent.entity.ProjectRepositoryEntity::getRepositoryId, repository.getId())
+                        .eq(qg.qgent.entity.ProjectRepositoryEntity::getStatus, "ACTIVE")
         );
 
         if (projectRepo == null) {

@@ -20,13 +20,18 @@ import java.util.HexFormat;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "app.worker.enabled=false",
                 "spring.ai.openai.api-key=test-key",
-                "sandbox.backend-service-token=test-token"
+                "sandbox.backend-service-token=test-token",
+                "app.agent-preseed.enabled=false",
+                "qgents.task-recovery.poll-delay-ms=86400000",
+                "qgents.test-execution.poll-delay-ms=86400000"
         })
 public class GitCredentialServiceIntegrationTest {
 
@@ -38,6 +43,12 @@ public class GitCredentialServiceIntegrationTest {
 
     @MockitoBean
     private GitHubAppClient githubAppClient;
+
+    @MockitoBean
+    private TaskRunRecoveryScheduler taskRunRecoveryScheduler;
+
+    @MockitoBean
+    private TestRunRecoveryScheduler testRunRecoveryScheduler;
 
     private final UUID teamId = UUID.randomUUID();
     private final UUID projectId = UUID.randomUUID();
@@ -128,5 +139,20 @@ public class GitCredentialServiceIntegrationTest {
         // 6. Verify that is_used is now 1
         Boolean isUsedAfterSuccess = jdbcTemplate.queryForObject("SELECT is_used FROM git_credential_grants WHERE grant_id_hash = ?", Boolean.class, grantIdHash);
         Assertions.assertTrue(isUsedAfterSuccess, "Grant is_used should be true after successful exchange");
+    }
+
+    @Test
+    public void exchangeGrantRejectsUnboundBindingInDatabase() {
+        jdbcTemplate.update("UPDATE project_repositories SET status = 'UNBOUND', unbound_at = NOW() WHERE id = ?",
+                toBytes(projectRepoId));
+        String grantId = credentialService.generateGrant(teamId, projectId, providerInstallationId, repoFullName,
+                "main", headCommit, GitCredentialPurpose.PUSH);
+
+        ApiException exception = Assertions.assertThrows(ApiException.class,
+                () -> credentialService.exchangeGrant(grantId, headCommit, repoFullName, "main",
+                        GitCredentialPurpose.PUSH));
+
+        Assertions.assertEquals("PROJECT_REPOSITORY_NOT_BOUND", exception.code());
+        verify(githubAppClient, never()).createInstallationToken(anyLong());
     }
 }

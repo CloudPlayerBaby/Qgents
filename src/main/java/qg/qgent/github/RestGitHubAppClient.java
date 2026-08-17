@@ -208,6 +208,29 @@ public class RestGitHubAppClient implements GitHubAppClient {
     }
 
     @Override
+    public void deleteRepository(long installationId, String owner, String repository) {
+        requireConfigured();
+        try {
+            client.delete()
+                    .uri("/repos/{owner}/{repository}", owner, repository)
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientResponseException exception) {
+            if (exception.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                return;
+            }
+            log.warn("GitHub deleteRepository rejected: owner={} repository={} status={}", owner, repository,
+                    exception.getStatusCode().value());
+            throw upstreamFailure();
+        } catch (RestClientException exception) {
+            log.warn("GitHub deleteRepository failed before receiving a response: owner={} repository={} {}",
+                    owner, repository, exception.getMessage());
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
     public String createInstallationToken(long installationId) {
         return installationTokenProvider.apply(installationId);
     }
