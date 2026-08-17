@@ -19,6 +19,7 @@ import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.github.GitHubRepositoryDetails;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
+import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 
@@ -46,8 +47,9 @@ class ProjectServiceTest {
     private final NotificationService notificationService = mock(NotificationService.class);
     private final EventService eventService = mock(EventService.class);
     private final GitHubRepositoryService githubRepositoryService = mock(GitHubRepositoryService.class);
+    private final ProjectRepositoryMapper projectRepositories = mock(ProjectRepositoryMapper.class);
     private final ProjectService service = new ProjectService(projects, members, teams, teamMembers, access,
-            eventPublisher, notificationService, eventService, githubRepositoryService);
+            eventPublisher, notificationService, eventService, githubRepositoryService, projectRepositories);
 
     @Test
     void createAddsCreatorAdminAndUniqueInitialMembers() {
@@ -266,6 +268,24 @@ class ProjectServiceTest {
 
         assertEquals(30, page.getData().size());
         assertEquals(true, page.getPage().isHasMore());
+    }
+
+    /** 项目详情 response 补齐 memberCount 与 repositoryCount（前端避免逐卡 N+1）。 */
+    @Test
+    void getFillsMemberAndRepositoryCounts() {
+        UUID teamId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        UUID projectId = UUID.randomUUID();
+        ProjectEntity project = project(projectId, teamId, "ACTIVE");
+        when(projects.selectById(projectId)).thenReturn(project);
+        when(access.requireAccess(project, actor)).thenReturn("PROJECT_MEMBER");
+        when(members.countMembers(projectId)).thenReturn(9L);
+        when(projectRepositories.countActiveByProject(projectId)).thenReturn(4L);
+
+        var response = service.get(actor, projectId);
+
+        assertEquals(9L, response.getMemberCount());
+        assertEquals(4L, response.getRepositoryCount());
     }
 
     private TeamEntity team(UUID id, UUID owner) {

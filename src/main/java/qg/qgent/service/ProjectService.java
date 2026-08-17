@@ -17,6 +17,7 @@ import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
+import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 
@@ -29,6 +30,7 @@ public class ProjectService {
     private static final Logger log = LoggerFactory.getLogger(ProjectService.class);
     private final ProjectMapper projectMapper;
     private final ProjectMemberMapper memberMapper;
+    private final ProjectRepositoryMapper projectRepositoryMapper;
     private final TeamMapper teamMapper;
     private final TeamMemberMapper teamMemberMapper;
     private final ProjectAccessService access;
@@ -40,7 +42,7 @@ public class ProjectService {
     public ProjectService(ProjectMapper projectMapper, ProjectMemberMapper memberMapper, TeamMapper teamMapper,
                           TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher,
                           NotificationService notificationService, EventService eventService,
-                          GitHubRepositoryService githubRepositoryService) {
+                          GitHubRepositoryService githubRepositoryService, ProjectRepositoryMapper projectRepositoryMapper) {
         this.projectMapper = projectMapper;
         this.memberMapper = memberMapper;
         this.teamMapper = teamMapper;
@@ -50,6 +52,7 @@ public class ProjectService {
         this.notificationService = notificationService;
         this.eventService = eventService;
         this.githubRepositoryService = githubRepositoryService;
+        this.projectRepositoryMapper = projectRepositoryMapper;
     }
 
     /**
@@ -364,16 +367,17 @@ public class ProjectService {
 
     private ProjectResponse response(ProjectEntity project, String role) {
         return response(new ProjectResponse(project.getId().toString(), project.getTeamId().toString(),
-                project.getName(), project.getDescription(), role, project.getStatus(), null));
+                project.getName(), project.getDescription(), role, project.getStatus(), null, null));
     }
 
     private ProjectResponse response(ProjectMembershipView row) {
         return response(new ProjectResponse(row.getId().toString(), row.getTeamId().toString(), row.getName(),
-                row.getDescription(), row.getRole(), row.getStatus(), null));
+                row.getDescription(), row.getRole(), row.getStatus(), null, null));
     }
 
     private ProjectResponse response(ProjectResponse r) {
         r.setMemberCount(memberMapper.countMembers(UUID.fromString(r.getId())));
+        r.setRepositoryCount(projectRepositoryMapper.countActiveByProject(UUID.fromString(r.getId())));
         return r;
     }
 

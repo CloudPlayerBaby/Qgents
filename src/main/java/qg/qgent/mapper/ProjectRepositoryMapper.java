@@ -23,4 +23,11 @@ public interface ProjectRepositoryMapper extends BaseMapper<ProjectRepositoryEnt
     @Select("select * from project_repositories where project_id=#{projectId} and repository_id=#{repositoryId} for update")
     ProjectRepositoryEntity selectByProjectAndRepositoryForUpdate(@Param("projectId") UUID projectId,
                                                                   @Param("repositoryId") UUID repositoryId);
+
+    /**
+     * 统计项目当前生效（ACTIVE）的仓库绑定数，用作项目卡片的 repositoryCount，
+     * 避免前端逐卡片 N+1 查询。软解绑（UNBOUND）的仓库不计入。
+     */
+    @Select("select count(*) from project_repositories where project_id=#{projectId} and status='ACTIVE'")
+    Long countActiveByProject(@Param("projectId") UUID projectId);
 }
