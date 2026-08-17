@@ -415,7 +415,7 @@ class GitHubRepositoryServiceTest {
     }
 
     @Test
-    void rejectsExistingRepositoryFromAnotherTeam() {
+    void redirectsRepositoryTeamConflictToExistingCallbackConflictCode() {
         long providerInstallationId = 12345L;
         UUID teamId = UUID.randomUUID();
         UUID previousInstallationId = UUID.randomUUID();
@@ -427,7 +427,8 @@ class GitHubRepositoryServiceTest {
         previousInstallation.setId(previousInstallationId);
         previousInstallation.setTeamId(UUID.randomUUID());
 
-        when(gitHubClient.verifyInstallationState("mock_state")).thenReturn(teamId);
+        when(gitHubClient.verifyInstallationStateDetails("mock_state"))
+                .thenReturn(new GitHubInstallationState(teamId, GitHubClient.WEB));
         when(gitHubClient.getInstallation(providerInstallationId))
                 .thenReturn(new qg.qgent.github.GitHubInstallationDetails(
                         providerInstallationId, "qgents", "Organization"));
@@ -438,11 +439,10 @@ class GitHubRepositoryServiceTest {
         when(repositoryMapper.selectList(any(Wrapper.class)))
                 .thenReturn(java.util.List.of(), java.util.List.of(existingRepository));
 
-        ApiException exception = assertThrows(ApiException.class,
-                () -> service.handleInstallationCallback(providerInstallationId, "mock_state"));
+        GitHubInstallationState callbackState = service.handleInstallationCallbackDetails(providerInstallationId,
+                "mock_state");
 
-        assertEquals(HttpStatus.CONFLICT, exception.status());
-        assertEquals("GITHUB_REPOSITORY_INSTALLATION_CONFLICT", exception.code());
+        assertEquals("GITHUB_INSTALLATION_TEAM_CONFLICT", callbackState.conflictCode());
         verify(repositoryMapper, never()).insert(any(GitHubRepositoryEntity.class));
         verify(repositoryMapper, never()).updateById(any(GitHubRepositoryEntity.class));
     }

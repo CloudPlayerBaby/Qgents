@@ -430,8 +430,15 @@ public class GitHubRepositoryService {
                     return callbackState;
                 }
 
-                // Execute the core metadata synchronization while holding the per-installation lock.
-                syncInstallation(teamId, providerInstallationId);
+                // Callback conflicts must redirect to the initiating client instead of exposing a 409 to GitHub.
+                try {
+                    syncInstallation(teamId, providerInstallationId);
+                } catch (ApiException exception) {
+                    if ("GITHUB_INSTALLATION_TEAM_CONFLICT".equals(exception.code())) {
+                        return callbackState.withConflictCode("GITHUB_INSTALLATION_TEAM_CONFLICT");
+                    }
+                    throw exception;
+                }
 
                 return callbackState;
             } finally {
@@ -551,7 +558,7 @@ public class GitHubRepositoryService {
                         .selectById(repositoryEntity.getInstallationId());
                 if (existingRepositoryInstallation == null
                         || !teamId.equals(existingRepositoryInstallation.getTeamId())) {
-                    throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_INSTALLATION_CONFLICT",
+                    throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_TEAM_CONFLICT",
                             "This GitHub repository is already bound to another team installation");
                 }
                 // Keep the repository UUID so existing project repository bindings remain valid.
