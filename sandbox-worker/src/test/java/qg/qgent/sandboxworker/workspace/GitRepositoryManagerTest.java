@@ -174,6 +174,44 @@ class GitRepositoryManagerTest {
     }
 
     @Test
+    void diffProducesLineLevelHunksForChangedFiles() throws Exception {
+        UUID repositoryId = UUID.randomUUID();
+        Path store = root.resolve("hunk-store").resolve(repositoryId + ".git");
+        Path source = root.resolve("hunk-source");
+        Files.createDirectories(store.getParent());
+        run(List.of("git", "init", "-b", "main", source.toString()), root);
+        Files.writeString(source.resolve("README.md"), "line1\nline2\nline3\n");
+        run(List.of("git", "-C", source.toString(), "add", "-A"), root);
+        run(List.of("git", "-C", source.toString(), "-c", "user.name=Test", "-c",
+                "user.email=test@example.com", "commit", "-m", "base"), root);
+        run(List.of("git", "clone", "--bare", source.toString(), store.toString()), root);
+
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+        properties.setGitStoreRoot(store.getParent().toString());
+        GitRepositoryManager manager = new GitRepositoryManager(properties);
+        Path worktree = root.resolve("hunk-workspace/repository");
+        manager.create(repositoryId, worktree, "main", "feat/hunks");
+
+        Files.writeString(worktree.resolve("README.md"), "line1\nline2 modified\nline3\nline4\n");
+        GitDiffResponse diff = manager.diff(worktree);
+
+        GitDiffFileResponse file = diff.getFiles().stream()
+                .filter(candidate -> candidate.getPath().equals("README.md")).findFirst().orElseThrow();
+        assertFalse(file.getHunks().isEmpty(), "变更文件必须产出行级 hunks");
+        List<Map<String, Object>> lines = (List<Map<String, Object>>) file.getHunks().get(0).get("lines");
+        assertTrue(lines.stream().anyMatch(row -> "DELETE".equals(row.get("type"))), "必须包含删除行");
+        assertTrue(lines.stream().anyMatch(row -> "ADD".equals(row.get("type"))), "必须包含新增行");
+        assertTrue(lines.stream().anyMatch(row -> "CONTEXT".equals(row.get("type"))), "必须包含上下文行");
+        Map<String, Object> deleted = lines.stream().filter(row -> "DELETE".equals(row.get("type")))
+                .findFirst().orElseThrow();
+        assertEquals(2, deleted.get("oldLineNo"));
+        assertEquals(null, deleted.get("newLineNo"));
+        assertEquals("line2", deleted.get("content"));
+
+        manager.remove(repositoryId, worktree);
+    }
+
+    @Test
     void cleansUpAskpassScriptOnFailure() throws Exception {
         UUID repositoryId = UUID.randomUUID();
         Path store = root.resolve("store2").resolve(repositoryId + ".git");

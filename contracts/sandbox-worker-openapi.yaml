@@ -226,7 +226,47 @@ components:
       properties: {branch: {type: string}, headCommit: {type: string}, clean: {type: boolean}, changes: {type: array, items: {$ref: '#/components/schemas/GitChange'}}}
     GitDiff:
       type: object
-      properties: {headCommit: {type: string}, diffHash: {type: string}, patch: {type: string}}
+      properties:
+        headCommit: {type: string}
+        diffHash: {type: string}
+        patch: {type: string}
+        files:
+          type: array
+          items: {$ref: '#/components/schemas/GitDiffFile'}
+    GitDiffFile:
+      type: object
+      description: 文件级摘要与逐行 hunk 结构（hunks 由 worker 解析 unified diff 生成）
+      properties:
+        path: {type: string}
+        previousPath: {type: [string, 'null']}
+        changeType: {type: string, enum: [ADDED, MODIFIED, DELETED, RENAMED]}
+        additions: {type: integer}
+        deletions: {type: integer}
+        binary: {type: boolean}
+        hunks:
+          type: array
+          items: {$ref: '#/components/schemas/DiffHunk'}
+    DiffHunk:
+      type: object
+      description: 一个 hunk 的头部与逐行内容（行级红绿 diff 渲染用）
+      properties:
+        header:
+          type: object
+          properties:
+            oldStart: {type: integer, description: 旧文件起始行号（1 起）}
+            newStart: {type: integer, description: 新文件起始行号（1 起）}
+            oldLines: {type: integer, description: 旧文件覆盖行数}
+            newLines: {type: integer, description: 新文件覆盖行数}
+        lines:
+          type: array
+          items: {$ref: '#/components/schemas/DiffHunkLine'}
+    DiffHunkLine:
+      type: object
+      properties:
+        type: {type: string, enum: [CONTEXT, ADD, DELETE], description: 行类型：上下文/新增/删除}
+        oldLineNo: {type: [integer, 'null'], description: 旧文件行号；ADD 行为 null}
+        newLineNo: {type: [integer, 'null'], description: 新文件行号；DELETE 行为 null}
+        content: {type: string, description: 行内容（不含 +/- 前缀符号）}
     GitCommitRequest:
       type: object
       required: [expectedHeadCommit, expectedDiffHash, message, operationId]

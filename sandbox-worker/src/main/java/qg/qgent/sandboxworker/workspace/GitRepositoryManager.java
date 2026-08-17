@@ -221,6 +221,7 @@ public class GitRepositoryManager {
                         "--numstat", "-z", "--no-ext-diff", "HEAD"), environment), "GIT_DIFF_FAILED",
                 "Cannot read Git diff file statistics");
         List<GitDiffFileResponse> files = new ArrayList<>();
+        Map<String, List<Map<String, Object>>> hunksByPath = parsePatchHunks(repository, environment);
         String[] entries = numstat.stdout().split("\u0000", -1);
         for (int index = 0; index < entries.length; index++) {
             String entry = entries[index];
@@ -247,9 +248,26 @@ public class GitRepositoryManager {
             }
             FileNameStatus nameStatus = statusByPath.get(path);
             files.add(new GitDiffFileResponse(path, nameStatus == null ? previousPath : nameStatus.previousPath(),
-                    nameStatus == null ? "MODIFIED" : nameStatus.changeType(), additions, deletions, binary, List.of()));
+                    nameStatus == null ? "MODIFIED" : nameStatus.changeType(), additions, deletions, binary,
+                    hunksByPath.getOrDefault(path, List.of())));
         }
         return files;
+    }
+
+    /**
+     * 解析完整工作树 patch 的 hunk 结构（逐行 CONTEXT/DELETE/ADD），按新路径归组。
+     * 与 {@code diffFiles} 使用同一临时 index（同一 environment），保证文件集合与
+     * name-status/numstat 一致；二进制文件、纯 rename 无 hunk 的块不产出行。
+     * {@code core.quotepath=false} 保证路径以原始 UTF-8 输出，避免与 numstat 的
+     * 原始路径对不上。hunk 结构契约见 {@link UnifiedDiffHunkParser}。
+     */
+    private Map<String, List<Map<String, Object>>> parsePatchHunks(Path repository, Map<String, String> environment) {
+        CommandResult result = requireSuccess(
+                runLimited(List.of("git", "-c", "core.quotepath=false", "-C", repository.toString(), "diff",
+                        "--cached", "--unified=3", "--no-ext-diff", "--no-color", "HEAD"),
+                        environment, MAX_DIFF_BYTES),
+                "GIT_DIFF_FAILED", "Cannot generate Git diff hunks");
+        return UnifiedDiffHunkParser.parse(result.stdout());
     }
 
     /**
