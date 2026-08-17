@@ -93,6 +93,9 @@ public class CodingPromptBuilder {
         sb.append("任务标题：").append(nullToBlank(input.getTaskTitle()));
         sb.append("\n任务描述：").append(nullToBlank(input.getRequirement()));
         sb.append("\n计划指令：").append(nullToBlank(input.getInstruction()));
+        if (input.getFeedback() != null && !input.getFeedback().isBlank()) {
+            sb.append("\n前一轮反馈：").append(input.getFeedback());
+        }
         PlanResult plan = input.getPlanResult();
         if (plan != null) {
             appendPlan(sb, plan);
