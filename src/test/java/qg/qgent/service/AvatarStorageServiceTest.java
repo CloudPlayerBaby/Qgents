@@ -38,6 +38,19 @@ class AvatarStorageServiceTest {
         properties.setAccessKeyId("a");
         properties.setAccessKeySecret("b");
         properties.setPresignExpirySeconds(900);
+        properties.setPublicBaseUrl("https://cdn.example.com/");
+        when(provider.getObject()).thenReturn(oss);
+        return new AvatarStorageService(provider, properties);
+    }
+
+    /** enabled() 但不配置公共读基础 URL，用于验证签发/确认时的提前失败。 */
+    private AvatarStorageService enabledWithoutPublicUrl() {
+        properties.setEnabled(true);
+        properties.setEndpoint("https://oss-cn-guangzhou.aliyuncs.com");
+        properties.setBucketName("my-bucket");
+        properties.setAccessKeyId("a");
+        properties.setAccessKeySecret("b");
+        properties.setPresignExpirySeconds(900);
         when(provider.getObject()).thenReturn(oss);
         return new AvatarStorageService(provider, properties);
     }
@@ -94,9 +107,20 @@ class AvatarStorageServiceTest {
     }
 
     @Test
+    void credentialThrows501WhenPublicBaseUrlMissing() {
+        assertThatThrownBy(() -> enabledWithoutPublicUrl().createCredential(UUID.randomUUID(), "image/png", 1000L))
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> {
+                    ApiException ex = (ApiException) e;
+                    assertThat(ex.status()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+                    assertThat(ex.code()).isEqualTo("AVATAR_PUBLIC_URL_NOT_CONFIGURED");
+                });
+    }
+
+    @Test
     void confirmThrows501WhenPublicBaseUrlMissing() {
         when(oss.doesObjectExist("my-bucket", "avatars/u/x.png")).thenReturn(true);
-        assertThatThrownBy(() -> enabled().confirmAvatar("avatars/u/x.png"))
+        assertThatThrownBy(() -> enabledWithoutPublicUrl().confirmAvatar("avatars/u/x.png"))
                 .isInstanceOf(ApiException.class)
                 .satisfies(e -> assertThat(((ApiException) e).code()).isEqualTo("AVATAR_PUBLIC_URL_NOT_CONFIGURED"));
     }

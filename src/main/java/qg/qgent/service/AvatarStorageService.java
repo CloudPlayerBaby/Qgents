@@ -62,6 +62,7 @@ public class AvatarStorageService {
      */
     public AvatarCredential createCredential(UUID userId, String mediaType, Long sizeBytes) {
         OSS oss = requireConfigured();
+        requirePublicUrl(); // 缺公共读基础 URL 时先失败，避免客户端已经直传对象后才在 confirm 处报错
         String normalizedMediaType = mediaType == null ? "" : mediaType.trim().toLowerCase(Locale.ROOT);
         if (!normalizedMediaType.startsWith("image/")) {
             throw new ApiException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "AVATAR_MEDIA_TYPE_REJECTED",
@@ -97,10 +98,7 @@ public class AvatarStorageService {
             throw new ApiException(HttpStatus.CONFLICT, "AVATAR_NOT_UPLOADED",
                     "头像尚未上传到对象存储，请先上传再确认");
         }
-        if (properties.getPublicBaseUrl() == null || properties.getPublicBaseUrl().isBlank()) {
-            throw new ApiException(HttpStatus.NOT_IMPLEMENTED, "AVATAR_PUBLIC_URL_NOT_CONFIGURED",
-                    "未配置头像公共访问基础 URL（aliyun.oss.public-base-url）");
-        }
+        requirePublicUrl();
         return properties.getPublicBaseUrl().replaceAll("/+$", "") + "/" + objectKey;
     }
 
@@ -125,6 +123,18 @@ public class AvatarStorageService {
                     "头像上传需要启用阿里云 OSS，当前未配置");
         }
         return ossProvider.getObject();
+    }
+
+    /**
+     * 校验已配置公共读基础 URL；缺失时提前失败，提示通过环境变量
+     * {@code ALIYUN_OSS_PUBLIC_BASE_URL}（即 aliyun.oss.public-base-url）配置。
+     */
+    private void requirePublicUrl() {
+        if (properties.getPublicBaseUrl() == null || properties.getPublicBaseUrl().isBlank()) {
+            throw new ApiException(HttpStatus.NOT_IMPLEMENTED, "AVATAR_PUBLIC_URL_NOT_CONFIGURED",
+                    "未配置头像公共访问基础 URL（aliyun.oss.public-base-url），"
+                            + "请设置环境变量 ALIYUN_OSS_PUBLIC_BASE_URL，如 https://<bucket>.<endpoint>");
+        }
     }
 
     private String extensionFor(String mediaType) {
