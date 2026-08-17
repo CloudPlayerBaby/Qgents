@@ -1,6 +1,8 @@
 package qg.qgent.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.DispatcherType;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -29,6 +31,7 @@ import java.util.Map;
  * 安全配置
  * SecurityConfig
  */
+@Slf4j
 @Configuration
 public class SecurityConfig {
 
@@ -78,6 +81,10 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 // 配置请求授权
                 .authorizeHttpRequests(a -> a
+                        // SSE 断连/超时后容器触发的 ASYNC/ERROR dispatch 会重走过滤链，此时已无 SecurityContext
+                        // （且长连接可能已超出 access token 有效期）。派发是已通过初始鉴权的请求的收尾，
+                        // 不构成新的授权入口，因此放行；初始 REQUEST 仍走完整鉴权。
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/login",
                                 "/api/v1/auth/refresh", "/api/v1/auth/password-reset-requests",
@@ -86,8 +93,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/integrations/github/callback").permitAll()
                         // GitHub Webhook 公开接口：安全依据为 X-Hub-Signature-256 验签，不携带 Qgents JWT。
                         .requestMatchers(HttpMethod.POST, "/api/v1/integrations/github/webhook").permitAll()
-                        // SSE 断线时容器触发 async dispatch 会重走授权链，此时 SecurityContext 已丢失；
-                        // 授权层放行，成员鉴权由 EventController/EventService 的 requireProjectMember 保证。
+                        // SSE 断线时容器触发 async dispatch 的兜底；初始请求的成员鉴权由
+                        // EventController/EventService 的 requireProjectMember 保证。
                         .requestMatchers(HttpMethod.GET, "/api/v1/projects/*/events").permitAll()
                         // Worker 内部调用使用独立 service token，由内部 Controller 自行校验。
                         .requestMatchers("/internal/v1/**").permitAll()
@@ -95,6 +102,8 @@ public class SecurityConfig {
                         .authenticated())
                 // 配置异常处理
                 .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> {
+                    // 401 原因记录为 debug：token 缺失/过期属客户端常态，避免刷屏；排查时开启 DEBUG 级别即可
+                    log.debug("Unauthorized {} {}: {}", req.getMethod(), req.getRequestURI(), ex.getMessage());
                     res.setStatus(401);
                     res.setCharacterEncoding("UTF-8");
                     res.setContentType(MediaType.APPLICATION_JSON_VALUE);

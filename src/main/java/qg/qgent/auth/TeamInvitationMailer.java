@@ -74,11 +74,11 @@ public class TeamInvitationMailer {
             helper.setText(html, true);
             sender.send(message);
         } catch (MailException e) {
-            // 邀请已持久化，邮件失败只记录固定事件，避免邮箱和邀请令牌进入日志。
-            log.warn("Team invitation email delivery failed");
+            // 邀请已持久化，邮件失败只记录异常摘要，避免邮箱和邀请令牌进入日志。
+            log.warn("Team invitation email delivery failed: {}", e.getMessage());
         } catch (Exception e) {
             // MimeMessage 构造异常视为邮件组装失败，同样不暴露令牌细节。
-            log.warn("Team invitation email assembly failed");
+            log.warn("Team invitation email assembly failed: {}", e.getMessage());
         }
     }
 }

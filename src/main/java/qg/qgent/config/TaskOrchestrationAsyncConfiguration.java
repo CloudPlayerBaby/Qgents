@@ -19,6 +19,7 @@ public class TaskOrchestrationAsyncConfiguration {
         executor.setMaxPoolSize(4);
         executor.setQueueCapacity(100);
         executor.setThreadNamePrefix("task-orchestrator-");
+        executor.setTaskDecorator(new MdcTaskDecorator());
         executor.initialize();
         return executor;
     }

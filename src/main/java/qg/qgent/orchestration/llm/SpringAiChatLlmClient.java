@@ -83,7 +83,7 @@ public class SpringAiChatLlmClient implements LlmClient {
         } catch (RuntimeException exception) {
             log.error("LLM_CALL_FAILED messages={} promptChars={} category={} durationMs={}",
                     messages.size(), promptChars, exception.getClass().getSimpleName(),
-                    Duration.ofNanos(System.nanoTime() - started).toMillis());
+                    Duration.ofNanos(System.nanoTime() - started).toMillis(), exception);
             throw exception;
         }
     }

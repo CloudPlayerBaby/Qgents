@@ -35,6 +35,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     @Override
+    protected boolean shouldNotFilterAsyncDispatch() {
+        // ASYNC dispatch 是已通过初始鉴权的请求（如 SSE 流）断连/超时后的收尾派发；
+        // 此时长连接可能已超出 access token 有效期，重复解析 JWT 会对已提交响应写 401。
+        // 派发类型已在 SecurityConfig 中按 DispatcherType.ASYNC 放行。
+        return true;
+    }
+
+    @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
             throws ServletException, IOException {
         // 尝试获取响应头
@@ -53,6 +61,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     // 处理未授权的请求，返回401错误
     private void unauthorized(HttpServletRequest req, HttpServletResponse res) throws IOException {
+        // 响应已提交（如 SSE 流式响应断连派发）时无法再写错误体，避免二次异常
+        if (res.isCommitted()) {
+            return;
+        }
         res.setStatus(401);
         res.setCharacterEncoding(StandardCharsets.UTF_8.name());
         res.setContentType(MediaType.APPLICATION_JSON_VALUE);
