@@ -12,6 +12,7 @@ import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.mapper.AgentMapper;
 import qg.qgent.mapper.TeamMapper;
+import qg.qgent.service.OrchestratorAgentService;
 
 import java.util.List;
 import java.util.Map;
@@ -21,6 +22,8 @@ import java.util.Map;
  * <p>
  * 应用启动时，对每个 ACTIVE 团队幂等地补齐 DEVELOPER / TESTER / REVIEWER 三个
  * TEAM 可见、ACTIVE 的默认 Agent；团队已存在该角色 Agent 时跳过，不会重复创建、不改已有数据。
+ * 同时为每个团队幂等补齐 ORCHESTRATOR 编排助手（任务卡片统一发送者），逻辑收敛在
+ * {@link OrchestratorAgentService}；新建团队在建团队事务内即时预置，此处兜底存量团队。
  * <p>
  * 关闭开关：{@code app.agent-preseed.enabled=false}（默认 true）。
  */
@@ -48,10 +51,13 @@ public class AgentPreseedInitializer implements ApplicationRunner {
 
     private final TeamMapper teamMapper;
     private final AgentMapper agentMapper;
+    private final OrchestratorAgentService orchestratorAgents;
 
-    public AgentPreseedInitializer(TeamMapper teamMapper, AgentMapper agentMapper) {
+    public AgentPreseedInitializer(TeamMapper teamMapper, AgentMapper agentMapper,
+                                   OrchestratorAgentService orchestratorAgents) {
         this.teamMapper = teamMapper;
         this.agentMapper = agentMapper;
+        this.orchestratorAgents = orchestratorAgents;
     }
 
     @Override
@@ -62,6 +68,8 @@ public class AgentPreseedInitializer implements ApplicationRunner {
             for (String role : DEFAULT_NAMES.keySet()) {
                 ensureRoleAgent(team, role);
             }
+            // 编排助手（ORCHESTRATOR）单独走 OrchestratorAgentService，保持身份与提示词单一来源
+            orchestratorAgents.ensureForTeam(team.getId(), team.getOwnerUserId());
         }
     }
 

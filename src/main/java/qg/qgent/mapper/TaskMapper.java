@@ -34,4 +34,14 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
     @Select("SELECT MAX(CAST(SUBSTRING_INDEX(display_code, '-', -1) AS UNSIGNED)) "
             + "FROM tasks WHERE project_id = #{projectId}")
     Long selectMaxDisplayCodeSeq(@Param("projectId") UUID projectId);
+
+    /**
+     * 统计某项目仓库绑定上仍在活动状态（PLANNING/PENDING/RUNNING/CANCELLING/WAITING_DIFF_CONFIRMATION/
+     * DELIVERING）的任务数，供软解绑前的占用校验使用。任务与仓库通过 Workspace worktree 关联。
+     */
+    @Select("SELECT COUNT(*) FROM tasks t WHERE t.status IN "
+            + "('PLANNING','PENDING','RUNNING','CANCELLING','WAITING_DIFF_CONFIRMATION','DELIVERING') "
+            + "AND EXISTS (SELECT 1 FROM workspace_repositories wr "
+            + "WHERE wr.workspace_id = t.workspace_id AND wr.project_repository_id = #{projectRepositoryId})")
+    int countActiveTasksUsingRepository(@Param("projectRepositoryId") UUID projectRepositoryId);
 }

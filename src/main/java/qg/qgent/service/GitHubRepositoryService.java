@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -41,6 +42,7 @@ public class GitHubRepositoryService {
     private final ProjectMapper projectMapper;
     private final ProjectMemberMapper projectMemberMapper;
     private final TeamMemberMapper teamMemberMapper;
+    private final TaskMapper taskMapper;
     private final GitHubAppClient gitHubClient;
     private final Clock clock;
     private final TransactionTemplate required;
@@ -48,7 +50,7 @@ public class GitHubRepositoryService {
     public GitHubRepositoryService(GitHubInstallationMapper installationMapper, GitHubRepositoryMapper repositoryMapper,
                                    ProjectRepositoryMapper projectRepositoryMapper,
                                    ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
-                                   TeamMemberMapper teamMemberMapper,
+                                   TeamMemberMapper teamMemberMapper, TaskMapper taskMapper,
                                    GitHubAppClient gitHubClient, Clock clock,
                                    PlatformTransactionManager transactionManager) {
         this.installationMapper = installationMapper;
@@ -57,6 +59,7 @@ public class GitHubRepositoryService {
         this.projectMapper = projectMapper;
         this.projectMemberMapper = projectMemberMapper;
         this.teamMemberMapper = teamMemberMapper;
+        this.taskMapper = taskMapper;
         this.gitHubClient = gitHubClient;
         this.clock = clock;
         this.required = new TransactionTemplate(transactionManager);
@@ -335,6 +338,11 @@ public class GitHubRepositoryService {
         if (current == null || !projectId.equals(current.getProjectId())) {
             throw notFound("Project repository binding does not exist");
         }
+        // 软解绑后的绑定不再可配置：拒绝修改默认分支/显示名，需先重新绑定
+        if ("UNBOUND".equals(current.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_UNBOUND",
+                    "Project repository binding is unbound");
+        }
         // 更新默认分支和自定义显示名称
         current.setDefaultBranch(request.getDefaultBranch());
         current.setDisplayName(request.getDisplayName());
@@ -349,8 +357,8 @@ public class GitHubRepositoryService {
      * 保留 RequirementGroup / Task / Workspace / Diff / MR / 分支配置等历史外键引用。
      * <p>
      * 幂等：已 UNBOUND 的绑定重复解绑直接返回，不报错。
-     * 活动 Task 占用校验待后端 1 提供「projectRepositoryId -> 是否有活动 Task」查询后接入，
-     * 命中时返回 409 PROJECT_REPOSITORY_IN_USE。
+     * 活动 Task 占用校验：该仓库仍被 PLANNING/RUNNING 等进行中任务使用时返回
+     * 409 PROJECT_REPOSITORY_IN_USE，不改变状态。
      *
      * @param actorId             操作人的用户 ID
      * @param projectId           项目 ID
@@ -370,7 +378,11 @@ public class GitHubRepositoryService {
         if ("UNBOUND".equals(current.getStatus())) {
             return;
         }
-        // TODO(后端1): 接入活动 Task 使用查询，命中时抛 409 PROJECT_REPOSITORY_IN_USE，再执行软解绑。
+        // 活动任务占用校验：有 PLANNING/RUNNING 等进行中任务使用该仓库时拒绝软解绑
+        if (taskMapper.countActiveTasksUsingRepository(projectRepositoryId) > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_IN_USE",
+                    "Repository is used by an active task and cannot be unbound");
+        }
         // 软解绑：标记 UNBOUND，保留历史记录与下游外键引用
         current.setStatus("UNBOUND");
         current.setUnboundAt(LocalDateTime.now(clock));
@@ -713,23 +725,32 @@ public class GitHubRepositoryService {
     /**
      * 绑定或恢复项目仓库绑定：同项目同仓库已有 ACTIVE 绑定则冲突；已有 UNBOUND 则恢复为
      * ACTIVE 并复用原 id（保留历史外键引用）；否则新建 ACTIVE 绑定。返回落库后的绑定记录。
+     * <p>
+     * 查询持行锁（FOR UPDATE）串行化同键上的软解绑与并发绑定，避免竞态或重复插入。
      */
     private ProjectRepositoryEntity upsertProjectBinding(UUID projectId, GitHubRepositoryEntity repository,
                                                          String displayName) {
-        ProjectRepositoryEntity existing = projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
-                .eq(ProjectRepositoryEntity::getProjectId, projectId)
-                .eq(ProjectRepositoryEntity::getRepositoryId, repository.getId()));
+        ProjectRepositoryEntity existing = projectRepositoryMapper
+                .selectByProjectAndRepositoryForUpdate(projectId, repository.getId());
         if (existing != null) {
             if ("ACTIVE".equals(existing.getStatus())) {
                 throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_ALREADY_BOUND",
                         "仓库已被该项目绑定");
             }
             existing.setStatus("ACTIVE");
-            existing.setUnboundAt(null);
             existing.setDefaultBranch(repository.getDefaultBranch());
             existing.setDisplayName(displayName);
             existing.setBoundAt(LocalDateTime.now(clock));
-            projectRepositoryMapper.updateById(existing);
+            projectRepositoryMapper.update(existing,
+                    Wrappers.<ProjectRepositoryEntity>lambdaUpdate()
+                            .eq(ProjectRepositoryEntity::getId, existing.getId())
+                            // 显式置空：updateById 会忽略 null 字段，导致 unbound_at 残留旧值
+                            .set(ProjectRepositoryEntity::getUnboundAt, null)
+                            .set(ProjectRepositoryEntity::getStatus, "ACTIVE")
+                            .set(ProjectRepositoryEntity::getDefaultBranch, existing.getDefaultBranch())
+                            .set(ProjectRepositoryEntity::getDisplayName, existing.getDisplayName())
+                            .set(ProjectRepositoryEntity::getBoundAt, existing.getBoundAt()));
+            existing.setUnboundAt(null);
             return existing;
         }
         ProjectRepositoryEntity binding = new ProjectRepositoryEntity();

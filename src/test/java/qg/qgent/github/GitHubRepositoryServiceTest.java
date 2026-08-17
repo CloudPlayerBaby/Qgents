@@ -51,6 +51,7 @@ import qg.qgent.mapper.GitHubRepositoryMapper;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
+import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.service.GitHubRepositoryService;
 
@@ -67,6 +68,7 @@ class GitHubRepositoryServiceTest {
     @Mock private ProjectMapper projectMapper;
     @Mock private ProjectMemberMapper projectMemberMapper;
     @Mock private TeamMemberMapper teamMemberMapper;
+    @Mock private TaskMapper taskMapper;
     @Mock private GitHubAppClient gitHubClient;
 
     private GitHubRepositoryService service;
@@ -87,8 +89,10 @@ class GitHubRepositoryServiceTest {
         PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
         // lenient：仅 sync 相关测试会触发事务，其余测试该 stub 不被使用
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        // lenient：仅解绑相关测试触发活动任务占用查询，默认无占用
+        lenient().when(taskMapper.countActiveTasksUsingRepository(any(UUID.class))).thenReturn(0);
         service = new GitHubRepositoryService(installationMapper, repositoryMapper, projectRepositoryMapper,
-                projectMapper, projectMemberMapper, teamMemberMapper, gitHubClient,
+                projectMapper, projectMemberMapper, teamMemberMapper, taskMapper, gitHubClient,
                 Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), transactionManager);
     }
 
@@ -97,7 +101,7 @@ class GitHubRepositoryServiceTest {
         GitHubRepositoryEntity repository = repository("main");
         authorizeProjectAdmin();
         when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(repository);
-        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(projectRepositoryMapper.selectByProjectAndRepositoryForUpdate(projectId, repositoryId)).thenReturn(null);
 
         ProjectRepositoryResponse response = service.bindProjectRepository(actorId, projectId,
                 bindRequest(installationId, repositoryId, null, "Backend"));
@@ -115,7 +119,7 @@ class GitHubRepositoryServiceTest {
         when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(repository("main"));
         ProjectRepositoryEntity active = new ProjectRepositoryEntity();
         active.setStatus("ACTIVE");
-        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(active);
+        when(projectRepositoryMapper.selectByProjectAndRepositoryForUpdate(projectId, repositoryId)).thenReturn(active);
 
         ApiException exception = assertThrows(ApiException.class, () -> service.bindProjectRepository(actorId, projectId,
                 bindRequest(installationId, repositoryId, null, null)));
@@ -193,6 +197,47 @@ class GitHubRepositoryServiceTest {
     }
 
     @Test
+    void unbindRejectedWhenRepositoryUsedByActiveTask() {
+        UUID projectRepositoryId = UUID.randomUUID();
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(projectRepositoryId);
+        binding.setProjectId(projectId);
+        binding.setStatus("ACTIVE");
+        authorizeProjectAdmin();
+        when(projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId)).thenReturn(binding);
+        when(taskMapper.countActiveTasksUsingRepository(projectRepositoryId)).thenReturn(1);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.unbindProjectRepository(actorId, projectId, projectRepositoryId));
+
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("PROJECT_REPOSITORY_IN_USE", exception.code());
+        // 状态不变，不产生任何写入
+        verify(projectRepositoryMapper, never()).updateById(any(ProjectRepositoryEntity.class));
+    }
+
+    @Test
+    void updateProjectRepositoryRejectedWhenUnbound() {
+        UUID projectRepositoryId = UUID.randomUUID();
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(projectRepositoryId);
+        binding.setProjectId(projectId);
+        binding.setStatus("UNBOUND");
+        authorizeProjectAdmin();
+        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(binding);
+
+        qg.qgent.dto.UpdateProjectRepositoryRequest request = new qg.qgent.dto.UpdateProjectRepositoryRequest();
+        request.setDefaultBranch("main");
+        request.setDisplayName("x");
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.updateProjectRepository(actorId, projectId, projectRepositoryId, request));
+
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("PROJECT_REPOSITORY_UNBOUND", exception.code());
+        verify(projectRepositoryMapper, never()).updateById(any(ProjectRepositoryEntity.class));
+    }
+
+    @Test
     void rebindingRestoresUnboundRepositoryReusingId() {
         GitHubRepositoryEntity repository = repository("main");
         authorizeProjectAdmin();
@@ -203,16 +248,16 @@ class GitHubRepositoryServiceTest {
         unbound.setProjectId(projectId);
         unbound.setRepositoryId(repository.getId());
         unbound.setStatus("UNBOUND");
-        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(unbound);
+        when(projectRepositoryMapper.selectByProjectAndRepositoryForUpdate(projectId, repository.getId()))
+                .thenReturn(unbound);
 
         ProjectRepositoryResponse response = service.bindProjectRepository(actorId, projectId,
                 bindRequest(installationId, repositoryId, null, "Backend"));
 
-        ArgumentCaptor<ProjectRepositoryEntity> captor = ArgumentCaptor.forClass(ProjectRepositoryEntity.class);
-        verify(projectRepositoryMapper).updateById(captor.capture());
-        assertEquals("ACTIVE", captor.getValue().getStatus());
-        assertNull(captor.getValue().getUnboundAt());
-        assertEquals(unbound.getId(), captor.getValue().getId());
+        // 恢复使用显式 set 的条件更新（清空 unbound_at），不插入新行，复用原 id
+        verify(projectRepositoryMapper).update(org.mockito.ArgumentMatchers.eq(unbound), any(Wrapper.class));
+        assertEquals("ACTIVE", unbound.getStatus());
+        assertNull(unbound.getUnboundAt());
         assertEquals("Backend", response.getDisplayName());
         verify(projectRepositoryMapper, never()).insert(any(ProjectRepositoryEntity.class));
     }
@@ -757,7 +802,9 @@ class GitHubRepositoryServiceTest {
                 new GitHubRepositoryService.RemoteRepositoryCreation(installation, created);
 
         when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(null);
-        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        // 自动建仓的镜像 id 是新分配的，与请求参数无关，需按任意参数匹配
+        lenient().when(projectRepositoryMapper.selectByProjectAndRepositoryForUpdate(any(UUID.class), any(UUID.class)))
+                .thenReturn(null);
 
         NewProjectRepositoryRequest request = new NewProjectRepositoryRequest();
         request.setName("new-repo");

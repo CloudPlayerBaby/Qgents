@@ -69,10 +69,11 @@ class TeamServiceTest {
     private final EventMapper eventMapper = mock(EventMapper.class);
     private final TaskMapper taskMapper = mock(TaskMapper.class);
     private final MergeRequestMapper mergeRequestMapper = mock(MergeRequestMapper.class);
+    private final OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
     private final TeamService service = new TeamService(teamMapper, memberMapper, invitationMapper,
             projectMemberMapper, projectMapper, userMapper, mock(TokenService.class),
             mock(TeamInvitationMailer.class), teamDisbandService, notificationService,
-            mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper);
+            mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper, orchestratorAgents);
 
     @Test
     void createAddsCreatorAsOwner() {
@@ -96,6 +97,9 @@ class TeamServiceTest {
         assertEquals(0, response.getMemberCount());
         verify(teamMapper).insert(any(TeamEntity.class));
         verify(memberMapper).insert(any(TeamMemberEntity.class));
+        // 建团队即预置编排助手 Agent（任务卡片统一发送者）
+        org.mockito.Mockito.verify(orchestratorAgents).ensureForTeam(org.mockito.ArgumentMatchers.argThat(
+                teamId -> teamId != null), org.mockito.ArgumentMatchers.eq(actor));
     }
 
     @Test
@@ -276,7 +280,8 @@ class TeamServiceTest {
         TokenService tokens = mock(TokenService.class);
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
                 projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class), mock(TeamDisbandService.class),
-                mock(NotificationService.class), mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper);
+                mock(NotificationService.class), mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper,
+                orchestratorAgents);
         when(userMapper.selectById(actor)).thenReturn(user);
         when(tokens.hash("raw-token")).thenReturn(new byte[] { 1 });
         when(invitationMapper.selectOne(any())).thenReturn(invitation);
@@ -323,7 +328,8 @@ class TeamServiceTest {
         when(tokens.hash("raw-token")).thenReturn(new byte[] { 1 });
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
                 projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class), mock(TeamDisbandService.class),
-                mock(NotificationService.class), mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper);
+                mock(NotificationService.class), mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper,
+                orchestratorAgents);
         InviteTeamMemberRequest request = new InviteTeamMemberRequest();
         request.setEmail("new@example.com");
         request.setRole("TEAM_MEMBER");
