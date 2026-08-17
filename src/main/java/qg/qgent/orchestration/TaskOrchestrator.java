@@ -504,9 +504,11 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 方案 A + 优先级：按角色在团队内解析 ACTIVE Agent——创建者本人的 PRIVATE Agent 优先于
-     * TEAM Agent（体现「个人变体覆盖团队默认」），同组按名称升序取第一个；查不到返回 null，
+     * 方案 A + 能力匹配：按角色在团队内解析 ACTIVE Agent——先按「能力与角色期望的匹配度」过滤并排序
+     * （能力最适合的优先，能力完全不匹配的不参与），匹配度相同时创建者本人的 PRIVATE Agent 优先于
+     * TEAM Agent（个人变体覆盖团队默认），再按名称升序取第一个；查不到返回 null，
      * 该步骤内置兜底或跳过（不使任务失败）。与 TaskService.validateAgent 的授权条件一致。
+     * 选择规则详见 {@link AgentCapabilityMatcher}。
      */
     private UUID resolveAgent(TaskEntity task, String role) {
         ProjectEntity project = projectMapper.selectById(task.getProjectId());
@@ -520,12 +522,8 @@ public class TaskOrchestrator {
                 .and(visibility -> visibility.eq(AgentEntity::getVisibility, "TEAM")
                         .or(owner -> owner.eq(AgentEntity::getVisibility, "PRIVATE")
                                 .eq(AgentEntity::getCreatedBy, task.getCreatedBy()))));
-        return candidates.stream()
-                .sorted(Comparator.comparingInt((AgentEntity agent) -> "PRIVATE".equals(agent.getVisibility()) ? 0 : 1)
-                        .thenComparing(AgentEntity::getName, Comparator.nullsLast(String::compareTo)))
-                .map(AgentEntity::getId)
-                .findFirst()
-                .orElse(null);
+        AgentEntity best = AgentCapabilityMatcher.pickBest(role, candidates, task.getCreatedBy());
+        return best == null ? null : best.getId();
     }
 
     private TaskStepCreateRequest planStep(UUID id, String title, String instruction, String role, UUID agentId,
