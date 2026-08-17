@@ -230,7 +230,7 @@ class TaskOrchestratorTest {
         fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
 
         ArgumentCaptor<Map> summary = ArgumentCaptor.forClass(Map.class);
-        verify(fixture.artifacts).createRunArtifact(any(), any(), any(), eq("REVIEWER"), summary.capture());
+        verify(fixture.artifacts).createRunArtifact(any(), any(), any(), eq("REVIEWING"), summary.capture());
         Map reviewSummary = (Map) summary.getValue().get("review");
         assertThat(reviewSummary).containsEntry("success", true);
         assertThat((List<?>) reviewSummary.get("findings")).hasSize(1);

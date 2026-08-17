@@ -279,11 +279,12 @@ class TaskDisplayServiceTest {
 
         DiffEntity firstRepo = new DiffEntity();
         firstRepo.setId(UUID.randomUUID());
-        firstRepo.setProjectRepositoryId(UUID.randomUUID());
+        // 显式指定升序 projectRepositoryId，保证按仓库升序取首条 Diff 的断言确定可复现（随机 UUID 排序不稳定）。
+        firstRepo.setProjectRepositoryId(UUID.fromString("00000000-0000-0000-0000-000000000001"));
         firstRepo.setChangeStats(Map.of("files", 1, "additions", 2, "deletions", 1));
         DiffEntity secondRepo = new DiffEntity();
         secondRepo.setId(UUID.randomUUID());
-        secondRepo.setProjectRepositoryId(UUID.randomUUID());
+        secondRepo.setProjectRepositoryId(UUID.fromString("00000000-0000-0000-0000-000000000002"));
         secondRepo.setChangeStats(Map.of("files", 1, "additions", 3, "deletions", 2));
         // 故意乱序返回，断言 diffId 取 projectRepositoryId 升序的第一条
         when(diffs.selectList(any())).thenReturn(List.of(secondRepo, firstRepo));
