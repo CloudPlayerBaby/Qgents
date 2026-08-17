@@ -105,9 +105,9 @@ public class SpringAiChatLlmClient implements LlmClient {
         int responseChars = text == null ? 0 : text.length();
         String responseSha256 = text == null ? null : Sha256.hex(text.getBytes(StandardCharsets.UTF_8));
         if (!response.hasToolCalls()) {
-            log.info("llm toolturn final finish={} promptChars={} responseChars={} durationMs={}",
+            log.info("llm toolturn final finish={} promptChars={} responseChars={} durationMs={} tail={}",
                     finishReason, promptChars, responseChars,
-                    Duration.ofNanos(System.nanoTime() - started).toMillis());
+                    Duration.ofNanos(System.nanoTime() - started).toMillis(), redactTail(text));
             ProtocolFailureCode code = "length".equals(finishReason) ? ProtocolFailureCode.LLM_FINISH_LENGTH : null;
             return ToolTurnResult.finalAnswer(text, finishReason, promptChars, responseChars, responseSha256, code);
         }

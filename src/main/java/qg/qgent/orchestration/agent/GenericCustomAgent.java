@@ -74,8 +74,8 @@ public class GenericCustomAgent implements Agent {
                     entity.getId(), input.getPhase(), outcome.getOutcome(), observations.size());
             return outcome;
         } catch (RuntimeException e) {
-            log.error("CUSTOM_AGENT_FAILED agentId={} phase={} category={}",
-                    entity.getId(), input.getPhase(), e.getClass().getSimpleName());
+            log.error("CUSTOM_AGENT_FAILED agentId={} phase={} category={} message={}",
+                    entity.getId(), input.getPhase(), e.getClass().getSimpleName(), e.getMessage());
             AgentRunOutcome failure = new AgentRunOutcome();
             failure.setPhase(input.getPhase());
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
@@ -120,9 +120,11 @@ public class GenericCustomAgent implements Agent {
                     throw new GenericParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
                             "custom agent output truncated by max tokens");
                 }
-                log.info("custom agent round {} finalResult agentId={} phase={} workspaceId={}",
-                        round, entity.getId(), input.getPhase(), input.getWorkspaceId());
-                return parser.parse(turn.text());
+                String raw = turn.text();
+                log.info("custom agent finalResult agentId={} phase={} round={} raw={}",
+                        entity.getId(), input.getPhase(), round,
+                        raw == null ? "null" : (raw.length() <= 800 ? raw : raw.substring(0, 800) + "...(len=" + raw.length() + ")"));
+                return parser.parse(raw);
             }
             throw new GenericParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
                     "custom agent tool turn returned no text, history or infra failure");
