@@ -203,6 +203,28 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void planCompleteButConcurrentClaimFailsSkipsFormalExecution() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+        // 规划完成后统一原子认领失败：并发另一执行器已物化并认领 / 用户已取消等，返回 0 放弃执行
+        when(fixture.tasks.claimForOrchestration(any(), any())).thenReturn(0);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess()))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        verify(fixture.materialization).materialize(eq(task), any(PlanResult.class));
+        // 认领失败后不再进入正式图：不创建任何 TaskRun，也不触碰运行产物
+        verifyNoInteractions(fixture.taskRuns);
+        verify(fixture.artifacts, never()).createRunArtifact(any(), any(), any(), any(), any());
+    }
+
+    @Test
     void reviewerArtifactSummaryIncludesStructuredFindings() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();

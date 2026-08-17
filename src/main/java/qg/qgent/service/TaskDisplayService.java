@@ -176,8 +176,9 @@ public class TaskDisplayService {
     private List<TaskStepListItemResponse> stepsList(UUID projectId, UUID taskId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         TaskEntity task = requireTask(projectId, taskId);
-        List<TaskStepEntity> stepList = steps.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
-                .eq(TaskStepEntity::getTaskId, taskId).orderByAsc(TaskStepEntity::getSequenceNo));
+        List<TaskStepEntity> stepList = withoutPlanner(steps.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
+                .eq(TaskStepEntity::getTaskId, taskId).orderByAsc(TaskStepEntity::getSequenceNo)));
+        // 规划期仅存在 PLANNER bootstrap 步骤，过滤后为空列表（前端以 status=PLANNING 渲染规划中）
         if (stepList.isEmpty()) {
             return List.of();
         }
@@ -274,10 +275,20 @@ public class TaskDisplayService {
     // ---------- 执行统计 / 待处理事项 / 操作能力 ----------
 
     /**
+     * 过滤 PLANNER bootstrap 步骤：PLANNER 不建 TaskRun、不进正式执行图，也不应出现在
+     * 步骤列表 / 执行统计 / 能力派生中（规划期 tasks 状态为 PLANNING，正式步骤尚未生成）。
+     */
+    private List<TaskStepEntity> withoutPlanner(List<TaskStepEntity> stepList) {
+        return stepList.stream().filter(step -> !"PLANNER".equals(step.getRole())).toList();
+    }
+
+    /**
      * 由步骤真实状态与最新运行状态聚合执行统计；waiting/blocked 取步骤最新运行状态。
      */
     private ExecutionSummary buildExecutionSummary(List<TaskStepEntity> stepList, List<TaskRunEntity> taskRuns,
                                                    boolean requiresUserAction) {
+        // PLANNER bootstrap 步骤不属于正式执行步骤，不计入执行统计
+        stepList = withoutPlanner(stepList);
         Map<UUID, List<TaskRunEntity>> runsByStep = taskRuns.stream()
                 .collect(Collectors.groupingBy(TaskRunEntity::getTaskStepId));
         int pending = 0, running = 0, succeeded = 0, failed = 0, waiting = 0, blocked = 0;
@@ -382,6 +393,8 @@ public class TaskDisplayService {
      */
     private TaskCapabilities buildCapabilities(TaskEntity task, UUID actor, List<TaskStepEntity> stepList,
                                                DiffReviewBatchEntity batch) {
+        // PLANNER bootstrap 步骤不参与"待执行步骤"能力派生，避免规划期误开"可替换"
+        stepList = withoutPlanner(stepList);
         boolean ownerOrAdmin = access.isOwnerOrAdmin(task.getCreatedBy(), task.getProjectId(), actor);
         String status = task.getStatus();
 

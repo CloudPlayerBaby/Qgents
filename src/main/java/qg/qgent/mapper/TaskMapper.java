@@ -40,6 +40,17 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
     TaskEntity selectByIdForUpdate(UUID taskId);
 
     /**
+     * 编排心跳：仅刷新任务的 updated_at（规划期/长步骤执行期间使用），防止
+     * {@code TaskRunRecoveryScheduler} 把仍在正常编排中的任务误判为崩溃卡死而触发续跑。
+     * 不改变 status、不发任何事件；与恢复调度器 {@code updated_at < staleBefore} 的 UTC 语义一致。
+     *
+     * @param taskId 目标任务 ID
+     * @return 影响行数（任务存在时为 1，否则为 0）
+     */
+    @Update("update tasks set updated_at=UTC_TIMESTAMP(6) where id=#{taskId}")
+    int touchUpdatedAt(@Param("taskId") UUID taskId);
+
+    /**
      * 返回项目内当前最大的 display_code 数字序号（如 T-1024 返回 1024）；无任务时返回 null。
      * 调用方须在持有项目级锁的事务内使用，保证序号单调递增且不重复。
      */

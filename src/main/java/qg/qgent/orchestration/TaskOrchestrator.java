@@ -149,16 +149,23 @@ public class TaskOrchestrator {
         log.info("orchestrate start taskId={} projectId={} startStepId={} retryOfTaskRunId={}",
                 taskId, projectId, startStepId, retryOfTaskRunId);
         TaskEntity task = requireTask(projectId, taskId);
-        int claimed = startStepId == null
-                ? taskMapper.claimForOrchestration(projectId, taskId)
-                : taskMapper.claimForResume(projectId, taskId);
-        if (claimed != 1) {
-            throw new IllegalStateException("Task " + taskId + " already claimed or not startable (status="
-                    + task.getStatus() + ")");
+        // 全新任务（无起始步骤且未物化）规划期保持 PLANNING，不在入口认领置 RUNNING；规划完成、
+        // 步骤物化后由下方统一原子认领。已物化 / 续跑路径才在入口原子认领。
+        boolean freshPlanning = startStepId == null && task.getPlanMaterializedAt() == null;
+        if (!freshPlanning) {
+            int claimed = startStepId == null
+                    ? taskMapper.claimForOrchestration(projectId, taskId)
+                    : taskMapper.claimForResume(projectId, taskId);
+            if (claimed != 1) {
+                throw new IllegalStateException("Task " + taskId + " already claimed or not startable (status="
+                        + task.getStatus() + ")");
+            }
         }
         TaskExecutionContext ctx = new TaskExecutionContext(task);
         // 续跑来源：首个 TaskRun 的 retryOfTaskRunId 指向被重试的失败运行
         ctx.retryOf = retryOfTaskRunId;
+        // 进程内防重入必须保持在 sandbox acquire 之前：只有赢家到达 acquire，避免并发编排器
+        // 双持同一 workspace session、输家 finally release 销毁赢家正在用的沙箱。
         TaskExecutionContext previous = executions.putIfAbsent(taskId, ctx);
         if (previous != null) {
             throw new IllegalStateException("Task " + taskId + " is already being orchestrated in this process");
@@ -171,11 +178,23 @@ public class TaskOrchestrator {
             if (current == null) {
                 throw new IllegalStateException("Task disappeared after orchestration claim");
             }
+            // 规划块对所有入口保留：freshPlanning 保持 PLANNING 直接规划；恢复续跑若崩溃在规划
+            // 中途（planMaterializedAt 仍 null），认领后也需补跑规划。
             if (current.getPlanMaterializedAt() == null) {
                 TaskStepEntity planner = planMaterialization.ensurePlannerStep(current);
                 if (!runPlanBootstrap(current, planner, ctx)) {
                     return;
                 }
+            }
+            if (freshPlanning) {
+                // 规划完成（物化成功，任务仍 PLANNING）：统一原子认领 PLANNING→RUNNING。
+                // 并发另一执行器已物化并认领 / 用户已取消等返回 0，放弃本次执行。
+                int claimed = taskMapper.claimForOrchestration(projectId, taskId);
+                if (claimed != 1) {
+                    log.info("orchestrate plan claimed by concurrent executor, skip taskId={}", taskId);
+                    return;
+                }
+                publishTaskRunningEvent(taskId);
             }
             List<TaskStepEntity> steps = loadSteps(taskId).stream()
                     .filter(step -> !"PLANNER".equals(step.getRole())).toList();
@@ -209,11 +228,13 @@ public class TaskOrchestrator {
         Optional<Agent> agent = agentRegistry.resolve(planner.getAssignedAgentId(), "PLANNER");
         if (agent.isEmpty()) {
             markStepSettled(task, planner, RunOutcome.FAILED);
-            finishTask(task, ctx, StateMachineDecision.Action.COMPLETE_FAILED);
+            finishTaskIfStartable(task, ctx, StateMachineDecision.Action.COMPLETE_FAILED);
             return false;
         }
         while (true) {
             markStepRunning(task, planner);
+            // 规划期心跳：刷新任务 updated_at，防止恢复调度器把长规划任务误判为卡死续跑
+            taskMapper.touchUpdatedAt(task.getId());
             AgentInput input = contextAssembler.assemble(task, planner, OrchestrationPhase.PLAN, null, null,
                     null, null, null, ctx.groupContext);
             AgentRunOutcome outcome = safeExecute(agent.get(), OrchestrationPhase.PLAN, input);
@@ -227,18 +248,18 @@ public class TaskOrchestrator {
                     planMaterialization.materialize(task, outcome.getPlanResult());
                 } catch (ApiException e) {
                     markStepSettled(task, planner, RunOutcome.FAILED);
-                    updateTaskStatus(task, "FAILED");
-                    sendAgentCard(task, "task-" + task.getId(), "FAILED", null, e.getMessage());
+                    failTaskIfStartable(task, e.getMessage());
                     return false;
                 }
-                updateTaskStatus(task, "RUNNING");
+                // 规划完成、步骤已物化：任务保持 PLANNING，由 orchestrate 入口统一原子认领到
+                // RUNNING——保证前端在规划期看到 PLANNING，并发编排中仅一个执行器拿到执行权。
                 return true;
             }
             if (decision.getAction() == StateMachineDecision.Action.RETRY_PHASE) {
                 continue;
             }
             markStepSettled(task, planner, outcome.getOutcome());
-            finishTask(task, ctx, decision.getAction());
+            finishTaskIfStartable(task, ctx, decision.getAction());
             return false;
         }
     }
@@ -260,6 +281,52 @@ public class TaskOrchestrator {
         updateTaskStatus(latest, "FAILED");
         sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null,
                 "任务启动失败：执行环境暂不可用，请稍后重试或联系管理员");
+    }
+
+    /**
+     * 规划完成、任务被原子认领到 RUNNING 后补发 task.updated 事件：裸 SQL
+     * {@code claimForOrchestration} 不发布任何事件，若不补发，前端 SSE 将永远看不到
+     * PLANNING→RUNNING，直接跳到终态。只发事件不重复 updateById（认领 SQL 已置 RUNNING）。
+     */
+    private void publishTaskRunningEvent(UUID taskId) {
+        TaskEntity latest = taskMapper.selectById(taskId);
+        if (latest == null || !"RUNNING".equals(latest.getStatus())) {
+            return;
+        }
+        eventService.publish(latest.getProjectId(), latest.getRequirementGroupId(), "task.updated",
+                latest.getId().toString(), TaskEventPayloads.taskUpdated(latest));
+    }
+
+    /**
+     * 规划失败落 FAILED 前的状态护栏：重查最新任务状态，仅当仍处于可编排启动态（PLANNING/
+     * PENDING/RUNNING，无终态、无用户取消意图）时才覆盖，避免用过期内存对象把并发取消
+     * （CANCELLING/CANCELLED）或已终态的任务误改为 FAILED。与 failStartup 的覆盖条件一致。
+     */
+    private void failTaskIfStartable(TaskEntity task, String message) {
+        TaskEntity latest = taskMapper.selectById(task.getId());
+        if (latest == null || !STARTABLE_TASK_STATUSES.contains(latest.getStatus())) {
+            log.warn("plan failure not persisted, task already left startable states, taskId={}",
+                    task.getId());
+            return;
+        }
+        updateTaskStatus(latest, "FAILED");
+        sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null, message);
+    }
+
+    /**
+     * 规划期到达终态前的状态护栏：重查最新任务状态，仅当仍处于可编排启动态时才允许
+     * {@link #finishTask(TaskEntity, TaskExecutionContext, StateMachineDecision.Action)} 覆盖
+     * （避免把并发取消的任务误改为 CANCELLED/FAILED）；任务已离开启动态则放弃覆盖，只记日志。
+     */
+    private void finishTaskIfStartable(TaskEntity task, TaskExecutionContext ctx,
+                                       StateMachineDecision.Action action) {
+        TaskEntity latest = taskMapper.selectById(task.getId());
+        if (latest == null || !STARTABLE_TASK_STATUSES.contains(latest.getStatus())) {
+            log.warn("plan terminal not persisted, task already left startable states, taskId={}",
+                    task.getId());
+            return;
+        }
+        finishTask(latest, ctx, action);
     }
 
     private List<TaskStepEntity> loadSteps(UUID taskId) {

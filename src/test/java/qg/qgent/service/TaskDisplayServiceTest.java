@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import qg.qgent.api.PagedApiResponse;
 import qg.qgent.dto.TaskDetailResponse;
 import qg.qgent.dto.TaskListItemResponse;
+import qg.qgent.dto.TaskStepListItemResponse;
 import qg.qgent.dto.DiffReviewSummary;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.DiffEntity;
@@ -298,6 +299,72 @@ class TaskDisplayServiceTest {
         assertThat(summary.getFilesChanged()).isEqualTo(2);
         assertThat(summary.getAdditions()).isEqualTo(5);
         assertThat(summary.getDeletions()).isEqualTo(3);
+    }
+
+    @Test
+    void stepsExcludesPlannerBootstrapDuringPlanning() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, UUID.randomUUID(), actor, workspaceId, "PLANNING");
+        when(tasks.selectById(task.getId())).thenReturn(task);
+        TaskStepEntity planner = step(UUID.randomUUID(), task.getId(), "PENDING");
+        planner.setRole("PLANNER");
+        when(steps.selectList(any())).thenReturn(List.of(planner));
+
+        PagedApiResponse<TaskStepListItemResponse> page = service.steps(projectId, task.getId(), actor, "req");
+
+        // 规划期仅存在 PLANNER bootstrap 步骤：过滤后为空步骤列表（前端以 status=PLANNING 渲染规划中）
+        assertTrue(page.data().isEmpty());
+        assertFalse(page.page().isHasMore());
+    }
+
+    @Test
+    void planningExecutionSummaryExcludesPlannerStep() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, creatorId, workspaceId, "PLANNING");
+        when(tasks.selectList(any())).thenReturn(List.of(task));
+        TaskStepEntity planner = step(UUID.randomUUID(), task.getId(), "PENDING");
+        planner.setRole("PLANNER");
+        when(steps.selectList(any())).thenReturn(List.of(planner));
+        when(runs.selectList(any())).thenReturn(List.of());
+        UserEntity creator = new UserEntity();
+        creator.setId(creatorId);
+        creator.setDisplayName("陈同学");
+        when(users.selectList(any())).thenReturn(List.of(creator));
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        group.setId(groupId);
+        group.setName("登录功能");
+        when(groups.selectList(any())).thenReturn(List.of(group));
+
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, "req")
+                .data().getFirst();
+
+        // PLANNER 不计入执行统计：规划期总步骤 0、无当前阶段
+        assertEquals(0, item.getExecutionSummary().getTotalSteps());
+        assertNull(item.getExecutionSummary().getCurrentStageTitle());
+    }
+
+    @Test
+    void planningCapabilitiesDoNotOfferReplaceFromPlannerStep() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, actor, workspaceId, "PLANNING");
+        when(tasks.selectById(task.getId())).thenReturn(task);
+        when(workspaces.selectById(workspaceId)).thenReturn(workspace(workspaceId));
+        TaskStepEntity planner = step(UUID.randomUUID(), task.getId(), "PENDING");
+        planner.setRole("PLANNER");
+        when(steps.selectList(any())).thenReturn(List.of(planner));
+        when(runs.selectList(any())).thenReturn(List.of());
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+
+        TaskDetailResponse detail = service.detail(projectId, task.getId(), actor);
+
+        // 规划期可取消，但 PLANNER bootstrap 步骤不参与"待执行步骤"派生，不误开"可替换"
+        assertTrue(detail.getCapabilities().isCanCancel());
+        assertFalse(detail.getCapabilities().isCanReplacePendingStepAgent());
+        assertEquals("NO_PENDING_STEP", detail.getCapabilities().getReplacePendingStepAgentDisabledReason());
+        assertEquals(0, detail.getExecutionSummary().getTotalSteps());
     }
 
     private TaskEntity task(UUID projectId, UUID groupId, UUID creatorId, UUID workspaceId, String status) {
