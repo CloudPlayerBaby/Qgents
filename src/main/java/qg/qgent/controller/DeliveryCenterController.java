@@ -40,6 +40,7 @@ public class DeliveryCenterController {
 
     /**
      * 契约 v1.8.0 §20：交付中心聚合列表（统一 cursor envelope）。
+     * keyword 按不区分大小写包含匹配 title/summary/resourceId/来源任务/创建人/提交人/CODE 仓库名/MEMORY/SKILL 摘要字段。
      */
     @GetMapping("/projects/{projectId}/delivery-items")
     public PagedApiResponse<DeliveryItem> list(@PathVariable UUID projectId,
@@ -49,10 +50,11 @@ public class DeliveryCenterController {
                                                @RequestParam(required = false) String status,
                                                @RequestParam(required = false) String repositoryId,
                                                @RequestParam(required = false) String createdBy,
+                                               @RequestParam(required = false) String keyword,
                                                @RequestParam(required = false) String cursor,
                                                @RequestParam(required = false) Integer limit,
                                                HttpServletRequest request) {
-        return deliveryCenter.list(projectId, userId, groupId, type, status, repositoryId, createdBy,
+        return deliveryCenter.list(projectId, userId, groupId, type, status, repositoryId, createdBy, keyword,
                 cursor, limit, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
 
@@ -67,8 +69,9 @@ public class DeliveryCenterController {
                                            @RequestParam(required = false) String status,
                                            @RequestParam(required = false) String repositoryId,
                                            @RequestParam(required = false) String createdBy,
+                                           @RequestParam(required = false) String keyword,
                                            HttpServletRequest request) {
-        return deliveryCenter.summary(projectId, userId, groupId, type, status, repositoryId, createdBy);
+        return deliveryCenter.summary(projectId, userId, groupId, type, status, repositoryId, createdBy, keyword);
     }
 
     /**
@@ -83,8 +86,9 @@ public class DeliveryCenterController {
                                          @RequestParam(required = false) String type,
                                          @RequestParam(required = false) String status,
                                          @RequestParam(required = false) String repositoryId,
-                                         @RequestParam(required = false) String createdBy) {
-        String csv = deliveryCenter.exportCsv(projectId, userId, groupId, type, status, repositoryId, createdBy);
+                                         @RequestParam(required = false) String createdBy,
+                                         @RequestParam(required = false) String keyword) {
+        String csv = deliveryCenter.exportCsv(projectId, userId, groupId, type, status, repositoryId, createdBy, keyword);
         String filename = "delivery-items-" + DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
                 .withZone(ZoneOffset.UTC).format(Instant.now()) + ".csv";
         return ResponseEntity.ok()
