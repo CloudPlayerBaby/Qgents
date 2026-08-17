@@ -1,6 +1,7 @@
 # Target directory
 target/
 .m2/
+/data/
 
 # Compiled class file
 *.class

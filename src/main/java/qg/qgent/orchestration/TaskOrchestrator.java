@@ -303,8 +303,9 @@ public class TaskOrchestrator {
         } else if (phase == OrchestrationPhase.TESTING && outcome.getTestResult() != null) {
             ctx.testResult = outcome.getTestResult();
         }
-        // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件（type 用 step.role，修复 PLAN 的 role 为 null）
-        artifactService.createRunArtifact(task, run, step, step.getRole(), runArtifactSummary(step, outcome));
+        // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
+        // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
+        artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
         taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()));
         markStepSettled(task, step, outcome.getOutcome());
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
@@ -400,6 +401,15 @@ public class TaskOrchestrator {
             case SUCCEEDED -> "SUCCEEDED";
             case CANCELLED -> "CANCELLED";
             default -> "FAILED";
+        };
+    }
+
+    private String artifactType(OrchestrationPhase phase) {
+        return switch (phase) {
+            case CODING -> "CODING";
+            case TESTING -> "TESTING";
+            case REVIEWING -> "REVIEWING";
+            case PLAN -> "PLAN";
         };
     }
 
