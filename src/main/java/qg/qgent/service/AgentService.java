@@ -166,7 +166,7 @@ public class AgentService {
 
     private AgentResponse toResponse(AgentEntity agent, boolean owner) {
         return new AgentResponse(agent.getId().toString(), agent.getName(), agent.getAvatar(), agent.getRole(),
-                agent.getCapabilities(), owner ? agent.getPrompt() : null, agent.getVisibility(), agent.getStatus(),
+                agent.getDescription(), owner ? agent.getPrompt() : null, agent.getVisibility(), agent.getStatus(),
                 agent.getCreatedBy() == null ? null : agent.getCreatedBy().toString());
     }
 

@@ -23,8 +23,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 自定义 Agent 运行时：以 {@link AgentEntity#prompt} 作系统提示，按能力→工具白名单
- * （{@link CapabilityToolRegistry}，写能力默认拒绝）暴露工具，经 {@link LlmClient#nextToolTurn}
+ * 自定义 Agent 运行时：以 {@link AgentEntity#prompt} 作系统提示，按角色→工具白名单
+ * （{@link AgentToolRegistry}，写权限默认拒绝）暴露工具，经 {@link LlmClient#nextToolTurn}
  * 原生 Tool Calling 循环执行，最终文本必须为 JSON {@code {"success": bool, "summary": "...", "message": "..."}}
  * （{@link GenericResultParser} 校验）。
  * <p>
@@ -35,8 +35,8 @@ import java.util.List;
  *   <li>输出非法、缺必填字段、超循环上限、输出被截断等协议失败 → FAILED_INFRASTRUCTURE
  *       （同相位重试）。</li>
  * </ul>
- * 每轮模型调用生成一条脱敏观测 {@link LlmObservation} 随 Run 产物落库。写工具命中的自定义
- * Agent（含写能力）同样把成功写结果交给 {@link CodingWriteObserver}（可为 null，预览静默跳过）。
+ * 每轮模型调用生成一条脱敏观测 {@link LlmObservation} 随 Run 产物落库。写角色命中的自定义
+ * Agent（DEVELOPER 等）同样把成功写结果交给 {@link CodingWriteObserver}（可为 null，预览静默跳过）。
  * 不执行 Git 或沙箱命令；工具结果与错误经既有 Coding/Review 工具结构保证路径约束与脱敏。
  */
 @Slf4j
@@ -46,12 +46,12 @@ public class GenericCustomAgent implements Agent {
 
     private final LlmClient llm;
     private final WorkspaceCodeAccess codeAccess;
-    private final CapabilityToolRegistry toolRegistry;
+    private final AgentToolRegistry toolRegistry;
     private final AgentEntity entity;
     private final CodingWriteObserver writeObserver;
     private final GenericResultParser parser = new GenericResultParser();
 
-    public GenericCustomAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, CapabilityToolRegistry toolRegistry,
+    public GenericCustomAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, AgentToolRegistry toolRegistry,
                               AgentEntity entity, CodingWriteObserver writeObserver) {
         this.llm = llm;
         this.codeAccess = codeAccess;
@@ -62,7 +62,7 @@ public class GenericCustomAgent implements Agent {
 
     @Override
     public AgentRunOutcome run(AgentInput input) {
-        boolean writeCapable = toolRegistry.hasWriteCapability(entity.getCapabilities());
+        boolean writeCapable = toolRegistry.hasWriteRole(entity.getRole());
         log.info("custom agent start agentId={} role={} write={} phase={} workspaceId={}",
                 entity.getId(), entity.getRole(), writeCapable, input.getPhase(), input.getWorkspaceId());
         List<LlmObservation> observations = new ArrayList<>();
@@ -98,7 +98,7 @@ public class GenericCustomAgent implements Agent {
         List<Message> history = new ArrayList<>();
         history.add(new UserMessage(buildUser(input, files)));
         String system = buildSystem(writeCapable);
-        Object tools = toolRegistry.toolsFor(input.getWorkspaceId(), entity.getCapabilities());
+        Object tools = toolRegistry.toolsFor(input.getWorkspaceId(), entity.getRole());
         if (tools instanceof CodingTools codingTools) {
             codingTools.setWriteObserver(writeObserver, input.getProjectId(), input.getTaskId(), input.getTaskRunId());
         }

@@ -42,12 +42,12 @@ public class AgentPreseedInitializer implements ApplicationRunner {
             "REVIEWER", "审查 Agent");
 
     /**
-     * 角色 → 默认能力标签。
+     * 角色 → 默认用途描述（该 Agent 干什么用）。
      */
-    private static final Map<String, List<String>> DEFAULT_CAPABILITIES = Map.of(
-            "DEVELOPER", List.of("coding", "implementation"),
-            "TESTER", List.of("testing", "verification"),
-            "REVIEWER", List.of("review", "quality"));
+    private static final Map<String, String> DEFAULT_DESCRIPTIONS = Map.of(
+            "DEVELOPER", "负责开发实现需求中的代码改动，按计划修改工作区文件并完成自检",
+            "TESTER", "负责运行测试并依据真实执行结果判定是否满足验收",
+            "REVIEWER", "负责审查本次改动是否符合需求、质量与安全要求");
 
     private final TeamMapper teamMapper;
     private final AgentMapper agentMapper;
@@ -90,7 +90,7 @@ public class AgentPreseedInitializer implements ApplicationRunner {
         agent.setCreatedBy(team.getOwnerUserId());
         agent.setName(DEFAULT_NAMES.get(role));
         agent.setRole(role);
-        agent.setCapabilities(DEFAULT_CAPABILITIES.getOrDefault(role, List.of()));
+        agent.setDescription(DEFAULT_DESCRIPTIONS.get(role));
         agent.setPrompt("你是 Qgents 的" + DEFAULT_NAMES.get(role) + "，请按任务要求完成" + role + "阶段的工作。");
         agent.setVisibility("TEAM");
         agent.setStatus("ACTIVE");

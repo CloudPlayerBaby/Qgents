@@ -491,7 +491,7 @@ CREATE TABLE IF NOT EXISTS
 CREATE TABLE IF NOT EXISTS agents (
     id BINARY(16) PRIMARY KEY, team_id BINARY(16) NOT NULL, created_by BINARY(16) NULL,
     name VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL,
-    avatar TEXT NULL COMMENT 'Agent 头像URL', capabilities JSON NULL COMMENT '能力标签JSON数组',
+    avatar TEXT NULL COMMENT 'Agent 头像URL', description TEXT NULL COMMENT 'Agent 用途描述',
     prompt TEXT NULL COMMENT 'Agent 系统提示词',
     visibility VARCHAR(16) NOT NULL DEFAULT 'TEAM',
     status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
@@ -933,20 +933,44 @@ PREPARE msg_fk_stmt FROM @msg_fk_sql;
 EXECUTE msg_fk_stmt;
 DEALLOCATE PREPARE msg_fk_stmt;
 
--- 幂等增量迁移：为 agents 表补充身份卡字段（头像/能力标签/提示词，契约 §11.1、产品需求 §2.3）。
--- 全新整库初始化时上方 agents 建表已包含这三列，此处仅服务已存在的库。
+-- 幂等增量迁移：为 agents 表补充身份卡字段（头像/用途描述/提示词，契约 §11.1、产品需求 §2.3）。
+-- 全新整库初始化时上方 agents 建表已包含这些列，此处仅服务已存在的库。
 SET @agent_col_exists = (
     SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'avatar'
 );
 SET @agent_alter_sql = IF(@agent_col_exists = 0,
     CONCAT('ALTER TABLE agents ADD COLUMN avatar TEXT NULL COMMENT ''Agent 头像URL'' AFTER role, ',
-           'ADD COLUMN capabilities JSON NULL COMMENT ''能力标签JSON数组'' AFTER avatar, ',
-           'ADD COLUMN prompt TEXT NULL COMMENT ''Agent 系统提示词'' AFTER capabilities'),
+           'ADD COLUMN description TEXT NULL COMMENT ''Agent 用途描述'' AFTER avatar, ',
+           'ADD COLUMN prompt TEXT NULL COMMENT ''Agent 系统提示词'' AFTER description'),
     'SELECT 1');
 PREPARE agent_alter_stmt FROM @agent_alter_sql;
 EXECUTE agent_alter_stmt;
 DEALLOCATE PREPARE agent_alter_stmt;
+
+-- 幂等增量迁移：description 列缺失时补列（capabilities 已废弃，删除后不再依赖旧 ALTER 补列）。
+SET @agent_desc_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'description'
+);
+SET @agent_desc_sql = IF(@agent_desc_exists = 0,
+    CONCAT('ALTER TABLE agents ADD COLUMN description TEXT NULL COMMENT ''Agent 用途描述'' AFTER avatar'),
+    'SELECT 1');
+PREPARE agent_desc_stmt FROM @agent_desc_sql;
+EXECUTE agent_desc_stmt;
+DEALLOCATE PREPARE agent_desc_stmt;
+
+-- 幂等增量迁移：删除已废弃的 capabilities JSON 能力标签列。
+SET @agent_cap_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'capabilities'
+);
+SET @agent_drop_sql = IF(@agent_cap_exists = 1,
+    'ALTER TABLE agents DROP COLUMN capabilities',
+    'SELECT 1');
+PREPARE agent_drop_stmt FROM @agent_drop_sql;
+EXECUTE agent_drop_stmt;
+DEALLOCATE PREPARE agent_drop_stmt;
 
 -- 通知中心：按用户维度持久化的通知（A 联调约定 §1）。
 -- 由 task.updated/input-required/approval-required/diff.created/merge-request.updated 等事件触发写入；

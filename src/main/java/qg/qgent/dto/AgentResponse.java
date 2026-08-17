@@ -5,8 +5,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.List;
-
 /**
  * Public Agent card returned by team Agent endpoints.
  */
@@ -19,7 +17,7 @@ public class AgentResponse {
     private String name;
     private String avatar;
     private String role;
-    private List<String> capabilities;
+    private String description;
     private String prompt;
     private String visibility;
     private String status;

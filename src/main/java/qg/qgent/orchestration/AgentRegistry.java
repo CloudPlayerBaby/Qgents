@@ -4,7 +4,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.mapper.AgentMapper;
-import qg.qgent.orchestration.agent.CapabilityToolRegistry;
+import qg.qgent.orchestration.agent.AgentToolRegistry;
 import qg.qgent.orchestration.agent.CodingAgent;
 import qg.qgent.orchestration.agent.CodingWriteObserver;
 import qg.qgent.orchestration.agent.GenericCustomAgent;
@@ -25,7 +25,7 @@ import java.util.UUID;
  *   <li>{@code assignedAgentId == null}（内置兜底）：按角色取内置 Agent——PLANNER→PlanAgent、
  *       DEVELOPER→CodingAgent、TESTER→TestAgent、REVIEWER→ReviewAgent；角色未知 → 空；</li>
  *   <li>{@code assignedAgentId != null}：查 {@link AgentEntity}，存在则以 {@link GenericCustomAgent}
- *       包装（自定义 prompt + 能力→工具白名单）；实体不存在 → 空（调用方跳步，不硬跑）；</li>
+ *       包装（自定义 prompt + 角色→工具白名单）；实体不存在 → 空（调用方跳步，不硬跑）；</li>
  *   <li>角色匹配 / ACTIVE / 可见性的静态授权已在 {@link qg.qgent.service.TaskService#validateAgent}
  *       落库时校验，运行时只做存在性检查。</li>
  * </ul>
@@ -39,7 +39,7 @@ public class AgentRegistry {
     private final TestAgent testAgent;
     private final ReviewAgent reviewAgent;
     private final AgentMapper agentMapper;
-    private final CapabilityToolRegistry toolRegistry;
+    private final AgentToolRegistry toolRegistry;
     private final LlmClient llm;
     private final WorkspaceCodeAccess codeAccess;
     private final WorkspaceCodeWriter writer;
@@ -49,7 +49,7 @@ public class AgentRegistry {
     private CodingWriteObserver writeObserver;
 
     public AgentRegistry(PlanAgent planAgent, CodingAgent codingAgent, TestAgent testAgent, ReviewAgent reviewAgent,
-                         AgentMapper agentMapper, CapabilityToolRegistry toolRegistry, LlmClient llm,
+                         AgentMapper agentMapper, AgentToolRegistry toolRegistry, LlmClient llm,
                          WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer) {
         this.planAgent = planAgent;
         this.codingAgent = codingAgent;

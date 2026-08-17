@@ -64,7 +64,7 @@ public class OrchestratorAgentService {
         agent.setCreatedBy(ownerUserId);
         agent.setName(ORCHESTRATOR_NAME);
         agent.setRole(ORCHESTRATOR_ROLE);
-        agent.setCapabilities(List.of("orchestration"));
+        agent.setDescription("负责把任务执行进度与最终 Diff 审核卡片回群，不执行具体编码工作");
         agent.setPrompt("你是 Qgents 的编排助手，负责把任务执行进度与最终 Diff 审核卡片回群，不执行具体编码工作。");
         agent.setVisibility("TEAM");
         agent.setStatus("ACTIVE");

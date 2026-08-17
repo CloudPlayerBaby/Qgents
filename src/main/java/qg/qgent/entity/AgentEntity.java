@@ -1,13 +1,10 @@
 package qg.qgent.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
-import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
-import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import lombok.Data;
 
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -42,10 +39,9 @@ public class AgentEntity {
      */
     private String avatar;
     /**
-     * Capability tags (能力标签).
+     * Agent 用途描述（干什么/有什么用，展示与选用决策依据）。
      */
-    @TableField(typeHandler = JacksonTypeHandler.class)
-    private List<String> capabilities;
+    private String description;
     /**
      * Agent system prompt (提示词).
      */

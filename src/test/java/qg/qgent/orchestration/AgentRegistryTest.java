@@ -3,7 +3,7 @@ package qg.qgent.orchestration;
 import org.junit.jupiter.api.Test;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.mapper.AgentMapper;
-import qg.qgent.orchestration.agent.CapabilityToolRegistry;
+import qg.qgent.orchestration.agent.AgentToolRegistry;
 import qg.qgent.orchestration.agent.CodingAgent;
 import qg.qgent.orchestration.agent.GenericCustomAgent;
 import qg.qgent.orchestration.agent.PlanAgent;
@@ -34,7 +34,7 @@ class AgentRegistryTest {
     private final LlmClient llm = mock(LlmClient.class);
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
     private final WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
-    private final CapabilityToolRegistry toolRegistry = mock(CapabilityToolRegistry.class);
+    private final AgentToolRegistry toolRegistry = mock(AgentToolRegistry.class);
     private final AgentRegistry registry = new AgentRegistry(planAgent, codingAgent, testAgent, reviewAgent,
             agentMapper, toolRegistry, llm, codeAccess, writer);
 

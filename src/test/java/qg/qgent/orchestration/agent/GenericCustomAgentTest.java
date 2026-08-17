@@ -29,8 +29,8 @@ import static org.mockito.Mockito.when;
 
 /**
  * 自定义 Agent 运行时单元测试：以 mock {@link LlmClient#nextToolTurn} 驱动原生 Tool Calling 循环，
- * 覆盖成功/失败结果映射（success→SUCCEEDED、!success→FAILED_QUALITY）、多轮工具循环、能力→工具
- * 白名单门禁（写能力授予 CodingTools，否则 ReviewTools）、基础设施中止与协议错误码分类。
+ * 覆盖成功/失败结果映射（success→SUCCEEDED、!success→FAILED_QUALITY）、多轮工具循环、角色→工具
+ * 白名单门禁（DEVELOPER 授 CodingTools，其余角色 ReviewTools）、基础设施中止与协议错误码分类。
  */
 class GenericCustomAgentTest {
 
@@ -39,20 +39,23 @@ class GenericCustomAgentTest {
     private final LlmClient llm = mock(LlmClient.class);
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
     private final WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
-    private final CapabilityToolRegistry toolRegistry = new CapabilityToolRegistry(codeAccess, writer);
+    private final AgentToolRegistry toolRegistry = new AgentToolRegistry(codeAccess, writer);
     private final UUID workspaceId = UUID.randomUUID();
 
     private GenericCustomAgent agent(AgentEntity entity) {
         return new GenericCustomAgent(llm, codeAccess, toolRegistry, entity, null);
     }
 
-    private AgentEntity customAgent(String... capabilities) {
+    private AgentEntity customAgent() {
+        return customAgent("CUSTOM");
+    }
+
+    private AgentEntity customAgent(String role) {
         AgentEntity entity = new AgentEntity();
         entity.setId(UUID.randomUUID());
-        entity.setRole("CUSTOM");
+        entity.setRole(role);
         entity.setName("My Agent");
         entity.setPrompt("you are a custom agent");
-        entity.setCapabilities(List.of(capabilities));
         entity.setStatus("ACTIVE");
         return entity;
     }
@@ -172,7 +175,7 @@ class GenericCustomAgentTest {
         when(llm.complete(anyString(), anyList()))
                 .thenReturn("{\"success\":true,\"summary\":\"done\",\"message\":\"all good\"}");
 
-        AgentRunOutcome outcome = agent(customAgent("coding", "implementation")).run(customInput(OrchestrationPhase.CODING));
+        AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         assertThat(outcome.getMessage()).isEqualTo("all good");
@@ -210,12 +213,12 @@ class GenericCustomAgentTest {
     }
 
     @Test
-    void writeCapabilityGrantsWriteTools() {
+    void writeRoleGrantsWriteTools() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"success\":true,\"summary\":\"done\"}", "stop"));
 
-        agent(customAgent("coding", "implementation")).run(customInput(OrchestrationPhase.CODING));
+        agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ToolCallback>> toolsCaptor = ArgumentCaptor.forClass(List.class);
@@ -226,12 +229,12 @@ class GenericCustomAgentTest {
     }
 
     @Test
-    void readOnlyCapabilitiesStayReadOnly() {
+    void nonWriteRoleStaysReadOnly() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"success\":true,\"summary\":\"ok\"}", "stop"));
 
-        agent(customAgent("read", "test")).run(customInput(OrchestrationPhase.TESTING));
+        agent(customAgent("TESTER")).run(customInput(OrchestrationPhase.TESTING));
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ToolCallback>> toolsCaptor = ArgumentCaptor.forClass(List.class);
