@@ -2,6 +2,7 @@ package qg.qgent.orchestration.worker;
 
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.entity.*;
 import qg.qgent.github.GitHubAppClient;
@@ -9,6 +10,7 @@ import qg.qgent.github.GitHubBranchDetails;
 import qg.qgent.mapper.*;
 import qg.qgent.service.GitCredentialService;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
@@ -137,7 +139,61 @@ public class SandboxSessionManager {
             throw new IllegalStateException("workspace has no repository worktrees: " + workspaceId);
         }
 
-        // Fetch Grants and Sync bare Git Stores for each repository
+        // 阶段一：同步所有 Git Store 并幂等准备 Workspace，瞬态失败在此阶段内自动重试。
+        String storageKey = prepareWorkspace(projectId, workspaceId, workspace, repositories);
+
+        // 阶段二：创建 Sandbox，整个 acquire 只生成一次 sandboxId，创建请求超时后按同 id 幂等恢复。
+        UUID sandboxId = UuidV7.next();
+        WorkerCreateSandboxRequest create = new WorkerCreateSandboxRequest();
+        create.setSandboxId(sandboxId);
+        create.setTaskRunId(taskId);
+        create.setWorkspaceStorageKey(storageKey);
+        create.setImageProfile(properties.getImageProfile());
+        create.setRepositoryIds(repositories.stream().map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList());
+        createSandboxRetry(create);
+
+        Map<String, UUID> repositoryByPath = new LinkedHashMap<>();
+        for (WorkspaceRepositoryEntity repository : repositories) {
+            repositoryByPath.put(repository.getWorkspacePath(), repository.getProjectRepositoryId());
+        }
+        return new SandboxSession(taskId, workspaceId, sandboxId, storageKey,
+                create.getRepositoryIds(), Collections.unmodifiableMap(new LinkedHashMap<>(repositoryByPath)));
+    }
+
+    /**
+     * 阶段一：同步所有仓库的 Git Store 并幂等准备 Workspace，返回 storageKey。
+     * 整个过程至多尝试 {@code acquireMaxAttempts} 次；每次尝试都重新查询 GitHub 分支 HEAD、
+     * 重新生成短期 FETCH credential，并对 sync 返回值做一致性校验。可重试错误退避后重试，
+     * 不可重试错误或重试耗尽时抛出最终异常。
+     */
+    private String prepareWorkspace(UUID projectId, UUID workspaceId, WorkspaceEntity workspace,
+                                    List<WorkspaceRepositoryEntity> repositories) {
+        int attempts = Math.max(1, properties.getAcquireMaxAttempts());
+        long initialBackoffMillis = properties.getAcquireInitialBackoff().toMillis();
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return prepareWorkspaceOnce(projectId, workspaceId, workspace, repositories);
+            } catch (ApiException failure) {
+                if (!isRetryable(failure) || attempt >= attempts) {
+                    throw failure;
+                }
+                try {
+                    Thread.sleep(initialBackoffMillis * (1L << (attempt - 1)));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("sandbox acquire interrupted during retry backoff", interrupted);
+                }
+            }
+        }
+        throw new IllegalStateException("unreachable: sandbox workspace prepare exhausted retries");
+    }
+
+    /**
+     * 单次尝试：GitHub 基线查询 → 逐仓库生成短期 FETCH 凭证并同步 Git Store → 准备 Workspace。
+     * 返回 Worker provision 提供的 storageKey（缺省回退到 workspace 持久字段）。
+     */
+    private String prepareWorkspaceOnce(UUID projectId, UUID workspaceId, WorkspaceEntity workspace,
+                                        List<WorkspaceRepositoryEntity> repositories) {
         for (WorkspaceRepositoryEntity repository : repositories) {
             ProjectRepositoryEntity projectRepo = projectRepositoryMapper.selectById(repository.getProjectRepositoryId());
             if (projectRepo == null || !"ACTIVE".equals(projectRepo.getStatus())) {
@@ -194,7 +250,8 @@ public class SandboxSessionManager {
                     .setExpectedHeadCommit(expectedHeadCommit)
                     .setCredentialGrantId(grantId);
 
-            client.syncGitStore(projectRepo.getId(), syncReq);
+            WorkerGitStoreSyncResponse synced = client.syncGitStore(projectRepo.getId(), syncReq);
+            validateSyncResult(projectRepo.getId(), remoteBranch, expectedHeadCommit, synced);
         }
 
         WorkerWorkspaceProvisionRequest provision = new WorkerWorkspaceProvisionRequest();
@@ -202,24 +259,71 @@ public class SandboxSessionManager {
         provision.setRepositories(repositories.stream().map(this::toRepositoryRequest).toList());
         WorkerWorkspace provisioned = client.provisionWorkspace(workspaceId, provision);
         persistProvisionedCommits(repositories, provisioned);
-        String storageKey = provisioned != null && provisioned.getStorageKey() != null
+        return provisioned != null && provisioned.getStorageKey() != null
                 ? provisioned.getStorageKey() : workspace.getStorageKey();
+    }
 
-        UUID sandboxId = UuidV7.next();
-        WorkerCreateSandboxRequest create = new WorkerCreateSandboxRequest();
-        create.setSandboxId(sandboxId);
-        create.setTaskRunId(taskId);
-        create.setWorkspaceStorageKey(storageKey);
-        create.setImageProfile(properties.getImageProfile());
-        create.setRepositoryIds(repositories.stream().map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList());
-        client.createSandbox(create);
-
-        Map<String, UUID> repositoryByPath = new LinkedHashMap<>();
-        for (WorkspaceRepositoryEntity repository : repositories) {
-            repositoryByPath.put(repository.getWorkspacePath(), repository.getProjectRepositoryId());
+    /**
+     * 校验 Git Store 同步结果是否命中预期的仓库、分支与 HEAD；任何一项不匹配视为同步失真，
+     * 作为可重试错误抛出，让下一轮重新查询 HEAD 并重新同步。
+     */
+    private void validateSyncResult(UUID repositoryId, String remoteBranch, String expectedHeadCommit,
+                                    WorkerGitStoreSyncResponse synced) {
+        if (synced == null || !repositoryId.equals(synced.getRepositoryId())
+                || !remoteBranch.equals(synced.getRemoteBranch())
+                || !expectedHeadCommit.equalsIgnoreCase(synced.getHeadCommit())) {
+            throw new ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY, "GIT_STORE_SYNC_INVALID",
+                    "Git store sync result did not match requested repository/branch/head");
         }
-        return new SandboxSession(taskId, workspaceId, sandboxId, storageKey,
-                create.getRepositoryIds(), Collections.unmodifiableMap(new LinkedHashMap<>(repositoryByPath)));
+    }
+
+    /**
+     * 阶段二：创建 Sandbox，并在「创建请求超时、但请求可能已在 Worker 端生效」时按相同
+     * sandboxId 查询幂等恢复。Worker 端对相同规格幂等返回，不同规格返回 {@code SANDBOX_ID_CONFLICT}。
+     */
+    private void createSandboxRetry(WorkerCreateSandboxRequest create) {
+        int attempts = Math.max(1, properties.getAcquireMaxAttempts());
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                client.createSandbox(create);
+                return;
+            } catch (ApiException failure) {
+                if (!"SANDBOX_WORKER_UNAVAILABLE".equals(failure.code()) || attempt >= attempts) {
+                    throw failure;
+                }
+                WorkerSandbox existing = querySandboxOrNull(create.getSandboxId());
+                if (existing == null) {
+                    continue;
+                }
+                if (create.getTaskRunId().equals(existing.getTaskRunId())) {
+                    return;
+                }
+                throw new ApiException(org.springframework.http.HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT",
+                        "sandbox already exists with a different spec");
+            }
+        }
+        throw new IllegalStateException("unreachable: sandbox create exhausted retries");
+    }
+
+    private WorkerSandbox querySandboxOrNull(UUID sandboxId) {
+        try {
+            return client.getSandbox(sandboxId);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * 判断初始化阶段的失败是否可安全自动重试。传输层不可达与可再同步的瞬态/基线漂移错误可重试；
+     * 授权、参数、规格冲突等确定性错误直接失败，不浪费重试。
+     */
+    private boolean isRetryable(ApiException failure) {
+        return switch (failure.code()) {
+            case "SANDBOX_WORKER_UNAVAILABLE", "GITHUB_API_UNAVAILABLE", "GIT_STORE_FETCH_FAILED",
+                    "GIT_REMOTE_SHA_MISMATCH", "GIT_BASE_REF_NOT_FOUND", "GIT_STORE_SYNC_INVALID",
+                    "GIT_COMMAND_TIMEOUT", "GIT_COMMAND_FAILED" -> true;
+            default -> false;
+        };
     }
 
     /**

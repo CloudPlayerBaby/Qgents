@@ -9,16 +9,20 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpStatus;
 
+import qg.qgent.api.ApiException;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.WorkspaceEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
@@ -66,6 +70,14 @@ class SandboxSessionManagerTest {
     private SandboxSessionManager enabledManager() {
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         properties.setEnabled(true);
+        return new SandboxSessionManager(client, properties, workspaceMapper, repositoryMapper,
+                projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient);
+    }
+
+    private SandboxSessionManager enabledManagerZeroBackoff() {
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+        properties.setEnabled(true);
+        properties.setAcquireInitialBackoff(Duration.ZERO);
         return new SandboxSessionManager(client, properties, workspaceMapper, repositoryMapper,
                 projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient);
     }
@@ -118,9 +130,15 @@ class SandboxSessionManagerTest {
                 .thenReturn(new qg.qgent.github.GitHubBranchDetails("main", "a".repeat(40)));
 
         when(credentialService.generateGrant(any(), any(), any(), any(), any(), any(), any())).thenReturn("mock-grant");
-        
-        qg.qgent.orchestration.worker.WorkerGitStoreSyncResponse syncResponse = new qg.qgent.orchestration.worker.WorkerGitStoreSyncResponse();
-        when(client.syncGitStore(any(), any())).thenReturn(syncResponse);
+
+        when(client.syncGitStore(any(), any())).thenReturn(syncResponse(REPO, "main", "a".repeat(40)));
+    }
+
+    private WorkerGitStoreSyncResponse syncResponse(UUID repositoryId, String remoteBranch, String headCommit) {
+        return new WorkerGitStoreSyncResponse()
+                .setRepositoryId(repositoryId)
+                .setRemoteBranch(remoteBranch)
+                .setHeadCommit(headCommit);
     }
 
     @Test
@@ -264,7 +282,8 @@ class SandboxSessionManagerTest {
         
         when(githubAppClient.getBranch(eq(12345L), eq("owner"), eq("repo"), eq("main")))
                 .thenReturn(new qg.qgent.github.GitHubBranchDetails("main", "b".repeat(40)));
-                
+        when(client.syncGitStore(any(), any())).thenReturn(syncResponse(REPO, "main", "b".repeat(40)));
+
         WorkerWorkspace provisioned = new WorkerWorkspace();
         provisioned.setStorageKey("workspaces/" + WORKSPACE);
         when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
@@ -345,5 +364,149 @@ class SandboxSessionManagerTest {
         manager.renewActiveLeases();
 
         verify(client, never()).renewSandbox(session.sandboxId());
+    }
+
+    @Test
+    void syncFirstFailsSecondSucceeds() {
+        mockDependenciesForAcquire();
+        when(client.syncGitStore(any(), any()))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_STORE_FETCH_FAILED", "transient"))
+                .thenReturn(syncResponse(REPO, "main", "a".repeat(40)));
+
+        SandboxSession session = enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE);
+
+        verify(client, times(2)).syncGitStore(any(), any());
+        verify(client).provisionWorkspace(any(), any());
+        assertThat(session.storageKey()).isEqualTo("workspaces/" + WORKSPACE);
+    }
+
+    @Test
+    void baseRefNotFoundRetriesToSucceed() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any()))
+                .thenThrow(new ApiException(HttpStatus.CONFLICT, "GIT_BASE_REF_NOT_FOUND", "base not ready"))
+                .thenReturn(provisioned);
+
+        enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE);
+
+        verify(client, times(2)).provisionWorkspace(any(), any());
+        verify(client, times(2)).syncGitStore(any(), any());
+        verify(credentialService, times(2)).generateGrant(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void nonRetryableErrorIsAttemptedOnce() {
+        mockDependenciesForAcquire();
+        when(client.syncGitStore(any(), any()))
+                .thenThrow(new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GIT_REMOTE_BRANCH_NOT_FOUND", "nope"));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE));
+
+        assertEquals("GIT_REMOTE_BRANCH_NOT_FOUND", exception.code());
+        verify(client, times(1)).syncGitStore(any(), any());
+        verify(client, never()).provisionWorkspace(any(), any());
+    }
+
+    @Test
+    void afterMultiRepoFailureNextRoundSyncsAll() {
+        mockDependenciesForAcquire();
+        UUID repoB = UUID.fromString("00000000-0000-0000-0000-000000000005");
+        WorkspaceRepositoryEntity repoBEntity = new WorkspaceRepositoryEntity();
+        repoBEntity.setWorkspaceId(WORKSPACE);
+        repoBEntity.setProjectRepositoryId(repoB);
+        repoBEntity.setWorkspacePath("repo-2");
+        repoBEntity.setBaseCommit("main");
+        repoBEntity.setSourceBranch("feat/task-2");
+        when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(repository(), repoBEntity));
+        stubRepositoryBinding(repoB);
+        // repoA 恒成功；repoB 首轮失败、第二轮成功
+        when(client.syncGitStore(eq(REPO), any())).thenReturn(syncResponse(REPO, "main", "a".repeat(40)));
+        when(client.syncGitStore(eq(repoB), any()))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_STORE_FETCH_FAILED", "transient"))
+                .thenReturn(syncResponse(repoB, "main", "a".repeat(40)));
+
+        enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE);
+
+        verify(client, times(2)).syncGitStore(eq(REPO), any());
+        verify(client, times(2)).syncGitStore(eq(repoB), any());
+    }
+
+    private void stubRepositoryBinding(UUID repositoryId) {
+        ProjectRepositoryEntity projectRepo = new ProjectRepositoryEntity();
+        projectRepo.setId(repositoryId);
+        projectRepo.setRepositoryId(UUID.randomUUID());
+        projectRepo.setDefaultBranch("main");
+        projectRepo.setStatus("ACTIVE");
+        when(projectRepositoryMapper.selectById(repositoryId)).thenReturn(projectRepo);
+
+        GitHubRepositoryEntity ghRepo = new GitHubRepositoryEntity();
+        ghRepo.setId(projectRepo.getRepositoryId());
+        ghRepo.setInstallationId(UUID.randomUUID());
+        ghRepo.setOwnerLogin("owner");
+        ghRepo.setName("repo");
+        ghRepo.setAuthorizationStatus("AUTHORIZED");
+        when(gitHubRepositoryMapper.selectById(projectRepo.getRepositoryId())).thenReturn(ghRepo);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(ghRepo.getInstallationId());
+        installation.setProviderInstallationId(12345L);
+        installation.setStatus("ACTIVE");
+        installation.setTeamId(UUID.randomUUID());
+        when(installationMapper.selectById(ghRepo.getInstallationId())).thenReturn(installation);
+    }
+
+    @Test
+    void createTimeoutQueriesExistingSandboxSucceeds() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+        when(client.createSandbox(any()))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "timeout"));
+        WorkerSandbox existing = new WorkerSandbox();
+        existing.setTaskRunId(TASK);
+        when(client.getSandbox(any())).thenReturn(existing);
+
+        SandboxSession session = enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE);
+
+        verify(client, times(1)).createSandbox(any());
+        verify(client).getSandbox(any());
+        assertThat(session.sandboxId()).isNotNull();
+        assertThat(session.storageKey()).isEqualTo("workspaces/" + WORKSPACE);
+    }
+
+    @Test
+    void createTimeoutWithDifferentSpecThrowsConflict() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+        when(client.createSandbox(any()))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "timeout"));
+        WorkerSandbox existing = new WorkerSandbox();
+        existing.setTaskRunId(UUID.fromString("00000000-0000-0000-0000-000000000099"));
+        when(client.getSandbox(any())).thenReturn(existing);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE));
+
+        assertEquals("SANDBOX_ID_CONFLICT", exception.code());
+    }
+
+    @Test
+    void retriesExhaustedThrowsFinalException() {
+        mockDependenciesForAcquire();
+        when(client.syncGitStore(any(), any()))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_STORE_FETCH_FAILED", "always"));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE));
+
+        assertEquals("GIT_STORE_FETCH_FAILED", exception.code());
+        verify(client, times(3)).syncGitStore(any(), any());
+        verify(client, never()).provisionWorkspace(any(), any());
     }
 }

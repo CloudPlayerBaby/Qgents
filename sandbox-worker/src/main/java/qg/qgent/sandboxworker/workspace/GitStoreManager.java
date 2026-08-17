@@ -8,6 +8,7 @@ import qg.qgent.sandboxworker.api.WorkerException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -42,29 +43,55 @@ public class GitStoreManager {
                                             String repositoryFullName) {
         Path store = repositories.gitStore(repositoryId);
         boolean created = ensureBareStore(store);
+        try {
+            repositories.withCredential(request.getCredentialGrantId(), request.getExpectedHeadCommit(), repositoryFullName,
+                    request.getRemoteBranch(), "FETCH", environment -> {
+                        repositories.requireSuccess(repositories.run(List.of("git", "--git-dir", store.toString(), "fetch",
+                                        "--no-tags", repositoryUrl,
+                                        "+refs/heads/" + request.getRemoteBranch() + ":refs/heads/"
+                                                + request.getRemoteBranch()),
+                                        environment),
+                                "GIT_STORE_FETCH_FAILED", "无法同步远程 Git Store");
+                        return null;
+                    });
 
-        repositories.withCredential(request.getCredentialGrantId(), request.getExpectedHeadCommit(), repositoryFullName,
-                request.getRemoteBranch(), "FETCH", environment -> {
-                    repositories.requireSuccess(repositories.run(List.of("git", "--git-dir", store.toString(), "fetch",
-                                            "--no-tags", repositoryUrl,
-                                            "+refs/heads/" + request.getRemoteBranch() + ":refs/heads/"
-                                                    + request.getRemoteBranch()),
-                                    environment),
-                            "GIT_STORE_FETCH_FAILED", "无法同步远程 Git Store");
-                    return null;
-                });
+            // WorkspaceManager 以 baseRef/sourceBranch 在 bare Store 中创建
+            // worktree，因此同步为本地受控分支引用。
+            String actualHead = resolveCommit(store, "refs/heads/" + request.getRemoteBranch());
+            if (actualHead == null) {
+                throw invalid("GIT_REMOTE_BRANCH_NOT_FOUND", "远程分支不存在或未返回可用提交");
+            }
+            if (!actualHead.equalsIgnoreCase(request.getExpectedHeadCommit())) {
+                throw new WorkerException(HttpStatus.CONFLICT, "GIT_REMOTE_SHA_MISMATCH", "远程分支 HEAD 与预期提交不一致");
+            }
+            configureOrigin(store, repositoryUrl);
+            return new GitStoreSyncResponse(repositoryId, request.getRemoteBranch(), actualHead, created);
+        } catch (RuntimeException failure) {
+            // 本次新建的 bare Store 在后续 fetch/校验失败时可能残留为空壳，删除避免下次以半成品复用；
+            // 已存在的 Store 失败时保留原引用，不破坏既有内容。删除失败仅告警，不阻断异常抛回。
+            if (created) {
+                deleteStoreQuietly(store);
+            }
+            throw failure;
+        }
+    }
 
-        // WorkspaceManager 以 baseRef/sourceBranch 在 bare Store 中创建
-        // worktree，因此同步为本地受控分支引用。
-        String actualHead = resolveCommit(store, "refs/heads/" + request.getRemoteBranch());
-        if (actualHead == null) {
-            throw invalid("GIT_REMOTE_BRANCH_NOT_FOUND", "远程分支不存在或未返回可用提交");
+    /**
+     * 尽力删除一个新建失败的空 Git Store 目录（递归）。
+     */
+    private void deleteStoreQuietly(Path store) {
+        try (var stream = Files.walk(store)) {
+            stream.sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (Exception ignored) {
+                            // 尽力清理，单个文件删除失败不影响整体抛回。
+                        }
+                    });
+        } catch (Exception ignored) {
+            // 目录无法遍历时跳过清理，具体失败由上层显式异常表达。
         }
-        if (!actualHead.equalsIgnoreCase(request.getExpectedHeadCommit())) {
-            throw new WorkerException(HttpStatus.CONFLICT, "GIT_REMOTE_SHA_MISMATCH", "远程分支 HEAD 与预期提交不一致");
-        }
-        configureOrigin(store, repositoryUrl);
-        return new GitStoreSyncResponse(repositoryId, request.getRemoteBranch(), actualHead, created);
     }
 
     private boolean ensureBareStore(Path store) {

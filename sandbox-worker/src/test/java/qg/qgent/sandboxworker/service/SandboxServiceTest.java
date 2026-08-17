@@ -87,6 +87,34 @@ class SandboxServiceTest {
         assertEquals("SANDBOX_REPOSITORY_DUPLICATE", exception.getCode());
     }
 
+    @Test
+    void sameSandboxIdSameSpecIsIdempotent() {
+        SandboxService service = service();
+        CreateSandboxRequest request = request();
+
+        SandboxResponse first = service.create(request);
+        SandboxResponse second = service.create(request);
+
+        assertEquals(first.getId(), second.getId());
+        assertEquals(1, runtime.findAll().size());
+    }
+
+    @Test
+    void sameSandboxIdDifferentSpecConflicts() {
+        SandboxService service = service();
+        CreateSandboxRequest request = request();
+        service.create(request);
+
+        CreateSandboxRequest conflict = request();
+        conflict.setSandboxId(request.getSandboxId());
+        conflict.setTaskRunId(UUID.randomUUID());
+
+        var exception = assertThrows(qg.qgent.sandboxworker.api.WorkerException.class,
+                () -> service.create(conflict));
+
+        assertEquals("SANDBOX_ID_CONFLICT", exception.getCode());
+    }
+
     private CreateSandboxRequest request() {
         CreateSandboxRequest request = new CreateSandboxRequest();
         request.setSandboxId(UUID.randomUUID());

@@ -76,6 +76,10 @@ app:
     poll-interval: ${SANDBOX_POLL_INTERVAL:250ms}
     poll-timeout: ${SANDBOX_POLL_TIMEOUT:15m}
     lease-renew-interval: ${SANDBOX_LEASE_RENEW_INTERVAL:10s}
+    # 初始化阶段（同步 Git Store + 准备 Workspace）自动重试：最大尝试次数与初始退避，
+    # 瞬态失败在此上限内重试，退避为 initial * 2^(n-1)，耗尽后走 Task 失败链路
+    acquire-max-attempts: ${SANDBOX_ACQUIRE_MAX_ATTEMPTS:3}
+    acquire-initial-backoff: ${SANDBOX_ACQUIRE_INITIAL_BACKOFF:1s}
     # 连接/响应硬超时：Worker 请求挂起时在此期限内转为 SANDBOX_WORKER_UNAVAILABLE，不占住编排线程
     connect-timeout: ${SANDBOX_WORKER_CONNECT_TIMEOUT:5s}
     response-timeout: ${SANDBOX_WORKER_RESPONSE_TIMEOUT:30s}

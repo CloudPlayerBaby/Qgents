@@ -160,6 +160,35 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void sandboxAcquireExhaustedPutsTaskInFailedWithoutTaskRun() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        doThrow(new RuntimeException("sandbox worker down"))
+                .when(fixture.sandboxSessionManager).acquire(any(), any(), any());
+
+        fixture.orchestrator(fixture.success(OrchestrationPhase.PLAN))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+        verifyNoInteractions(fixture.taskRuns);
+        verify(fixture.sandboxSessionManager, times(1)).acquire(any(), any(), any());
+    }
+
+    @Test
+    void initializationFailureDoesNotFakeTaskRun() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        doThrow(new RuntimeException("sandbox worker down"))
+                .when(fixture.sandboxSessionManager).acquire(any(), any(), any());
+
+        fixture.orchestrator(fixture.success(OrchestrationPhase.PLAN))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        verifyNoInteractions(fixture.taskRuns);
+        verify(fixture.materialization, never()).materialize(any(), any());
+    }
+
+    @Test
     void plannerInfrastructureFailureRetriesThenContinuesToFormalGraph() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
@@ -367,6 +396,7 @@ class TaskOrchestratorTest {
         private final MessageService messages = mock(MessageService.class);
         private final NotificationService notifications = mock(NotificationService.class);
         private final OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
+        private final SandboxSessionManager sandboxSessionManager = mock(SandboxSessionManager.class);
         private final java.util.concurrent.ExecutorService timeoutExecutor =
                 java.util.concurrent.Executors.newSingleThreadExecutor();
         private final ThreadLocal<Agent> currentAgent = new ThreadLocal<>();
@@ -424,7 +454,7 @@ class TaskOrchestratorTest {
             currentAgent.set(agent);
             return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry, context,
                     taskRuns, tasks, steps, events,
-                    notifications, mock(SandboxSessionManager.class), artifacts, diffs,
+                    notifications, sandboxSessionManager, artifacts, diffs,
                     diffMapper, messages, orchestratorAgents,
                     materialization, timeoutExecutor, timeout);
         }

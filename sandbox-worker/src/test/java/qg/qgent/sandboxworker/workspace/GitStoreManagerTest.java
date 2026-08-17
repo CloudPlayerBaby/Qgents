@@ -87,6 +87,38 @@ class GitStoreManagerTest {
         assertEquals("GIT_REMOTE_BRANCH_INVALID", exception.getCode());
     }
 
+    @Test
+    void newlyCreatedStoreCleanedOnFetchFailure() {
+        UUID repositoryId = UUID.randomUUID();
+        Path store = root.resolve("stores").resolve(repositoryId + ".git");
+        GitStoreManager manager = new GitStoreManager(failingFetchRecording(root, "a".repeat(40)));
+
+        WorkerException exception = assertThrows(WorkerException.class,
+                () -> manager.sync(repositoryId, request("https://github.com/qgents/example.git")));
+
+        assertEquals("GIT_STORE_FETCH_FAILED", exception.getCode());
+        assertEquals(false, Files.exists(store));
+    }
+
+    @Test
+    void existingStorePreservedOnFetchFailure() throws Exception {
+        UUID repositoryId = UUID.randomUUID();
+        Path store = root.resolve("stores").resolve(repositoryId + ".git");
+        Files.createDirectories(store);
+
+        GitStoreManager manager = new GitStoreManager(failingFetchRecording(root, "a".repeat(40)));
+
+        WorkerException exception = assertThrows(WorkerException.class,
+                () -> manager.sync(repositoryId, request("https://github.com/qgents/example.git")));
+
+        assertEquals("GIT_STORE_FETCH_FAILED", exception.getCode());
+        assertEquals(true, Files.exists(store));
+    }
+
+    private GitRepositoryManager failingFetchRecording(Path root, String fetchedHead) {
+        return new RecordingGitRepositoryManager(root, fetchedHead, true);
+    }
+
     private GitStoreManager manager() {
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         properties.setGitStoreRoot(root.resolve("stores").toString());
@@ -106,12 +138,18 @@ class GitStoreManagerTest {
     private static final class RecordingGitRepositoryManager extends GitRepositoryManager {
         private final Path storeRoot;
         private final String fetchedHead;
+        private final boolean failFetch;
         private final java.util.ArrayList<List<String>> commands = new java.util.ArrayList<>();
 
         private RecordingGitRepositoryManager(Path root, String fetchedHead) {
+            this(root, fetchedHead, false);
+        }
+
+        private RecordingGitRepositoryManager(Path root, String fetchedHead, boolean failFetch) {
             super(properties(root), org.springframework.web.client.RestClient.builder().build());
             this.storeRoot = root.resolve("stores");
             this.fetchedHead = fetchedHead;
+            this.failFetch = failFetch;
         }
 
         @Override
@@ -143,6 +181,9 @@ class GitStoreManagerTest {
             }
             if (command.contains("remote") && command.contains("get-url")) {
                 return new CommandResult(2, "", "");
+            }
+            if (command.contains("fetch")) {
+                return failFetch ? new CommandResult(1, "", "fetch failed") : new CommandResult(0, "", "");
             }
             return new CommandResult(0, "", "");
         }

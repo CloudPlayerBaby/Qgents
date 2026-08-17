@@ -39,6 +39,18 @@ public class SandboxWorkerProperties {
     private String imageProfile = "java-node";
 
     /**
+     * 「同步 Git Store + 准备 Workspace」阶段的最大尝试次数（含首次）。
+     * 初始化阶段的瞬态失败（Worker 不可达、远程仓库未同步等）在此上限内自动重试，
+     * 耗尽后才进入 Task 的 failStartup 失败链路。
+     */
+    private int acquireMaxAttempts = 3;
+
+    /**
+     * 初始化阶段重试的初始退避：第 n 次重试前等待 initial * 2^(n-1)。
+     */
+    private Duration acquireInitialBackoff = Duration.ofSeconds(1);
+
+    /**
      * 轮询工具执行结果的间隔。
      */
     private Duration pollInterval = Duration.ofMillis(250);

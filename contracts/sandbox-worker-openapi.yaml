@@ -100,7 +100,9 @@ paths:
     post:
       operationId: createSandbox
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CreateSandboxRequest'}}}}
-      responses: {'201': {description: Sandbox 已创建, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}}
+      responses:
+        '201': {description: Sandbox 已创建（相同 sandboxId 与相同任务/Workspace 规格的重复请求幂等返回已有 Sandbox）, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}
+        '409': {description: 相同 sandboxId 但任务/Workspace 规格不一致（SANDBOX_ID_CONFLICT）}
   /internal/v1/sandboxes/{sandboxId}:
     parameters: [{$ref: '#/components/parameters/SandboxId'}]
     get: {operationId: getSandbox, responses: {'200': {description: Sandbox 状态, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}}}

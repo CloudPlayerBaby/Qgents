@@ -38,7 +38,8 @@ public class SandboxService {
 
     /**
      * 创建沙箱并计算实际租约。
-     * 相同 Sandbox 编号的重复创建请求会返回冲突。
+     * 相同 Sandbox 编号的重复创建请求：若任务与 Workspace 规格一致则幂等返回已有沙箱，
+     * 规格不同返回冲突，避免初始化重试因请求超时造成重复创建。
      */
     public SandboxResponse create(CreateSandboxRequest request) {
         // 如果里面说的仓库有重复的
@@ -75,6 +76,18 @@ public class SandboxService {
                 workspaceMetadataStore.resolveRepositories(request.getWorkspaceStorageKey(),
                         request.getRepositoryIds()));
 
+        // 幂等分支：主后端初始化重试可能用相同 sandboxId 重复请求；相同任务与 Workspace 规格
+        // 视为创建已成功并返回已有沙箱，规格不同才拒绝，避免创建请求超时后重复建容器。
+        if (runtime.find(request.getSandboxId()).isPresent()) {
+            SandboxAllocation existing = runtime.find(request.getSandboxId()).get();
+            if (sameSandboxSpec(existing, allocation)) {
+                log.info("sandbox idempotent return sandboxId={} taskRunId={} workspace={}",
+                        existing.getId(), existing.getTaskRunId(), existing.getWorkspaceStorageKey());
+                return response(existing);
+            }
+            throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT", "同名沙箱规格不一致");
+        }
+
         try {
             // 上锁 -> 创建沙箱 -> 返回响应
             return workspaceLock.execute(request.getWorkspaceStorageKey(), () -> {
@@ -87,6 +100,16 @@ public class SandboxService {
         } catch (IllegalStateException exception) {
             throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT", exception.getMessage());
         }
+    }
+
+    /**
+     * 判断两个沙箱规格是否一致：任务、Workspace 存储键、镜像配置与仓库集合全部相等才算一致。
+     */
+    private boolean sameSandboxSpec(SandboxAllocation existing, SandboxAllocation requested) {
+        return java.util.Objects.equals(existing.getTaskRunId(), requested.getTaskRunId())
+                && java.util.Objects.equals(existing.getWorkspaceStorageKey(), requested.getWorkspaceStorageKey())
+                && java.util.Objects.equals(existing.getImageProfile(), requested.getImageProfile())
+                && java.util.Objects.equals(existing.getRepositoryPaths(), requested.getRepositoryPaths());
     }
 
     /**
