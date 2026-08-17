@@ -371,7 +371,14 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 throw upstreamFailure();
             }
             return new GitHubBranchDetails(response.name(), response.commit().sha());
+        } catch (RestClientResponseException exception) {
+            // 记录状态码与响应体：空仓库/分支不存在时 GitHub 返回 404，需与凭据失败（401）区分定位
+            log.warn("GitHub getBranch rejected: owner={} repo={} branch={} status={} body={}",
+                    owner, repo, branch, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            throw upstreamFailure();
         } catch (RestClientException exception) {
+            log.warn("GitHub getBranch failed before receiving a response: owner={} repo={} branch={} {}",
+                    owner, repo, branch, exception.getMessage());
             throw upstreamFailure();
         }
     }
