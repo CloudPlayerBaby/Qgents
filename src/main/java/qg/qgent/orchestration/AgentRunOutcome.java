@@ -27,6 +27,11 @@ public class AgentRunOutcome {
      */
     private String message;
     /**
+     * 稳定失败分类码（如 AGENT_RUN_TIMEOUT / ORPHANED_RUN_TIMEOUT），用于随 Run 产物摘要落库定位；
+     * 仅失败且可分类时非空。
+     */
+    private String failureCode;
+    /**
      * 本相位每次模型调用的脱敏观测（阶段 A）：随 Run 产物摘要落库，失败时可定位错误码。
      * 缺失时为 null（PLAN/LEGACY 或未执行模型调用），落库侧做空值兼容。
      */

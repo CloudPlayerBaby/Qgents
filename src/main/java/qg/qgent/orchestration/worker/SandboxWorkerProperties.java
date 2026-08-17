@@ -54,6 +54,17 @@ public class SandboxWorkerProperties {
     private Duration leaseRenewInterval = Duration.ofSeconds(10);
 
     /**
+     * 连接超时（建立 TCP/HTTP 连接的最长等待）。
+     */
+    private Duration connectTimeout = Duration.ofSeconds(5);
+
+    /**
+     * 响应超时（请求发出到收到响应的最长等待）。Worker 请求挂起时在此期限内转为
+     * {@code SANDBOX_WORKER_UNAVAILABLE}，避免长时间占住编排线程。
+     */
+    private Duration responseTimeout = Duration.ofSeconds(30);
+
+    /**
      * 续租频率必须为正数；零或负数会令轮询循环持续调用 Worker，造成请求风暴。
      */
     @PostConstruct

@@ -273,6 +273,52 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void agentRunHittingPhaseTimeoutFailsInfrastructureWithTimeoutCode() throws Exception {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+        // CODING 相位 agent.run() 永久阻塞（模拟 Worker HTTP 挂起），必须被总时限兜住。
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger call = new java.util.concurrent.atomic.AtomicInteger();
+        Agent agent = input -> {
+            if (call.getAndIncrement() == 0) {
+                return fixture.planSuccess();
+            }
+            entered.countDown();
+            try {
+                Thread.sleep(60_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            throw new IllegalStateException("dead code");
+        };
+        OrchestrationTimeoutProperties timeout = new OrchestrationTimeoutProperties();
+        timeout.setCodingTimeout(java.time.Duration.ofMillis(200));
+        timeout.setTestingTimeout(java.time.Duration.ofMillis(200));
+        timeout.setReviewingTimeout(java.time.Duration.ofMillis(200));
+
+        // 用独立线程驱动编排，避免阻塞的 agent 占住编排主线程导致整个测试挂死。
+        java.util.concurrent.ExecutorService driver = java.util.concurrent.Executors.newSingleThreadExecutor();
+        java.util.concurrent.Future<?> orchestrate = driver.submit(() ->
+                fixture.orchestrator(agent, timeout).orchestrate(task.getProjectId(), task.getId()));
+        assertThat(entered.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        orchestrate.get(5, java.util.concurrent.TimeUnit.SECONDS);
+
+        ArgumentCaptor<Map> summary = ArgumentCaptor.forClass(Map.class);
+        verify(fixture.artifacts, atLeastOnce()).createRunArtifact(any(), any(), any(), eq("CODING"), summary.capture());
+        assertThat(summary.getAllValues()).anySatisfy(s ->
+                assertThat(s.get("failureCode")).isEqualTo("AGENT_RUN_TIMEOUT"));
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+        driver.shutdownNow();
+    }
+
+    @Test
     void reviewerArtifactSummaryIncludesStructuredFindings() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
@@ -321,6 +367,8 @@ class TaskOrchestratorTest {
         private final MessageService messages = mock(MessageService.class);
         private final NotificationService notifications = mock(NotificationService.class);
         private final OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
+        private final java.util.concurrent.ExecutorService timeoutExecutor =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
         private final ThreadLocal<Agent> currentAgent = new ThreadLocal<>();
 
         TaskEntity task() {
@@ -369,12 +417,16 @@ class TaskOrchestratorTest {
         }
 
         TaskOrchestrator orchestrator(Agent agent) {
+            return orchestrator(agent, new OrchestrationTimeoutProperties());
+        }
+
+        TaskOrchestrator orchestrator(Agent agent, OrchestrationTimeoutProperties timeout) {
             currentAgent.set(agent);
             return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry, context,
                     taskRuns, tasks, steps, events,
                     notifications, mock(SandboxSessionManager.class), artifacts, diffs,
                     diffMapper, messages, orchestratorAgents,
-                    materialization);
+                    materialization, timeoutExecutor, timeout);
         }
 
         Agent sequenceAgent(AgentRunOutcome... outcomes) {

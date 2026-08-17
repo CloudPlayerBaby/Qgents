@@ -73,6 +73,8 @@ public class TaskOrchestrator {
     private final MessageService messageService;
     private final OrchestratorAgentService orchestratorAgents;
     private final TaskPlanMaterializationService planMaterialization;
+    private final java.util.concurrent.ExecutorService taskRunTimeoutExecutor;
+    private final OrchestrationTimeoutProperties orchestrationTimeout;
 
     /**
      * 各编排任务的执行现场（富结果/反馈/计数，不进图状态），按 taskId 暂存。
@@ -86,8 +88,8 @@ public class TaskOrchestrator {
                             NotificationService notificationService, SandboxSessionManager sandboxSessionManager,
                             TaskExecutionArtifactService artifactService, FinalDiffBundleService finalDiffBundles,
                             DiffMapper diffMapper, MessageService messageService,
-                            OrchestratorAgentService orchestratorAgents,
-                            TaskPlanMaterializationService planMaterialization) {
+                            OrchestratorAgentService orchestratorAgents, TaskPlanMaterializationService planMaterialization,
+                            java.util.concurrent.ExecutorService taskRunTimeoutExecutor, OrchestrationTimeoutProperties orchestrationTimeout) {
         this.stateMachine = stateMachine;
         this.workflowGraphBuilder = workflowGraphBuilder;
         this.agentRegistry = agentRegistry;
@@ -104,6 +106,8 @@ public class TaskOrchestrator {
         this.messageService = messageService;
         this.orchestratorAgents = orchestratorAgents;
         this.planMaterialization = planMaterialization;
+        this.taskRunTimeoutExecutor = taskRunTimeoutExecutor;
+        this.orchestrationTimeout = orchestrationTimeout;
     }
 
     /**
@@ -454,18 +458,41 @@ public class TaskOrchestrator {
     }
 
     /**
-     * Agent 抛异常统一按基础设施失败处理，避免异常破坏状态机推进。
+     * Agent 抛异常统一按基础设施失败处理，避免异常破坏状态机推进；并在相位总时限内等待 `agent.run()`
+     * 返回——超时按基础设施失败落库，失败码 AGENT_RUN_TIMEOUT。底层 Worker 请求挂起由其 HTTP
+     * 超时（app.worker.response-timeout）兜底，旧线程晚回写由 TaskRun 的 RUNNING 守卫在
+     * {{@code complete()}} 处拒绝。
      */
     private AgentRunOutcome safeExecute(Agent agent, OrchestrationPhase phase, AgentInput input) {
+        java.time.Duration limit = orchestrationTimeout.timeoutFor(phase);
+        java.util.concurrent.Future<AgentRunOutcome> future =
+                taskRunTimeoutExecutor.submit(() -> agent.run(input));
         try {
-            return agent.run(input);
+            return future.get(limit.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            future.cancel(true); // 尽力中断；阻塞 HTTP 未必被打断，由网络超时兜底
+            log.warn("agent run timed out phase={} limit={}ms", phase, limit.toMillis());
+            return infrastructureFailure(phase, "agent run timed out after " + limit.toSeconds() + "s",
+                    "AGENT_RUN_TIMEOUT");
+        } catch (java.util.concurrent.ExecutionException e) {
+            Throwable cause = e.getCause();
+            return infrastructureFailure(phase, "agent execution failed: "
+                    + (cause == null ? e.getMessage() : cause.getMessage()), null);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return infrastructureFailure(phase, "agent run interrupted", null);
         } catch (RuntimeException e) {
-            AgentRunOutcome failure = new AgentRunOutcome();
-            failure.setPhase(phase);
-            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
-            failure.setMessage("agent execution failed: " + e.getMessage());
-            return failure;
+            return infrastructureFailure(phase, "agent execution failed: " + e.getMessage(), null);
         }
+    }
+
+    private AgentRunOutcome infrastructureFailure(OrchestrationPhase phase, String message, String failureCode) {
+        AgentRunOutcome failure = new AgentRunOutcome();
+        failure.setPhase(phase);
+        failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+        failure.setMessage(message);
+        failure.setFailureCode(failureCode);
+        return failure;
     }
 
     private String terminalStatus(RunOutcome outcome) {
@@ -495,6 +522,9 @@ public class TaskOrchestrator {
         summary.put("role", step.getRole());
         summary.put("status", terminalStatus(outcome.getOutcome()));
         summary.put("message", outcome.getMessage());
+        if (outcome.getFailureCode() != null) {
+            summary.put("failureCode", outcome.getFailureCode());
+        }
         if (outcome.getObservations() != null && !outcome.getObservations().isEmpty()) {
             List<Map<String, Object>> observations = outcome.getObservations().stream()
                     .map(LlmObservation::toSummary)

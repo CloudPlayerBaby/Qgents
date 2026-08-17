@@ -76,6 +76,9 @@ app:
     poll-interval: ${SANDBOX_POLL_INTERVAL:250ms}
     poll-timeout: ${SANDBOX_POLL_TIMEOUT:15m}
     lease-renew-interval: ${SANDBOX_LEASE_RENEW_INTERVAL:10s}
+    # 连接/响应硬超时：Worker 请求挂起时在此期限内转为 SANDBOX_WORKER_UNAVAILABLE，不占住编排线程
+    connect-timeout: ${SANDBOX_WORKER_CONNECT_TIMEOUT:5s}
+    response-timeout: ${SANDBOX_WORKER_RESPONSE_TIMEOUT:30s}
   # Coding/Review Agent 与 LLM 的工具调用协议（阶段 B）：native=Spring AI 原生 Tool Calling（默认）；
   # legacy=旧手写 JSON 文本协议（灰度期回退用，稳定后删除）
   agent:
@@ -126,6 +129,18 @@ springdoc:
 sandbox:
   # 内部 Git 凭据接口没有安全默认值；生产与联调均必须显式注入随机 service token。
   backend-service-token: ${SANDBOX_BACKEND_SERVICE_TOKEN:}
+
+# Agent Run 单相位总时限与任务恢复相关配置
+qgents:
+  orchestration:
+    # 单次 agent.run() 的总时限；超时按基础设施失败落库（failureCode=AGENT_RUN_TIMEOUT）
+    coding-timeout: ${QGENTS_CODING_TIMEOUT:10m}
+    testing-timeout: ${QGENTS_TESTING_TIMEOUT:15m}
+    reviewing-timeout: ${QGENTS_REVIEWING_TIMEOUT:8m}
+  task-recovery:
+    # 恢复器回收陈旧活跃 Run 的阈值，必须大于最大的相位时限（testing-timeout）
+    stale-run-threshold: ${QGENTS_RECOVERY_STALE_RUN:20m}
+    poll-delay-ms: ${QGENTS_RECOVERY_POLL_DELAY_MS:30000}
 
 
 mybatis-plus:
