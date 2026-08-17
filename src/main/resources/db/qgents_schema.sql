@@ -878,6 +878,31 @@ CREATE TABLE IF NOT EXISTS
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '合并前试运行，真实报告由执行服务写入';
 
 CREATE TABLE IF NOT EXISTS
+    preflight_cq_reviews (
+        id BINARY(16) PRIMARY KEY COMMENT 'MR创建前CQ审查UUIDv7',
+        project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+        task_id BINARY(16) NOT NULL COMMENT '待交付Task ID',
+        project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
+        dry_run_id BINARY(16) NOT NULL COMMENT '已完成Dry Run ID',
+        source_commit VARCHAR(128) NOT NULL COMMENT 'Dry Run固定的源提交SHA',
+        target_branch VARCHAR(512) NOT NULL COMMENT '目标分支名',
+        target_commit VARCHAR(128) NOT NULL COMMENT 'Dry Run固定的目标基准SHA',
+        decision VARCHAR(16) NOT NULL COMMENT '审查结论：APPROVED/REJECTED',
+        reviewer_user_id BINARY(16) NOT NULL COMMENT '独立CQ审查者用户ID',
+        reason VARCHAR(1000) NULL COMMENT 'CQ理由或拒绝修改意见',
+        reviewed_at DATETIME(6) NOT NULL COMMENT '审查时间UTC',
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '记录创建时间UTC',
+        KEY idx_preflight_cq_context (project_id, task_id, project_repository_id, source_commit, target_branch(255), target_commit, reviewed_at),
+        KEY idx_preflight_cq_dry_run (dry_run_id, reviewed_at),
+        CONSTRAINT fk_preflight_cq_project FOREIGN KEY (project_id) REFERENCES projects (id),
+        CONSTRAINT fk_preflight_cq_task FOREIGN KEY (task_id) REFERENCES tasks (id),
+        CONSTRAINT fk_preflight_cq_repo FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
+        CONSTRAINT fk_preflight_cq_dry_run FOREIGN KEY (dry_run_id) REFERENCES dry_runs (id),
+        CONSTRAINT fk_preflight_cq_reviewer FOREIGN KEY (reviewer_user_id) REFERENCES users (id),
+        CHECK (decision IN ('APPROVED', 'REJECTED'))
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '绑定固定提交的MR创建前CQ审查事实';
+
+CREATE TABLE IF NOT EXISTS
     events (
         id BINARY(16) PRIMARY KEY COMMENT '事件UUIDv7',
         project_id BINARY(16) NOT NULL COMMENT '所属项目ID',

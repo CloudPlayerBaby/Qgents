@@ -79,10 +79,19 @@ public class MergeRequestService {
      * 也保持既有纯 Mockito 测试构造器兼容（未注入时钩子静默跳过）。
      */
     private MrQualityGateService qualityGates;
+    /**
+     * P1 MR 前预检门禁。生产环境必须注入；保留为空仅用于旧的纯 Mockito 构造器测试。
+     */
+    private PreflightGateService preflightGates;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setQualityGates(MrQualityGateService qualityGates) {
         this.qualityGates = qualityGates;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setPreflightGates(PreflightGateService preflightGates) {
+        this.preflightGates = preflightGates;
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -197,7 +206,10 @@ public class MergeRequestService {
      */
     public MergeRequestSummaryResponse create(UUID projectId, UUID userId, MergeRequestCreateRequest request) {
         projectAccess.requireProjectMember(projectId, userId);
-        CreateClaim claim = claimCreateWithRetry(projectId, userId, request);
+        // 目标分支的 SHA 必须在短数据库事务外解析；claimCreate 仅用该不可变值查询预检事实。
+        String targetCommit = preflightGates == null ? null
+                : preflightGates.resolveTargetCommit(projectId, request.getRepositoryId(), request.getTargetBranch());
+        CreateClaim claim = claimCreateWithRetry(projectId, userId, request, targetCommit);
         if (claim.existing() != null) {
             if (claim.existing().getHeadCommit().equals(claim.worktree().getHeadCommit())) {
                 log.info("merge request push skipped projectId={} taskId={} repositoryId={} branch={} reason=existing_open_mr_same_head headCommit={} mrId={}",
@@ -240,15 +252,16 @@ public class MergeRequestService {
         }
     }
 
-    private CreateClaim claimCreateWithRetry(UUID projectId, UUID userId, MergeRequestCreateRequest request) {
+    private CreateClaim claimCreateWithRetry(UUID projectId, UUID userId, MergeRequestCreateRequest request,
+                                             String targetCommit) {
         try {
-            return inTransaction(() -> claimCreate(projectId, userId, request));
+            return inTransaction(() -> claimCreate(projectId, userId, request, targetCommit));
         } catch (DuplicateKeyException race) {
-            return inTransaction(() -> claimCreate(projectId, userId, request));
+            return inTransaction(() -> claimCreate(projectId, userId, request, targetCommit));
         }
     }
 
-    private CreateClaim claimCreate(UUID projectId, UUID userId, MergeRequestCreateRequest request) {
+    private CreateClaim claimCreate(UUID projectId, UUID userId, MergeRequestCreateRequest request, String targetCommit) {
         TaskEntity task = taskMapper.selectById(request.getTaskId());
         if (task == null || !projectId.equals(task.getProjectId())) {
             throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "Task does not exist or is not visible");
@@ -266,6 +279,9 @@ public class MergeRequestService {
                     "The repository branch must have a committed head before MR creation");
         }
         requireAcceptedDelivery(task, worktree, request.getRepositoryId());
+        if (preflightGates != null) {
+            preflightGates.requireReady(task, worktree, request.getRepositoryId(), request.getTargetBranch(), targetCommit);
+        }
         MergeRequestEntity existing = mergeRequestMapper.selectOne(Wrappers.<MergeRequestEntity>lambdaQuery()
                 .eq(MergeRequestEntity::getProjectRepositoryId, request.getRepositoryId())
                 .eq(MergeRequestEntity::getSourceBranch, worktree.getSourceBranch())
