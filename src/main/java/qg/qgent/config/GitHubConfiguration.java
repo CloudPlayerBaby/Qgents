@@ -8,12 +8,14 @@ import org.springframework.web.client.RestClient;
 import qg.qgent.github.GitHubAppClient;
 import qg.qgent.github.RestGitHubAppClient;
 
+import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
 
 @Configuration
-@EnableConfigurationProperties({GitHubAppProperties.class, GitHubWebhookProperties.class})
+@EnableConfigurationProperties({GitHubAppProperties.class, GitHubWebhookProperties.class, GitHubProxyProperties.class})
 public class GitHubConfiguration {
 
     /**
@@ -33,10 +35,8 @@ public class GitHubConfiguration {
     }
 
     @Bean
-    GitHubAppClient gitHubAppClient(GitHubAppProperties properties, Clock clock) {
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(CONNECT_TIMEOUT)
-                .build();
+    GitHubAppClient gitHubAppClient(GitHubAppProperties properties, GitHubProxyProperties proxyProperties, Clock clock) {
+        HttpClient httpClient = createHttpClient(proxyProperties);
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
         factory.setReadTimeout(READ_TIMEOUT);
         RestClient client = RestClient.builder()
@@ -44,5 +44,14 @@ public class GitHubConfiguration {
                 .requestFactory(factory)
                 .build();
         return new RestGitHubAppClient(client, properties, clock);
+    }
+
+    static HttpClient createHttpClient(GitHubProxyProperties proxyProperties) {
+        HttpClient.Builder builder = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT);
+        if (proxyProperties.configured()) {
+            builder.proxy(ProxySelector.of(InetSocketAddress.createUnresolved(
+                    proxyProperties.getHost(), proxyProperties.getPort())));
+        }
+        return builder.build();
     }
 }

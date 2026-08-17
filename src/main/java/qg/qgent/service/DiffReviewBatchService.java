@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -23,6 +24,7 @@ import java.util.UUID;
  * Applies one Task-level review decision, then delivers each repository independently.
  */
 @Service
+@Slf4j
 public class DiffReviewBatchService {
     private static final Duration DELIVERY_LEASE = Duration.ofMinutes(30);
     private final DiffReviewBatchMapper batches;
@@ -90,6 +92,8 @@ public class DiffReviewBatchService {
         TaskEntity task = requireTask(projectId, taskId);
         requireOwnerOrAdmin(task, actor);
         DiffReviewBatchEntity batch = transactions.execute(status -> claim(task));
+        log.info("diff delivery started projectId={} taskId={} reviewBatchId={} operationId={} mode=confirm",
+                projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
         List<DiffEntity> values = diffs(batch.getId());
         try {
             preflight(task, values);
@@ -151,6 +155,8 @@ public class DiffReviewBatchService {
         TaskEntity task = requireTask(projectId, taskId);
         requireOwnerOrAdmin(task, actor);
         DiffReviewBatchEntity batch = transactions.execute(status -> claimRetry(projectId, taskId));
+        log.info("diff delivery retry started projectId={} taskId={} reviewBatchId={} operationId={}",
+                projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
         for (DiffEntity diff : diffs(batch.getId())) {
             if (!"MR_CREATED".equals(diff.getDeliveryStatus())) {
                 deliver(task, diff, actor, batch.getDeliveryClaimToken());
@@ -237,6 +243,9 @@ public class DiffReviewBatchService {
     private void deliver(TaskEntity task, DiffEntity diff, UUID actor, String claimToken) {
         UUID diffId = diff.getId();
         UUID batchId = diff.getReviewBatchId();
+        log.info("repository delivery started projectId={} taskId={} reviewBatchId={} diffId={} repositoryId={} status={}",
+                task.getProjectId(), task.getId(), batchId, diffId, diff.getProjectRepositoryId(),
+                diff.getDeliveryStatus());
         try {
             renewBatchLease(diff.getReviewBatchId(), claimToken);
             if (!"COMMITTED".equals(diff.getDeliveryStatus()) && !"MR_CREATED".equals(diff.getDeliveryStatus())) {
@@ -259,8 +268,13 @@ public class DiffReviewBatchService {
                     markDelivered(task, diffId, batchId, claimToken);
                     return null;
                 });
+                log.info("repository delivery completed projectId={} taskId={} reviewBatchId={} diffId={} repositoryId={} status=MR_CREATED",
+                        task.getProjectId(), task.getId(), batchId, diffId, diff.getProjectRepositoryId());
             }
         } catch (RuntimeException failure) {
+            log.error("repository delivery failed projectId={} taskId={} reviewBatchId={} diffId={} repositoryId={} code={} message={}",
+                    task.getProjectId(), task.getId(), batchId, diffId, diff.getProjectRepositoryId(),
+                    failureCode(failure), failure.getMessage(), failure);
             markDiffFailure(task, diffId, batchId, claimToken, failure);
         }
     }
@@ -291,6 +305,9 @@ public class DiffReviewBatchService {
             current.setDeliveryFailureReason("Repository delivery failed (" + failureCode(failure) + ")");
             current.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
             diffs.updateById(current);
+            log.warn("repository delivery failure persisted projectId={} taskId={} reviewBatchId={} diffId={} repositoryId={} code={}",
+                    task.getProjectId(), task.getId(), batchId, diffId, current.getProjectRepositoryId(),
+                    failureCode(failure));
             return null;
         });
     }
@@ -312,6 +329,8 @@ public class DiffReviewBatchService {
             task.setStatus(nextTaskStatus);
             task.setUpdatedAt(batch.getUpdatedAt());
             tasks.updateById(task);
+            log.warn("diff delivery finished projectId={} taskId={} reviewBatchId={} status={} allDelivered={} anyDelivered={}",
+                    task.getProjectId(), task.getId(), batchId, batch.getDeliveryStatus(), allDelivered, anyDelivered);
             events.publish(task.getProjectId(), task.getRequirementGroupId(), allDelivered ? "delivery.completed" : "delivery.failed",
                     batchId.toString(), Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
                             "reviewBatchId", batchId, "deliveryStatus", batch.getDeliveryStatus()));

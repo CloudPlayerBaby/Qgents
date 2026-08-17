@@ -1,6 +1,7 @@
 package qg.qgent.orchestration.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -22,6 +23,7 @@ import java.util.function.Supplier;
  * </ul>
  * 本客户端不向 Worker 提交宿主机路径、Git 远端或凭证。
  */
+@Slf4j
 public class SandboxWorkerClient {
 
     private static final String BASE_PATH = "/internal/v1";
@@ -96,11 +98,17 @@ public class SandboxWorkerClient {
      * 同步受控 Git Store
      */
     public WorkerGitStoreSyncResponse syncGitStore(UUID repositoryId, WorkerGitStoreSyncRequest request) {
-        return execute(() -> client.post()
-                .uri(GIT_STORE_SYNC, repositoryId)
-                .body(request)
-                .retrieve()
-                .body(WorkerGitStoreSyncResponse.class));
+        try {
+            return execute(() -> client.post()
+                    .uri(GIT_STORE_SYNC, repositoryId)
+                    .body(request)
+                    .retrieve()
+                    .body(WorkerGitStoreSyncResponse.class));
+        } catch (ApiException failure) {
+            log.error("sandbox git store sync failed repositoryId={} code={} message={}", repositoryId,
+                    failure.code(), failure.getMessage(), failure);
+            throw failure;
+        }
     }
 
     /**
@@ -118,22 +126,34 @@ public class SandboxWorkerClient {
      */
     public WorkerGitCommitResponse commitWorkspaceDiff(UUID workspaceId, UUID repositoryId,
                                                        WorkerGitCommitRequest request) {
-        return execute(() -> client.post()
-                .uri(GIT_COMMIT, workspaceId, repositoryId)
-                .body(request)
-                .retrieve()
-                .body(WorkerGitCommitResponse.class));
+        try {
+            return execute(() -> client.post()
+                    .uri(GIT_COMMIT, workspaceId, repositoryId)
+                    .body(request)
+                    .retrieve()
+                    .body(WorkerGitCommitResponse.class));
+        } catch (ApiException failure) {
+            log.error("sandbox git commit failed workspaceId={} repositoryId={} code={} message={}", workspaceId,
+                    repositoryId, failure.code(), failure.getMessage(), failure);
+            throw failure;
+        }
     }
 
     /**
      * 校验 expectedHeadCommit 并带凭证发起推送。
      */
     public WorkerGitPushResponse pushWorkspaceBranch(UUID workspaceId, UUID repositoryId, WorkerGitPushRequest request) {
-        return execute(() -> client.post()
-                .uri(GIT_PUSH, workspaceId, repositoryId)
-                .body(request)
-                .retrieve()
-                .body(WorkerGitPushResponse.class));
+        try {
+            return execute(() -> client.post()
+                    .uri(GIT_PUSH, workspaceId, repositoryId)
+                    .body(request)
+                    .retrieve()
+                    .body(WorkerGitPushResponse.class));
+        } catch (ApiException failure) {
+            log.error("sandbox git push failed workspaceId={} repositoryId={} code={} message={}", workspaceId,
+                    repositoryId, failure.code(), failure.getMessage(), failure);
+            throw failure;
+        }
     }
 
     /**

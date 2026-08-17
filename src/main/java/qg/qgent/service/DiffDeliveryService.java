@@ -1,5 +1,6 @@
 package qg.qgent.service;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -25,6 +26,7 @@ import java.util.UUID;
  * 复用 Worker 对精确 Diff 快照的校验与真实 Commit 落库流程。
  */
 @Service
+@Slf4j
 public class DiffDeliveryService {
     private final DiffMapper diffs;
     private final WorkspaceMapper workspaces;
@@ -53,6 +55,8 @@ public class DiffDeliveryService {
         if (expectedHead == null || expectedHead.isBlank()) {
             throw new ApiException(HttpStatus.CONFLICT, "DIFF_HEAD_MISSING", "Diff 缺少可校验的 HEAD");
         }
+        log.info("repository commit started projectId={} taskId={} diffId={} repositoryId={} workspaceId={}",
+                task.getProjectId(), task.getId(), diff.getId(), diff.getProjectRepositoryId(), task.getWorkspaceId());
         WorkerGitCommitResponse result = worker.commitWorkspaceDiff(task.getWorkspaceId(),
                 diff.getProjectRepositoryId(), new WorkerGitCommitRequest()
                         .setExpectedHeadCommit(expectedHead)
@@ -62,6 +66,8 @@ public class DiffDeliveryService {
         if (result == null || result.getCommitSha() == null || result.getCommitSha().isBlank()) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "WORKER_COMMIT_FAILED", "Worker 未返回真实 Commit SHA");
         }
+        log.info("repository commit completed projectId={} taskId={} diffId={} repositoryId={} commitSha={}",
+                task.getProjectId(), task.getId(), diff.getId(), diff.getProjectRepositoryId(), result.getCommitSha());
         return result.getCommitSha();
     }
 
@@ -84,6 +90,9 @@ public class DiffDeliveryService {
         try {
             commitSha = commitVerified(task, claimed);
         } catch (RuntimeException failure) {
+            log.error("non-batch repository commit failed projectId={} taskId={} diffId={} repositoryId={} code={} message={}",
+                    task.getProjectId(), task.getId(), claimed.getId(), claimed.getProjectRepositoryId(),
+                    failure instanceof ApiException api ? api.code() : "WORKER_COMMIT_FAILED", failure.getMessage(), failure);
             recordFailure(claimed.getId(), claimed.getDeliveryClaimToken(), failure);
             throw failure;
         }
