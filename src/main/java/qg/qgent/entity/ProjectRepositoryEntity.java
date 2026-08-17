@@ -34,4 +34,12 @@ public class ProjectRepositoryEntity {
      */
     private String displayName;
     private LocalDateTime boundAt;
+    /**
+     * 绑定状态：ACTIVE（生效中）/ UNBOUND（软解绑，保留历史引用）。
+     */
+    private String status;
+    /**
+     * 软解绑时间（UTC）；ACTIVE 时为 null。
+     */
+    private LocalDateTime unboundAt;
 }

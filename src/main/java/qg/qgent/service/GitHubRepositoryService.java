@@ -41,8 +41,6 @@ public class GitHubRepositoryService {
     private final ProjectMapper projectMapper;
     private final ProjectMemberMapper projectMemberMapper;
     private final TeamMemberMapper teamMemberMapper;
-    private final RepositoryBranchConfigMapper branchConfigMapper;
-    private final DiffMapper diffMapper;
     private final GitHubAppClient gitHubClient;
     private final Clock clock;
     private final TransactionTemplate required;
@@ -50,8 +48,7 @@ public class GitHubRepositoryService {
     public GitHubRepositoryService(GitHubInstallationMapper installationMapper, GitHubRepositoryMapper repositoryMapper,
                                    ProjectRepositoryMapper projectRepositoryMapper,
                                    ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
-                                   TeamMemberMapper teamMemberMapper, RepositoryBranchConfigMapper branchConfigMapper,
-                                   DiffMapper diffMapper,
+                                   TeamMemberMapper teamMemberMapper,
                                    GitHubAppClient gitHubClient, Clock clock,
                                    PlatformTransactionManager transactionManager) {
         this.installationMapper = installationMapper;
@@ -60,8 +57,6 @@ public class GitHubRepositoryService {
         this.projectMapper = projectMapper;
         this.projectMemberMapper = projectMemberMapper;
         this.teamMemberMapper = teamMemberMapper;
-        this.branchConfigMapper = branchConfigMapper;
-        this.diffMapper = diffMapper;
         this.gitHubClient = gitHubClient;
         this.clock = clock;
         this.required = new TransactionTemplate(transactionManager);
@@ -184,6 +179,7 @@ public class GitHubRepositoryService {
         requireProjectMember(actorId, projectId);
         List<ProjectRepositoryEntity> bindings = projectRepositoryMapper.selectList(new LambdaQueryWrapper<ProjectRepositoryEntity>()
                 .eq(ProjectRepositoryEntity::getProjectId, projectId)
+                .eq(ProjectRepositoryEntity::getStatus, "ACTIVE")
                 .orderByDesc(ProjectRepositoryEntity::getBoundAt));
 
         if (bindings.isEmpty()) {
@@ -240,21 +236,9 @@ public class GitHubRepositoryService {
             mirror.setSyncedAt(LocalDateTime.now(clock));
             repositoryMapper.insert(mirror);
         }
-        if (projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
-                .eq(ProjectRepositoryEntity::getProjectId, projectId)
-                .eq(ProjectRepositoryEntity::getRepositoryId, mirror.getId())) != null) {
-            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_ALREADY_BOUND",
-                    "仓库已被该项目绑定");
-        }
-        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
-        binding.setId(UuidV7.next());
-        binding.setProjectId(projectId);
-        binding.setRepositoryId(mirror.getId());
-        binding.setDefaultBranch(created.getDefaultBranch());
-        binding.setDisplayName(request.getDisplayName() == null || request.getDisplayName().isBlank()
-                ? created.getName() : request.getDisplayName());
-        binding.setBoundAt(LocalDateTime.now(clock));
-        projectRepositoryMapper.insert(binding);
+        String displayName = request.getDisplayName() == null || request.getDisplayName().isBlank()
+                ? created.getName() : request.getDisplayName();
+        ProjectRepositoryEntity binding = upsertProjectBinding(projectId, mirror, displayName);
         return toProjectRepositoryResponse(binding, mirror);
     }
 
@@ -287,25 +271,8 @@ public class GitHubRepositoryService {
                     "Repository default branch is missing from metadata");
         }
 
-        // 防止重复绑定：如果该仓库已经被当前项目绑定过，抛出冲突
-        if (projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
-                .eq(ProjectRepositoryEntity::getProjectId, projectId)
-                .eq(ProjectRepositoryEntity::getRepositoryId, repository.getId())) != null) {
-            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_ALREADY_BOUND",
-                    "Repository is already bound to this project");
-        }
-
-        // 创建项目与仓库的绑定关系记录 (ProjectRepositoryEntity)
-        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
-        binding.setId(UUID.randomUUID());
-        binding.setProjectId(projectId);
-        binding.setRepositoryId(repository.getId());
-        // 强制以后端 GitHub 的 defaultBranch 为准，忽略前端的覆盖值
-        binding.setDefaultBranch(repository.getDefaultBranch());
-        binding.setDisplayName(request.getDisplayName());
-        binding.setBoundAt(LocalDateTime.now(clock));
-
-        projectRepositoryMapper.insert(binding);
+        // 绑定或恢复：ACTIVE 冲突，UNBOUND 恢复复用原 id，否则新建（强制以后端 defaultBranch 为准）
+        ProjectRepositoryEntity binding = upsertProjectBinding(projectId, repository, request.getDisplayName());
         return toProjectRepositoryResponse(binding, repository);
     }
 
@@ -343,20 +310,7 @@ public class GitHubRepositoryService {
                 throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_METADATA_INCOMPLETE",
                         "仓库默认分支缺失，无法绑定");
             }
-            if (projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
-                    .eq(ProjectRepositoryEntity::getProjectId, projectId)
-                    .eq(ProjectRepositoryEntity::getRepositoryId, repository.getId())) != null) {
-                throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_ALREADY_BOUND",
-                        "仓库已被该项目绑定");
-            }
-            ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
-            binding.setId(UUID.randomUUID());
-            binding.setProjectId(projectId);
-            binding.setRepositoryId(repository.getId());
-            binding.setDefaultBranch(repository.getDefaultBranch());
-            binding.setDisplayName(repository.getName());
-            binding.setBoundAt(LocalDateTime.now(clock));
-            projectRepositoryMapper.insert(binding);
+            upsertProjectBinding(projectId, repository, repository.getName());
         }
     }
 
@@ -391,8 +345,12 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 解除项目与某个 GitHub 仓库的绑定关系。
-     * 若该绑定仍被配置或不可变项目历史引用，则拒绝解绑，避免删除历史记录。
+     * 软解绑项目仓库：不物理删除绑定记录，仅标记 UNBOUND 并写入 unbound_at，
+     * 保留 RequirementGroup / Task / Workspace / Diff / MR / 分支配置等历史外键引用。
+     * <p>
+     * 幂等：已 UNBOUND 的绑定重复解绑直接返回，不报错。
+     * 活动 Task 占用校验待后端 1 提供「projectRepositoryId -> 是否有活动 Task」查询后接入，
+     * 命中时返回 409 PROJECT_REPOSITORY_IN_USE。
      *
      * @param actorId             操作人的用户 ID
      * @param projectId           项目 ID
@@ -402,26 +360,21 @@ public class GitHubRepositoryService {
     public void unbindProjectRepository(UUID actorId, UUID projectId, UUID projectRepositoryId) {
         // 权限校验：必须是项目管理员
         requireProjectAdmin(actorId, projectId);
-        // 查找对应的绑定记录
-        // 锁定父记录，避免预检通过后新增 Diff 造成删除时再次触发外键异常。
+        // 锁定父记录，避免并发下重复软解绑或与重新绑定竞争
         ProjectRepositoryEntity current = projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId);
         // 防越权校验
         if (current == null || !projectId.equals(current.getProjectId())) {
             throw notFound("Project repository binding does not exist");
         }
-        // 如果这个仓库配置了分支，不给解绑
-        if (branchConfigMapper.selectCount(new LambdaQueryWrapper<RepositoryBranchConfigEntity>()
-                .eq(RepositoryBranchConfigEntity::getProjectRepositoryId, projectRepositoryId)) > 0) {
-            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_REFERENCED_BY_BRANCH_CONFIG",
-                    "Delete branch configuration before unbinding this repository");
+        // 幂等：已软解绑的绑定重复解绑直接返回
+        if ("UNBOUND".equals(current.getStatus())) {
+            return;
         }
-        if (diffMapper.selectCount(new LambdaQueryWrapper<DiffEntity>()
-                .eq(DiffEntity::getProjectRepositoryId, projectRepositoryId)) > 0) {
-            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_REFERENCED_BY_DIFF",
-                    "Project repository has immutable Diff history and cannot be unbound");
-        }
-        // 否则删除
-        projectRepositoryMapper.deleteById(projectRepositoryId);
+        // TODO(后端1): 接入活动 Task 使用查询，命中时抛 409 PROJECT_REPOSITORY_IN_USE，再执行软解绑。
+        // 软解绑：标记 UNBOUND，保留历史记录与下游外键引用
+        current.setStatus("UNBOUND");
+        current.setUnboundAt(LocalDateTime.now(clock));
+        projectRepositoryMapper.updateById(current);
     }
 
     /**
@@ -755,6 +708,40 @@ public class GitHubRepositoryService {
 
     private ApiException notFound(String message) {
         return new ApiException(HttpStatus.NOT_FOUND, "GITHUB_RESOURCE_NOT_FOUND", message);
+    }
+
+    /**
+     * 绑定或恢复项目仓库绑定：同项目同仓库已有 ACTIVE 绑定则冲突；已有 UNBOUND 则恢复为
+     * ACTIVE 并复用原 id（保留历史外键引用）；否则新建 ACTIVE 绑定。返回落库后的绑定记录。
+     */
+    private ProjectRepositoryEntity upsertProjectBinding(UUID projectId, GitHubRepositoryEntity repository,
+                                                         String displayName) {
+        ProjectRepositoryEntity existing = projectRepositoryMapper.selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
+                .eq(ProjectRepositoryEntity::getProjectId, projectId)
+                .eq(ProjectRepositoryEntity::getRepositoryId, repository.getId()));
+        if (existing != null) {
+            if ("ACTIVE".equals(existing.getStatus())) {
+                throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_ALREADY_BOUND",
+                        "仓库已被该项目绑定");
+            }
+            existing.setStatus("ACTIVE");
+            existing.setUnboundAt(null);
+            existing.setDefaultBranch(repository.getDefaultBranch());
+            existing.setDisplayName(displayName);
+            existing.setBoundAt(LocalDateTime.now(clock));
+            projectRepositoryMapper.updateById(existing);
+            return existing;
+        }
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(UuidV7.next());
+        binding.setProjectId(projectId);
+        binding.setRepositoryId(repository.getId());
+        binding.setDefaultBranch(repository.getDefaultBranch());
+        binding.setDisplayName(displayName);
+        binding.setBoundAt(LocalDateTime.now(clock));
+        binding.setStatus("ACTIVE");
+        projectRepositoryMapper.insert(binding);
+        return binding;
     }
 
     /**

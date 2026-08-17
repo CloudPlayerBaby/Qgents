@@ -41,20 +41,16 @@ import qg.qgent.dto.NewProjectRepositoryRequest;
 import qg.qgent.dto.ProjectRepositoryResponse;
 import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.GitHubRepositoryEntity;
-import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
-import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.github.GitHubClient;
 import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
-import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
-import qg.qgent.mapper.RepositoryBranchConfigMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.service.GitHubRepositoryService;
 
@@ -71,8 +67,6 @@ class GitHubRepositoryServiceTest {
     @Mock private ProjectMapper projectMapper;
     @Mock private ProjectMemberMapper projectMemberMapper;
     @Mock private TeamMemberMapper teamMemberMapper;
-    @Mock private RepositoryBranchConfigMapper branchConfigMapper;
-    @Mock private DiffMapper diffMapper;
     @Mock private GitHubAppClient gitHubClient;
 
     private GitHubRepositoryService service;
@@ -86,8 +80,6 @@ class GitHubRepositoryServiceTest {
         TableInfoHelper.initTableInfo(assistant, GitHubRepositoryEntity.class);
         TableInfoHelper.initTableInfo(assistant, ProjectRepositoryEntity.class);
         TableInfoHelper.initTableInfo(assistant, ProjectEntity.class);
-        TableInfoHelper.initTableInfo(assistant, RepositoryBranchConfigEntity.class);
-        TableInfoHelper.initTableInfo(assistant, DiffEntity.class);
     }
 
     @BeforeEach
@@ -96,7 +88,7 @@ class GitHubRepositoryServiceTest {
         // lenient：仅 sync 相关测试会触发事务，其余测试该 stub 不被使用
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         service = new GitHubRepositoryService(installationMapper, repositoryMapper, projectRepositoryMapper,
-                projectMapper, projectMemberMapper, teamMemberMapper, branchConfigMapper, diffMapper, gitHubClient,
+                projectMapper, projectMemberMapper, teamMemberMapper, gitHubClient,
                 Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), transactionManager);
     }
 
@@ -121,7 +113,9 @@ class GitHubRepositoryServiceTest {
     void rejectsDuplicateProjectBinding() {
         authorizeProjectAdmin();
         when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(repository("main"));
-        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(new ProjectRepositoryEntity());
+        ProjectRepositoryEntity active = new ProjectRepositoryEntity();
+        active.setStatus("ACTIVE");
+        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(active);
 
         ApiException exception = assertThrows(ApiException.class, () -> service.bindProjectRepository(actorId, projectId,
                 bindRequest(installationId, repositoryId, null, null)));
@@ -165,40 +159,62 @@ class GitHubRepositoryServiceTest {
     }
 
     @Test
-    void refusesToUnbindRepositoryReferencedByBranchConfiguration() {
+    void unbindsRepositoryByMarkingUnbound() {
         UUID projectRepositoryId = UUID.randomUUID();
         ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
         binding.setId(projectRepositoryId);
         binding.setProjectId(projectId);
+        binding.setStatus("ACTIVE");
         authorizeProjectAdmin();
         when(projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId)).thenReturn(binding);
-        when(branchConfigMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
 
-        ApiException exception = assertThrows(ApiException.class,
-                () -> service.unbindProjectRepository(actorId, projectId, projectRepositoryId));
+        service.unbindProjectRepository(actorId, projectId, projectRepositoryId);
 
-        assertEquals(HttpStatus.CONFLICT, exception.status());
-        assertEquals("PROJECT_REPOSITORY_REFERENCED_BY_BRANCH_CONFIG", exception.code());
-        verify(projectRepositoryMapper, never()).deleteById(projectRepositoryId);
+        ArgumentCaptor<ProjectRepositoryEntity> captor = ArgumentCaptor.forClass(ProjectRepositoryEntity.class);
+        verify(projectRepositoryMapper).updateById(captor.capture());
+        assertEquals("UNBOUND", captor.getValue().getStatus());
+        assertNotNull(captor.getValue().getUnboundAt());
+        verify(projectRepositoryMapper, never()).deleteById(any(UUID.class));
     }
 
     @Test
-    void refusesToUnbindRepositoryReferencedByDiff() {
+    void unbindIsIdempotentForAlreadyUnbound() {
         UUID projectRepositoryId = UUID.randomUUID();
         ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
         binding.setId(projectRepositoryId);
         binding.setProjectId(projectId);
+        binding.setStatus("UNBOUND");
         authorizeProjectAdmin();
         when(projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId)).thenReturn(binding);
-        when(branchConfigMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
-        when(diffMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
 
-        ApiException exception = assertThrows(ApiException.class,
-                () -> service.unbindProjectRepository(actorId, projectId, projectRepositoryId));
+        service.unbindProjectRepository(actorId, projectId, projectRepositoryId);
 
-        assertEquals(HttpStatus.CONFLICT, exception.status());
-        assertEquals("PROJECT_REPOSITORY_REFERENCED_BY_DIFF", exception.code());
-        verify(projectRepositoryMapper, never()).deleteById(projectRepositoryId);
+        verify(projectRepositoryMapper, never()).updateById(any(ProjectRepositoryEntity.class));
+    }
+
+    @Test
+    void rebindingRestoresUnboundRepositoryReusingId() {
+        GitHubRepositoryEntity repository = repository("main");
+        authorizeProjectAdmin();
+        when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(repository);
+
+        ProjectRepositoryEntity unbound = new ProjectRepositoryEntity();
+        unbound.setId(UUID.randomUUID());
+        unbound.setProjectId(projectId);
+        unbound.setRepositoryId(repository.getId());
+        unbound.setStatus("UNBOUND");
+        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(unbound);
+
+        ProjectRepositoryResponse response = service.bindProjectRepository(actorId, projectId,
+                bindRequest(installationId, repositoryId, null, "Backend"));
+
+        ArgumentCaptor<ProjectRepositoryEntity> captor = ArgumentCaptor.forClass(ProjectRepositoryEntity.class);
+        verify(projectRepositoryMapper).updateById(captor.capture());
+        assertEquals("ACTIVE", captor.getValue().getStatus());
+        assertNull(captor.getValue().getUnboundAt());
+        assertEquals(unbound.getId(), captor.getValue().getId());
+        assertEquals("Backend", response.getDisplayName());
+        verify(projectRepositoryMapper, never()).insert(any(ProjectRepositoryEntity.class));
     }
 
     @Test
