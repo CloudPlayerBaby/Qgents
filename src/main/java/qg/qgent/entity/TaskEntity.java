@@ -60,6 +60,10 @@ public class TaskEntity {
      */
     private String deliveryMode;
     /**
+     * Planner 计划已原子物化为正式执行步骤的时间；非空后不得由自动编排重写步骤清单。
+     */
+    private LocalDateTime planMaterializedAt;
+    /**
      * Authenticated user who requested the task.
      */
     private UUID createdBy;

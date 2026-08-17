@@ -36,6 +36,9 @@ public class TaskStepCreateRequest {
     @Size(max = 5000)
     @Schema(description = "Acceptance criteria")
     private String acceptanceCriteria;
+    @Size(max = 20)
+    @Schema(description = "Planner required capability tags for this step")
+    private List<@NotBlank @Size(max = 64) String> requiredCapabilities;
     @Schema(description = "Identifiers of earlier steps in this Task")
     private List<@NotNull UUID> dependencyIds;
     @NotEmpty

@@ -17,7 +17,7 @@ class PlanResultParserTest {
             {
               "taskUnderstanding": "understand",
               "implementationGoals": ["goal1", "goal2"],
-              "steps": [{"title":"impl","files":["a.java","b.java"],"description":"do it"}],
+              "steps": [{"title":"impl","files":["a.java","b.java"],"description":"do it","requiredCapabilities":["java","spring-boot"]}],
               "testPlan": "run tests",
               "risks": ["risk1"]
             }
@@ -31,6 +31,7 @@ class PlanResultParserTest {
         assertThat(plan.getImplementationSteps().get(0).getTitle()).isEqualTo("impl");
         assertThat(plan.getImplementationSteps().get(0).getFiles()).containsExactly("a.java", "b.java");
         assertThat(plan.getImplementationSteps().get(0).getDescription()).isEqualTo("do it");
+        assertThat(plan.getImplementationSteps().get(0).getRequiredCapabilities()).containsExactly("java", "spring-boot");
         assertThat(plan.getTestPlan()).isEqualTo("run tests");
         assertThat(plan.getRisks()).containsExactly("risk1");
     }
@@ -71,6 +72,18 @@ class PlanResultParserTest {
 
     @Test void rejectsBlankTestPlan() {
         String json = "{\"taskUnderstanding\":\"x\",\"implementationGoals\":[\"g\"],\"steps\":[{\"title\":\"s\",\"files\":[\"a\"]}],\"testPlan\":\"\"}";
+        assertThatThrownBy(() -> parser.parse(json)).isInstanceOf(PlanParseException.class);
+    }
+
+    @Test void rejectsAbsoluteOrTraversalFilePath() {
+        String absolute = VALID_JSON.replace("a.java", "/etc/passwd");
+        String traversal = VALID_JSON.replace("a.java", "../outside.java");
+        assertThatThrownBy(() -> parser.parse(absolute)).isInstanceOf(PlanParseException.class);
+        assertThatThrownBy(() -> parser.parse(traversal)).isInstanceOf(PlanParseException.class);
+    }
+
+    @Test void rejectsInvalidCapabilityTag() {
+        String json = VALID_JSON.replace("spring-boot", "Spring Boot");
         assertThatThrownBy(() -> parser.parse(json)).isInstanceOf(PlanParseException.class);
     }
 }

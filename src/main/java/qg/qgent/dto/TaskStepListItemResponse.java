@@ -56,6 +56,12 @@ public class TaskStepListItemResponse {
     private String role;
 
     /**
+     * Planner 为本步骤声明的能力标签。
+     */
+    @Schema(description = "步骤所需能力标签")
+    private List<String> requiredCapabilities;
+
+    /**
      * 分配的 Agent 摘要；未分配时为 null。
      */
     @Schema(description = "分配 Agent 摘要")

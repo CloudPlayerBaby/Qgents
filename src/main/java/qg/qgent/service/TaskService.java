@@ -236,6 +236,11 @@ public class TaskService {
                                            List<TaskStepCreateRequest> requests) {
         TaskEntity task = requireTask(projectId, taskId);
         requireTaskManager(task, actor);
+        if (task.getPlanMaterializedAt() != null || (task.getStatus() != null
+                && !Set.of("PLANNING", "PENDING").contains(task.getStatus()))) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_STEP_PLAN_FROZEN",
+                    "计划已物化或任务已开始执行，不能追加步骤");
+        }
         workspaces.selectByIdForUpdate(task.getWorkspaceId());
         Set<UUID> allowedRepositories = repositories.selectByWorkspace(task.getWorkspaceId()).stream()
                 .map(WorkspaceRepositoryEntity::getProjectRepositoryId).collect(Collectors.toSet());
@@ -339,6 +344,7 @@ public class TaskService {
         step.setRole(request.getRole().trim());
         step.setAssignedAgentId(request.getAssignedAgentId());
         step.setAcceptanceCriteria(request.getAcceptanceCriteria());
+        step.setRequiredCapabilities(request.getRequiredCapabilities());
         step.setStatus("PENDING");
         step.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         step.setUpdatedAt(step.getCreatedAt());
@@ -394,7 +400,7 @@ public class TaskService {
     private TaskStepResponse stepResponse(TaskStepEntity step, List<TaskRepositoryScopeRequest> repositoryScopes) {
         return new TaskStepResponse(id(step.getId()), id(step.getTaskId()), step.getSequenceNo(), step.getTitle(),
                 step.getInstruction(), step.getRole(), id(step.getAssignedAgentId()), step.getAcceptanceCriteria(),
-                step.getStatus(), repositoryScopes);
+                step.getRequiredCapabilities(), step.getStatus(), repositoryScopes);
     }
 
     private TaskRepositoryScopeRequest scopeResponse(TaskStepRepositoryEntity entity) {

@@ -40,5 +40,9 @@ public class PlanResult {
         private String title;
         private List<String> files = new ArrayList<>();
         private String description;
+        /**
+         * 完成此原子实现步骤所需的能力标签。
+         */
+        private List<String> requiredCapabilities = new ArrayList<>();
     }
 }

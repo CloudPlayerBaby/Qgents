@@ -3,16 +3,19 @@ package qg.qgent.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import lombok.Data;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.List;
 
 /**
  * Planned workflow node with explicit instructions, role, Agent assignment and acceptance criteria.
  */
 @Data
-@TableName("task_steps")
+@TableName(value = "task_steps", autoResultMap = true)
 public class TaskStepEntity {
     /**
      * UUIDv7 step identifier.
@@ -47,6 +50,11 @@ public class TaskStepEntity {
      * Acceptance criteria for this step.
      */
     private String acceptanceCriteria;
+    /**
+     * Planner 为该步骤声明的能力标签；用于固定 Agent 选择依据并供看板展示。
+     */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private List<String> requiredCapabilities;
     /**
      * State: PENDING/RUNNING/SUCCEEDED/FAILED/SKIPPED/CANCELLED.
      */

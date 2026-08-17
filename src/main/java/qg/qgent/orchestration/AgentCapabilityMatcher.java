@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.ArrayList;
 
 /**
  * Agent 能力匹配选择器：在角色候选池中按「能力与步骤角色的匹配度」选出最合适的 Agent。
@@ -65,8 +66,32 @@ public final class AgentCapabilityMatcher {
      * @param creatorId  任务创建人 ID（仅用于 PRIVATE 优先级的语义声明；候选池已保证归属）。
      */
     public static AgentEntity pickBest(String role, List<AgentEntity> candidates, java.util.UUID creatorId) {
+        return pickBest(role, List.of(), candidates, creatorId);
+    }
+
+    /**
+     * 按步骤显式能力要求选择 Agent。显式要求优先于角色通用标签：有要求时候选必须至少命中一个，
+     * 再按命中数量、PRIVATE、名称做稳定排序；无显式要求时保持角色能力的既有选择规则。
+     */
+    public static AgentEntity pickBest(String role, List<String> requiredCapabilities, List<AgentEntity> candidates,
+                                       java.util.UUID creatorId) {
         if (candidates == null || candidates.isEmpty()) {
             return null;
+        }
+        List<String> required = requiredCapabilities == null ? List.of() : requiredCapabilities.stream()
+                .filter(java.util.Objects::nonNull).map(value -> value.toLowerCase(Locale.ROOT)).distinct().toList();
+        if (!required.isEmpty()) {
+            List<AgentEntity> matching = candidates.stream()
+                    .filter(candidate -> explicitMatchScore(required, candidate.getCapabilities()) == required.size()).toList();
+            if (matching.isEmpty()) {
+                return null;
+            }
+            return matching.stream().sorted(Comparator
+                            .comparingInt((AgentEntity candidate) -> explicitMatchScore(required,
+                                    candidate.getCapabilities())).reversed()
+                            .thenComparingInt(candidate -> "PRIVATE".equals(candidate.getVisibility()) ? 0 : 1)
+                            .thenComparing(AgentEntity::getName, Comparator.nullsLast(String::compareTo)))
+                    .findFirst().orElse(null);
         }
         // 能力约束过滤：存在命中期望能力者时只在命中者中选
         List<AgentEntity> scoped = candidates.stream()
@@ -83,5 +108,13 @@ public final class AgentCapabilityMatcher {
                         .thenComparing(AgentEntity::getName, Comparator.nullsLast(String::compareTo)))
                 .findFirst()
                 .orElse(null);
+    }
+
+    private static int explicitMatchScore(List<String> required, List<String> capabilities) {
+        if (capabilities == null) {
+            return 0;
+        }
+        return (int) capabilities.stream().filter(java.util.Objects::nonNull)
+                .map(value -> value.toLowerCase(Locale.ROOT)).filter(required::contains).count();
     }
 }

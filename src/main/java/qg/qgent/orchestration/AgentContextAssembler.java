@@ -40,8 +40,7 @@ public class AgentContextAssembler {
     }
 
     /**
-     * PLAN 相位输入：无 TaskRun/TaskStep（P0 起 PLAN 为正式 step，主链路走 {@link #assemble}，
-     * 本方法保留用于兼容调用）。
+     * PLAN bootstrap 输入：无 TaskRun/TaskStep。本方法保留供无步骤上下文的调用方使用。
      */
     public AgentInput assemblePlan(TaskEntity task) {
         AgentInput input = base(task);

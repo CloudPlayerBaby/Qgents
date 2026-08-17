@@ -213,6 +213,20 @@ class TaskServiceTest {
     }
 
     @Test
+    void materializedPlanRejectsAppendingSteps() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
+        TaskEntity task = task(taskId, projectId, actor);
+        task.setPlanMaterializedAt(java.time.LocalDateTime.now());
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.addSteps(projectId, taskId, actor, List.of()));
+
+        assertEquals("TASK_STEP_PLAN_FROZEN", exception.code());
+        verifyNoInteractions(workspaces, repositories, steps);
+    }
+
+    @Test
     void cancelPendingTaskMarksCancelledAndPublishesEvent() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
         UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();

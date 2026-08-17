@@ -8,11 +8,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import qg.qgent.api.ApiException;
-import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.GroupContext;
 import qg.qgent.dto.MessageSendRequest;
-import qg.qgent.dto.TaskRepositoryScopeRequest;
-import qg.qgent.dto.TaskStepCreateRequest;
 import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
 import qg.qgent.orchestration.llm.LlmObservation;
@@ -33,7 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * TaskRun 生命周期、结果路由、Test/Review 失败后的 Coding 重试、循环上限与基础设施重试。
  * <p>
  * 编排图由 {@link WorkflowGraphBuilder} 按任务的步骤列表**数据驱动构建**：每个 TaskStep 一个
- * 节点（PLANNER 提升为带 TaskRun 的正式 step），节点执行 {@link #runStepNode}——建 TaskRun、
+ * 节点（Planner bootstrap 成功后才物化的正式执行 step）执行 {@link #runStepNode}——建 TaskRun、
  * 经 {@link AgentRegistry} 解析 Agent（自定义 Agent 或内置兜底）执行、落产物、依据
  * {@link OrchestrationStateMachine#decide} 的决策在图中推进（next/retry/requeue/END）。
  * <p>
@@ -52,15 +49,6 @@ public class TaskOrchestrator {
      */
     private static final Set<String> STARTABLE_TASK_STATUSES = Set.of("PLANNING", "PENDING", "RUNNING");
 
-    /**
-     * 模板步骤的通用指令（PLANNER 产出计划后回填 DEVELOPER/TESTER 指令；
-     * 已回填或用户自写的指令不再覆盖）。
-     */
-    private static final String TEMPLATE_PLANNER_INSTRUCTION = "分析需求并制定实现计划";
-    private static final String TEMPLATE_DEVELOPER_INSTRUCTION = "实现任务需求：读取相关代码、按需修改工作区文件，并完成自检";
-    private static final String TEMPLATE_TESTER_INSTRUCTION = "运行测试并判定是否满足验收";
-    private static final String TEMPLATE_REVIEWER_INSTRUCTION = "审查本次改动是否符合需求、质量与安全要求";
-
     private static final Logger log = LoggerFactory.getLogger(TaskOrchestrator.class);
     /**
      * 终态中等待用户确认的 Diff 审核状态；确认后的交付由 DiffReviewBatchService 驱动。
@@ -71,20 +59,17 @@ public class TaskOrchestrator {
     private final WorkflowGraphBuilder workflowGraphBuilder;
     private final AgentRegistry agentRegistry;
     private final AgentContextAssembler contextAssembler;
-    private final TaskService taskService;
     private final TaskRunService taskRunService;
     private final TaskMapper taskMapper;
     private final TaskStepMapper stepMapper;
-    private final WorkspaceRepositoryMapper workspaceRepositoryMapper;
     private final EventService eventService;
     private final NotificationService notificationService;
     private final SandboxSessionManager sandboxSessionManager;
     private final TaskExecutionArtifactService artifactService;
     private final FinalDiffBundleService finalDiffBundles;
     private final MessageService messageService;
-    private final AgentMapper agentMapper;
-    private final ProjectMapper projectMapper;
     private final OrchestratorAgentService orchestratorAgents;
+    private final TaskPlanMaterializationService planMaterialization;
 
     /**
      * 各编排任务的执行现场（富结果/反馈/计数，不进图状态），按 taskId 暂存。
@@ -92,31 +77,28 @@ public class TaskOrchestrator {
     private final Map<UUID, TaskExecutionContext> executions = new ConcurrentHashMap<>();
 
     public TaskOrchestrator(OrchestrationStateMachine stateMachine, WorkflowGraphBuilder workflowGraphBuilder,
-                            AgentRegistry agentRegistry, AgentContextAssembler contextAssembler, TaskService taskService,
+                            AgentRegistry agentRegistry, AgentContextAssembler contextAssembler,
                             TaskRunService taskRunService, TaskMapper taskMapper, TaskStepMapper stepMapper,
-                            WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService,
+                            EventService eventService,
                             NotificationService notificationService, SandboxSessionManager sandboxSessionManager,
                             TaskExecutionArtifactService artifactService, FinalDiffBundleService finalDiffBundles,
-                            MessageService messageService, AgentMapper agentMapper, ProjectMapper projectMapper,
-                            OrchestratorAgentService orchestratorAgents) {
+                            MessageService messageService, OrchestratorAgentService orchestratorAgents,
+                            TaskPlanMaterializationService planMaterialization) {
         this.stateMachine = stateMachine;
         this.workflowGraphBuilder = workflowGraphBuilder;
         this.agentRegistry = agentRegistry;
         this.contextAssembler = contextAssembler;
-        this.taskService = taskService;
         this.taskRunService = taskRunService;
         this.taskMapper = taskMapper;
         this.stepMapper = stepMapper;
-        this.workspaceRepositoryMapper = workspaceRepositoryMapper;
         this.eventService = eventService;
         this.notificationService = notificationService;
         this.sandboxSessionManager = sandboxSessionManager;
         this.artifactService = artifactService;
         this.finalDiffBundles = finalDiffBundles;
         this.messageService = messageService;
-        this.agentMapper = agentMapper;
-        this.projectMapper = projectMapper;
         this.orchestratorAgents = orchestratorAgents;
+        this.planMaterialization = planMaterialization;
     }
 
     /**
@@ -179,13 +161,28 @@ public class TaskOrchestrator {
         }
         try {
             sandboxSessionManager.acquire(task.getId(), task.getProjectId(), task.getWorkspaceId());
-            List<TaskStepEntity> steps = ensureSteps(task);
-            ctx.steps = steps;
             // 群聊/Skill/Memory 上下文快照：一次 orchestrate 组装一次，跨节点复用（失败不阻断）
             ctx.groupContext = contextAssembler.buildGroupContext(task);
-            String startNodeId = startStepId == null ? null : startStepId.toString();
+            TaskEntity current = taskMapper.selectById(taskId);
+            if (current == null) {
+                throw new IllegalStateException("Task disappeared after orchestration claim");
+            }
+            if (current.getPlanMaterializedAt() == null) {
+                TaskStepEntity planner = planMaterialization.ensurePlannerStep(current);
+                if (!runPlanBootstrap(current, planner, ctx)) {
+                    return;
+                }
+            }
+            List<TaskStepEntity> steps = loadSteps(taskId).stream()
+                    .filter(step -> !"PLANNER".equals(step.getRole())).toList();
+            if (steps.isEmpty()) {
+                throw new IllegalStateException("materialized task has no executable steps");
+            }
+            ctx.steps = steps;
+            String startNodeId = steps.stream().anyMatch(step -> step.getId().equals(startStepId))
+                    ? startStepId.toString() : null;
             CompiledGraph<TaskOrchestrationState> graph = workflowGraphBuilder.build(steps,
-                    (step, state) -> runStepNode(step, state), developerNodeId(steps), startNodeId);
+                    (step, state) -> runStepNode(step, state), lastDeveloperNodeId(steps), startNodeId);
             log.info("orchestrate sandbox acquired taskId={}", taskId);
             graph.invoke(Map.of("projectId", projectId.toString(), "taskId", taskId.toString()));
             log.info("orchestrate graph completed taskId={}", taskId);
@@ -197,6 +194,48 @@ public class TaskOrchestrator {
         } finally {
             sandboxSessionManager.release(task.getWorkspaceId());
             executions.remove(taskId);
+        }
+    }
+
+    /**
+     * Planner 不进入 TaskRun 图：它只生成 Task 级 PLAN 产物，成功后才由物化服务冻结正式步骤。
+     * 外部 Agent 调用发生在数据库事务外，避免持锁调用 LLM 或 Worker。
+     */
+    private boolean runPlanBootstrap(TaskEntity task, TaskStepEntity planner, TaskExecutionContext ctx) {
+        Optional<Agent> agent = agentRegistry.resolve(planner.getAssignedAgentId(), "PLANNER");
+        if (agent.isEmpty()) {
+            markStepSettled(task, planner, RunOutcome.FAILED);
+            finishTask(task, ctx, StateMachineDecision.Action.COMPLETE_FAILED);
+            return false;
+        }
+        while (true) {
+            markStepRunning(task, planner);
+            AgentInput input = contextAssembler.assemble(task, planner, OrchestrationPhase.PLAN, null, null,
+                    null, null, null, ctx.groupContext);
+            AgentRunOutcome outcome = safeExecute(agent.get(), OrchestrationPhase.PLAN, input);
+            if (outcome.getPlanResult() != null) {
+                ctx.planResult = outcome.getPlanResult();
+            }
+            StateMachineDecision decision = stateMachine.decide(OrchestrationPhase.PLAN, outcome.getOutcome(),
+                    ctx.counters);
+            if (decision.getAction() == StateMachineDecision.Action.ADVANCE && outcome.getPlanResult() != null) {
+                try {
+                    planMaterialization.materialize(task, outcome.getPlanResult());
+                } catch (ApiException e) {
+                    markStepSettled(task, planner, RunOutcome.FAILED);
+                    updateTaskStatus(task, "FAILED");
+                    sendAgentCard(task, "task-" + task.getId(), "FAILED", null, e.getMessage());
+                    return false;
+                }
+                updateTaskStatus(task, "RUNNING");
+                return true;
+            }
+            if (decision.getAction() == StateMachineDecision.Action.RETRY_PHASE) {
+                continue;
+            }
+            markStepSettled(task, planner, outcome.getOutcome());
+            finishTask(task, ctx, decision.getAction());
+            return false;
         }
     }
 
@@ -219,102 +258,10 @@ public class TaskOrchestrator {
                 "任务启动失败：执行环境暂不可用，请稍后重试或联系管理员");
     }
 
-    /**
-     * 确保任务步骤就位（幂等，只补缺不重复创建）：任务无步骤时按模板创建
-     * [PLANNER, DEVELOPER, TESTER, REVIEWER]；已有步骤时保留用户步骤与 assignedAgentId，
-     * 仅补缺——缺 PLANNER 则补建（恒在首位）、缺 DEVELOPER 则补建（requeue 目标必须存在），
-     * 用户步骤缺失 TESTER/REVIEWER 视为用户选择。返回按执行顺序排列的步骤。
-     */
-    private List<TaskStepEntity> ensureSteps(TaskEntity task) {
-        List<TaskStepEntity> existing = loadSteps(task.getId());
-        if (existing.isEmpty()) {
-            createTemplateSteps(task);
-            return normalizeSteps(task, loadSteps(task.getId()));
-        }
-        List<TaskStepCreateRequest> toAdd = new ArrayList<>();
-        if (findByRole(existing, "PLANNER") == null) {
-            toAdd.add(gapStep(task, "PLANNER", "Plan", TEMPLATE_PLANNER_INSTRUCTION, "READ"));
-        }
-        if (findByRole(existing, "DEVELOPER") == null) {
-            toAdd.add(gapStep(task, "DEVELOPER", "Implement", TEMPLATE_DEVELOPER_INSTRUCTION, "WRITE"));
-        }
-        if (!toAdd.isEmpty()) {
-            taskService.addSteps(task.getProjectId(), task.getId(), task.getCreatedBy(), toAdd);
-        }
-        return normalizeSteps(task, loadSteps(task.getId()));
-    }
-
-    /**
-     * 无步骤任务：一次性创建模板四步（依赖链 PLANNER→DEVELOPER→TESTER→REVIEWER，
-     * 仓库 scope DEVELOPER=WRITE、其余 READ），resolveAgent 在落库时定型 assignedAgentId。
-     */
-    private void createTemplateSteps(TaskEntity task) {
-        List<UUID> repoIds = repositoryIds(task);
-        UUID plannerId = UuidV7.next();
-        UUID devId = UuidV7.next();
-        UUID testId = UuidV7.next();
-        UUID reviewId = UuidV7.next();
-        List<TaskStepCreateRequest> requests = List.of(
-                planStep(plannerId, "Plan", TEMPLATE_PLANNER_INSTRUCTION, "PLANNER", resolveAgent(task, "PLANNER"),
-                        List.of(), "READ", repoIds),
-                planStep(devId, "Implement", TEMPLATE_DEVELOPER_INSTRUCTION, "DEVELOPER",
-                        resolveAgent(task, "DEVELOPER"), List.of(plannerId), "WRITE", repoIds),
-                planStep(testId, "Verify", TEMPLATE_TESTER_INSTRUCTION, "TESTER", resolveAgent(task, "TESTER"),
-                        List.of(devId), "READ", repoIds),
-                planStep(reviewId, "Review", TEMPLATE_REVIEWER_INSTRUCTION, "REVIEWER",
-                        resolveAgent(task, "REVIEWER"), List.of(testId), "READ", repoIds));
-        taskService.addSteps(task.getProjectId(), task.getId(), task.getCreatedBy(), requests);
-    }
-
-    /**
-     * 已有步骤的补缺单步（PLANNER/DEVELOPER），仓库 scope 按角色（PLANNER=READ，DEVELOPER=WRITE）。
-     */
-    private TaskStepCreateRequest gapStep(TaskEntity task, String role, String title, String instruction,
-                                          String accessMode) {
-        return planStep(UuidV7.next(), title, instruction, role, resolveAgent(task, role), List.of(), accessMode,
-                repositoryIds(task));
-    }
-
-    /**
-     * 步骤排序归一：PLANNER 恒在首位（fill-gap 补建的 PLANNER 在 DB 中 sequenceNo 靠后），
-     * 其余按 sequenceNo 升序；随后把 DB sequenceNo 重排为 1..N，使 UI 展示与图执行顺序一致。
-     */
-    private List<TaskStepEntity> normalizeSteps(TaskEntity task, List<TaskStepEntity> steps) {
-        List<TaskStepEntity> ordered = new ArrayList<>(steps);
-        ordered.sort(Comparator
-                .comparingInt((TaskStepEntity step) -> "PLANNER".equals(step.getRole()) ? 0 : 1)
-                .thenComparingInt(step -> step.getSequenceNo() == null ? Integer.MAX_VALUE : step.getSequenceNo()));
-        renumberSequences(task, ordered);
-        return ordered;
-    }
-
-    private void renumberSequences(TaskEntity task, List<TaskStepEntity> ordered) {
-        int seq = 1;
-        for (TaskStepEntity step : ordered) {
-            Integer current = step.getSequenceNo();
-            if (current != null && current == seq) {
-                seq++;
-                continue;
-            }
-            step.setSequenceNo(seq++);
-            step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
-            stepMapper.updateById(step);
-        }
-    }
-
     private List<TaskStepEntity> loadSteps(UUID taskId) {
         return stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
                 .eq(TaskStepEntity::getTaskId, taskId)
                 .orderByAsc(TaskStepEntity::getSequenceNo));
-    }
-
-    private TaskStepEntity findByRole(List<TaskStepEntity> steps, String role) {
-        for (TaskStepEntity step : steps) {
-            if (role.equals(step.getRole())) {
-                return step;
-            }
-        }
-        return null;
     }
 
     /**
@@ -351,9 +298,7 @@ public class TaskOrchestrator {
         if (phase == OrchestrationPhase.CODING && outcome.getOutcome() == RunOutcome.SUCCEEDED) {
             ctx.lastCodingRunId = run.getId();
         }
-        if (phase == OrchestrationPhase.PLAN && outcome.getPlanResult() != null) {
-            ctx.planResult = outcome.getPlanResult();
-        } else if (phase == OrchestrationPhase.CODING && outcome.getCodingResult() != null) {
+        if (phase == OrchestrationPhase.CODING && outcome.getCodingResult() != null) {
             ctx.codingResult = outcome.getCodingResult();
         } else if (phase == OrchestrationPhase.TESTING && outcome.getTestResult() != null) {
             ctx.testResult = outcome.getTestResult();
@@ -366,10 +311,6 @@ public class TaskOrchestrator {
         String route;
         switch (decision.getAction()) {
             case ADVANCE -> {
-                if (phase == OrchestrationPhase.PLAN && outcome.getPlanResult() != null) {
-                    backfillPlanSteps(task, outcome.getPlanResult());
-                    updateTaskStatus(task, "RUNNING");
-                }
                 ctx.feedback = null;
                 ctx.retryOf = null;
                 route = "next";
@@ -434,28 +375,6 @@ public class TaskOrchestrator {
         return -1;
     }
 
-    /**
-     * PLANNER 成功后回填模板步骤指令并落 plan 产物：仅覆盖仍为模板通用指令的
-     * DEVELOPER/TESTER 步骤（用户自写的指令不覆盖），TESTER 回填计划中的测试计划。
-     */
-    private void backfillPlanSteps(TaskEntity task, PlanResult plan) {
-        for (TaskStepEntity step : loadSteps(task.getId())) {
-            if ("DEVELOPER".equals(step.getRole()) && TEMPLATE_DEVELOPER_INSTRUCTION.equals(step.getInstruction())) {
-                step.setInstruction(planInstruction(plan));
-                step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
-                stepMapper.updateById(step);
-            } else if ("TESTER".equals(step.getRole()) && TEMPLATE_TESTER_INSTRUCTION.equals(step.getInstruction())) {
-                if (plan.getTestPlan() != null && !plan.getTestPlan().isBlank()) {
-                    step.setInstruction(plan.getTestPlan());
-                    step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
-                    stepMapper.updateById(step);
-                }
-            }
-        }
-        // PLAN 产物只属于 Task，不关联 TaskRun/TaskStep（AGENTS.md）
-        artifactService.createPlan(task, planSummary(plan));
-    }
-
     private Map<String, Object> routeState(TaskOrchestrationState state, String route) {
         return Map.of("projectId", state.getProjectId().toString(), "taskId", state.getTaskId().toString(),
                 "route", route);
@@ -503,83 +422,10 @@ public class TaskOrchestrator {
         return summary;
     }
 
-    /**
-     * 方案 A + 能力匹配：按角色在团队内解析 ACTIVE Agent——先按「能力与角色期望的匹配度」过滤并排序
-     * （能力最适合的优先，能力完全不匹配的不参与），匹配度相同时创建者本人的 PRIVATE Agent 优先于
-     * TEAM Agent（个人变体覆盖团队默认），再按名称升序取第一个；查不到返回 null，
-     * 该步骤内置兜底或跳过（不使任务失败）。与 TaskService.validateAgent 的授权条件一致。
-     * 选择规则详见 {@link AgentCapabilityMatcher}。
-     */
-    private UUID resolveAgent(TaskEntity task, String role) {
-        ProjectEntity project = projectMapper.selectById(task.getProjectId());
-        if (project == null || project.getTeamId() == null) {
-            return null;
-        }
-        List<AgentEntity> candidates = agentMapper.selectList(Wrappers.<AgentEntity>lambdaQuery()
-                .eq(AgentEntity::getTeamId, project.getTeamId())
-                .eq(AgentEntity::getRole, role)
-                .eq(AgentEntity::getStatus, "ACTIVE")
-                .and(visibility -> visibility.eq(AgentEntity::getVisibility, "TEAM")
-                        .or(owner -> owner.eq(AgentEntity::getVisibility, "PRIVATE")
-                                .eq(AgentEntity::getCreatedBy, task.getCreatedBy()))));
-        AgentEntity best = AgentCapabilityMatcher.pickBest(role, candidates, task.getCreatedBy());
-        return best == null ? null : best.getId();
-    }
-
-    private TaskStepCreateRequest planStep(UUID id, String title, String instruction, String role, UUID agentId,
-                                           List<UUID> dependencyIds, String accessMode, List<UUID> repoIds) {
-        TaskStepCreateRequest request = new TaskStepCreateRequest();
-        request.setId(id);
-        request.setTitle(title);
-        request.setInstruction(instruction);
-        request.setRole(role);
-        request.setAssignedAgentId(agentId);
-        request.setAcceptanceCriteria("满足该步骤验收条件");
-        request.setDependencyIds(dependencyIds);
-        request.setRepositoryScopes(repoIds.stream().map(repositoryId -> {
-            TaskRepositoryScopeRequest scope = new TaskRepositoryScopeRequest();
-            scope.setRepositoryId(repositoryId);
-            scope.setAccessMode(accessMode);
-            return scope;
-        }).toList());
-        return request;
-    }
-
-    private List<UUID> repositoryIds(TaskEntity task) {
-        return workspaceRepositoryMapper.selectByWorkspace(task.getWorkspaceId()).stream()
-                .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
-    }
-
-    /**
-     * PLAN 产物的用户可见摘要：目标与实现步骤标题，不落完整指令与文件路径明细。
-     */
-    private Map<String, Object> planSummary(PlanResult plan) {
-        Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("objectives", plan.getObjectives());
-        summary.put("steps", plan.getImplementationSteps().stream()
-                .map(PlanResult.ImplementationStep::getTitle).toList());
-        return summary;
-    }
-
-    private String planInstruction(PlanResult plan) {
-        StringBuilder sb = new StringBuilder("实现目标：").append(String.join("；", plan.getObjectives()));
-        for (PlanResult.ImplementationStep step : plan.getImplementationSteps()) {
-            sb.append("\n- ").append(step.getTitle()).append(" 文件：")
-                    .append(String.join(",", step.getFiles()));
-        }
-        if (plan.getTestPlan() != null && !plan.getTestPlan().isBlank()) {
-            sb.append("\n测试计划：").append(plan.getTestPlan());
-        }
-        if (plan.getRisks() != null && !plan.getRisks().isEmpty()) {
-            sb.append("\n风险：").append(String.join("；", plan.getRisks()));
-        }
-        return sb.toString();
-    }
-
-    private String developerNodeId(List<TaskStepEntity> steps) {
-        for (TaskStepEntity step : steps) {
-            if ("DEVELOPER".equals(step.getRole())) {
-                return step.getId().toString();
+    private String lastDeveloperNodeId(List<TaskStepEntity> steps) {
+        for (int index = steps.size() - 1; index >= 0; index--) {
+            if ("DEVELOPER".equals(steps.get(index).getRole())) {
+                return steps.get(index).getId().toString();
             }
         }
         return steps.get(0).getId().toString();

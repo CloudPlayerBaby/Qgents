@@ -21,6 +21,7 @@ public class TaskStepResponse {
     private String role;
     private String assignedAgentId;
     private String acceptanceCriteria;
+    private List<String> requiredCapabilities;
     private String status;
     private List<TaskRepositoryScopeRequest> repositoryScopes;
 }

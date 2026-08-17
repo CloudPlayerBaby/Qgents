@@ -556,7 +556,7 @@ public class TaskDisplayService {
         LocalDateTime finishedAt = stepRuns.stream().map(TaskRunEntity::getFinishedAt).filter(Objects::nonNull)
                 .max(Comparator.naturalOrder()).orElse(null);
         return new TaskStepListItemResponse(id(step.getId()), id(task.getId()), step.getSequenceNo(), step.getTitle(),
-                step.getInstruction(), step.getRole(), agentSummary(agent), repository,
+                step.getInstruction(), step.getRole(), step.getRequiredCapabilities(), agentSummary(agent), repository,
                 dependencyIds.stream().map(this::id).toList(), step.getStatus(), step.getAcceptanceCriteria(),
                 latestRun, stepRuns.size(), iso(startedAt), iso(finishedAt), iso(step.getCreatedAt()),
                 iso(step.getUpdatedAt()));

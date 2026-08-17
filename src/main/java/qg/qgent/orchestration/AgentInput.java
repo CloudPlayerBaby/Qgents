@@ -13,7 +13,7 @@ import java.util.UUID;
 
 /**
  * Agent 的结构化输入：任务上下文 + 本 step 步骤 + 循环反馈 + 群聊/Skill/Memory 上下文。
- * P0 起 PLAN 为正式 step（建 TaskRun），凡被执行的 step 均有 TaskRun，taskRunId/taskStepId 恒填充。
+ * PLAN bootstrap 不创建 TaskRun；正式执行图中的 CODING/TESTING/REVIEWING 输入均关联 TaskRun 与 TaskStep。
  * <p>
  * 群聊/Skill/Memory 上下文来自 {@code ContextService.buildForGroup}（后端4 已按用户+项目过滤），
  * 由 {@link AgentContextAssembler} 在每次 orchestrate 时快照一次注入；缺失时为空列表，属补充信息，
@@ -24,11 +24,11 @@ public class AgentInput {
     private UUID projectId;
     private UUID taskId;
     /**
-     * 本 step 对应的 TaskRun（P0 起 PLAN 亦建 TaskRun，执行时恒填充）。
+     * 本次正式执行对应的 TaskRun；PLAN bootstrap 时为 null。
      */
     private UUID taskRunId;
     /**
-     * 本 step 对应的 TaskStep（执行时恒填充）。
+     * 本次执行关联的 TaskStep；PLAN bootstrap 仍关联 Planner Step。
      */
     private UUID taskStepId;
     private OrchestrationPhase phase;

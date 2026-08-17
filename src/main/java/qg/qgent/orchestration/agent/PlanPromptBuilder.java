@@ -51,12 +51,14 @@ public class PlanPromptBuilder {
                 {
                   "taskUnderstanding": "对需求的完整理解",
                   "implementationGoals": ["目标1", "目标2"],
-                  "steps": [{"title": "步骤标题", "files": ["相对路径1", "相对路径2"], "description": "该步骤做什么"}],
+                  "steps": [{"title": "步骤标题", "files": ["相对路径1", "相对路径2"], "description": "该步骤做什么", "requiredCapabilities": ["java", "spring-boot"]}],
                   "testPlan": "如何验证实现符合需求",
                   "risks": ["风险1"]
                 }
-                - taskUnderstanding、implementationGoals、testPlan 不得为空；steps 至少一项，每项必须有 title 和至少一个 files；risks 可为空数组。
-                - files 必须是相对路径；只能引用给出的文件树中已有的文件，或明确需要新建的文件（在 description 说明）。
+                - taskUnderstanding、implementationGoals、testPlan 不得为空；steps 至少一项、至多 12 项，每项必须有 title 和至少一个 files；risks 可为空数组。
+                - 每一项 steps 必须是一次 Coding Agent 调用可以独立完成的原子实现单元，不能重复整项需求。
+                - requiredCapabilities 是可选的小写 kebab-case 能力标签数组；只填写该步骤实际需要的专项能力。
+                - files 必须是无 .. 的相对路径；只能引用给出的文件树中已有的文件，或明确需要新建的文件（在 description 说明）。
                 - 不要臆造文件树中不存在的既有文件。
                 """;
     }

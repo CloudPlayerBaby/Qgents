@@ -6,6 +6,8 @@ import qg.qgent.orchestration.result.PlanResult;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * 把 LLM 返回的 Plan JSON 文本解析并校验为结构化 PlanResult。
@@ -26,9 +28,12 @@ import java.util.List;
  */
 public class PlanResultParser {
 
-    private static final int MAX_STEPS = 50;
+    private static final int MAX_STEPS = 12;
     private static final int MAX_GOALS = 20;
     private static final int MAX_RISKS = 20;
+    private static final int MAX_FILES_PER_STEP = 20;
+    private static final int MAX_CAPABILITIES_PER_STEP = 12;
+    private static final Pattern CAPABILITY = Pattern.compile("[a-z0-9]+(?:-[a-z0-9]+)*");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -76,6 +81,7 @@ public class PlanResultParser {
             step.setTitle(requireStepText(stepNode, "title"));
             step.setFiles(requireStepFiles(stepNode));
             step.setDescription(optionalText(stepNode, "description"));
+            step.setRequiredCapabilities(optionalCapabilities(stepNode));
             steps.add(step);
         }
         return steps;
@@ -105,14 +111,46 @@ public class PlanResultParser {
         List<String> files = new ArrayList<>();
         for (JsonNode fileNode : filesNode) {
             String file = fileNode.isTextual() ? fileNode.asText().trim() : "";
-            if (!file.isBlank()) {
+            if (!file.isBlank() && isRelativePath(file)) {
                 files.add(file);
+            } else if (!file.isBlank()) {
+                throw new PlanParseException("plan step file must be a relative normalized path");
+            }
+            if (files.size() > MAX_FILES_PER_STEP) {
+                throw new PlanParseException("plan step 'files' exceeds " + MAX_FILES_PER_STEP);
             }
         }
         if (files.isEmpty()) {
             throw new PlanParseException("plan step has empty 'files'");
         }
         return files;
+    }
+
+    private List<String> optionalCapabilities(JsonNode stepNode) {
+        JsonNode values = stepNode.get("requiredCapabilities");
+        if (values == null) {
+            return List.of();
+        }
+        if (!values.isArray() || values.size() > MAX_CAPABILITIES_PER_STEP) {
+            throw new PlanParseException("plan step 'requiredCapabilities' is invalid or exceeds "
+                    + MAX_CAPABILITIES_PER_STEP);
+        }
+        List<String> result = new ArrayList<>();
+        for (JsonNode value : values) {
+            String capability = value.isTextual() ? value.asText().trim().toLowerCase(Locale.ROOT) : "";
+            if (!CAPABILITY.matcher(capability).matches()) {
+                throw new PlanParseException("plan step capability must be lowercase kebab-case");
+            }
+            if (!result.contains(capability)) {
+                result.add(capability);
+            }
+        }
+        return result;
+    }
+
+    private boolean isRelativePath(String path) {
+        return !path.startsWith("/") && !path.startsWith("\\") && !path.matches("^[A-Za-z]:.*")
+                && !path.contains("\\") && !path.contains("..") && path.length() <= 512;
     }
 
     private List<String> requireStringArray(JsonNode node, String field, int max, String label) {

@@ -126,4 +126,28 @@ class AgentCapabilityMatcherTest {
 
         assertThat(best).isSameAs(personal);
     }
+
+    @Test void explicitStepCapabilitiesOverrideGenericRoleLabels() {
+        AgentEntity generic = team(UUID.randomUUID(), "通用开发", List.of("coding", "implementation"));
+        AgentEntity java = team(UUID.randomUUID(), "Java开发", List.of("coding", "java", "spring-boot"));
+
+        AgentEntity best = AgentCapabilityMatcher.pickBest("DEVELOPER", List.of("java", "spring-boot"),
+                List.of(generic, java), creatorId);
+
+        assertThat(best).isSameAs(java);
+    }
+
+    @Test void explicitCapabilitiesDoNotSilentlyChooseUnmatchedCustomAgent() {
+        AgentEntity generic = team(UUID.randomUUID(), "通用开发", List.of("coding"));
+
+        assertThat(AgentCapabilityMatcher.pickBest("DEVELOPER", List.of("database"), List.of(generic), creatorId))
+                .isNull();
+    }
+
+    @Test void explicitCapabilitiesRequireEveryDeclaredTag() {
+        AgentEntity partial = team(UUID.randomUUID(), "仅Java", List.of("java"));
+
+        assertThat(AgentCapabilityMatcher.pickBest("DEVELOPER", List.of("java", "spring-boot"),
+                List.of(partial), creatorId)).isNull();
+    }
 }

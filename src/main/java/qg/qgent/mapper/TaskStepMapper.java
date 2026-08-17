@@ -27,4 +27,10 @@ public interface TaskStepMapper extends BaseMapper<TaskStepEntity> {
      */
     @Select("select id from task_steps where task_id=#{taskId} order by sequence_no limit 1")
     UUID selectFirstStep(@Param("taskId") UUID taskId);
+
+    /**
+     * 在计划物化事务中锁定任务的全部步骤，防止并发物化写出两套执行清单。
+     */
+    @Select("select * from task_steps where task_id=#{taskId} order by sequence_no for update")
+    java.util.List<TaskStepEntity> selectByTaskForUpdate(@Param("taskId") UUID taskId);
 }
