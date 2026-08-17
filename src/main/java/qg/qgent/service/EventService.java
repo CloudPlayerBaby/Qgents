@@ -15,8 +15,11 @@ import qg.qgent.entity.NotificationEventEntity;
 import qg.qgent.entity.TeamEventEntity;
 import qg.qgent.mapper.EventMapper;
 import qg.qgent.mapper.NotificationEventMapper;
+import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.TeamEventMapper;
+import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.service.event.DeliveryStartedDomainEvent;
+import qg.qgent.websocket.RealtimeFrame;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -24,11 +27,13 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * 项目级实时事件（SSE 数据源）服务。
@@ -69,15 +74,22 @@ public class EventService {
     private final TeamEventMapper teamEventMapper;
     private final ExecutorService executor;
     private final ApplicationEventPublisher publisher;
+    private final RealtimeHub realtimeHub;
+    private final ProjectMemberMapper projectMemberMapper;
+    private final TeamMemberMapper teamMemberMapper;
 
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
                         NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
-                        ApplicationEventPublisher publisher) {
+                        ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
+                        ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper) {
         this.eventMapper = eventMapper;
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
         this.teamEventMapper = teamEventMapper;
         this.publisher = publisher;
+        this.realtimeHub = realtimeHub;
+        this.projectMemberMapper = projectMemberMapper;
+        this.teamMemberMapper = teamMemberMapper;
         // SSE 泵线程执行期间保留提交线程的 MDC（requestId），便于按请求串联日志
         MdcTaskDecorator mdcDecorator = new MdcTaskDecorator();
         AtomicInteger seq = new AtomicInteger(1);
@@ -118,6 +130,10 @@ public class EventService {
         event.setCreatedAt(now);
         eventMapper.insert(event);
         publishDomainEvent(projectId, eventType, resourceId, payload);
+        // WebSocket 用户级聚合：推送给本项目所有成员（多设备/多标签在线都收到）
+        Set<UUID> members = projectMemberMapper.selectMembers(projectId).stream()
+                .map(m -> m.getUserId()).collect(Collectors.toSet());
+        fan(members, "project", id(projectId), id(groupId), null, null, resourceId, eventType, payload);
     }
 
     /**
@@ -162,6 +178,9 @@ public class EventService {
         event.setPayload(payload);
         event.setCreatedAt(now);
         notificationEventMapper.insert(event);
+        // WebSocket 用户级聚合：仅推送该接收用户（其全部在线连接都收到）
+        fan(Set.of(recipientUserId), "notification", null, null, null, id(recipientUserId), id(notificationId),
+                kind, payload);
     }
 
     /**
@@ -242,6 +261,10 @@ public class EventService {
         event.setPayload(payload);
         event.setCreatedAt(now);
         teamEventMapper.insert(event);
+        // WebSocket 用户级聚合：推送给本团队全部成员（其所有在线连接都收到）
+        Set<UUID> members = teamMemberMapper.selectByTeamId(teamId).stream()
+                .map(m -> m.getUserId()).collect(Collectors.toSet());
+        fan(members, "team", null, null, id(teamId), null, resourceId, eventType, payload);
     }
 
     /**
@@ -387,6 +410,36 @@ public class EventService {
         } catch (Exception ignored) {
             // 连接已断时 complete 自身也可能抛错，忽略
         }
+    }
+
+    /**
+     * 将一条已落库事件按目标用户聚合推送到其全部在线 WebSocket 连接（单连接 + 用户级聚合流）。
+     * <p>
+     * 实时推送失败只记 warn，不向调用方（可能处于业务事务中）抛出，确保 WS fan-out 不影响业务写入；
+     * 事件仅作「刷新界面」信号，不在此续传（断线后由前端以 REST 兜底）。
+     *
+     * @param userIds      目标用户 ID 集（项目成员 / 团队成员 / 通知接收人）
+     * @param scope        作用域：project / team / notification
+     * @param projectId    项目 ID（scope=project 时非空）
+     * @param groupId      关联需求群 ID（可为 null）
+     * @param teamId       团队 ID（scope=team 时非空）
+     * @param recipientUserId 通知接收人 ID（scope=notification 时非空）
+     * @param resourceId   关联资源 ID（可为 null）
+     * @param eventType    事件类型（对应 SSE eventType）
+     * @param payload      脱敏业务载荷
+     */
+    private void fan(Set<UUID> userIds, String scope, String projectId, String groupId, String teamId,
+                     String recipientUserId, String resourceId, String eventType, Map<String, Object> payload) {
+        try {
+            realtimeHub.broadcastToUsers(userIds, RealtimeFrame.of(eventType, scope, projectId, groupId,
+                    teamId, recipientUserId, resourceId, payload));
+        } catch (Exception e) {
+            log.warn("realtime fan-out failed, scope={}, eventType={}: {}", scope, eventType, e.getMessage());
+        }
+    }
+
+    private String id(UUID value) {
+        return value == null ? null : value.toString();
     }
 
     /**

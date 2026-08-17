@@ -96,6 +96,9 @@ public class SecurityConfig {
                         // SSE 断线时容器触发 async dispatch 的兜底；初始请求的成员鉴权由
                         // EventController/EventService 的 requireProjectMember 保证。
                         .requestMatchers(HttpMethod.GET, "/api/v1/projects/*/events").permitAll()
+                        // WebSocket 握手升级为 HTTP GET，需放行初始请求；真实鉴权由
+                        // RealtimeAuthInterceptor 解析 query token 完成（浏览器升级无法携带 Authorization 头）。
+                        .requestMatchers("/api/v1/ws/realtime").permitAll()
                         // Worker 内部调用使用独立 service token，由内部 Controller 自行校验。
                         .requestMatchers("/internal/v1/**").permitAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/error").permitAll().anyRequest()
