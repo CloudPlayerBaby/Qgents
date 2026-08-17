@@ -77,11 +77,11 @@ public class PasswordResetMailer {
             helper.setText(html, true);
             sender.send(message);
         } catch (MailException e) {
-            // 发送失败只记录固定事件，避免重置令牌进入日志。
-            log.warn("Password reset email delivery failed");
+            // 发送失败记录异常摘要（不含令牌），便于排查 SMTP 问题。
+            log.warn("Password reset email delivery failed: {}", e.getMessage());
         } catch (Exception e) {
             // MimeMessage 构造异常视为邮件组装失败，同样不暴露令牌细节。
-            log.warn("Password reset email assembly failed");
+            log.warn("Password reset email assembly failed: {}", e.getMessage());
         }
     }
 }

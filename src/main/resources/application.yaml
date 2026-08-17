@@ -39,9 +39,7 @@ spring:
 logging:
   file:
     name: ${LOG_FILE:logs/qgents.log}
-  pattern:
-    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [requestId=%X{requestId}] %logger{36} : %msg%n"
-    file: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [requestId=%X{requestId}] %logger{36} : %msg%n"
+  # 输出格式与滚动策略见 logback-spring.xml；排查 SQL 时将 qg.qgent.mapper 设为 DEBUG
 
 
 # TODO(Deployment): 部署到生产环境（有真实的公网域名）时，必须在 GitHub 开发者后台创建一个全新的 GitHub App。
@@ -133,4 +131,4 @@ mybatis-plus:
   type-handlers-package: qg.qgent.handler
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl

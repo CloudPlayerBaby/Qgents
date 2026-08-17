@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
+import qg.qgent.config.MdcTaskDecorator;
 import qg.qgent.entity.EventEntity;
 import qg.qgent.entity.NotificationEventEntity;
 import qg.qgent.entity.TeamEventEntity;
@@ -72,9 +73,11 @@ public class EventService {
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
         this.teamEventMapper = teamEventMapper;
+        // SSE 泵线程执行期间保留提交线程的 MDC（requestId），便于按请求串联日志
+        MdcTaskDecorator mdcDecorator = new MdcTaskDecorator();
         AtomicInteger seq = new AtomicInteger(1);
         ThreadFactory factory = r -> {
-            Thread t = new Thread(r, "sse-event-pump-" + seq.getAndIncrement());
+            Thread t = new Thread(mdcDecorator.decorate(r), "sse-event-pump-" + seq.getAndIncrement());
             t.setDaemon(true);
             return t;
         };
@@ -350,7 +353,18 @@ public class EventService {
             emitter.send(event);
             return true;
         } catch (IOException | IllegalStateException e) {
+            // 客户端断开/连接失效（含 AsyncRequestNotUsableException，其亦为 IOException 子类）：
+            // 立即结束该 emitter，泵线程退出，等待客户端按 Last-Event-ID 重连
+            completeQuietly(emitter);
             return false;
+        }
+    }
+
+    private void completeQuietly(SseEmitter emitter) {
+        try {
+            emitter.complete();
+        } catch (Exception ignored) {
+            // 连接已断时 complete 自身也可能抛错，忽略
         }
     }
 

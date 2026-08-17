@@ -18,6 +18,7 @@ public class TestExecutionAsyncConfiguration {
         executor.setMaxPoolSize(4);
         executor.setQueueCapacity(100);
         executor.setThreadNamePrefix("test-execution-");
+        executor.setTaskDecorator(new MdcTaskDecorator());
         executor.initialize();
         return executor;
     }
