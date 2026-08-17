@@ -11,6 +11,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.execution.ToolExecutionException;
@@ -72,7 +73,7 @@ public class SpringAiChatLlmClient implements LlmClient {
         }
         long started = System.nanoTime();
         try {
-            ChatResponse response = chatModel.call(new Prompt(springMessages));
+            ChatResponse response = chatModel.call(new Prompt(springMessages, jsonOptions()));
             String text = response.getResult().getOutput().getText();
             log.info("llm complete messages={} promptChars={} responseChars={} durationMs={} finish={} tail={}",
                     messages.size(), promptChars, text == null ? 0 : text.length(),
@@ -193,6 +194,27 @@ public class SpringAiChatLlmClient implements LlmClient {
             return (OpenAiChatOptions) openAi.mutate().toolCallbacks(tools).build();
         }
         throw new IllegalStateException("ChatModel options must be OpenAiChatOptions for native tool calling; got "
+                + (defaults == null ? "null" : defaults.getClass().getSimpleName()));
+    }
+
+    /**
+     * 纯文本协议（Plan/Test 与灰度期 legacy）要求模型输出结构化 JSON：以模型默认 options 为基底
+     * 追加 {@code response_format=json_object} 强制格式。
+     * <p>
+     * 注意不能用于 {@link #nextToolTurn}：native tool calling 携带 tools，DeepSeek 的 json_object
+     * 模式与 tool call 互斥（开启后模型不再返回 toolCall，工具循环会整体失效），因此 JSON 强制只
+     * 作用于无工具调用的纯文本路径。
+     */
+    private OpenAiChatOptions jsonOptions() {
+        ChatOptions defaults = chatModel.getOptions();
+        if (defaults instanceof OpenAiChatOptions openAi) {
+            return (OpenAiChatOptions) openAi.mutate()
+                    .responseFormat(OpenAiChatModel.ResponseFormat.builder()
+                            .type(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT)
+                            .build())
+                    .build();
+        }
+        throw new IllegalStateException("ChatModel options must be OpenAiChatOptions for JSON mode; got "
                 + (defaults == null ? "null" : defaults.getClass().getSimpleName()));
     }
 

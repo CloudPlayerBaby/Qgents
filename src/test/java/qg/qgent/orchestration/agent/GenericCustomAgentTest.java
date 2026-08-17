@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -147,6 +148,52 @@ class GenericCustomAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
         assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+    }
+
+    @Test
+    void nonJsonFinalTextWithEmbeddedJsonObjectIsExtractedLocally() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("已完成，结果如下：{\"success\":true,\"summary\":\"done\",\"message\":\"ok\"}，有问题请告知。", "stop"));
+
+        AgentRunOutcome outcome = agent(customAgent()).run(customInput(OrchestrationPhase.REVIEWING));
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getMessage()).isEqualTo("ok");
+        verify(llm, times(1)).nextToolTurn(anyString(), anyList(), anyList());
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void nonJsonFinalTextIsRepairedBySecondCompletionCall() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("功能已实现，测试通过。", "stop"));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"success\":true,\"summary\":\"done\",\"message\":\"all good\"}");
+
+        AgentRunOutcome outcome = agent(customAgent("coding", "implementation")).run(customInput(OrchestrationPhase.CODING));
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getMessage()).isEqualTo("all good");
+        verify(llm).complete(anyString(), anyList());
+        // 工具循环 1 轮 + 修复轮 1 条观测。
+        assertThat(outcome.getObservations()).hasSize(2);
+        assertThat(outcome.getObservations().get(1).round()).isEqualTo(2);
+    }
+
+    @Test
+    void nonJsonFinalTextKeepsMalformedWhenRepairFails() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("这是一段中文描述，没有 JSON 对象。", "stop"));
+        when(llm.complete(anyString(), anyList())).thenReturn("still not json");
+
+        AgentRunOutcome outcome = agent(customAgent()).run(customInput(OrchestrationPhase.REVIEWING));
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        verify(llm).complete(anyString(), anyList());
     }
 
     @Test

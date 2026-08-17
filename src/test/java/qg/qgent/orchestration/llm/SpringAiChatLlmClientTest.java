@@ -13,6 +13,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.annotation.Tool;
@@ -56,6 +57,7 @@ class SpringAiChatLlmClientTest {
         when(output.getText()).thenReturn(text);
         when(generation.getOutput()).thenReturn(output);
         when(response.getResult()).thenReturn(generation);
+        when(chatModel.getOptions()).thenReturn(OpenAiChatOptions.builder().build());
         when(chatModel.call(any(Prompt.class))).thenReturn(response);
     }
 
@@ -104,12 +106,17 @@ class SpringAiChatLlmClientTest {
 
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(chatModel).call(promptCaptor.capture());
-        List<Message> messages = promptCaptor.getValue().getInstructions();
+        Prompt prompt = promptCaptor.getValue();
+        List<Message> messages = prompt.getInstructions();
         assertThat(messages).hasSize(2);
         assertThat(messages.get(0)).isInstanceOf(SystemMessage.class);
         assertThat(messages.get(0).getText()).isEqualTo("system prompt");
         assertThat(messages.get(1)).isInstanceOf(UserMessage.class);
         assertThat(messages.get(1).getText()).isEqualTo("user prompt");
+        // 纯文本协议强制 JSON_OBJECT：基于默认 options 追加，保留 model/temperature/max-tokens。
+        OpenAiChatOptions options = (OpenAiChatOptions) prompt.getOptions();
+        assertThat(options.getResponseFormat().getType())
+                .isEqualTo(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT);
     }
 
     @Test
@@ -139,6 +146,7 @@ class SpringAiChatLlmClientTest {
 
     @Test
     void chatModelExceptionPropagatesToCaller() {
+        when(chatModel.getOptions()).thenReturn(OpenAiChatOptions.builder().build());
         when(chatModel.call(any(Prompt.class))).thenThrow(new RuntimeException("connection refused"));
 
         assertThatThrownBy(() -> client().complete("system prompt", "user prompt"))

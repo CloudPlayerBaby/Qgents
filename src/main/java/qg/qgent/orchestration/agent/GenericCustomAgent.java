@@ -11,11 +11,14 @@ import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.RunOutcome;
 import qg.qgent.orchestration.llm.LlmClient;
+import qg.qgent.orchestration.llm.LlmMessage;
 import qg.qgent.orchestration.llm.LlmObservation;
 import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.PlanResult;
+import qg.qgent.orchestration.tool.Sha256;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -124,13 +127,53 @@ public class GenericCustomAgent implements Agent {
                 log.info("custom agent finalResult agentId={} phase={} round={} raw={}",
                         entity.getId(), input.getPhase(), round,
                         raw == null ? "null" : (raw.length() <= 800 ? raw : raw.substring(0, 800) + "...(len=" + raw.length() + ")"));
-                return parser.parse(raw);
+                try {
+                    return parser.parse(raw);
+                } catch (GenericParseException malformed) {
+                    log.warn("custom agent final output not valid JSON, repairing agentId={} phase={} round={}",
+                            entity.getId(), input.getPhase(), round);
+                    String repaired = repairJson(system, raw, observations, round, input);
+                    if (repaired != null) {
+                        return parser.parse(repaired);
+                    }
+                    throw malformed;
+                }
             }
             throw new GenericParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
                     "custom agent tool turn returned no text, history or infra failure");
         }
         throw new GenericParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+    }
+
+    /**
+     * 本地清洗（围栏剥离 / JSON 对象提取）仍无法解析时，把模型的非 JSON 最终输出回灌一次（该调用走
+     * {@link LlmClient#complete}，纯文本协议下已强制 JSON_OBJECT）整理为规范 JSON。
+     * <p>
+     * 不伪造结果：让模型基于自己的原始输出重述，语义由模型自己确认。length 截断不进入本方法（残缺
+     * 数据无法格式化）；修复调用失败返回 null，由调用方抛出原 {@link GenericParseException}。
+     */
+    private String repairJson(String system, String raw, List<LlmObservation> observations, int round,
+                              AgentInput input) {
+        String repairUser = "你的上一轮最终输出不是合法 JSON。请仅输出一个原始 JSON 对象（不要输出任何解释、"
+                + "代码围栏或多余内容），把上一轮的结果整理为："
+                + "{\"success\": true|false, \"summary\": \"结果摘要\", \"message\": \"给用户的具体反馈、发现的问题或建议\"}。\n\n"
+                + "你的上一轮输出：\n" + raw;
+        log.info("custom agent json repair agentId={} phase={} round={} promptChars={}",
+                entity.getId(), input.getPhase(), round, system.length() + repairUser.length());
+        try {
+            String repaired = llm.complete(system, List.of(LlmMessage.user(repairUser)));
+            String repairedSha = repaired == null ? null
+                    : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
+            observations.add(new LlmObservation(input.getPhase().name(), round + 1,
+                    system.length() + repairUser.length(),
+                    repaired == null ? 0 : repaired.length(), "stop", null, null, repairedSha));
+            return repaired;
+        } catch (RuntimeException e) {
+            log.warn("custom agent json repair call failed agentId={} phase={} category={}",
+                    entity.getId(), input.getPhase(), e.getClass().getSimpleName());
+            return null;
+        }
     }
 
     /**
@@ -145,7 +188,7 @@ public class GenericCustomAgent implements Agent {
                 + (writeCapable ? WRITE_TOOLS_CONTRACT : READ_ONLY_TOOLS_CONTRACT)
                 + "\n\n工作方式：\n"
                 + "- 先按需调用工具理解现状，只读取需要的文件；工具返回 ok=false 时根据 error 修正后重试。\n"
-                + "- 完成后输出 JSON（不要输出代码围栏）：{\"success\": true|false, \"summary\": \"结果摘要\", \"message\": \"给用户的具体反馈、发现的问题或建议\"}\n"
+                + "- 最后一条消息必须且只能输出一个原始 JSON 对象（无代码围栏、无前后说明文字、无 Markdown 标注）：{\"success\": true|false, \"summary\": \"结果摘要\", \"message\": \"给用户的具体反馈、发现的问题或建议\"}\n"
                 + "- 无法完成、或发现不满足验收条件时 success=false，message 说明原因。";
     }
 

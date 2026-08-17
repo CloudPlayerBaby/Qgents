@@ -25,11 +25,33 @@ public class GenericResultParser {
     }
 
     private JsonNode toJson(String raw) {
+        String stripped = stripFences(raw);
         try {
-            return objectMapper.readTree(stripFences(raw));
+            return objectMapper.readTree(stripped);
         } catch (Exception e) {
+            JsonNode extracted = tryExtractJsonObject(stripped);
+            if (extracted != null) {
+                return extracted;
+            }
             throw new GenericParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
                     "custom agent output is not valid JSON: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 模型偶尔在 JSON 对象前后夹杂说明文字；尝试定位首个 '{' 与最后一个 '}' 之间的子串再解析。
+     * 提取失败返回 null（仍由调用方判定为非法输出，不伪造结果）。
+     */
+    private JsonNode tryExtractJsonObject(String text) {
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(text.substring(start, end + 1));
+        } catch (Exception ignore) {
+            return null;
         }
     }
 
