@@ -12,9 +12,11 @@ import qg.qgent.dto.Mention;
 import qg.qgent.dto.TaskCreateRequest;
 import qg.qgent.dto.TaskResponse;
 import qg.qgent.dto.TaskTriggerRequest;
+import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.TaskEntity;
+import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.MessageMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.RequirementGroupRepositoryMapper;
@@ -44,17 +46,20 @@ public class TaskTriggerService {
     private final RequirementGroupMapper groupMapper;
     private final RequirementGroupRepositoryMapper groupRepoMapper;
     private final TaskMapper taskMapper;
+    private final DiffMapper diffMapper;
     private final TaskService taskService;
     private final ProjectAccessService access;
     private final ObjectMapper mapper;
 
     public TaskTriggerService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
-                              RequirementGroupRepositoryMapper groupRepoMapper, TaskMapper taskMapper, TaskService taskService,
+                              RequirementGroupRepositoryMapper groupRepoMapper, TaskMapper taskMapper,
+                              DiffMapper diffMapper, TaskService taskService,
                               ProjectAccessService access, ObjectMapper mapper) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupRepoMapper = groupRepoMapper;
         this.taskMapper = taskMapper;
+        this.diffMapper = diffMapper;
         this.taskService = taskService;
         this.access = access;
         this.mapper = mapper;
@@ -78,8 +83,14 @@ public class TaskTriggerService {
         access.requireProjectMember(projectId, actor);
         MessageEntity message = requireMessageInGroup(groupId, messageId);
         RequirementGroupEntity group = requireActiveRequirementGroup(projectId, groupId);
-        TaskCreateRequest request = assembleRequest(actor, projectId, group, message, body.getTitle(),
-                body.getRequirement(), body.getRepositoryIds(), body.getBaseRef());
+        // 幂等：同一触发消息只建一次 Task（引用 DIFF 续作尤其要防重复点击创建多个续作 Task）
+        TaskResponse existing = taskService.findByTriggerMessage(projectId, message.getId(), actor);
+        if (existing != null) {
+            return existing;
+        }
+        ContinuationRef continuation = resolveQuotedDiffContinuation(projectId, groupId, message);
+        TaskCreateRequest request = assembleRequest(group, message, body.getTitle(),
+                body.getRequirement(), continuation, body.getRepositoryIds(), body.getBaseRef());
         return taskService.create(projectId, actor, request);
     }
 
@@ -112,8 +123,10 @@ public class TaskTriggerService {
             return null;
         }
         RequirementGroupEntity group = requireActiveRequirementGroup(projectId, groupId);
-        List<UUID> repositoryIds = groupRepoMapper.selectRepositoryIds(groupId);
-        if (repositoryIds.isEmpty()) {
+        ContinuationRef continuation = resolveQuotedDiffContinuation(projectId, groupId, message);
+        List<UUID> groupRepositories = groupRepoMapper.selectRepositoryIds(groupId);
+        // 非续作且需求群未绑仓库时跳过；引用 DIFF 续作的仓库范围由源 Workspace 继承，不依赖群绑定。
+        if (continuation == null && groupRepositories.isEmpty()) {
             log.warn("task auto-trigger skipped: requirement group {} has no bound repositories", groupId);
             return null;
         }
@@ -121,20 +134,28 @@ public class TaskTriggerService {
         if (title == null || title.isBlank()) {
             title = group.getName();
         }
-        TaskCreateRequest request = assembleRequest(actor, projectId, group, message, title, null, repositoryIds, null);
+        TaskCreateRequest request = assembleRequest(group, message, title, null, continuation, groupRepositories, null);
         return taskService.create(projectId, actor, request);
     }
 
-    private TaskCreateRequest assembleRequest(UUID actor, UUID projectId, RequirementGroupEntity group,
-                                              MessageEntity message, String title, String requirement, List<UUID> repositoryIds, String baseRef) {
+    private TaskCreateRequest assembleRequest(RequirementGroupEntity group,
+                                              MessageEntity message, String title, String requirement,
+                                              ContinuationRef continuation, List<UUID> repositoryIds, String baseRef) {
         TaskCreateRequest request = new TaskCreateRequest();
         request.setRequirementGroupId(group.getId());
         request.setTriggerMessageId(message.getId());
         request.setTitle(truncate(title != null && !title.isBlank() ? title.trim() : group.getName(), MAX_TITLE));
         request.setRequirement(requirement != null && !requirement.isBlank() ? requirement.trim()
                 : defaultRequirement(group, message));
-        request.setRepositoryIds(repositoryIds == null || repositoryIds.isEmpty()
-                ? groupRepoMapper.selectRepositoryIds(group.getId()) : repositoryIds);
+        if (continuation != null) {
+            // 引用 DIFF 续作：复用源 Task 的 Workspace，仓库范围由 Workspace 继承，不接受客户端仓库参数。
+            request.setWorkspaceId(continuation.workspaceId());
+            request.setContinuationOfTaskId(continuation.taskId());
+            request.setRepositoryIds(null);
+        } else {
+            request.setRepositoryIds(repositoryIds == null || repositoryIds.isEmpty()
+                    ? groupRepoMapper.selectRepositoryIds(group.getId()) : repositoryIds);
+        }
         request.setBaseRef(baseRef);
         return request;
     }
@@ -149,6 +170,71 @@ public class TaskTriggerService {
         }
         return group.getDescription() != null && !group.getDescription().isBlank() ? group.getDescription()
                 : group.getName();
+    }
+
+    /**
+     * 解析当前消息的引用续作：仅当消息直接回复 {@code message_type=DIFF} 的消息时，从该 DIFF
+     * 消息的结构化 {@code content.diffId} 解析 Diff 及其源 Task/Workspace，返回续作引用。
+     * 未引用或引用非 DIFF 消息时返回 null（新建 Workspace）；DIFF 内容损坏、Diff 不存在或
+     * 归属不一致时返回稳定的 422 错误，不静默降级为新建 Workspace。
+     */
+    private ContinuationRef resolveQuotedDiffContinuation(UUID projectId, UUID groupId, MessageEntity message) {
+        UUID replyToId = message.getReplyToMessageId();
+        if (replyToId == null) {
+            return null;
+        }
+        MessageEntity parent = messageMapper.selectById(replyToId);
+        if (parent == null || !groupId.equals(parent.getRequirementGroupId())
+                || !"DIFF".equals(parent.getMessageType())) {
+            return null;
+        }
+        UUID diffId = parseDiffId(parent.getContent());
+        if (diffId == null) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "QUOTED_DIFF_INVALID",
+                    "被引用的 DIFF 消息缺少有效的 diffId");
+        }
+        DiffEntity diff = diffMapper.selectById(diffId);
+        if (diff == null) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "QUOTED_DIFF_NOT_ACCESSIBLE",
+                    "被引用的 Diff 不存在");
+        }
+        if (!projectId.equals(diff.getProjectId())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "QUOTED_DIFF_NOT_ACCESSIBLE",
+                    "被引用的 Diff 不属于当前项目");
+        }
+        TaskEntity sourceTask = taskMapper.selectById(diff.getTaskId());
+        if (sourceTask == null) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "QUOTED_DIFF_NOT_ACCESSIBLE",
+                    "被引用 Diff 的源 Task 不存在");
+        }
+        if (!projectId.equals(sourceTask.getProjectId()) || !groupId.equals(sourceTask.getRequirementGroupId())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "QUOTED_DIFF_NOT_ACCESSIBLE",
+                    "被引用 Diff 的源 Task 不属于当前项目或需求群");
+        }
+        if (!diff.getWorkspaceId().equals(sourceTask.getWorkspaceId())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "QUOTED_DIFF_INVALID",
+                    "被引用 Diff 与源 Task 的 Workspace 不一致");
+        }
+        return new ContinuationRef(sourceTask.getId(), diff.getWorkspaceId());
+    }
+
+    /**
+     * 从 DIFF 消息的结构化 content 提取 diffId；内容非法或缺少 diffId 时返回 null。
+     */
+    private UUID parseDiffId(String contentJson) {
+        if (contentJson == null || contentJson.isBlank()) {
+            return null;
+        }
+        try {
+            Map<?, ?> map = mapper.readValue(contentJson, Map.class);
+            Object diffId = map.get("diffId");
+            if (diffId == null || diffId.toString().isBlank()) {
+                return null;
+            }
+            return UUID.fromString(diffId.toString().trim());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private MessageEntity requireMessageInGroup(UUID groupId, UUID messageId) {
@@ -187,5 +273,11 @@ public class TaskTriggerService {
         } catch (Exception e) {
             return contentJson;
         }
+    }
+
+    /**
+     * 引用 DIFF 的续作引用：源 Task 与其 Workspace（后续 Task 复用该 Workspace）。
+     */
+    private record ContinuationRef(UUID taskId, UUID workspaceId) {
     }
 }

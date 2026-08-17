@@ -57,6 +57,13 @@ public class ProjectService {
      */
     @Transactional
     public ProjectResponse create(UUID actor, UUID teamId, CreateProjectRequest request) {
+        // 事务外建仓：在获取 team 行锁之前调用（createRemoteRepository 用 NOT_SUPPORTED 挂起事务），
+        // 确保 GitHub 建仓 HTTP 不持有数据库事务或行锁（AGENTS §3.4）。
+        GitHubRepositoryService.RemoteRepositoryCreation createdRepository = null;
+        if (request.getNewRepository() != null) {
+            createdRepository = githubRepositoryService.createRemoteRepository(actor, teamId, request.getNewRepository());
+        }
+
         // 查询到team
         TeamEntity team = requireTeamForUpdate(teamId);
         requireCanonicalTeamOwner(team, actor);
@@ -77,8 +84,13 @@ public class ProjectService {
             requireTeamMember(teamId, userId);
             insertMember(project.getId(), userId, "PROJECT_MEMBER");
         }
-        // 创建项目时一并绑定 GitHub 授权仓库（前端额外清单 §四；repositoryIds 为 github_repositories.id）
-        githubRepositoryService.bindRepositoriesOnCreate(actor, teamId, project.getId(), request.getRepositoryIds());
+        if (createdRepository != null) {
+            // 自动新建：落仓库镜像并绑定到项目（事务内）
+            githubRepositoryService.bindCreatedRepository(project.getId(), createdRepository, request.getNewRepository());
+        } else {
+            // 创建项目时一并绑定 GitHub 授权仓库（前端额外清单 §四；repositoryIds 为 github_repositories.id）
+            githubRepositoryService.bindRepositoriesOnCreate(actor, teamId, project.getId(), request.getRepositoryIds());
+        }
         // 触发自动创建唯一 PROJECT_MAIN 群（契约 §7），监听方为 GroupService
         eventPublisher.publishEvent(new ProjectCreatedEvent(project.getId(), project.getName(), actor));
         // 项目创建动态事件：供「团队最近动态」聚合展示，与项目同事务落库

@@ -14,6 +14,10 @@ import java.util.UUID;
  * 显式触发端点 {@code POST .../messages/{messageId}/trigger-task} 使用；
  * 缺省字段由服务端从触发消息/群信息提取（标题截断 255、需求用消息文本或群描述、
  * 仓库用群关联仓库）。
+ * <p>
+ * 续作字段（workspaceId / continuationOfTaskId）不由客户端提交：当触发消息直接回复
+ * {@code message_type=DIFF} 的消息时，服务端从该 Diff 的 {@code content.diffId} 推导源
+ * Task 与 Workspace 并自动续作；普通引用仍创建新 Workspace。
  */
 @Data
 public class TaskTriggerRequest {

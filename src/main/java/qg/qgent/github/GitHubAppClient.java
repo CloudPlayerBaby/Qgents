@@ -63,6 +63,18 @@ public interface GitHubAppClient {
     List<GitHubRepositoryDetails> listRepositories(long installationId);
 
     /**
+     * 在指定 GitHub App 安装账号下新建仓库，并返回带真实默认分支的仓库元数据。
+     *
+     * @param installationId GitHub 提供的安装数字 ID
+     * @param accountType    安装账号类型（User / Organization），决定建仓端点
+     * @param accountLogin   安装账号登录名；Organization 时用于 /orgs/{org}/repos
+     * @param request        建仓参数（含 autoInit）
+     * @return 新建仓库元数据，不含访问令牌
+     */
+    GitHubRepositoryDetails createRepository(long installationId, String accountType, String accountLogin,
+                                             GitHubRepositoryCreateRequest request);
+
+    /**
      * 创建 Pull Request
      *
      * @param installationId 安装 ID

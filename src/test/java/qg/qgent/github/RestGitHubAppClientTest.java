@@ -7,6 +7,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withBadRequest;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import java.time.Clock;
@@ -16,6 +17,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
@@ -64,6 +66,57 @@ class RestGitHubAppClientTest {
         assertEquals("main", details.baseBranch());
         assertEquals("head-sha", details.headSha());
         server.verify();
+    }
+
+    @Test
+    void createsRepositoryUnderOrganizationWithAutoInit() {
+        GitHubRepositoryCreateRequest request = new GitHubRepositoryCreateRequest("new-repo", "desc", true, true);
+        server.expect(once(), requestTo("https://api.github.com/orgs/qgents-org/repos"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("Authorization", "Bearer test-token"))
+                .andRespond(withSuccess("""
+                        {"id":9001,"owner":{"login":"qgents-org"},"name":"new-repo",
+                         "default_branch":"main","visibility":"private","archived":false}
+                        """, MediaType.APPLICATION_JSON));
+
+        GitHubRepositoryDetails details = client.createRepository(12345L, "Organization", "qgents-org", request);
+        assertEquals("new-repo", details.getName());
+        assertEquals("qgents-org", details.getOwnerLogin());
+        assertEquals("main", details.getDefaultBranch());
+        server.verify();
+    }
+
+    @Test
+    void createsRepositoryUnderUserAccount() {
+        GitHubRepositoryCreateRequest request = new GitHubRepositoryCreateRequest("new-repo", null, false, false);
+        server.expect(once(), requestTo("https://api.github.com/user/repos"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"id":9002,"owner":{"login":"user-login"},"name":"new-repo",
+                         "default_branch":"main","visibility":"public","archived":false}
+                        """, MediaType.APPLICATION_JSON));
+
+        GitHubRepositoryDetails details = client.createRepository(12345L, "User", "user-login", request);
+        assertEquals("user-login", details.getOwnerLogin());
+        assertEquals("new-repo", details.getName());
+        server.verify();
+    }
+
+    @Test
+    void mapsRepositoryCreateConflictToConflictCode() {
+        GitHubRepositoryCreateRequest request = new GitHubRepositoryCreateRequest("taken", null, true, true);
+        server.expect(once(), requestTo("https://api.github.com/orgs/qgents-org/repos"))
+                .andRespond(withStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+                        .body("{\"message\":\"name already exists\"}")
+                        .contentType(MediaType.APPLICATION_JSON));
+
+        try {
+            client.createRepository(12345L, "Organization", "qgents-org", request);
+        } catch (qg.qgent.api.ApiException exception) {
+            assertEquals("GITHUB_REPOSITORY_CREATE_CONFLICT", exception.code());
+            return;
+        }
+        throw new AssertionError("Expected repository create conflict");
     }
 
     @Test
