@@ -2,6 +2,7 @@ package qg.qgent.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -15,6 +16,7 @@ import qg.qgent.entity.TeamEventEntity;
 import qg.qgent.mapper.EventMapper;
 import qg.qgent.mapper.NotificationEventMapper;
 import qg.qgent.mapper.TeamEventMapper;
+import qg.qgent.service.event.DeliveryStartedDomainEvent;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -66,13 +68,16 @@ public class EventService {
     private final NotificationEventMapper notificationEventMapper;
     private final TeamEventMapper teamEventMapper;
     private final ExecutorService executor;
+    private final ApplicationEventPublisher publisher;
 
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
-                        NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper) {
+                        NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
+                        ApplicationEventPublisher publisher) {
         this.eventMapper = eventMapper;
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
         this.teamEventMapper = teamEventMapper;
+        this.publisher = publisher;
         // SSE 泵线程执行期间保留提交线程的 MDC（requestId），便于按请求串联日志
         MdcTaskDecorator mdcDecorator = new MdcTaskDecorator();
         AtomicInteger seq = new AtomicInteger(1);
@@ -112,6 +117,25 @@ public class EventService {
         event.setPayload(payload);
         event.setCreatedAt(now);
         eventMapper.insert(event);
+        publishDomainEvent(projectId, eventType, resourceId, payload);
+    }
+
+    /**
+     * 事件落库后发布进程内领域事件，供主后端内部模块在事务提交后消费（如 MR_FIRST 交付执行器）。
+     * 与浏览器 SSE 同源但用途分离：SSE 面向前端展示，领域事件面向内部执行，互为补充。
+     * 事务边界由 {@code @TransactionalEventListener(AFTER_COMMIT)} 负责：事务内发布会在提交后消费，
+     * 非事务调用则由监听器的 fallbackExecution 立即消费。不得在 afterCommit 回调中再次发布事件，
+     * 否则事务监听器没有可注册的事务上下文。
+     */
+    private void publishDomainEvent(UUID projectId, String eventType, String resourceId, Map<String, Object> payload) {
+        if ("delivery.started".equals(eventType) && resourceId != null && payload instanceof Map<?, ?> map
+                && map.get("taskId") != null && map.get("operationId") != null) {
+            DeliveryStartedDomainEvent domainEvent = new DeliveryStartedDomainEvent(projectId,
+                    UUID.fromString(String.valueOf(map.get("taskId"))),
+                    payload.get("reviewBatchId") == null ? null : UUID.fromString(String.valueOf(map.get("reviewBatchId"))),
+                    String.valueOf(map.get("operationId")));
+            publisher.publishEvent(domainEvent);
+        }
     }
 
     /**
