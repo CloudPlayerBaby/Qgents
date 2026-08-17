@@ -33,6 +33,7 @@ import qg.qgent.orchestration.worker.SandboxWorkerProperties;
 import qg.qgent.service.EventService;
 import qg.qgent.service.MessageService;
 import qg.qgent.service.NotificationService;
+import qg.qgent.service.OrchestratorAgentService;
 import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
 import qg.qgent.service.TaskExecutionArtifactService;
@@ -76,23 +77,29 @@ class TaskOrchestratorTest {
     private final TaskExecutionArtifactService artifactService = mock(TaskExecutionArtifactService.class);
     private final FinalDiffBundleService finalDiffBundles = mock(FinalDiffBundleService.class);
     private final MessageService messageService = mock(MessageService.class);
+    private final NotificationService notificationService = mock(NotificationService.class);
+    private final OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
     private final AgentMapper agentMapper = mock(AgentMapper.class);
     private final ProjectMapper projectMapper = mock(ProjectMapper.class);
     private static final UUID AGENT_ID = UUID.randomUUID();
+    /** 团队编排助手（卡片统一发送者）ID，由 OrchestratorAgentService 解析。 */
+    private static final UUID ORCHESTRATOR_ID = UUID.randomUUID();
     private final ContextService contextService = mock(ContextService.class);
     private final AgentContextAssembler contextAssembler = new AgentContextAssembler(contextService);
     private final GitHubAppClient githubAppClient = mock(GitHubAppClient.class);
-    private final SandboxSessionManager sessionManager = new SandboxSessionManager(
+    /** 默认禁用 Worker 的会话管理器；启动失败用例替换为启用且抛错的版本。 */
+    private SandboxSessionManager sessionManager = new SandboxSessionManager(
             mock(SandboxWorkerClient.class), new SandboxWorkerProperties(), mock(WorkspaceMapper.class), repoMapper,
             mock(ProjectRepositoryMapper.class), mock(qg.qgent.mapper.GitHubRepositoryMapper.class),
             mock(qg.qgent.mapper.GitHubInstallationMapper.class), mock(qg.qgent.service.GitCredentialService.class), githubAppClient);
 
     private TaskOrchestrator orchestrator(AgentRegistry registry) {
         when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenReturn(UUID.randomUUID());
+        when(orchestratorAgents.resolveIdForTask(any())).thenReturn(ORCHESTRATOR_ID);
         return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry,
                 contextAssembler, taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
-                mock(NotificationService.class), sessionManager, artifactService, finalDiffBundles, messageService,
-                agentMapper, projectMapper);
+                notificationService, sessionManager, artifactService, finalDiffBundles, messageService,
+                agentMapper, projectMapper, orchestratorAgents);
     }
 
     private AgentRegistry registryOf(Agent agent) {
@@ -250,9 +257,9 @@ class TaskOrchestratorTest {
         assertThat(agentCaptor.getAllValues()).allSatisfy(agentId -> assertThat(agentId).isEqualTo(AGENT_ID));
         verify(taskRunService, times(4)).complete(any(), anyString());
 
-        // sendAsAgent 接线：step 卡片 + 任务结果卡片均为 AGENT 身份、TASK_STATUS 类型、幂等键前缀正确
+        // 卡片接线：全部卡片由团队编排助手（ORCHESTRATOR_ID）发送，TASK_STATUS 类型、幂等键前缀正确
         ArgumentCaptor<MessageSendRequest> reqCaptor = ArgumentCaptor.forClass(MessageSendRequest.class);
-        verify(messageService, atLeast(1)).sendAsAgent(eq(task.getRequirementGroupId()), eq(AGENT_ID),
+        verify(messageService, atLeast(1)).sendAsAgent(eq(task.getRequirementGroupId()), eq(ORCHESTRATOR_ID),
                 reqCaptor.capture());
         assertThat(reqCaptor.getAllValues()).allSatisfy(req -> assertThat(req.getType()).isEqualTo("TASK_STATUS"));
         assertThat(reqCaptor.getAllValues()).anyMatch(req -> req.getClientMessageId().startsWith("agent-step-"));
@@ -603,6 +610,71 @@ class TaskOrchestratorTest {
         assertThatThrownBy(() -> orchestrator(mock(AgentRegistry.class)).orchestrate(projectId, taskId))
                 .isInstanceOf(IllegalStateException.class);
         verify(taskRunService, never()).createForStep(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    /** Worker 不可达等启动失败：任务落 FAILED、发布 task.updated、写 TASK_FAILED 通知并以编排助手身份回群卡片。 */
+    @Test void sandboxUnavailableFailsTaskAndNotifies() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        sessionManager = failingSessionManager();
+
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> orchestrator(mock(AgentRegistry.class)).orchestrate(projectId, taskId));
+
+        assertTerminalStatus("FAILED");
+        verify(notificationService).notify(eq(task.getCreatedBy()), eq(projectId), eq(task.getRequirementGroupId()),
+                eq("TASK_FAILED"), anyString(), anyString(), eq(taskId.toString()));
+        verify(messageService).sendAsAgent(eq(task.getRequirementGroupId()), eq(ORCHESTRATOR_ID), any());
+        verify(messageService, never()).sendAsSystem(any(), any());
+    }
+
+    /** 启动失败时任务已被并发取消（CANCELLED 终态）：不覆盖状态、不写失败通知。 */
+    @Test void startupFailureDoesNotOverwriteCancelledTask() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        TaskEntity cancelled = task(projectId, taskId);
+        cancelled.setStatus("CANCELLED");
+        // 第一次 selectById 供 requireTask（PLANNING 可启动），第二次供 failStartup 重查（已取消）
+        when(taskMapper.selectById(taskId)).thenReturn(task, cancelled);
+        sessionManager = failingSessionManager();
+
+        orchestrator(mock(AgentRegistry.class)).orchestrate(projectId, taskId);
+
+        verify(taskMapper, never()).updateById(any(TaskEntity.class));
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    /** 团队查不到编排助手时卡片降级为 SYSTEM 系统消息，不因缺少发送者而丢失。 */
+    @Test void missingOrchestratorAgentDegradesCardToSystemMessage() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        sessionManager = failingSessionManager();
+
+        TaskOrchestrator orchestrator = orchestrator(mock(AgentRegistry.class));
+        when(orchestratorAgents.resolveIdForTask(any())).thenReturn(null);
+        orchestrator.orchestrate(projectId, taskId);
+
+        assertTerminalStatus("FAILED");
+        verify(messageService).sendAsSystem(eq(task.getRequirementGroupId()), any());
+        verify(messageService, never()).sendAsAgent(any(), any(), any());
+    }
+
+    /** 启用 Worker 且 workspace 查询失败：acquire 抛错，用于构造启动阶段基础设施故障。 */
+    private SandboxSessionManager failingSessionManager() {
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+        properties.setEnabled(true);
+        WorkspaceMapper workspaceMapper = mock(WorkspaceMapper.class);
+        when(workspaceMapper.selectById(any(UUID.class))).thenReturn(null);
+        return new SandboxSessionManager(mock(SandboxWorkerClient.class), properties, workspaceMapper,
+                repoMapper, mock(ProjectRepositoryMapper.class),
+                mock(qg.qgent.mapper.GitHubRepositoryMapper.class),
+                mock(qg.qgent.mapper.GitHubInstallationMapper.class),
+                mock(qg.qgent.service.GitCredentialService.class), githubAppClient);
     }
 
     private List<AgentRunOutcome> fullSuccessSequence() {

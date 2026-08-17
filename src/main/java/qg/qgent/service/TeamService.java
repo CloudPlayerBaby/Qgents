@@ -57,13 +57,15 @@ public class TeamService {
     private final EventMapper eventMapper;
     private final TaskMapper taskMapper;
     private final MergeRequestMapper mergeRequestMapper;
+    private final OrchestratorAgentService orchestratorAgents;
 
     public TeamService(TeamMapper teamMapper, TeamMemberMapper memberMapper,
                        TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, ProjectMapper projectMapper,
                        UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer,
                        TeamDisbandService teamDisbandService, NotificationService notificationService,
                        EventService eventService,
-                       EventMapper eventMapper, TaskMapper taskMapper, MergeRequestMapper mergeRequestMapper) {
+                       EventMapper eventMapper, TaskMapper taskMapper, MergeRequestMapper mergeRequestMapper,
+                       OrchestratorAgentService orchestratorAgents) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
         this.invitationMapper = invitationMapper;
@@ -78,6 +80,7 @@ public class TeamService {
         this.eventMapper = eventMapper;
         this.taskMapper = taskMapper;
         this.mergeRequestMapper = mergeRequestMapper;
+        this.orchestratorAgents = orchestratorAgents;
     }
 
     /**
@@ -103,6 +106,8 @@ public class TeamService {
         member.setUserId(actor);
         member.setRole("TEAM_OWNER");
         memberMapper.insert(member);
+        // 建团队即预置编排助手 Agent（任务卡片统一发送者），不依赖应用重启时的启动预置
+        orchestratorAgents.ensureForTeam(team.getId(), actor);
         // 重查一次以带回数据库生成的 created_at
         return team(teamMapper.selectById(team.getId()), "TEAM_OWNER");
     }

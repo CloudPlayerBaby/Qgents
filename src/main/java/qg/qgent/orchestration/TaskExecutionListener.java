@@ -32,7 +32,12 @@ public class TaskExecutionListener {
     }
 
     /**
-     * 任务创建提交后，异步启动编排；失败只记录日志，避免重复/并发执行与线程泄漏。
+     * 任务创建提交后，异步启动编排。
+     * <p>
+     * 监听器只吞「不应执行」的护栏异常：重复触发时 {@code orchestrate} 的 requireStartable
+     * 幂等拒绝、任务/项目归属不符等。真正的执行失败（Sandbox Worker 不可达、图执行崩溃等）
+     * 已在 {@link TaskOrchestrator#orchestrate} 内部落 FAILED 终态并通知用户，不会外抛到
+     * 这里；若未来出现新逃逸的异常类别，此处的兜底日志是排查入口，任务状态不因此回滚。
      */
     @Async("taskOrchestratorExecutor")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -41,7 +46,7 @@ public class TaskExecutionListener {
         try {
             orchestrator.orchestrate(event.projectId(), event.taskId());
         } catch (RuntimeException e) {
-            log.warn("task orchestration trigger skipped for task {}: {}", event.taskId(), e.getMessage(), e);
+            log.warn("task orchestration trigger rejected for task {}: {}", event.taskId(), e.getMessage(), e);
         }
     }
 }

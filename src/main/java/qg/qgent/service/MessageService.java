@@ -125,6 +125,26 @@ public class MessageService {
         return doSend(group.getProjectId(), groupId, null, agentId, body);
     }
 
+    /**
+     * 系统消息发送（内部方法，供编排系统在团队无可用编排助手 Agent 时兜底回群）。
+     * <p>
+     * 消息类型固定为 SYSTEM，无用户与 Agent 发送者（满足 messages 表 CHECK 约束的
+     * SYSTEM 分支）；不进入用户发送路径，PUBLIC_TYPES 不放开 SYSTEM，用户无法伪造。
+     * 当前仅承接 TASK_STATUS 形状的任务状态卡片内容（taskId/status 必填）。
+     *
+     * @param groupId 需求群 ID
+     * @param body    发送请求（type 字段被忽略，content 按 SYSTEM 规则校验）
+     * @return 消息视图
+     */
+    @Transactional
+    public MessageResponse sendAsSystem(UUID groupId, MessageSendRequest body) {
+        RequirementGroupEntity group = lockGroup(groupId);
+        if (group == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在");
+        }
+        return doSend(group.getProjectId(), groupId, null, null, body, "SYSTEM");
+    }
+
     private RequirementGroupEntity lockGroup(UUID groupId) {
         return groupMapper.selectOne(Wrappers.<RequirementGroupEntity>lambdaQuery()
                 .eq(RequirementGroupEntity::getId, groupId)
@@ -133,7 +153,11 @@ public class MessageService {
 
     private MessageResponse doSend(UUID projectId, UUID groupId, UUID authorUserId, UUID agentId,
                                    MessageSendRequest body) {
-        String type = normalizeType(body.getType());
+        return doSend(projectId, groupId, authorUserId, agentId, body, normalizeType(body.getType()));
+    }
+
+    private MessageResponse doSend(UUID projectId, UUID groupId, UUID authorUserId, UUID agentId,
+                                   MessageSendRequest body, String type) {
         validateContent(type, body.getContent());
         List<Mention> mentions = body.getMentions() == null ? List.of() : body.getMentions();
         String clientMessageId = trimmed(body.getClientMessageId());
@@ -260,6 +284,11 @@ public class MessageService {
             case "IMAGE", "FILE" -> requireField(content, "url", type + " 消息缺少 url 字段");
             case "DIFF" -> requireField(content, "diffId", "Diff 卡片消息缺少 diffId 字段");
             case "TASK_STATUS" -> {
+                requireField(content, "taskId", "任务状态卡片缺少 taskId 字段");
+                requireField(content, "status", "任务状态卡片缺少 status 字段");
+            }
+            // 系统兜底通道仅承接任务状态卡片形状（见 sendAsSystem），不放开通用文本
+            case "SYSTEM" -> {
                 requireField(content, "taskId", "任务状态卡片缺少 taskId 字段");
                 requireField(content, "status", "任务状态卡片缺少 status 字段");
             }

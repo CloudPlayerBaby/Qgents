@@ -78,6 +78,7 @@ public class TaskOrchestrator {
     private final MessageService messageService;
     private final AgentMapper agentMapper;
     private final ProjectMapper projectMapper;
+    private final OrchestratorAgentService orchestratorAgents;
 
     /**
      * 各编排任务的执行现场（富结果/反馈/计数，不进图状态），按 taskId 暂存。
@@ -90,7 +91,8 @@ public class TaskOrchestrator {
                             WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService,
                             NotificationService notificationService, SandboxSessionManager sandboxSessionManager,
                             TaskExecutionArtifactService artifactService, FinalDiffBundleService finalDiffBundles,
-                            MessageService messageService, AgentMapper agentMapper, ProjectMapper projectMapper) {
+                            MessageService messageService, AgentMapper agentMapper, ProjectMapper projectMapper,
+                            OrchestratorAgentService orchestratorAgents) {
         this.stateMachine = stateMachine;
         this.workflowGraphBuilder = workflowGraphBuilder;
         this.agentRegistry = agentRegistry;
@@ -108,6 +110,7 @@ public class TaskOrchestrator {
         this.messageService = messageService;
         this.agentMapper = agentMapper;
         this.projectMapper = projectMapper;
+        this.orchestratorAgents = orchestratorAgents;
     }
 
     /**
@@ -139,10 +142,34 @@ public class TaskOrchestrator {
             log.info("orchestrate sandbox acquired taskId={}", taskId);
             graph.invoke(Map.of("projectId", projectId.toString(), "taskId", taskId.toString()));
             log.info("orchestrate graph completed taskId={}", taskId);
+        } catch (RuntimeException e) {
+            // 启动/图执行阶段的意外失败（Sandbox Worker 不可达、建图失败等）必须落 FAILED 终态并
+            // 通知用户，不允许任务无声卡死在初始状态；requireTask/requireStartable 的幂等护栏
+            // 异常在 try 之外，继续外抛由监听器吞掉。
+            failStartup(task, e);
         } finally {
             sandboxSessionManager.release(task.getWorkspaceId());
             executions.remove(taskId);
         }
+    }
+
+    /**
+     * 编排意外中止时把任务落到 FAILED 终态：重查最新状态，仅当任务仍处于
+     * PLANNING/PENDING/RUNNING（无终态、无用户取消意图）时覆盖，避免并发取消
+     * （CANCELLING/CANCELLED）或已终态的任务被误改；随后走统一终态链路
+     * （落库 + task.updated 事件 + TASK_FAILED 通知）并以编排助手身份回群失败卡片。
+     */
+    private void failStartup(TaskEntity task, RuntimeException cause) {
+        log.error("orchestration aborted by unexpected failure, taskId={}", task.getId(), cause);
+        TaskEntity latest = taskMapper.selectById(task.getId());
+        if (latest == null || !STARTABLE_TASK_STATUSES.contains(latest.getStatus())) {
+            log.warn("startup failure not persisted, task already left startable states, taskId={} status={}",
+                    task.getId(), latest == null ? "MISSING" : latest.getStatus());
+            return;
+        }
+        updateTaskStatus(latest, "FAILED");
+        sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null,
+                "任务启动失败：执行环境暂不可用，请稍后重试或联系管理员");
     }
 
     /**
@@ -276,7 +303,6 @@ public class TaskOrchestrator {
         ctx.lastRunId = run.getId();
         if (phase == OrchestrationPhase.CODING && outcome.getOutcome() == RunOutcome.SUCCEEDED) {
             ctx.lastCodingRunId = run.getId();
-            ctx.lastCodingAgentId = step.getAssignedAgentId();
         }
         if (phase == OrchestrationPhase.PLAN && outcome.getPlanResult() != null) {
             ctx.planResult = outcome.getPlanResult();
@@ -533,8 +559,7 @@ public class TaskOrchestrator {
         step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         stepMapper.updateById(step);
         publishStepUpdated(task, step);
-        sendAgentCard(task, step.getAssignedAgentId(), "step-" + step.getId(), step.getStatus(), step.getRole(),
-                stepSettledMessage(step));
+        sendAgentCard(task, "step-" + step.getId(), step.getStatus(), step.getRole(), stepSettledMessage(step));
     }
 
     private void publishStepUpdated(TaskEntity task, TaskStepEntity step) {
@@ -553,7 +578,7 @@ public class TaskOrchestrator {
             default -> "FAILED";
         };
         updateTaskStatus(task, status);
-        sendAgentCard(task, ctx.lastCodingAgentId, "task-" + task.getId(), status, null, taskResultMessage(status));
+        sendAgentCard(task, "task-" + task.getId(), status, null, taskResultMessage(status));
     }
 
     /**
@@ -594,15 +619,12 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 以分配 Agent 身份把 TASK_STATUS 卡片回群；agentId 为 null（查不到匹配 Agent）或发送失败时
-     * 记日志并跳过，回群失败不等于任务失败（与 TaskExecutionListener 吞异常模式一致）。
+     * 以团队编排助手（ORCHESTRATOR Agent）身份把 TASK_STATUS 卡片回群：任务进度、Diff
+     * 确认与终态卡片使用统一发送者，不再依赖各步骤恰好分配到 Agent 实体；团队查不到
+     * 编排助手时降级为 SYSTEM 系统消息（sendAsSystem），保证卡片永不因缺少发送者而丢失。
+     * 发送失败记日志跳过，回群失败不等于任务失败。
      */
-    private void sendAgentCard(TaskEntity task, UUID agentId, String idSuffix, String status, String node,
-                               String message) {
-        if (agentId == null) {
-            log.warn("agent card skipped (no assigned agent), taskId={}, suffix={}", task.getId(), idSuffix);
-            return;
-        }
+    private void sendAgentCard(TaskEntity task, String idSuffix, String status, String node, String message) {
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("taskId", task.getId().toString());
         content.put("status", status);
@@ -616,8 +638,15 @@ public class TaskOrchestrator {
         body.setType("TASK_STATUS");
         body.setClientMessageId("agent-" + idSuffix + "-" + status);
         body.setContent(content);
+        UUID cardSenderId = orchestratorAgents.resolveIdForTask(task);
         try {
-            messageService.sendAsAgent(task.getRequirementGroupId(), agentId, body);
+            if (cardSenderId != null) {
+                messageService.sendAsAgent(task.getRequirementGroupId(), cardSenderId, body);
+            } else {
+                log.warn("orchestrator agent missing, card degrades to SYSTEM, taskId={}, suffix={}",
+                        task.getId(), idSuffix);
+                messageService.sendAsSystem(task.getRequirementGroupId(), body);
+            }
         } catch (RuntimeException e) {
             log.warn("agent card skipped, taskId={}, suffix={}: {}", task.getId(), idSuffix, e.getMessage());
         }
@@ -715,10 +744,6 @@ public class TaskOrchestrator {
          * 最后一次 SUCCEEDED 的 CODING run，终态时供 FinalDiffBundleService 生成待确认 Diff 批次。
          */
         private UUID lastCodingRunId;
-        /**
-         * 上述 coding run 的执行 Agent，作为任务结果卡片发言身份。
-         */
-        private UUID lastCodingAgentId;
         private PlanResult planResult;
         private CodingResult codingResult;
         private TestResult testResult;
