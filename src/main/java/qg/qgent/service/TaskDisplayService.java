@@ -93,27 +93,48 @@ public class TaskDisplayService {
     }
 
     /**
-     * 任务中心列表：游标分页并支持 groupId/status/createdBy/repositoryId 筛选。
+     * 任务中心列表：游标分页并支持 groupId/status/createdBy/repositoryId/keyword 筛选。
      * <p>
      * repositoryId 筛选在 SQL 层完成（workspace_id IN 子查询），避免只过滤当前页导致的漏数据；
+     * keyword 同样在 SQL 层完成（参数化 LIKE，跨任务/需求群/创建人/绑定仓库匹配），
+     * cursor 与分页基于关键词筛选后的结果集计算。
      * 一页任务的后置数据（步骤/运行/输入请求/仓库/用户/群）批量加载后内存组装。
      */
     public PagedApiResponse<TaskListItemResponse> list(UUID projectId, UUID actor, String groupId, String status,
-                                                       String createdBy, String repositoryId, String cursor, Integer limit, String requestId) {
+                                                       String createdBy, String repositoryId, String keyword,
+                                                       String cursor, Integer limit, String requestId) {
         access.requireProjectMember(projectId, actor);
         int size = clampLimit(limit);
         UUID cursorUuid = parseCursor(cursor);
         UUID groupUuid = parseOptionalUuid(groupId, "INVALID_GROUP_FILTER");
         UUID creatorUuid = parseOptionalUuid(createdBy, "INVALID_CREATEDBY_FILTER");
         UUID repositoryUuid = parseOptionalUuid(repositoryId, "INVALID_REPOSITORY_FILTER");
-        List<TaskEntity> rows = tasks.selectList(Wrappers.<TaskEntity>lambdaQuery()
+        String normalizedKeyword = normalizeKeyword(keyword);
+        var wrapper = Wrappers.<TaskEntity>lambdaQuery()
                 .eq(TaskEntity::getProjectId, projectId)
                 .eq(groupUuid != null, TaskEntity::getRequirementGroupId, groupUuid)
                 .in(!splitStatuses(status).isEmpty(), TaskEntity::getStatus, splitStatuses(status))
                 .eq(creatorUuid != null, TaskEntity::getCreatedBy, creatorUuid)
                 .apply(repositoryUuid != null,
                         "workspace_id in (select workspace_id from workspace_repositories where project_repository_id = {0})",
-                        repositoryUuid)
+                        repositoryUuid);
+        if (normalizedKeyword != null) {
+            String like = likePattern(normalizedKeyword);
+            wrapper.and(w -> w
+                    .apply("lower(display_code) like lower({0}) escape '\\\\'", like)
+                    .or().apply("lower(title) like lower({0}) escape '\\\\'", like)
+                    .or().apply("lower(requirement) like lower({0}) escape '\\\\'", like)
+                    .or().apply("requirement_group_id in (select id from requirement_groups where lower(name) like lower({0}) escape '\\\\')",
+                            like)
+                    .or().apply("created_by in (select id from users where lower(display_name) like lower({0}) escape '\\\\')",
+                            like)
+                    .or().apply("workspace_id in (select workspace_id from workspace_repositories where project_repository_id in "
+                            + "(select id from project_repositories where lower(display_name) like lower({0}) escape '\\\\' "
+                            + "or repository_id in (select id from github_repositories where lower(name) like lower({0}) escape '\\\\' "
+                            + "or lower(owner_login) like lower({0}) escape '\\\\' "
+                            + "or lower(concat(owner_login, '/', name)) like lower({0}) escape '\\\\')))", like));
+        }
+        List<TaskEntity> rows = tasks.selectList(wrapper
                 .lt(cursorUuid != null, TaskEntity::getId, cursorUuid).orderByDesc(TaskEntity::getId)
                 .last("LIMIT " + (size + 1)));
         boolean hasMore = rows.size() > size;
@@ -736,6 +757,35 @@ public class TaskDisplayService {
         } catch (IllegalArgumentException e) {
             throw new ApiException(HttpStatus.BAD_REQUEST, errorCode, "筛选参数格式不合法");
         }
+    }
+
+    /**
+     * 规范化 keyword：去除首尾空白；空白串等同于未传；超过 100 个 Unicode 字符返回 422。
+     */
+    private String normalizeKeyword(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.strip();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.codePointCount(0, trimmed.length()) > 100) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_QUERY_PARAMETER",
+                    "keyword must be 100 characters or fewer");
+        }
+        return trimmed;
+    }
+
+    /**
+     * 构造参数化 LIKE 模式：小写化并把 LIKE 通配符与转义符转义为字面量，
+     * 配合 SQL 侧 {@code escape '\'} 使用，防止用户输入 %/_ 被当作通配符。
+     */
+    private String likePattern(String keyword) {
+        return "%" + keyword.toLowerCase(Locale.ROOT)
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_") + "%";
     }
 
     private int clampLimit(Integer limit) {

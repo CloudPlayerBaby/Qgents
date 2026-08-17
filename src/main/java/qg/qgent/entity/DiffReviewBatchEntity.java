@@ -21,6 +21,12 @@ public class DiffReviewBatchEntity {
     private UUID workspaceId;
     private UUID finalCodingTaskRunId;
     private String reviewStatus;
+    /**
+     * 交付授权来源：USER=用户确认（DIFF_FIRST）；SYSTEM=系统按 MR_FIRST 规则自动授权。
+     * reviewStatus=ACCEPTED 统一表示「已获准进入交付」，谁授权由本字段表达；
+     * SYSTEM 只能由 MR_FIRST 内部流程写入，客户端 confirm 接口固定写 USER。
+     */
+    private String confirmationSource;
     private String deliveryStatus;
     private String deliveryOperationId;
     /**

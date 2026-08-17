@@ -80,6 +80,7 @@ public class DeliveryCenterService {
      * @param displayStatus 展示状态筛选（可选）
      * @param repositoryId 项目仓库绑定 ID 筛选（仅 CODE 匹配）
      * @param createdBy    创建者筛选（可选）
+     * @param keyword      关键词筛选（可选，不区分大小写包含匹配）
      * @param cursor       分页游标（上一页 nextCursor）
      * @param limit        每页条数（默认 30，最大 100）
      * @param requestId    请求 ID
@@ -87,12 +88,14 @@ public class DeliveryCenterService {
      */
     public PagedApiResponse<DeliveryItem> list(UUID projectId, UUID actor, String groupId, String type,
                                                String displayStatus, String repositoryId, String createdBy,
+                                               String keyword,
                                                String cursor, Integer limit, String requestId) {
         access.requireProjectMember(projectId, actor);
         UUID groupUuid = optionalUuid(groupId, "INVALID_GROUP_FILTER");
         UUID repositoryUuid = optionalUuid(repositoryId, "INVALID_REPOSITORY_FILTER");
         UUID creatorUuid = optionalUuid(createdBy, "INVALID_CREATEDBY_FILTER");
-        List<DeliveryItem> all = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid, creatorUuid);
+        List<DeliveryItem> all = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid,
+                creatorUuid, keyword);
 
         int size = clampLimit(limit);
         int offset = decodeCursor(cursor);
@@ -110,12 +113,13 @@ public class DeliveryCenterService {
      * 空数据集同样返回表头行。CSV 生成遵循 RFC 4180 转义。
      */
     public String exportCsv(UUID projectId, UUID actor, String groupId, String type,
-                            String displayStatus, String repositoryId, String createdBy) {
+                            String displayStatus, String repositoryId, String createdBy, String keyword) {
         access.requireProjectMember(projectId, actor);
         UUID groupUuid = optionalUuid(groupId, "INVALID_GROUP_FILTER");
         UUID repositoryUuid = optionalUuid(repositoryId, "INVALID_REPOSITORY_FILTER");
         UUID creatorUuid = optionalUuid(createdBy, "INVALID_CREATEDBY_FILTER");
-        List<DeliveryItem> items = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid, creatorUuid);
+        List<DeliveryItem> items = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid,
+                creatorUuid, keyword);
 
         StringBuilder csv = new StringBuilder();
         csv.append('\uFEFF'); // UTF-8 BOM：Excel 直接打开时正确识别中文
@@ -148,16 +152,18 @@ public class DeliveryCenterService {
 
     /**
      * 交付中心聚合统计：针对完整筛选数据集计算，不由当前分页推导。
-     * 筛选参数与 delivery-items 一致（groupId/type/status/repositoryId/createdBy），
+     * 筛选参数与 delivery-items 一致（groupId/type/status/repositoryId/createdBy/keyword），
      * 用户切换筛选后统计同步变化。
      */
     public DeliverySummaryResponse summary(UUID projectId, UUID actor, String groupId, String type,
-                                           String displayStatus, String repositoryId, String createdBy) {
+                                           String displayStatus, String repositoryId, String createdBy,
+                                           String keyword) {
         access.requireProjectMember(projectId, actor);
         UUID groupUuid = optionalUuid(groupId, "INVALID_GROUP_FILTER");
         UUID repositoryUuid = optionalUuid(repositoryId, "INVALID_REPOSITORY_FILTER");
         UUID creatorUuid = optionalUuid(createdBy, "INVALID_CREATEDBY_FILTER");
-        List<DeliveryItem> all = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid, creatorUuid);
+        List<DeliveryItem> all = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid,
+                creatorUuid, keyword);
 
         long code = 0, memory = 0, skill = 0;
         long draft = 0, pendingReview = 0, processing = 0, accepted = 0, rejected = 0, delivered = 0,
@@ -206,9 +212,10 @@ public class DeliveryCenterService {
 
     /**
      * 加载三类资源并组装为统一交付项列表（按 updatedAt 倒序）。
+     * keyword 归一化后对完整组装结果集做不区分大小写包含匹配，分页/统计均基于该结果集。
      */
     private List<DeliveryItem> collect(UUID projectId, UUID actor, UUID groupUuid, String type,
-                                       String displayStatus, UUID repositoryUuid, UUID creatorUuid) {
+                                       String displayStatus, UUID repositoryUuid, UUID creatorUuid, String keyword) {
         List<DeliveryItem> items = new ArrayList<>();
         if (type == null || "CODE".equals(type)) {
             items.addAll(codeItems(projectId, actor, groupUuid, displayStatus, repositoryUuid, creatorUuid));
@@ -219,7 +226,9 @@ public class DeliveryCenterService {
         if (type == null || "SKILL".equals(type)) {
             items.addAll(skillItems(projectId, actor, groupUuid, displayStatus, creatorUuid));
         }
+        String normalized = normalizeKeyword(keyword);
         return items.stream()
+                .filter(item -> normalized == null || keywordMatches(item, normalized))
                 .sorted(Comparator.comparing(DeliveryItem::getUpdatedAt,
                         Comparator.nullsLast(Comparator.naturalOrder())).reversed())
                 .toList();
@@ -785,6 +794,60 @@ public class DeliveryCenterService {
             return UUID.fromString(raw.trim());
         } catch (IllegalArgumentException e) {
             throw new ApiException(HttpStatus.BAD_REQUEST, errorCode, "筛选参数格式非法");
+        }
+    }
+
+    /**
+     * 规范化 keyword：去除首尾空白并小写化；空白串等同于未传；超过 100 个 Unicode 字符返回 422。
+     */
+    private String normalizeKeyword(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.strip();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.codePointCount(0, trimmed.length()) > 100) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_QUERY_PARAMETER",
+                    "keyword must be 100 characters or fewer");
+        }
+        return trimmed.toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 关键词匹配范围（契约字段）：公共 title/summary/resourceId、来源任务编号与标题、
+     * 创建人/提交人展示名、CODE 仓库名、MEMORY/SKILL 摘要字段。全部字段拼接后按包含匹配。
+     */
+    private boolean keywordMatches(DeliveryItem item, String keyword) {
+        StringBuilder sb = new StringBuilder();
+        appendSearchable(sb, item.getTitle());
+        appendSearchable(sb, item.getSummary());
+        appendSearchable(sb, item.getResourceId());
+        if (item.getSource() != null) {
+            appendSearchable(sb, item.getSource().getTaskDisplayCode());
+            appendSearchable(sb, item.getSource().getTaskTitle());
+        }
+        appendSearchable(sb, displayName(item.getCreator()));
+        appendSearchable(sb, displayName(item.getSubmitter()));
+        if (item instanceof CodeDeliveryItem code) {
+            if (code.getRepositories() != null) {
+                for (CodeDeliveryItem.RepositoryRef repository : code.getRepositories()) {
+                    appendSearchable(sb, repository.getName());
+                }
+            }
+        } else if (item instanceof MemoryDeliveryItem memory) {
+            appendSearchable(sb, memory.getContentExcerpt());
+        } else if (item instanceof SkillDeliveryItem skill) {
+            appendSearchable(sb, skill.getCapabilitySummary());
+            appendSearchable(sb, skill.getContentExcerpt());
+        }
+        return sb.toString().contains(keyword);
+    }
+
+    private void appendSearchable(StringBuilder sb, String value) {
+        if (value != null && !value.isBlank()) {
+            sb.append(value.toLowerCase(Locale.ROOT)).append(' ');
         }
     }
 

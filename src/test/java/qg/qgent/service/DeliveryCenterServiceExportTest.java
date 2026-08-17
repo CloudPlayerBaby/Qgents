@@ -112,7 +112,7 @@ class DeliveryCenterServiceExportTest {
     void emptyProjectReturnsBomAndHeaderOnly() {
         stubEmptyProject();
 
-        String csv = service.exportCsv(projectId, actor, null, null, null, null, null);
+        String csv = service.exportCsv(projectId, actor, null, null, null, null, null, null);
 
         assertTrue(csv.startsWith("\uFEFF"), "CSV 应以 UTF-8 BOM 开头");
         assertTrue(csv.contains("类型,标题,摘要,展示状态,资源状态,需求群,来源任务编号,来源任务标题,"
@@ -140,7 +140,7 @@ class DeliveryCenterServiceExportTest {
         when(memorySources.selectByMemoryIds(any())).thenReturn(List.of());
         when(users.selectById(actor)).thenReturn(creator);
 
-        String csv = service.exportCsv(projectId, actor, null, null, null, null, null);
+        String csv = service.exportCsv(projectId, actor, null, null, null, null, null, null);
 
         assertTrue(csv.contains("\"部署指南, 含逗号\""), "含逗号字段应被双引号包裹");
         assertTrue(csv.contains("张三"));
@@ -174,7 +174,7 @@ class DeliveryCenterServiceExportTest {
         when(memorySources.selectByMemoryIds(any())).thenReturn(List.of());
         when(skills.selectList(any())).thenReturn(List.of(skill));
 
-        String csv = service.exportCsv(projectId, actor, null, "SKILL", null, null, null);
+        String csv = service.exportCsv(projectId, actor, null, "SKILL", null, null, null, null);
 
         assertTrue(csv.contains("SKILL-名称"));
         assertFalse(csv.contains("MEMORY-标题"), "type=SKILL 时不得导出 MEMORY");
@@ -218,7 +218,7 @@ class DeliveryCenterServiceExportTest {
         when(memories.selectList(any())).thenReturn(List.of());
         when(skills.selectList(any())).thenReturn(List.of());
 
-        String csv = service.exportCsv(projectId, actor, null, null, null, null, null);
+        String csv = service.exportCsv(projectId, actor, null, null, null, null, null, null);
 
         assertTrue(csv.contains("CODE"), "应包含 CODE 类型");
         assertTrue(csv.contains("实现登录功能"));
@@ -227,12 +227,101 @@ class DeliveryCenterServiceExportTest {
     }
 
     @Test
+    void keywordFiltersExportAcrossTypes() {
+        stubEmptyProject();
+        MemoryEntity memory = new MemoryEntity();
+        memory.setId(UUID.randomUUID());
+        memory.setProjectId(projectId);
+        memory.setCreatedBy(actor);
+        memory.setTitle("部署手册");
+        memory.setContent("memory body");
+        memory.setStatus("APPROVED");
+        memory.setCreatedAt(now);
+        memory.setUpdatedAt(now);
+        SkillEntity skill = new SkillEntity();
+        skill.setId(UUID.randomUUID());
+        skill.setProjectId(projectId);
+        skill.setCreatedBy(actor);
+        skill.setName("Review 技能");
+        skill.setContent("skill body");
+        skill.setStatus("PUBLISHED");
+        skill.setCreatedAt(now);
+        skill.setUpdatedAt(now);
+        when(memories.selectList(any())).thenReturn(List.of(memory));
+        when(memorySources.selectByMemoryIds(any())).thenReturn(List.of());
+        when(skills.selectList(any())).thenReturn(List.of(skill));
+
+        String csv = service.exportCsv(projectId, actor, null, null, null, null, null, "部署手册");
+
+        assertTrue(csv.contains("部署手册"));
+        assertFalse(csv.contains("Review 技能"), "关键词不匹配的 SKILL 不应导出");
+    }
+
+    @Test
+    void keywordFiltersCodeByRepositoryName() {
+        UUID taskId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID batchId = UUID.randomUUID();
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId);
+        batch.setProjectId(projectId);
+        batch.setTaskId(taskId);
+        batch.setWorkspaceId(workspaceId);
+        batch.setReviewStatus("ACCEPTED");
+        batch.setDeliveryStatus("DELIVERED");
+        batch.setCreatedAt(now);
+        batch.setUpdatedAt(now);
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setWorkspaceId(workspaceId);
+        task.setCreatedBy(actor);
+        task.setTitle("登录功能");
+        UUID repoId = UUID.randomUUID();
+        DiffEntity diff = new DiffEntity();
+        diff.setId(UUID.randomUUID());
+        diff.setProjectRepositoryId(repoId);
+        diff.setReviewBatchId(batchId);
+        diff.setChangeStats(Map.of("files", 1, "additions", 1, "deletions", 0));
+        diff.setCreatedAt(now);
+        diff.setUpdatedAt(now);
+        when(diffBatches.selectList(any())).thenReturn(List.of(batch));
+        when(diffs.selectList(any())).thenReturn(List.of(diff));
+        when(tasks.selectList(any())).thenReturn(List.of(task));
+        when(mergeRequests.selectList(any())).thenReturn(List.of());
+        when(groups.selectList(any())).thenReturn(List.of());
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(repoId);
+        binding.setDisplayName("qgents-web");
+        when(projectRepositories.selectList(any())).thenReturn(List.of(binding));
+        when(worktrees.selectByWorkspaces(any())).thenReturn(List.of());
+        when(githubRepositories.selectList(any())).thenReturn(List.of());
+        when(memories.selectList(any())).thenReturn(List.of());
+        when(skills.selectList(any())).thenReturn(List.of());
+
+        String csv = service.exportCsv(projectId, actor, null, "CODE", null, null, null, "qgents-web");
+
+        assertTrue(csv.contains("登录功能"), "关键词匹配 CODE 仓库名时应导出该任务");
+        String filteredOut = service.exportCsv(projectId, actor, null, "CODE", null, null, null, "no-match");
+        assertFalse(filteredOut.contains("登录功能"), "关键词不匹配时不应导出");
+    }
+
+    @Test
+    void keywordLongerThan100UnicodeCharactersIsRejected() {
+        stubEmptyProject();
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.exportCsv(projectId, actor, null, null, null, null, null, "长".repeat(101)));
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, ex.status());
+        assertEquals("INVALID_QUERY_PARAMETER", ex.code());
+    }
+
+    @Test
     void nonMemberIsRejected() {
         doThrow(new ApiException(HttpStatus.FORBIDDEN, "NOT_PROJECT_MEMBER", "非项目成员"))
                 .when(access).requireProjectMember(projectId, actor);
 
         assertThrows(ApiException.class,
-                () -> service.exportCsv(projectId, actor, null, null, null, null, null));
+                () -> service.exportCsv(projectId, actor, null, null, null, null, null, null));
         verifyNoInteractions(diffBatches);
     }
 }

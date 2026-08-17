@@ -26,7 +26,10 @@ import java.util.UUID;
 @Service
 @Slf4j
 public class DiffReviewBatchService {
-    private static final Duration DELIVERY_LEASE = Duration.ofMinutes(30);
+    /**
+     * 批次交付租约时长；过期后可被重新领取（confirm 重试 / MR_FIRST 兜底扫描）。对 MrFirstDeliveryService 公开。
+     */
+    public static final Duration DELIVERY_LEASE = Duration.ofMinutes(30);
     private final DiffReviewBatchMapper batches;
     private final DiffMapper diffs;
     private final TaskMapper tasks;
@@ -176,6 +179,40 @@ public class DiffReviewBatchService {
         return response(result, diffs(result.getId()));
     }
 
+    /**
+     * MR_FIRST 系统授权批次的交付入口：校验批次归属与租约后，按既有单仓库交付链路
+     * （commit → push → 创建 PR → 状态回写）逐仓库执行并收尾。幂等由租约保证——
+     * 领域事件与兜底扫描双通道并发到达时，只有持有有效 claimToken 的一方能推进；
+     * 已交付（DELIVERED/PARTIALLY_DELIVERED/FAILED 终态）或租约易主时静默跳过。
+     * actor 使用任务发起人（系统代执行），交付失败回写 FAILED 状态与稳定失败码，
+     * 用户可通过 retry-delivery 重试失败仓库。
+     */
+    public void deliverSystemAcceptedBatch(UUID projectId, UUID taskId, UUID reviewBatchId, String claimToken) {
+        TaskEntity task = requireTask(projectId, taskId);
+        // 本方法会执行 Worker/GitHub 外部调用，不能持有 FOR UPDATE 锁；后续每次状态写入均会
+        // 在短事务内用 claimToken 再次校验，租约失效或易主时安全退出。
+        DiffReviewBatchEntity batch = batches.selectById(reviewBatchId);
+        if (batch == null || !projectId.equals(batch.getProjectId()) || !taskId.equals(batch.getTaskId())) {
+            log.warn("mr-first delivery skipped, batch context mismatch, projectId={} taskId={} reviewBatchId={}",
+                    projectId, taskId, reviewBatchId);
+            return;
+        }
+        if (!"SYSTEM".equals(batch.getConfirmationSource()) || !"DELIVERING".equals(batch.getDeliveryStatus())
+                || !java.util.Objects.equals(batch.getDeliveryClaimToken(), claimToken)) {
+            log.info("mr-first delivery skipped, batch not claimable, projectId={} taskId={} reviewBatchId={} status={}",
+                    projectId, taskId, reviewBatchId, batch.getDeliveryStatus());
+            return;
+        }
+        log.info("mr-first delivery started projectId={} taskId={} reviewBatchId={} operationId={}",
+                projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
+        for (DiffEntity diff : diffs(batch.getId())) {
+            if (!"MR_CREATED".equals(diff.getDeliveryStatus())) {
+                deliver(task, diff, task.getCreatedBy(), claimToken);
+            }
+        }
+        finish(task, batch.getId(), claimToken);
+    }
+
     private DiffReviewBatchEntity claim(TaskEntity task) {
         DiffReviewBatchEntity batch = latestForUpdate(task.getProjectId(), task.getId());
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
@@ -231,6 +268,8 @@ public class DiffReviewBatchService {
         requireBatchClaim(batch, claimToken);
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         batch.setReviewStatus("ACCEPTED");
+        // 授权来源固定为 USER：confirm 是用户显式决策，服务端不接收客户端传入的来源字段
+        batch.setConfirmationSource("USER");
         batch.setReviewedBy(actor);
         batch.setReviewedAt(now);
         batch.setUpdatedAt(now);
@@ -503,8 +542,8 @@ public class DiffReviewBatchService {
                 value.getSourceBranch(), value.getHeadCommit(), value.getStatus(), value.getChangeStats(),
                 value.getCreatedAt().toInstant(ZoneOffset.UTC).toString())).toList();
         return new DiffReviewBatchResponse(batch.getId().toString(), batch.getTaskId().toString(), batch.getReviewStatus(),
-                batch.getDeliveryStatus(), batch.getAggregateHash(), batch.getReviewReason(), items,
-                repositoryDeliveries(batch, values));
+                batch.getConfirmationSource(), batch.getDeliveryStatus(), batch.getAggregateHash(), batch.getReviewReason(),
+                items, repositoryDeliveries(batch, values));
     }
 
     private List<DiffRepositoryDeliveryResponse> repositoryDeliveries(DiffReviewBatchEntity batch,

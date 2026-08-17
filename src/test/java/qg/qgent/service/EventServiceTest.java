@@ -1,10 +1,12 @@
 package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.entity.EventEntity;
 import qg.qgent.mapper.EventMapper;
 import qg.qgent.mapper.NotificationEventMapper;
 import qg.qgent.mapper.TeamEventMapper;
+import qg.qgent.service.event.DeliveryStartedDomainEvent;
 
 import java.util.Map;
 import java.util.UUID;
@@ -53,8 +55,34 @@ class EventServiceTest {
         verifyNoMoreInteractions(events);
     }
 
+    @Test
+    void deliveryStartedPublishesTypedDomainEventWithThePersistedBatchId() {
+        EventMapper events = mock(EventMapper.class);
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID batchId = UUID.randomUUID();
+        when(events.maxSequence(projectId)).thenReturn(0L);
+        EventService service = service(events, publisher);
+
+        service.publish(projectId, null, "delivery.started", taskId.toString(), Map.of(
+                "taskId", taskId, "reviewBatchId", batchId, "operationId", "operation-1"));
+
+        org.mockito.ArgumentCaptor<Object> captured = org.mockito.ArgumentCaptor.forClass(Object.class);
+        verify(publisher).publishEvent(captured.capture());
+        DeliveryStartedDomainEvent event = (DeliveryStartedDomainEvent) captured.getValue();
+        assertEquals(projectId, event.projectId());
+        assertEquals(taskId, event.taskId());
+        assertEquals(batchId, event.reviewBatchId());
+        assertEquals("operation-1", event.operationId());
+    }
+
     private EventService service(EventMapper events) {
+        return service(events, mock(ApplicationEventPublisher.class));
+    }
+
+    private EventService service(EventMapper events, ApplicationEventPublisher publisher) {
         return new EventService(events, mock(ProjectAccessService.class), mock(NotificationEventMapper.class),
-                mock(TeamEventMapper.class));
+                mock(TeamEventMapper.class), publisher);
     }
 }

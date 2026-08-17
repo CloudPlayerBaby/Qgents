@@ -1,12 +1,16 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpStatus;
+import qg.qgent.api.ApiException;
 import qg.qgent.api.PagedApiResponse;
 import qg.qgent.dto.TaskDetailResponse;
 import qg.qgent.dto.TaskListItemResponse;
@@ -58,9 +62,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /** 任务中心/任务详情展示摘要组装测试（执行统计、待处理事项、操作能力与列表分页）。 */
@@ -158,7 +164,7 @@ class TaskDisplayServiceTest {
         group.setStatus("ACTIVE");
         when(groups.selectList(any())).thenReturn(List.of(group));
 
-        PagedApiResponse<TaskListItemResponse> page = service.list(projectId, actor, null, null, null, null, null,
+        PagedApiResponse<TaskListItemResponse> page = service.list(projectId, actor, null, null, null, null, null, null,
                 null, "req");
 
         TaskListItemResponse item = page.data().getFirst();
@@ -192,7 +198,7 @@ class TaskDisplayServiceTest {
         group.setName("登录功能");
         when(groups.selectList(any())).thenReturn(List.of(group));
 
-        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, "req")
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
 
         assertEquals("DIFF_CONFIRMATION_REQUIRED", item.getAttention().getKind());
@@ -368,7 +374,7 @@ class TaskDisplayServiceTest {
         group.setName("登录功能");
         when(groups.selectList(any())).thenReturn(List.of(group));
 
-        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, "req")
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
 
         // PLANNER 不计入执行统计：规划期总步骤 0、无当前阶段
@@ -396,6 +402,55 @@ class TaskDisplayServiceTest {
         assertFalse(detail.getCapabilities().isCanReplacePendingStepAgent());
         assertEquals("NO_PENDING_STEP", detail.getCapabilities().getReplacePendingStepAgentDisabledReason());
         assertEquals(0, detail.getExecutionSummary().getTotalSteps());
+    }
+
+    @Test
+    void listAppliesKeywordToSqlWrapperAcrossContractFields() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, creatorId, workspaceId, "RUNNING");
+        when(tasks.selectList(any())).thenReturn(List.of(task));
+
+        service.list(projectId, actor, null, null, null, null, "登录", null, null, "req");
+
+        ArgumentCaptor<AbstractWrapper<TaskEntity, ?, ?>> captor = ArgumentCaptor.forClass(AbstractWrapper.class);
+        verify(tasks).selectList(captor.capture());
+        String sql = captor.getValue().getTargetSql();
+        assertTrue(sql.contains("lower(display_code) like lower(?)"), "应匹配任务编号");
+        assertTrue(sql.contains("lower(title) like lower(?)"), "应匹配任务标题");
+        assertTrue(sql.contains("lower(requirement) like lower(?)"), "应匹配需求摘要");
+        assertTrue(sql.contains("requirement_groups where lower(name) like lower(?)"), "应匹配需求群名");
+        assertTrue(sql.contains("users where lower(display_name) like lower(?)"), "应匹配创建人");
+        assertTrue(sql.contains("project_repositories where lower(display_name) like lower(?)"), "应匹配仓库展示名");
+        assertTrue(sql.contains("github_repositories where lower(name) like lower(?)"), "应匹配仓库名");
+        assertTrue(sql.contains("lower(concat(owner_login, '/', name)) like lower(?)"), "应匹配仓库完整名");
+        assertTrue(sql.contains("escape '\\\\'"), "LIKE 应使用转义子句");
+        boolean hasLikeValue = captor.getValue().getParamNameValuePairs().values().stream()
+                .anyMatch(value -> "%登录%".equals(value));
+        assertTrue(hasLikeValue, "关键词应以参数化值 %登录% 传入，不拼接进 SQL");
+    }
+
+    @Test
+    void listIgnoresBlankKeyword() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, creatorId, workspaceId, "RUNNING");
+        when(tasks.selectList(any())).thenReturn(List.of(task));
+
+        service.list(projectId, actor, null, null, null, null, "   ", null, null, "req");
+
+        ArgumentCaptor<AbstractWrapper<TaskEntity, ?, ?>> captor = ArgumentCaptor.forClass(AbstractWrapper.class);
+        verify(tasks).selectList(captor.capture());
+        assertFalse(captor.getValue().getTargetSql().contains("like"), "空白关键词应等同于未传，不追加 LIKE 条件");
+    }
+
+    @Test
+    void listRejectsKeywordLongerThan100UnicodeCharacters() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.list(projectId, actor, null, null, null, null, "长".repeat(101), null, null, "req"));
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, ex.status());
+        assertEquals("INVALID_QUERY_PARAMETER", ex.code());
     }
 
     private TaskEntity task(UUID projectId, UUID groupId, UUID creatorId, UUID workspaceId, String status) {

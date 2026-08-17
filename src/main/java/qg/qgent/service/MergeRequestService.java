@@ -74,6 +74,16 @@ public class MergeRequestService {
     private final MergeRequestDeliveryOperationMapper deliveryOperationMapper;
     private final TransactionTemplate transactions;
     private final DiffMapper diffMapper;
+    /**
+     * PR 创建成功后的检查写入/通知钩子。@Autowired setter 注入：避免主构造器继续膨胀，
+     * 也保持既有纯 Mockito 测试构造器兼容（未注入时钩子静默跳过）。
+     */
+    private MrQualityGateService qualityGates;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setQualityGates(MrQualityGateService qualityGates) {
+        this.qualityGates = qualityGates;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public MergeRequestService(MergeRequestMapper mergeRequestMapper, MergeRequestGroupMapper mergeRequestGroupMapper,
@@ -213,6 +223,15 @@ public class MergeRequestService {
             } catch (RuntimeException failure) {
                 log.warn("mergeability poll failed for MR {}, falling back to created state", mr.getId(), failure);
                 refreshed = mr;
+            }
+            // PR 创建成功后写入 AI_REVIEW 检查并发 MR_PENDING 通知（best-effort，
+            // 失败不影响已创建的 PR 事实；DIFF_FIRST 手动建 MR 同样受益）
+            if (qualityGates != null) {
+                try {
+                    qualityGates.onPullRequestCreated(refreshed);
+                } catch (RuntimeException failure) {
+                    log.warn("post-create quality gate hooks failed for MR {}", mr.getId(), failure);
+                }
             }
             return summary(refreshed);
         } catch (RuntimeException failure) {
@@ -515,10 +534,16 @@ public class MergeRequestService {
         }
     }
 
+    /**
+     * 创建 MR 的交付前置校验：head 必须来自本任务「已获准进入交付且已提交」的 Diff。
+     * DIFF_FIRST 为用户确认（confirmationSource=USER）；MR_FIRST 为系统自动授权（SYSTEM）——
+     * 两种模式统一走同一校验（Diff ACCEPTED + 批次 ACCEPTED + headCommit 一致），
+     * 未定型（null）交付模式仍拒绝。客户端无法通过本接口伪造 head 归属。
+     */
     private void requireAcceptedDelivery(TaskEntity task, WorkspaceRepositoryEntity worktree, UUID repositoryId) {
-        if (!"DIFF_FIRST".equals(task.getDeliveryMode())) {
+        if (task.getDeliveryMode() == null) {
             throw new ApiException(HttpStatus.CONFLICT, "MR_DELIVERY_MODE_INVALID",
-                    "Only a confirmed DIFF_FIRST Task can create this Pull Request");
+                    "Task delivery mode is not determined yet");
         }
         if (diffMapper == null || diffMapper.selectAcceptedCommittedForMr(task.getId(), task.getProjectId(),
                 task.getWorkspaceId(), repositoryId, worktree.getHeadCommit()) == null) {

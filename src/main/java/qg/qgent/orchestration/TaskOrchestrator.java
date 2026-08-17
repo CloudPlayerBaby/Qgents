@@ -585,8 +585,8 @@ public class TaskOrchestrator {
 
     /**
      * 任务到达终态：成功路径按交付模式分叉——DIFF_FIRST 先创建待确认 Diff 批次再置
-     * WAITING_DIFF_CONFIRMATION（失败降级 SUCCEEDED），MR_FIRST 跳过 Diff 审核直接进入
-     * DELIVERING（由后端3 监听 delivery.started 执行 commit→push→建 PR）；其余按取消/失败
+     * WAITING_DIFF_CONFIRMATION（失败降级 SUCCEEDED），MR_FIRST 创建 SYSTEM 授权的内部批次后进入
+     * DELIVERING（交付模块监听 delivery.started 执行 commit→push→建 PR）；其余按取消/失败
      * 落终态；随后以编码 Agent 身份把任务结果卡片回群（失败不阻断编排）。
      */
     private void finishTask(TaskEntity task, TaskExecutionContext ctx, StateMachineDecision.Action action) {
@@ -613,31 +613,43 @@ public class TaskOrchestrator {
     }
 
     /**
-     * MR_FIRST 成功终态：跳过 Diff 审核批次与 WAITING_DIFF_CONFIRMATION，直接置 DELIVERING，
-     * 并发布 delivery.started 事件通知后端3 交付执行器（commit→push→建 PR）。判定理由随事件
-     * 一并下发供前端展示；DELIVERING 不是编排终态，不触发 TASK_COMPLETED 通知（由交付侧在
-     * PR 创建后发 MR_PENDING）。
+     * MR_FIRST 成功终态：短事务内创建系统授权 Diff 批次（reviewStatus=ACCEPTED +
+     * confirmationSource=SYSTEM，见 {@link FinalDiffBundleService#createSystemAcceptedBatch}），
+     * Task 直达 DELIVERING 并发布 delivery.started（SSE + 领域事件双通道）。事务提交后由
+     * MR_FIRST 交付执行器（MrFirstDeliveryService，AFTER_COMMIT 监听）或兜底扫描领取租约，
+     * 执行逐仓库 commit→push→建 PR。判定理由随事件一并下发供前端展示；
+     * DELIVERING 不是编排终态，不触发 TASK_COMPLETED 通知（由交付侧在
+     * PR 创建后发 MR_PENDING、全部交付完成后发 TASK_COMPLETED）。
      */
     private FinishingStatus completeWithMrFirst(TaskEntity task, TaskExecutionContext ctx) {
         log.info("mr-first task enters delivery taskId={} mode={} reason={}", task.getId(), task.getDeliveryMode(),
                 task.getDeliveryReason());
-        publishDeliveryStarted(task);
-        return new FinishingStatus("DELIVERING", null);
-    }
-
-    /**
-     * 发布 delivery.started 事件（后端3 交付执行器监听）：payload 仅脱敏元数据，不含代码内容。
-     */
-    private void publishDeliveryStarted(TaskEntity task) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("projectId", task.getProjectId());
-        payload.put("taskId", task.getId());
-        payload.put("deliveryMode", task.getDeliveryMode());
-        if (task.getDeliveryReason() != null) {
-            payload.put("reason", task.getDeliveryReason());
+        try {
+            UUID finalCodingRunId = ctx.lastCodingRunId;
+            if (finalCodingRunId == null) {
+                finalCodingRunId = taskMapper.selectLastSucceededCodingRunId(task.getId());
+            }
+            UUID reviewBatchId = finalDiffBundles.createSystemAcceptedBatch(task.getProjectId(), task.getId(),
+                    finalCodingRunId);
+            // SYSTEM 批次只承载快照、租约和交付审计，不能复用 DIFF_FIRST 的用户确认卡片。
+            // MR_FIRST 的用户可见进度由 delivery.started / delivery.repository.updated / MR 卡片提供。
+            log.info("mr-first system batch materialized taskId={} reviewBatchId={}", task.getId(), reviewBatchId);
+            return new FinishingStatus("DELIVERING", null);
+        } catch (ApiException e) {
+            if ("FINAL_DIFF_EMPTY".equals(e.code())) {
+                log.warn("mr-first final diff empty, task finishes SUCCEEDED, taskId={}: {}", task.getId(),
+                        e.getMessage());
+                publishDiffReviewSkipped(task, e.code());
+                return new FinishingStatus("SUCCEEDED", null);
+            }
+            log.warn("mr-first batch creation failed, task finishes FAILED, taskId={}, code={}: {}",
+                    task.getId(), e.code(), e.getMessage());
+            return new FinishingStatus("FAILED", null);
+        } catch (RuntimeException e) {
+            log.error("mr-first batch creation failed, task finishes FAILED, taskId={}: {}",
+                    task.getId(), e.getMessage(), e);
+            return new FinishingStatus("FAILED", null);
         }
-        eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "delivery.started",
-                task.getId().toString(), payload);
     }
 
     /**
