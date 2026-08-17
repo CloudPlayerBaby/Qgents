@@ -5,6 +5,10 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 
 import qg.qgent.api.ApiException;
+import qg.qgent.dto.ContextMemory;
+import qg.qgent.dto.ContextMessage;
+import qg.qgent.dto.ContextSkill;
+import qg.qgent.dto.GroupContext;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.ProjectEntity;
@@ -19,22 +23,10 @@ import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.mapper.WorkspaceMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
-import qg.qgent.orchestration.agent.AgentProtocol;
-import qg.qgent.orchestration.agent.CodingAgent;
-import qg.qgent.orchestration.agent.PlanAgent;
-import qg.qgent.orchestration.agent.ReviewAgent;
-import qg.qgent.orchestration.agent.TestAgent;
-import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.result.TestResult;
-import qg.qgent.orchestration.tool.ExecutionPort;
-import qg.qgent.orchestration.tool.ExecutionResult;
-import qg.qgent.orchestration.tool.GitDiffResult;
-import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.github.GitHubAppClient;
-import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
-import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.SandboxWorkerProperties;
@@ -45,15 +37,19 @@ import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
 import qg.qgent.service.TaskExecutionArtifactService;
 import qg.qgent.service.FinalDiffBundleService;
+import qg.qgent.service.ContextService;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -65,14 +61,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * TaskOrchestrator 主链路 Mockito 测试：驱动整条 PLAN→CODING→TESTING→REVIEWING 循环，
- * 断言 Task 终态、Plan 步骤落库、TaskRun 角色链与重试/质量循环的反馈装配。
+ * TaskOrchestrator 主链路 Mockito 测试：驱动数据驱动图（step=node）整条
+ * PLANNER→DEVELOPER→TESTER→REVIEWER 循环，断言 Task 终态、模板步骤创建、TaskRun 角色链、
+ * 重试/质量循环的反馈装配与终态接线（diff-batch/卡片/事件）。
  * 纯单元测试：全部依赖 Mock，不启动 Spring 上下文、不访问 DB。
  */
 class TaskOrchestratorTest {
     private final TaskMapper taskMapper = mock(TaskMapper.class);
     private final TaskStepMapper stepMapper = mock(TaskStepMapper.class);
-    private final StepScheduler stepScheduler = mock(StepScheduler.class);
     private final WorkspaceRepositoryMapper repoMapper = mock(WorkspaceRepositoryMapper.class);
     private final TaskService taskService = mock(TaskService.class);
     private final TaskRunService taskRunService = mock(TaskRunService.class);
@@ -83,54 +79,54 @@ class TaskOrchestratorTest {
     private final AgentMapper agentMapper = mock(AgentMapper.class);
     private final ProjectMapper projectMapper = mock(ProjectMapper.class);
     private static final UUID AGENT_ID = UUID.randomUUID();
-    private final AgentContextAssembler contextAssembler = new AgentContextAssembler();
+    private final ContextService contextService = mock(ContextService.class);
+    private final AgentContextAssembler contextAssembler = new AgentContextAssembler(contextService);
     private final GitHubAppClient githubAppClient = mock(GitHubAppClient.class);
     private final SandboxSessionManager sessionManager = new SandboxSessionManager(
             mock(SandboxWorkerClient.class), new SandboxWorkerProperties(), mock(WorkspaceMapper.class), repoMapper,
             mock(ProjectRepositoryMapper.class), mock(qg.qgent.mapper.GitHubRepositoryMapper.class),
             mock(qg.qgent.mapper.GitHubInstallationMapper.class), mock(qg.qgent.service.GitCredentialService.class), githubAppClient);
 
-    private TaskOrchestrator orchestrator(AgentRunExecutor executor) {
+    private TaskOrchestrator orchestrator(AgentRegistry registry) {
         when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenReturn(UUID.randomUUID());
-        return new TaskOrchestrator(new OrchestrationStateMachine(), stepScheduler, executor, contextAssembler,
-                taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
+        return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry,
+                contextAssembler, taskService, taskRunService, taskMapper, stepMapper, repoMapper, eventService,
                 mock(NotificationService.class), sessionManager, artifactService, finalDiffBundles, messageService,
                 agentMapper, projectMapper);
     }
 
-    /** Maven 文件树 + Mock LLM：Plan 两轮、Coding 一次 finalResult、Test 一次分析、Review 一次 finalResult，全部成功。 */
-    private TaskOrchestrator realAgentOrchestrator() {
-        LlmClient llm = mock(LlmClient.class);
-        WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
-        WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
-        ExecutionPort executionPort = mock(ExecutionPort.class);
-        WorkspaceDiffAccess diffAccess = mock(WorkspaceDiffAccess.class);
-        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
-        when(executionPort.execute(any(), anyList(), any()))
-                .thenReturn(new ExecutionResult(true, 0, "BUILD SUCCESS", "", null));
-        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff --git a/X.java b/X.java", "base", "head"));
-        when(llm.complete(anyString(), anyString()))
-                .thenReturn("{\"readRequests\":[]}",
-                        """
-                        {
-                          "taskUnderstanding": "understand the task",
-                          "implementationGoals": ["implement"],
-                          "steps": [{"title":"impl","files":["src/main/java/X.java"],"description":"do it"}],
-                          "testPlan": "run tests",
-                          "risks": ["risk"]
-                        }
-                        """);
-        when(llm.complete(anyString(), anyList()))
-                .thenReturn("{\"finalResult\":{\"success\":true,\"summary\":\"implemented\"," +
-                                "\"modifiedFiles\":[\"src/main/java/X.java\"]}}",
-                        "{\"success\":true,\"summary\":\"tests passed\",\"failures\":[],\"needsCodingFix\":false}",
-                        "{\"finalResult\":{\"success\":true,\"summary\":\"review passed\",\"findings\":[]," +
-                                "\"suggestions\":[],\"needsCodingFix\":false}}");
-        // 该主链路测试以 mock complete() 驱动 legacy 协议，灰度期保留；原生协议由 CodingAgentTest/ReviewAgentTest 覆盖。
-        return orchestrator(new AgentRunExecutor(new PlanAgent(llm, codeAccess),
-                new CodingAgent(llm, codeAccess, writer, new AgentProtocol("legacy")),
-                new TestAgent(llm, codeAccess, executionPort),
-                new ReviewAgent(llm, codeAccess, diffAccess, new AgentProtocol("legacy"))));
+    private AgentRegistry registryOf(Agent agent) {
+        AgentRegistry registry = mock(AgentRegistry.class);
+        when(registry.resolve(any(), any())).thenReturn(Optional.of(agent));
+        return registry;
+    }
+
+    /** 按相位返回成功结果的 mock Agent（PLANNER 产出计划，其余 SUCCEEDED）。 */
+    private Agent phaseAgent() {
+        Agent agent = mock(Agent.class);
+        when(agent.run(any())).thenAnswer(inv -> {
+            AgentInput input = inv.getArgument(0);
+            if (input.getPhase() == OrchestrationPhase.PLAN) {
+                return planSuccess();
+            }
+            return outcome(input.getPhase(), RunOutcome.SUCCEEDED);
+        });
+        return agent;
+    }
+
+    /** 按调用顺序返回预设结果的 mock Agent（位置与节点执行顺序对应）。 */
+    private Agent sequenceAgent(List<AgentRunOutcome> sequence) {
+        AtomicInteger idx = new AtomicInteger();
+        Agent agent = mock(Agent.class);
+        when(agent.run(any())).thenAnswer(inv -> sequence.get(idx.getAndIncrement()));
+        return agent;
+    }
+
+    /** 以 sequenceAgent 驱动整条链路并执行。 */
+    private Agent runSequence(TaskEntity task, List<AgentRunOutcome> sequence) {
+        Agent agent = sequenceAgent(sequence);
+        orchestrator(registryOf(agent)).orchestrate(task.getProjectId(), task.getId());
+        return agent;
     }
 
     private TaskEntity task(UUID projectId, UUID taskId) {
@@ -146,22 +142,33 @@ class TaskOrchestratorTest {
         return t;
     }
 
-    private TaskStepEntity step(UUID taskId, String role) {
+    private TaskStepEntity step(UUID taskId, String role, int sequenceNo) {
         TaskStepEntity s = new TaskStepEntity();
         s.setId(UUID.randomUUID());
         s.setTaskId(taskId);
         s.setRole(role);
         s.setInstruction("execute " + role);
         s.setStatus("PENDING");
+        s.setSequenceNo(sequenceNo);
+        s.setAssignedAgentId(AGENT_ID);
         return s;
     }
 
-    private void stubStepScheduler(UUID taskId) {
-        when(stepScheduler.findStepForPhase(eq(taskId), any())).thenAnswer(inv -> {
-            TaskStepEntity s = step(taskId, ((OrchestrationPhase) inv.getArgument(1)).role());
-            s.setAssignedAgentId(AGENT_ID);
-            return s;
-        });
+    private List<TaskStepEntity> canonicalSteps(UUID taskId) {
+        return List.of(step(taskId, "PLANNER", 1), step(taskId, "DEVELOPER", 2),
+                step(taskId, "TESTER", 3), step(taskId, "REVIEWER", 4));
+    }
+
+    /** 预置 4 个规范步骤（PLANNER/DEVELOPER/TESTER/REVIEWER，assignedAgentId=AGENT_ID），
+     * 使 ensureSteps 跳过模板创建，selectById 按 stepId 回查。 */
+    private void stubSteps(TaskEntity task) {
+        List<TaskStepEntity> steps = canonicalSteps(task.getId());
+        Map<UUID, TaskStepEntity> byId = new HashMap<>();
+        for (TaskStepEntity s : steps) {
+            byId.put(s.getId(), s);
+        }
+        when(stepMapper.selectList(any())).thenReturn(steps);
+        when(stepMapper.selectById(any())).thenAnswer(inv -> byId.get(inv.getArgument(0)));
     }
 
     private void stubRunCreation(UUID projectId, UUID taskId) {
@@ -173,6 +180,7 @@ class TaskOrchestratorTest {
                 });
     }
 
+    /** 模板创建路径：仓库 scope 来源 + resolveAgent 用的项目/团队 Agent。 */
     private void stubPlanPersistence(TaskEntity task) {
         WorkspaceRepositoryEntity repo = new WorkspaceRepositoryEntity();
         repo.setProjectRepositoryId(UUID.randomUUID());
@@ -180,7 +188,7 @@ class TaskOrchestratorTest {
         stubAgents(task);
     }
 
-    /** 方案 A：团队内存在与角色匹配的 ACTIVE TEAM Agent，供 persistPlanSteps 分配与回群断言。 */
+    /** 方案 A：团队内存在与角色匹配的 ACTIVE TEAM Agent，供 resolveAgent 分配与回群断言。 */
     private void stubAgents(TaskEntity task) {
         ProjectEntity project = new ProjectEntity();
         project.setTeamId(UUID.randomUUID());
@@ -213,45 +221,34 @@ class TaskOrchestratorTest {
         return o;
     }
 
-    private AgentRunExecutor runSequence(TaskEntity task, List<AgentRunOutcome> sequence) {
-        AtomicInteger idx = new AtomicInteger();
-        AgentRunExecutor executor = mock(AgentRunExecutor.class);
-        when(executor.execute(any(), any())).thenAnswer(inv -> sequence.get(idx.getAndIncrement()));
-        orchestrator(executor).orchestrate(task.getProjectId(), task.getId());
-        return executor;
-    }
-
     private void assertTerminalStatus(String expected) {
         ArgumentCaptor<TaskEntity> captor = ArgumentCaptor.forClass(TaskEntity.class);
         verify(taskMapper, atLeast(1)).updateById(captor.capture());
         assertThat(captor.getAllValues().get(captor.getAllValues().size() - 1).getStatus()).isEqualTo(expected);
     }
 
-    @Test void happyPathCompletesSuccessWithPlanStepsAndThreeRuns() {
+    @Test void happyPathCompletesSuccessWithPlanStepsAndFourRuns() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
-        realAgentOrchestrator().orchestrate(projectId, taskId);
+        orchestrator(registryOf(phaseAgent())).orchestrate(projectId, taskId);
 
         assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
-        verify(taskService).addSteps(eq(projectId), eq(taskId), eq(task.getCreatedBy()),
-                argThat(requests -> requests.size() == 3));
-        verify(taskService).addSteps(eq(projectId), eq(taskId), eq(task.getCreatedBy()),
-                argThat(requests -> requests.stream().allMatch(r -> AGENT_ID.equals(r.getAssignedAgentId()))));
+        // 步骤预置时 ensureSteps 幂等：不重复创建模板
+        verify(taskService, never()).addSteps(any(), any(), any(), any());
 
         ArgumentCaptor<String> roleCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<UUID> agentCaptor = ArgumentCaptor.forClass(UUID.class);
-        verify(taskRunService, times(3)).createForStep(eq(projectId), eq(taskId), any(), roleCaptor.capture(),
+        verify(taskRunService, times(4)).createForStep(eq(projectId), eq(taskId), any(), roleCaptor.capture(),
                 agentCaptor.capture(), any(), any());
-        assertThat(roleCaptor.getAllValues()).containsExactly("DEVELOPER", "TESTER", "REVIEWER");
+        assertThat(roleCaptor.getAllValues()).containsExactly("PLANNER", "DEVELOPER", "TESTER", "REVIEWER");
         // 方案 A：TaskRun.agentId 来自步骤分配的真实 Agent，不再恒 null
         assertThat(agentCaptor.getAllValues()).allSatisfy(agentId -> assertThat(agentId).isEqualTo(AGENT_ID));
-        verify(taskRunService, times(3)).complete(any(), anyString());
+        verify(taskRunService, times(4)).complete(any(), anyString());
 
         // sendAsAgent 接线：step 卡片 + 任务结果卡片均为 AGENT 身份、TASK_STATUS 类型、幂等键前缀正确
         ArgumentCaptor<MessageSendRequest> reqCaptor = ArgumentCaptor.forClass(MessageSendRequest.class);
@@ -262,16 +259,101 @@ class TaskOrchestratorTest {
         assertThat(reqCaptor.getAllValues()).anyMatch(req -> req.getClientMessageId().startsWith("agent-task-"));
     }
 
+    /** 群聊/Skill/Memory 上下文：ContextService.buildForGroup 每次 orchestrate 拉取一次（limit=50），
+     * 快照注入每个 step 的 AgentInput。 */
+    @Test void groupContextSnapshotFlowsIntoEveryStepInput() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubSteps(task);
+        stubRunCreation(projectId, taskId);
+
+        GroupContext groupContext = new GroupContext(task.getRequirementGroupId().toString(), projectId.toString(),
+                "需求群", "背景说明", List.of("repo-1"),
+                List.of(new ContextMessage(1L, "TEXT", "USER", "u-1", "补充：需要离线导出")),
+                List.of(new ContextSkill("编码规范", "禁止提交 .env")),
+                List.of(new ContextMemory("缓存约定", "Redis key 以 projectId 前缀", "architecture")));
+        when(contextService.buildForGroup(any(), any(), any(), any())).thenReturn(groupContext);
+
+        Agent agent = phaseAgent();
+        orchestrator(registryOf(agent)).orchestrate(projectId, taskId);
+
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        // 一次 orchestrate 只组装一次，limit 固定 50
+        verify(contextService, times(1)).buildForGroup(eq(task.getCreatedBy()), eq(projectId),
+                eq(task.getRequirementGroupId()), eq(50));
+        // 快照注入每个 step 输入，且与来源一致（同一对象复用）
+        ArgumentCaptor<AgentInput> inputCaptor = ArgumentCaptor.forClass(AgentInput.class);
+        verify(agent, times(4)).run(inputCaptor.capture());
+        assertThat(inputCaptor.getAllValues()).allSatisfy(input -> {
+            assertThat(input.getConversation()).containsExactly(groupContext.getConversation().get(0));
+            assertThat(input.getSkills()).containsExactly(groupContext.getSkills().get(0));
+            assertThat(input.getMemories()).containsExactly(groupContext.getMemories().get(0));
+        });
+    }
+
+    /** ContextService 组装失败（群不存在等）不阻断编排：AgentInput 上下文为空列表语义。 */
+    @Test void contextAssemblyFailureDoesNotFailOrchestration() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubSteps(task);
+        stubRunCreation(projectId, taskId);
+        when(contextService.buildForGroup(any(), any(), any(), any()))
+                .thenThrow(new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在"));
+
+        Agent agent = phaseAgent();
+        orchestrator(registryOf(agent)).orchestrate(projectId, taskId);
+
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        ArgumentCaptor<AgentInput> inputCaptor = ArgumentCaptor.forClass(AgentInput.class);
+        verify(agent, times(4)).run(inputCaptor.capture());
+        assertThat(inputCaptor.getAllValues()).allSatisfy(input -> {
+            assertThat(input.getConversation()).isNull();
+            assertThat(input.getSkills()).isNull();
+            assertThat(input.getMemories()).isNull();
+        });
+    }
+
+    /** 任务无步骤：ensureSteps 创建模板四步（PLANNER/DEVELOPER/TESTER/REVIEWER），resolveAgent 落 assignedAgentId。 */
+    @Test void noStepsCreatesTemplateStepsBeforeExecution() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId);
+        when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubPlanPersistence(task);
+        stubRunCreation(projectId, taskId);
+        // 首次 loadSteps 为空 → 创建模板；随后 loadSteps 返回模板步骤（含 resolveAgent 定型的 assignedAgentId）
+        List<TaskStepEntity> steps = canonicalSteps(taskId);
+        Map<UUID, TaskStepEntity> byId = new HashMap<>();
+        for (TaskStepEntity s : steps) {
+            byId.put(s.getId(), s);
+        }
+        when(stepMapper.selectList(any())).thenReturn(List.of(), steps);
+        when(stepMapper.selectById(any())).thenAnswer(inv -> byId.get(inv.getArgument(0)));
+
+        orchestrator(registryOf(phaseAgent())).orchestrate(projectId, taskId);
+
+        assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
+        verify(taskService).addSteps(eq(projectId), eq(taskId), eq(task.getCreatedBy()),
+                argThat(requests -> requests.size() == 4
+                        && requests.stream().map(r -> r.getRole()).toList()
+                                .containsAll(List.of("PLANNER", "DEVELOPER", "TESTER", "REVIEWER"))
+                        && requests.stream().allMatch(r -> AGENT_ID.equals(r.getAssignedAgentId()))));
+        verify(taskRunService, times(4)).createForStep(any(), any(), any(), any(), any(), any(), any());
+    }
+
     @Test void testFailureRequeuesCodingWithFeedbackThenSucceeds() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
-        AgentRunExecutor executor = runSequence(task, List.of(
+        Agent agent = runSequence(task, List.of(
                 planSuccess(),
                 outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY),
@@ -280,9 +362,9 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
         assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
-        verify(taskRunService, times(5)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(), any());
-        verify(taskRunService, times(5)).complete(any(), anyString());
-        verify(executor, times(6)).execute(any(), any());
+        verify(taskRunService, times(6)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(), any());
+        verify(taskRunService, times(6)).complete(any(), anyString());
+        verify(agent, times(6)).run(any());
     }
 
     @Test void testFailureFeedsFeedbackIntoRetryCodingInput() {
@@ -290,11 +372,10 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
-        AgentRunExecutor executor = runSequence(task, List.of(
+        Agent agent = runSequence(task, List.of(
                 planSuccess(),
                 outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY),
@@ -303,7 +384,7 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
         ArgumentCaptor<AgentInput> inputCaptor = ArgumentCaptor.forClass(AgentInput.class);
-        verify(executor, times(6)).execute(any(), inputCaptor.capture());
+        verify(agent, times(6)).run(inputCaptor.capture());
         List<AgentInput> codingInputs = inputCaptor.getAllValues().stream()
                 .filter(in -> in.getPhase() == OrchestrationPhase.CODING).toList();
         assertThat(codingInputs).hasSize(2);
@@ -317,9 +398,8 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
         TestResult failing = new TestResult();
         failing.setSuccess(false);
@@ -332,7 +412,7 @@ class TaskOrchestratorTest {
         AgentRunOutcome testingFailed = outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
         testingFailed.setTestResult(failing);
 
-        AgentRunExecutor executor = runSequence(task, List.of(
+        Agent agent = runSequence(task, List.of(
                 planSuccess(),
                 outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
                 testingFailed,
@@ -343,7 +423,7 @@ class TaskOrchestratorTest {
         assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
 
         ArgumentCaptor<AgentInput> inputCaptor = ArgumentCaptor.forClass(AgentInput.class);
-        verify(executor, times(6)).execute(any(), inputCaptor.capture());
+        verify(agent, times(6)).run(inputCaptor.capture());
         List<AgentInput> codingInputs = inputCaptor.getAllValues().stream()
                 .filter(in -> in.getPhase() == OrchestrationPhase.CODING).toList();
         assertThat(codingInputs).hasSize(2);
@@ -358,14 +438,13 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
         AgentRunOutcome reviewFailed = outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
         reviewFailed.setReviewResult(reviewWithFindings());
 
-        AgentRunExecutor executor = runSequence(task, List.of(
+        Agent agent = runSequence(task, List.of(
                 planSuccess(),
                 outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
@@ -375,9 +454,9 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED)));
 
         assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
-        verify(taskRunService, times(6)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(), any());
-        verify(taskRunService, times(6)).complete(any(), anyString());
-        verify(executor, times(7)).execute(any(), any());
+        verify(taskRunService, times(7)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(), any());
+        verify(taskRunService, times(7)).complete(any(), anyString());
+        verify(agent, times(7)).run(any());
     }
 
     /** §七：ReviewResult.findings/suggestions 必须进入重试 Coding Agent 的输入（feedback）。 */
@@ -386,14 +465,13 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
         AgentRunOutcome reviewFailed = outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
         reviewFailed.setReviewResult(reviewWithFindings());
 
-        AgentRunExecutor executor = runSequence(task, List.of(
+        Agent agent = runSequence(task, List.of(
                 planSuccess(),
                 outcome(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED),
                 outcome(OrchestrationPhase.TESTING, RunOutcome.SUCCEEDED),
@@ -405,7 +483,7 @@ class TaskOrchestratorTest {
         assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
 
         ArgumentCaptor<AgentInput> inputCaptor = ArgumentCaptor.forClass(AgentInput.class);
-        verify(executor, times(7)).execute(any(), inputCaptor.capture());
+        verify(agent, times(7)).run(inputCaptor.capture());
         List<AgentInput> codingInputs = inputCaptor.getAllValues().stream()
                 .filter(in -> in.getPhase() == OrchestrationPhase.CODING).toList();
         assertThat(codingInputs).hasSize(2);
@@ -435,9 +513,8 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
         runSequence(task, List.of(
                 planSuccess(),
@@ -458,9 +535,8 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
         runSequence(task, List.of(
                 planSuccess(),
@@ -471,11 +547,19 @@ class TaskOrchestratorTest {
 
         assertTerminalStatus("WAITING_DIFF_CONFIRMATION");
 
+        ArgumentCaptor<String> roleCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<UUID> retryCaptor = ArgumentCaptor.forClass(UUID.class);
-        verify(taskRunService, times(4)).createForStep(eq(projectId), eq(taskId), any(), any(), any(), any(),
-                retryCaptor.capture());
-        assertThat(retryCaptor.getAllValues().get(0)).isNull();
-        assertThat(retryCaptor.getAllValues().get(1)).isNotNull();
+        verify(taskRunService, times(5)).createForStep(eq(projectId), eq(taskId), any(), roleCaptor.capture(),
+                any(), any(), retryCaptor.capture());
+        List<UUID> devRetries = new ArrayList<>();
+        for (int i = 0; i < roleCaptor.getAllValues().size(); i++) {
+            if ("DEVELOPER".equals(roleCaptor.getAllValues().get(i))) {
+                devRetries.add(retryCaptor.getAllValues().get(i));
+            }
+        }
+        assertThat(devRetries).hasSize(2);
+        assertThat(devRetries.get(0)).isNull();
+        assertThat(devRetries.get(1)).isNotNull();
     }
 
     @Test void cancelledCompletesCancelled() {
@@ -483,9 +567,8 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
         runSequence(task, List.of(
                 planSuccess(),
@@ -495,16 +578,19 @@ class TaskOrchestratorTest {
         assertTerminalStatus("CANCELLED");
     }
 
-    @Test void planFailureFailsTaskWithoutAnyRun() {
+    /** PLANNER 提升为正式 step：plan 失败会建一次 TaskRun 后任务 FAILED。 */
+    @Test void planFailureFailsTaskAfterOneRun() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
+        stubSteps(task);
+        stubRunCreation(projectId, taskId);
 
         runSequence(task, List.of(outcome(OrchestrationPhase.PLAN, RunOutcome.FAILED)));
 
         assertTerminalStatus("FAILED");
-        verify(taskRunService, never()).createForStep(any(), any(), any(), any(), any(), any(), any());
+        verify(taskRunService, times(1)).createForStep(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test void notStartableTaskRejected() {
@@ -514,7 +600,7 @@ class TaskOrchestratorTest {
         task.setStatus("SUCCEEDED");
         when(taskMapper.selectById(taskId)).thenReturn(task);
 
-        assertThatThrownBy(() -> realAgentOrchestrator().orchestrate(projectId, taskId))
+        assertThatThrownBy(() -> orchestrator(mock(AgentRegistry.class)).orchestrate(projectId, taskId))
                 .isInstanceOf(IllegalStateException.class);
         verify(taskRunService, never()).createForStep(any(), any(), any(), any(), any(), any(), any());
     }
@@ -527,24 +613,16 @@ class TaskOrchestratorTest {
                 outcome(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED));
     }
 
-    private AgentRunExecutor sequenceExecutor(List<AgentRunOutcome> sequence) {
-        AgentRunExecutor executor = mock(AgentRunExecutor.class);
-        AtomicInteger idx = new AtomicInteger();
-        when(executor.execute(any(), any())).thenAnswer(inv -> sequence.get(idx.getAndIncrement()));
-        return executor;
-    }
-
     /** 后端3 决策：无未提交改动（FINAL_DIFF_EMPTY）视为成功降级 SUCCEEDED，且发布 diff-review.skipped 事件作为依据。 */
     @Test void finalDiffEmptyDegradesToSucceededWithSkippedEvent() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
-        TaskOrchestrator orchestrator = orchestrator(sequenceExecutor(fullSuccessSequence()));
+        TaskOrchestrator orchestrator = orchestrator(registryOf(sequenceAgent(fullSuccessSequence())));
         when(finalDiffBundles.createPendingBatch(any(), any(), any()))
                 .thenThrow(new ApiException(HttpStatus.CONFLICT, "FINAL_DIFF_EMPTY", "No uncommitted changes"));
 
@@ -562,11 +640,10 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
-        TaskOrchestrator orchestrator = orchestrator(sequenceExecutor(fullSuccessSequence()));
+        TaskOrchestrator orchestrator = orchestrator(registryOf(sequenceAgent(fullSuccessSequence())));
         when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenThrow(
                 new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "Sandbox worker is unavailable"));
 
@@ -582,11 +659,10 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
-        TaskOrchestrator orchestrator = orchestrator(sequenceExecutor(fullSuccessSequence()));
+        TaskOrchestrator orchestrator = orchestrator(registryOf(sequenceAgent(fullSuccessSequence())));
         when(finalDiffBundles.createPendingBatch(any(), any(), any())).thenThrow(
                 new ApiException(HttpStatus.CONFLICT, "FINAL_CODING_RUN_INVALID",
                         "A successful final coding run is required"));
@@ -602,11 +678,10 @@ class TaskOrchestratorTest {
         UUID taskId = UUID.randomUUID();
         TaskEntity task = task(projectId, taskId);
         when(taskMapper.selectById(taskId)).thenReturn(task);
-        stubStepScheduler(taskId);
+        stubSteps(task);
         stubRunCreation(projectId, taskId);
-        stubPlanPersistence(task);
 
-        TaskOrchestrator orchestrator = orchestrator(sequenceExecutor(fullSuccessSequence()));
+        TaskOrchestrator orchestrator = orchestrator(registryOf(sequenceAgent(fullSuccessSequence())));
         when(finalDiffBundles.createPendingBatch(any(), any(), any()))
                 .thenThrow(new IllegalStateException("unexpected failure"));
 

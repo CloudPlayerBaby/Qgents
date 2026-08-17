@@ -2,6 +2,8 @@ package qg.qgent.controller;
 
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -14,6 +16,10 @@ import qg.qgent.dto.DeliveryItem;
 import qg.qgent.dto.DeliverySummaryResponse;
 import qg.qgent.service.DeliveryCenterService;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.UUID;
 
 /**
@@ -63,5 +69,27 @@ public class DeliveryCenterController {
                                            @RequestParam(required = false) String createdBy,
                                            HttpServletRequest request) {
         return deliveryCenter.summary(projectId, userId, groupId, type, status, repositoryId, createdBy);
+    }
+
+    /**
+     * 契约成员 B P2：交付中心导出。筛选参数与 delivery-items 一致，返回 UTF-8 CSV
+     * （含 BOM），并设置 {@code Content-Disposition: attachment}。只导出列表摘要，
+     * 不包含完整 Memory/Skill 内容、Prompt、Token、凭据或代码 Patch。
+     */
+    @GetMapping("/projects/{projectId}/delivery-items/export")
+    public ResponseEntity<byte[]> export(@PathVariable UUID projectId,
+                                         @AuthenticationPrincipal UUID userId,
+                                         @RequestParam(required = false) String groupId,
+                                         @RequestParam(required = false) String type,
+                                         @RequestParam(required = false) String status,
+                                         @RequestParam(required = false) String repositoryId,
+                                         @RequestParam(required = false) String createdBy) {
+        String csv = deliveryCenter.exportCsv(projectId, userId, groupId, type, status, repositoryId, createdBy);
+        String filename = "delivery-items-" + DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                .withZone(ZoneOffset.UTC).format(Instant.now()) + ".csv";
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, "text/csv; charset=UTF-8")
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .body(csv.getBytes(StandardCharsets.UTF_8));
     }
 }

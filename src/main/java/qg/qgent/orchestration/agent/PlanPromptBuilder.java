@@ -72,6 +72,7 @@ public class PlanPromptBuilder {
             sb.append("\n已读取文件内容（供你分析代码结构）：\n");
             fileContents.forEach((path, content) -> sb.append("--- ").append(path).append(" ---\n").append(content).append('\n'));
         }
+        sb.append(ContextPromptRenderer.render(input));
         return sb.toString();
     }
 

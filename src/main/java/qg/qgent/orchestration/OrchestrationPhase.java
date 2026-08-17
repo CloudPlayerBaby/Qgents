@@ -7,7 +7,8 @@ package qg.qgent.orchestration;
  */
 public enum OrchestrationPhase {
     /**
-     * 需求理解与计划产出阶段（方案 B：不创建 TaskRun）。
+     * 需求理解与计划产出阶段（P0 起为正式 step：创建 TaskRun、落 PlanResult，
+     * 经 backfillPlanSteps 回填 DEVELOPER/TESTER 指令）。
      */
     PLAN,
     /**
@@ -24,7 +25,8 @@ public enum OrchestrationPhase {
     REVIEWING;
 
     /**
-     * 相位对应的 TaskStep 角色。PLAN 阶段没有可挂的 TaskStep（产出步骤），返回 null。
+     * 相位对应的 TaskStep 角色。PLAN 恒返回 null：P0 起角色映射由
+     * {@code TaskOrchestrator.stepPhase}（step.role → 相位）反向承担，执行期直接取 step.role。
      */
     public String role() {
         return switch (this) {

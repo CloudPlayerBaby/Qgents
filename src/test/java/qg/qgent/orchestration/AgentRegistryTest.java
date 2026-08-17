@@ -1,0 +1,77 @@
+package qg.qgent.orchestration;
+
+import org.junit.jupiter.api.Test;
+import qg.qgent.entity.AgentEntity;
+import qg.qgent.mapper.AgentMapper;
+import qg.qgent.orchestration.agent.CapabilityToolRegistry;
+import qg.qgent.orchestration.agent.CodingAgent;
+import qg.qgent.orchestration.agent.GenericCustomAgent;
+import qg.qgent.orchestration.agent.PlanAgent;
+import qg.qgent.orchestration.agent.ReviewAgent;
+import qg.qgent.orchestration.agent.TestAgent;
+import qg.qgent.orchestration.llm.LlmClient;
+import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+/**
+ * Agent 运行时注册表解析测试：assignedAgentId==null 按角色回退内置 Agent；非空则查实体并包装为
+ * {@link GenericCustomAgent}；实体缺失或内置角色未知返回空 Optional（调用方「缺 Agent 不硬跑」）。
+ */
+class AgentRegistryTest {
+
+    private final PlanAgent planAgent = mock(PlanAgent.class);
+    private final CodingAgent codingAgent = mock(CodingAgent.class);
+    private final TestAgent testAgent = mock(TestAgent.class);
+    private final ReviewAgent reviewAgent = mock(ReviewAgent.class);
+    private final AgentMapper agentMapper = mock(AgentMapper.class);
+    private final LlmClient llm = mock(LlmClient.class);
+    private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
+    private final WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
+    private final CapabilityToolRegistry toolRegistry = mock(CapabilityToolRegistry.class);
+    private final AgentRegistry registry = new AgentRegistry(planAgent, codingAgent, testAgent, reviewAgent,
+            agentMapper, toolRegistry, llm, codeAccess, writer);
+
+    @Test
+    void nullAgentIdFallsBackToBuiltinByRole() {
+        assertThat(registry.resolve(null, "PLANNER")).containsSame(planAgent);
+        assertThat(registry.resolve(null, "DEVELOPER")).containsSame(codingAgent);
+        assertThat(registry.resolve(null, "TESTER")).containsSame(testAgent);
+        assertThat(registry.resolve(null, "REVIEWER")).containsSame(reviewAgent);
+    }
+
+    @Test
+    void unknownBuiltinRoleResolvesEmpty() {
+        assertThat(registry.resolve(null, "SECURITY")).isEmpty();
+        assertThat(registry.resolve(null, null)).isEmpty();
+    }
+
+    @Test
+    void customEntityWrapsGenericCustomAgent() {
+        AgentEntity entity = new AgentEntity();
+        entity.setId(UUID.randomUUID());
+        entity.setRole("SECURITY");
+        entity.setStatus("ACTIVE");
+        entity.setPrompt("do the thing");
+        when(agentMapper.selectById(entity.getId())).thenReturn(entity);
+
+        Optional<Agent> resolved = registry.resolve(entity.getId(), "SECURITY");
+
+        assertThat(resolved).isPresent();
+        assertThat(resolved.get()).isInstanceOf(GenericCustomAgent.class);
+    }
+
+    @Test
+    void missingEntityResolvesEmpty() {
+        UUID missing = UUID.randomUUID();
+        when(agentMapper.selectById(missing)).thenReturn(null);
+
+        assertThat(registry.resolve(missing, "DEVELOPER")).isEmpty();
+    }
+}
