@@ -154,7 +154,7 @@ public class TaskDisplayService {
                         .orderByAsc(TaskAcceptanceCriterionEntity::getSequenceNo)));
 
         return new TaskDetailResponse(id(task.getId()), task.getDisplayCode(), id(task.getProjectId()), task.getTitle(),
-                task.getRequirement(), task.getStatus(), null, task.getDeliveryMode(),
+                task.getRequirement(), task.getStatus(), null, task.getDeliveryMode(), task.getDeliveryReason(),
                 groupSummary(groupById.get(task.getRequirementGroupId())),
                 userSummary(userById.get(task.getCreatedBy())), criteria, execution,
                 workspaceSummary(task, worktreeData), buildCapabilities(task, actor, stepList, batch),
@@ -266,7 +266,7 @@ public class TaskDisplayService {
                 .toList();
         return new TaskListItemResponse(id(task.getId()), task.getDisplayCode(), id(task.getProjectId()),
                 task.getTitle(), requirementSummary(task.getRequirement()), task.getStatus(), null,
-                task.getDeliveryMode(), groupSummary(groupById.get(task.getRequirementGroupId())),
+                task.getDeliveryMode(), task.getDeliveryReason(), groupSummary(groupById.get(task.getRequirementGroupId())),
                 userSummary(userById.get(task.getCreatedBy())), repositories, execution, attention,
                 iso(task.getCreatedAt()), iso(task.getUpdatedAt()));
     }

@@ -86,4 +86,37 @@ class PlanResultParserTest {
         String json = VALID_JSON.replace("spring-boot", "Spring Boot");
         assertThatThrownBy(() -> parser.parse(json)).isInstanceOf(PlanParseException.class);
     }
+
+    @Test void parsesOptionalDeliveryModeAndScaleReason() {
+        String json = VALID_JSON.replace("""
+                "risks": ["risk1"]
+                """, """
+                "risks": ["risk1"],
+                "deliveryMode": "MR_FIRST",
+                "scaleReason": "涉及前后端 2 个仓库、4 个开发步骤"
+                """);
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getDeliveryMode()).isEqualTo("MR_FIRST");
+        assertThat(plan.getScaleReason()).isEqualTo("涉及前后端 2 个仓库、4 个开发步骤");
+    }
+
+    @Test void missingDeliveryModeFallsBackToNull() {
+        PlanResult plan = parser.parse(VALID_JSON);
+        assertThat(plan.getDeliveryMode()).isNull();
+        assertThat(plan.getScaleReason()).isNull();
+    }
+
+    @Test void invalidDeliveryModeFallsBackToNullInsteadOfFailing() {
+        String json = VALID_JSON.replace("\"risks\": [\"risk1\"]", "\"risks\": [],\n  \"deliveryMode\": \"UNKNOWN\"");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getDeliveryMode()).isNull();
+    }
+
+    @Test void parsesDiffFirstMode() {
+        String json = VALID_JSON.replace("\"risks\": [\"risk1\"]",
+                "\"risks\": [],\n  \"deliveryMode\": \"DIFF_FIRST\",\n  \"scaleReason\": \"补丁式修改\"");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getDeliveryMode()).isEqualTo("DIFF_FIRST");
+        assertThat(plan.getScaleReason()).isEqualTo("补丁式修改");
+    }
 }

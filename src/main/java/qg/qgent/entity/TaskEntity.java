@@ -60,6 +60,10 @@ public class TaskEntity {
      */
     private String deliveryMode;
     /**
+     * 交付模式判定理由（Planner scaleReason 或硬规则依据），供看板/卡片展示；可为空。
+     */
+    private String deliveryReason;
+    /**
      * Planner 计划已原子物化为正式执行步骤的时间；非空后不得由自动编排重写步骤清单。
      */
     private LocalDateTime planMaterializedAt;

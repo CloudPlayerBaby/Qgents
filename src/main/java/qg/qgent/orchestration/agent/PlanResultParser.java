@@ -2,6 +2,7 @@ package qg.qgent.orchestration.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import qg.qgent.orchestration.DeliveryMode;
 import qg.qgent.orchestration.result.PlanResult;
 
 import java.util.ArrayList;
@@ -19,12 +20,15 @@ import java.util.regex.Pattern;
  *   "implementationGoals": ["..."],
  *   "steps": [{"title":"...", "files":["..."], "description":"..."}],
  *   "testPlan": "...",
- *   "risks": ["..."]
+ *   "risks": ["..."],
+ *   "deliveryMode": "DIFF_FIRST",
+ *   "scaleReason": "..."
  * }
  * </pre>
  * 必填校验：taskUnderstanding/testPlan 非空，implementationGoals 与 steps 非空，
  * 且每个 step 必须有 title 和至少一个文件。校验失败抛 {@link PlanParseException}，
- * 由 PlanAgent 转为 FAILED_INFRASTRUCTURE。
+ * 由 PlanAgent 转为 FAILED_INFRASTRUCTURE。deliveryMode 为可选字段：仅接受
+ * DIFF_FIRST/MR_FIRST，缺失或非法视为未判定（返回 null），由硬规则兜底，不阻断计划。
  */
 public class PlanResultParser {
 
@@ -56,6 +60,8 @@ public class PlanResultParser {
         plan.setTestPlan(requireText(node, "testPlan"));
         plan.setImplementationSteps(parseSteps(node));
         plan.setRisks(optionalStringArray(node, "risks", MAX_RISKS));
+        plan.setDeliveryMode(optionalDeliveryMode(node));
+        plan.setScaleReason(optionalText(node, "scaleReason"));
         return plan;
     }
 
@@ -181,6 +187,14 @@ public class PlanResultParser {
     private String optionalText(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value != null && value.isTextual() ? value.asText().trim() : null;
+    }
+
+    /**
+     * 可选交付模式：仅接受 DIFF_FIRST/MR_FIRST；缺失或非法视为未判定返回 null（硬规则兜底）。
+     */
+    private String optionalDeliveryMode(JsonNode node) {
+        String value = optionalText(node, "deliveryMode");
+        return DeliveryMode.isValid(value) ? value : null;
     }
 
     /**

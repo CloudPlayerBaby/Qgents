@@ -92,6 +92,7 @@ public class TaskTriggerService {
         ContinuationRef continuation = resolveQuotedDiffContinuation(projectId, groupId, message);
         TaskCreateRequest request = assembleRequest(group, message, body.getTitle(),
                 body.getRequirement(), continuation, body.getRepositoryIds(), body.getBaseRef());
+        request.setDeliveryMode(body.getDeliveryMode());
         return createIdempotent(projectId, actor, message, request);
     }
 

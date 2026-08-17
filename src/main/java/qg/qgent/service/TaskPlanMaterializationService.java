@@ -15,7 +15,11 @@ import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.mapper.TaskStepRepositoryMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.orchestration.AgentDispatcher;
+import qg.qgent.orchestration.DeliveryMode;
+import qg.qgent.orchestration.DeliveryModeDecider;
 import qg.qgent.orchestration.result.PlanResult;
+import qg.qgent.entity.RepositoryBranchConfigEntity;
+import qg.qgent.mapper.RepositoryBranchConfigMapper;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -41,11 +45,14 @@ public class TaskPlanMaterializationService {
     private final TaskExecutionArtifactService artifacts;
     private final EventService events;
     private final AgentDispatcher agentDispatcher;
+    private final DeliveryModeDecider deliveryModeDecider;
+    private final RepositoryBranchConfigMapper branchConfigMapper;
 
     public TaskPlanMaterializationService(TaskMapper tasks, TaskStepMapper steps, TaskStepDependencyMapper dependencies,
                                           TaskStepRepositoryMapper scopes, WorkspaceRepositoryMapper worktrees,
                                           TaskExecutionArtifactService artifacts, EventService events,
-                                          AgentDispatcher agentDispatcher) {
+                                          AgentDispatcher agentDispatcher, DeliveryModeDecider deliveryModeDecider,
+                                          RepositoryBranchConfigMapper branchConfigMapper) {
         this.tasks = tasks;
         this.steps = steps;
         this.dependencies = dependencies;
@@ -54,6 +61,8 @@ public class TaskPlanMaterializationService {
         this.artifacts = artifacts;
         this.events = events;
         this.agentDispatcher = agentDispatcher;
+        this.deliveryModeDecider = deliveryModeDecider;
+        this.branchConfigMapper = branchConfigMapper;
     }
 
     /**
@@ -89,6 +98,7 @@ public class TaskPlanMaterializationService {
 
     /**
      * 计划成功后的唯一物化入口。已有手工非 Planner 步骤时保留其清单，仅保存 Task 级 Plan 产物。
+     * 物化事务内同时定型交付模式（优先级：用户显式 &gt; Planner 判定 &gt; 硬规则兜底），执行期不变。
      */
     @Transactional
     public List<TaskStepEntity> materialize(TaskEntity task, PlanResult plan) {
@@ -103,9 +113,13 @@ public class TaskPlanMaterializationService {
         TaskStepEntity planner = existing.stream().filter(step -> "PLANNER".equals(step.getRole())).findFirst()
                 .orElseThrow(() -> new IllegalStateException("planner bootstrap step is missing"));
         boolean manualPlan = existing.stream().anyMatch(step -> !"PLANNER".equals(step.getRole()));
-        artifacts.createPlan(locked, planSummary(plan));
+        List<WorkspaceRepositoryEntity> worktreeList = worktrees.selectByWorkspace(locked.getWorkspaceId());
+        DeliveryDecision decision = resolveDeliveryMode(locked, plan, worktreeList);
+        locked.setDeliveryMode(decision.mode());
+        locked.setDeliveryReason(decision.reason());
+        artifacts.createPlan(locked, planSummary(plan, decision));
         if (!manualPlan) {
-            createGeneratedSteps(locked, plan, planner);
+            createGeneratedSteps(locked, plan, planner, worktreeList);
         }
         planner.setStatus("SUCCEEDED");
         planner.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
@@ -117,8 +131,9 @@ public class TaskPlanMaterializationService {
         return steps.selectByTaskForUpdate(locked.getId());
     }
 
-    private void createGeneratedSteps(TaskEntity task, PlanResult plan, TaskStepEntity planner) {
-        List<UUID> repositories = worktrees.selectByWorkspace(task.getWorkspaceId()).stream()
+    private void createGeneratedSteps(TaskEntity task, PlanResult plan, TaskStepEntity planner,
+                                      List<WorkspaceRepositoryEntity> worktreeList) {
+        List<UUID> repositories = worktreeList.stream()
                 .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
         List<TaskStepEntity> created = new ArrayList<>();
         UUID previous = planner.getId();
@@ -181,7 +196,7 @@ public class TaskPlanMaterializationService {
                 + (item.getDescription() == null || item.getDescription().isBlank() ? "" : "\n说明：" + item.getDescription());
     }
 
-    private Map<String, Object> planSummary(PlanResult plan) {
+    private Map<String, Object> planSummary(PlanResult plan, DeliveryDecision decision) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("taskUnderstanding", plan.getTaskUnderstanding());
         result.put("objectives", plan.getObjectives());
@@ -195,7 +210,77 @@ public class TaskPlanMaterializationService {
         }).toList());
         result.put("testPlan", plan.getTestPlan());
         result.put("risks", plan.getRisks());
+        result.put("deliveryMode", decision.mode());
+        result.put("scaleReason", plan.getScaleReason());
+        result.put("deliveryReason", decision.reason());
         return result;
+    }
+
+    /**
+     * 交付模式定型：用户显式指定（或续作沿用）优先，其次 Planner 判定，最后硬规则兜底。
+     * 判定依据与理由随 Plan 物化写入 Task，执行期不再变化。
+     */
+    private DeliveryDecision resolveDeliveryMode(TaskEntity task, PlanResult plan,
+                                                 List<WorkspaceRepositoryEntity> worktreeList) {
+        if (DeliveryMode.isValid(task.getDeliveryMode())) {
+            return new DeliveryDecision(task.getDeliveryMode(), "用户指定或沿用源任务");
+        }
+        if (DeliveryMode.isValid(plan.getDeliveryMode())) {
+            String reason = plan.getScaleReason() == null || plan.getScaleReason().isBlank()
+                    ? "由 Planner 判定" : plan.getScaleReason();
+            return new DeliveryDecision(plan.getDeliveryMode(), reason);
+        }
+        boolean hasRequiredChecks = targetBranchHasRequiredChecks(worktreeList);
+        int repositoryCount = worktreeList.size();
+        int developerStepCount = plan.getImplementationSteps().size();
+        String mode = deliveryModeDecider.decide(repositoryCount, developerStepCount, hasRequiredChecks);
+        return new DeliveryDecision(mode, ruleReason(mode, repositoryCount, developerStepCount, hasRequiredChecks));
+    }
+
+    /**
+     * 目标分支是否配置了 requiredChecks 质量门禁：按工作区各 worktree 的基分支（baseCommit）匹配分支配置。
+     * baseCommit 为提交 SHA（非分支名）时无法匹配分支策略，按无门禁处理。
+     */
+    private boolean targetBranchHasRequiredChecks(List<WorkspaceRepositoryEntity> worktreeList) {
+        if (worktreeList.isEmpty()) {
+            return false;
+        }
+        List<UUID> repositoryIds = worktreeList.stream()
+                .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
+        // 用字符串列名 QueryWrapper：避免 lambda 缓存依赖，纯单测环境（mock Mapper）下亦可执行。
+        List<RepositoryBranchConfigEntity> configs = branchConfigMapper.selectList(
+                Wrappers.<RepositoryBranchConfigEntity>query()
+                        .in("project_repository_id", repositoryIds));
+        return configs.stream().anyMatch(config -> config.getRequiredChecks() != null
+                && !config.getRequiredChecks().isEmpty()
+                && worktreeList.stream().anyMatch(w -> isBranchName(w.getBaseCommit())
+                        && w.getBaseCommit().equals(config.getBranchName())));
+    }
+
+    private boolean isBranchName(String value) {
+        return value != null && !value.isBlank() && !value.matches("[0-9a-fA-F]{40}");
+    }
+
+    private String ruleReason(String mode, int repositoryCount, int developerStepCount, boolean hasRequiredChecks) {
+        if (DeliveryMode.MR_FIRST.equals(mode)) {
+            if (repositoryCount > 1) {
+                return "涉及 " + repositoryCount + " 个仓库，按规则判定 MR_FIRST";
+            }
+            if (developerStepCount > 2) {
+                return "开发步骤 " + developerStepCount + " 个，按规则判定 MR_FIRST";
+            }
+            if (hasRequiredChecks) {
+                return "目标分支配置了质量门禁，按规则判定 MR_FIRST";
+            }
+            return "按规则判定 MR_FIRST";
+        }
+        return "按规则判定 DIFF_FIRST";
+    }
+
+    /**
+     * 交付模式判定结果：模式 + 判定理由（随 Task 落库，供看板/卡片展示）。
+     */
+    private record DeliveryDecision(String mode, String reason) {
     }
 
     private void registerStepEvent(TaskEntity task, TaskStepEntity step) {

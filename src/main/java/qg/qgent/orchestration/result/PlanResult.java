@@ -31,6 +31,14 @@ public class PlanResult {
      * 风险列表。
      */
     private List<String> risks = new ArrayList<>();
+    /**
+     * 交付模式判定：DIFF_FIRST 或 MR_FIRST；可为空（未判定时由硬规则兜底）。
+     */
+    private String deliveryMode;
+    /**
+     * 交付模式判定理由（规模/跨仓库/门禁等）；可为空。
+     */
+    private String scaleReason;
 
     /**
      * 单个实现步骤。

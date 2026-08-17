@@ -44,4 +44,7 @@ public class TaskCreateRequest {
     @Size(max = 512)
     @Schema(description = "Optional common base ref")
     private String baseRef;
+
+    @Schema(description = "交付模式：DIFF_FIRST/MR_FIRST；不传则自动判定（Planner/规则），续作沿用源任务")
+    private String deliveryMode;
 }

@@ -51,4 +51,10 @@ public class TaskTriggerRequest {
     @Size(max = 512)
     @Schema(description = "可选公共基线分支")
     private String baseRef;
+
+    /**
+     * 交付模式：DIFF_FIRST/MR_FIRST；不传则自动判定（Planner/规则），续作沿用源任务。
+     */
+    @Schema(description = "交付模式：DIFF_FIRST/MR_FIRST；不传则自动判定")
+    private String deliveryMode;
 }

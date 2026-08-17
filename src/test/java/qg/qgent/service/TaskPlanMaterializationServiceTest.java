@@ -14,9 +14,13 @@ import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.mapper.TaskStepRepositoryMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.orchestration.AgentDispatcher;
+import qg.qgent.orchestration.DeliveryMode;
+import qg.qgent.orchestration.DeliveryModeDecider;
 import qg.qgent.orchestration.result.PlanResult;
+import qg.qgent.mapper.RepositoryBranchConfigMapper;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -43,7 +47,7 @@ class TaskPlanMaterializationServiceTest {
                                                    TaskExecutionArtifactService artifacts,
                                                    EventService events, AgentDispatcher dispatcher) {
         return new TaskPlanMaterializationService(tasks, steps, dependencies, scopes, worktrees, artifacts, events,
-                dispatcher);
+                dispatcher, new DeliveryModeDecider(), mock(RepositoryBranchConfigMapper.class));
     }
 
     @Test
@@ -131,6 +135,115 @@ class TaskPlanMaterializationServiceTest {
         // 调度 Agent 选不到 → 步骤不绑 Agent，执行期由 AgentRegistry 内置兜底，不抛错。
         assertThat(inserted.getAllValues()).extracting(TaskStepEntity::getAssignedAgentId)
                 .allMatch(java.util.Objects::isNull);
+    }
+
+    @Test
+    void explicitDeliveryModeWinsOverPlannerAndRule() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskEntity task = task();
+        task.setDeliveryMode(DeliveryMode.MR_FIRST);
+        TaskStepEntity planner = planner(task);
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository()));
+        PlanResult plan = plan();
+        plan.setDeliveryMode(DeliveryMode.DIFF_FIRST);
+        TaskPlanMaterializationService service = service(tasks, steps, mock(TaskStepDependencyMapper.class),
+                mock(TaskStepRepositoryMapper.class), worktrees,
+                mock(TaskExecutionArtifactService.class), mock(EventService.class), mock(AgentDispatcher.class));
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.materialize(task, plan);
+
+        ArgumentCaptor<TaskEntity> updated = ArgumentCaptor.forClass(TaskEntity.class);
+        verify(tasks).updateById(updated.capture());
+        assertThat(updated.getValue().getDeliveryMode()).isEqualTo(DeliveryMode.MR_FIRST);
+    }
+
+    @Test
+    void plannerDeliveryModeUsedWhenTaskUnset() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository()));
+        PlanResult plan = plan();
+        plan.setDeliveryMode(DeliveryMode.MR_FIRST);
+        plan.setScaleReason("跨模块新功能，值得走人工审查");
+        TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
+        TaskPlanMaterializationService service = service(tasks, steps, mock(TaskStepDependencyMapper.class),
+                mock(TaskStepRepositoryMapper.class), worktrees, artifacts,
+                mock(EventService.class), mock(AgentDispatcher.class));
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.materialize(task, plan);
+
+        ArgumentCaptor<TaskEntity> updated = ArgumentCaptor.forClass(TaskEntity.class);
+        verify(tasks).updateById(updated.capture());
+        assertThat(updated.getValue().getDeliveryMode()).isEqualTo(DeliveryMode.MR_FIRST);
+        assertThat(updated.getValue().getDeliveryReason()).isEqualTo("跨模块新功能，值得走人工审查");
+        ArgumentCaptor<Map> summary = ArgumentCaptor.forClass(Map.class);
+        verify(artifacts).createPlan(any(), summary.capture());
+        assertThat(summary.getValue()).containsEntry("deliveryMode", DeliveryMode.MR_FIRST)
+                .containsEntry("scaleReason", "跨模块新功能，值得走人工审查");
+    }
+
+    @Test
+    void ruleFallbackPicksMrFirstForMultipleRepositories() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository(), repository()));
+        TaskPlanMaterializationService service = service(tasks, steps, mock(TaskStepDependencyMapper.class),
+                mock(TaskStepRepositoryMapper.class), worktrees,
+                mock(TaskExecutionArtifactService.class), mock(EventService.class), mock(AgentDispatcher.class));
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.materialize(task, plan());
+
+        ArgumentCaptor<TaskEntity> updated = ArgumentCaptor.forClass(TaskEntity.class);
+        verify(tasks).updateById(updated.capture());
+        assertThat(updated.getValue().getDeliveryMode()).isEqualTo(DeliveryMode.MR_FIRST);
+        assertThat(updated.getValue().getDeliveryReason()).contains("仓库").contains("MR_FIRST");
+    }
+
+    @Test
+    void ruleFallbackDefaultsDiffFirstForSingleSmallTask() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository()));
+        TaskPlanMaterializationService service = service(tasks, steps, mock(TaskStepDependencyMapper.class),
+                mock(TaskStepRepositoryMapper.class), worktrees,
+                mock(TaskExecutionArtifactService.class), mock(EventService.class), mock(AgentDispatcher.class));
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.materialize(task, plan());
+
+        ArgumentCaptor<TaskEntity> updated = ArgumentCaptor.forClass(TaskEntity.class);
+        verify(tasks).updateById(updated.capture());
+        assertThat(updated.getValue().getDeliveryMode()).isEqualTo(DeliveryMode.DIFF_FIRST);
+        assertThat(updated.getValue().getDeliveryReason()).contains("DIFF_FIRST");
+    }
+
+    private WorkspaceRepositoryEntity repository() {
+        WorkspaceRepositoryEntity repository = new WorkspaceRepositoryEntity();
+        repository.setProjectRepositoryId(UUID.randomUUID());
+        repository.setBaseCommit("develop");
+        return repository;
     }
 
     private TaskEntity task() {

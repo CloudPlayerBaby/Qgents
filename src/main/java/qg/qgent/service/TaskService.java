@@ -10,6 +10,7 @@ import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
 import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
+import qg.qgent.orchestration.DeliveryMode;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -76,6 +77,10 @@ public class TaskService {
     @Transactional
     public TaskResponse create(UUID projectId, UUID actor, TaskCreateRequest body) {
         access.requireProjectMember(projectId, actor);
+        if (body.getDeliveryMode() != null && !DeliveryMode.isValid(body.getDeliveryMode())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DELIVERY_MODE",
+                    "交付模式仅支持 DIFF_FIRST 或 MR_FIRST");
+        }
         // 锁定项目行串行化同项目内的 Task 创建，保证 display_code 序号在项目内单调且不重复（沿用消息序号的持行锁模式）。
         ProjectEntity project = projects.selectByIdForUpdate(projectId);
         // 任务发起惰性兜底：确保团队默认 Agent 一定在位（存量团队 / 部署间隙 / 建团队失败重试等场景），
@@ -166,7 +171,7 @@ public class TaskService {
         task.setDisplayCode(nextDisplayCode(projectId));
         task.setRequirement(body.getRequirement().trim());
         task.setStatus("PLANNING");
-        task.setDeliveryMode("DIFF_FIRST");
+        task.setDeliveryMode(resolveDeliveryMode(body, continuation));
         task.setCreatedBy(actor);
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
@@ -428,6 +433,17 @@ public class TaskService {
     private void publishTaskUpdated(TaskEntity task) {
         eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated",
                 task.getId().toString(), TaskEventPayloads.taskUpdated(task));
+    }
+
+    /**
+     * 交付模式解析优先级：用户显式指定（已校验）&gt; 续作沿用源 Task &gt; 空（Plan 物化时自动判定）。
+     * 续作沿用原 Task 的 deliveryMode，保证多轮迭代中途不换交付路线。
+     */
+    private String resolveDeliveryMode(TaskCreateRequest body, TaskEntity continuation) {
+        if (body.getDeliveryMode() != null) {
+            return body.getDeliveryMode();
+        }
+        return continuation == null ? null : continuation.getDeliveryMode();
     }
 
     private ApiException validation(String code, String message) {

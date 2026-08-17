@@ -12,6 +12,7 @@ import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.orchestration.result.PlanResult;
+import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.service.EventService;
 import qg.qgent.service.FinalDiffBundleService;
@@ -180,6 +181,62 @@ class TaskOrchestratorTest {
         assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
     }
 
+    @Test
+    void mrFirstTaskEntersDeliveringWithoutDiffConfirmation() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        task.setDeliveryMode(DeliveryMode.MR_FIRST);
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING));
+
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.updatedStatuses()).contains("DELIVERING");
+        verify(fixture.diffs, never()).createPendingBatch(any(), any(), any());
+        verify(fixture.events).publish(any(), any(), eq("delivery.started"), any(), any());
+    }
+
+    @Test
+    void reviewerArtifactSummaryIncludesStructuredFindings() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+        AgentRunOutcome review = fixture.success(OrchestrationPhase.REVIEWING);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(true);
+        reviewResult.setSummary("looks good");
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("MAJOR");
+        finding.setFile("src/App.java");
+        finding.setLine(12);
+        finding.setIssue("missing null check");
+        finding.setSuggestion("add null check");
+        reviewResult.setFindings(List.of(finding));
+        review.setReviewResult(reviewResult);
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), review);
+
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        ArgumentCaptor<Map> summary = ArgumentCaptor.forClass(Map.class);
+        verify(fixture.artifacts).createRunArtifact(any(), any(), any(), eq("REVIEWER"), summary.capture());
+        Map reviewSummary = (Map) summary.getValue().get("review");
+        assertThat(reviewSummary).containsEntry("success", true);
+        assertThat((List<?>) reviewSummary.get("findings")).hasSize(1);
+        assertThat((Map<String, Integer>) reviewSummary.get("severityCount")).containsEntry("MAJOR", 1);
+    }
+
     private static final class Fixture {
         private final TaskMapper tasks = mock(TaskMapper.class);
         private final TaskStepMapper steps = mock(TaskStepMapper.class);
@@ -188,6 +245,7 @@ class TaskOrchestratorTest {
         private final AgentRegistry registry = mock(AgentRegistry.class);
         private final AgentContextAssembler context = mock(AgentContextAssembler.class);
         private final FinalDiffBundleService diffs = mock(FinalDiffBundleService.class);
+        private final EventService events = mock(EventService.class);
         private final TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
         private final DiffMapper diffMapper = mock(DiffMapper.class);
         private final MessageService messages = mock(MessageService.class);
@@ -241,7 +299,7 @@ class TaskOrchestratorTest {
         TaskOrchestrator orchestrator(Agent agent) {
             currentAgent.set(agent);
             return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry, context,
-                    taskRuns, tasks, steps, mock(EventService.class),
+                    taskRuns, tasks, steps, events,
                     mock(NotificationService.class), mock(SandboxSessionManager.class), artifacts, diffs,
                     diffMapper, messages, orchestratorAgents,
                     materialization);

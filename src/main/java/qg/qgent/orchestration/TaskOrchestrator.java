@@ -15,6 +15,7 @@ import qg.qgent.mapper.*;
 import qg.qgent.orchestration.llm.LlmObservation;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
+import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.service.*;
@@ -432,7 +433,51 @@ public class TaskOrchestrator {
                     .toList();
             summary.put("observations", observations);
         }
+        if ("REVIEWER".equals(step.getRole()) && outcome.getReviewResult() != null) {
+            summary.put("review", reviewSummary(outcome.getReviewResult()));
+        }
         return summary;
+    }
+
+    /**
+     * REVIEW 产物的结构化摘要（T4.3 AI_REVIEW check 数据源）：success、摘要、严重度统计与
+     * findings（文件/行/问题/建议，均截断脱敏），供交付侧在 PR 创建后映射为质量门禁检查结果。
+     */
+    private Map<String, Object> reviewSummary(ReviewResult review) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", review.isSuccess());
+        result.put("summary", truncate(review.getSummary(), 2000));
+        result.put("needsCodingFix", review.isNeedsCodingFix());
+        Map<String, Integer> severityCount = new LinkedHashMap<>();
+        List<Map<String, Object>> findings = new ArrayList<>();
+        for (ReviewResult.Finding finding : review.getFindings()) {
+            String severity = finding.getSeverity() == null ? "UNKNOWN" : finding.getSeverity();
+            severityCount.merge(severity, 1, Integer::sum);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("severity", severity);
+            if (finding.getFile() != null) {
+                item.put("file", finding.getFile());
+            }
+            if (finding.getLine() != null) {
+                item.put("line", finding.getLine());
+            }
+            item.put("issue", truncate(finding.getIssue(), 1000));
+            if (finding.getSuggestion() != null) {
+                item.put("suggestion", truncate(finding.getSuggestion(), 1000));
+            }
+            findings.add(item);
+        }
+        result.put("severityCount", severityCount);
+        result.put("findings", findings);
+        if (review.getSuggestions() != null && !review.getSuggestions().isEmpty()) {
+            result.put("suggestions", review.getSuggestions().stream()
+                    .map(suggestion -> truncate(suggestion, 500)).toList());
+        }
+        return result;
+    }
+
+    private String truncate(String value, int max) {
+        return value == null || value.length() <= max ? value : value.substring(0, max);
     }
 
     private String lastDeveloperNodeId(List<TaskStepEntity> steps) {
@@ -472,12 +517,14 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 任务到达终态：成功路径先创建待确认 Diff 批次再置 WAITING_DIFF_CONFIRMATION（失败降级 SUCCEEDED），
-     * 其余按取消/失败落终态；随后以编码 Agent 身份把任务结果卡片回群（失败不阻断编排）。
+     * 任务到达终态：成功路径按交付模式分叉——DIFF_FIRST 先创建待确认 Diff 批次再置
+     * WAITING_DIFF_CONFIRMATION（失败降级 SUCCEEDED），MR_FIRST 跳过 Diff 审核直接进入
+     * DELIVERING（由后端3 监听 delivery.started 执行 commit→push→建 PR）；其余按取消/失败
+     * 落终态；随后以编码 Agent 身份把任务结果卡片回群（失败不阻断编排）。
      */
     private void finishTask(TaskEntity task, TaskExecutionContext ctx, StateMachineDecision.Action action) {
         FinishingStatus finishing = switch (action) {
-            case COMPLETE_SUCCESS -> completeWithDiffBatch(task, ctx);
+            case COMPLETE_SUCCESS -> completeSuccess(task, ctx);
             case COMPLETE_CANCELLED -> new FinishingStatus("CANCELLED", null);
             default -> new FinishingStatus("FAILED", null);
         };
@@ -486,6 +533,44 @@ public class TaskOrchestrator {
             sendDiffCard(task, finishing.reviewBatchId());
         }
         sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, taskResultMessage(finishing.status()));
+    }
+
+    /**
+     * 成功终态按交付模式路由：MR_FIRST 直达 DELIVERING，DIFF_FIRST 走待确认 Diff 批次。
+     */
+    private FinishingStatus completeSuccess(TaskEntity task, TaskExecutionContext ctx) {
+        if (DeliveryMode.MR_FIRST.equals(task.getDeliveryMode())) {
+            return completeWithMrFirst(task, ctx);
+        }
+        return completeWithDiffBatch(task, ctx);
+    }
+
+    /**
+     * MR_FIRST 成功终态：跳过 Diff 审核批次与 WAITING_DIFF_CONFIRMATION，直接置 DELIVERING，
+     * 并发布 delivery.started 事件通知后端3 交付执行器（commit→push→建 PR）。判定理由随事件
+     * 一并下发供前端展示；DELIVERING 不是编排终态，不触发 TASK_COMPLETED 通知（由交付侧在
+     * PR 创建后发 MR_PENDING）。
+     */
+    private FinishingStatus completeWithMrFirst(TaskEntity task, TaskExecutionContext ctx) {
+        log.info("mr-first task enters delivery taskId={} mode={} reason={}", task.getId(), task.getDeliveryMode(),
+                task.getDeliveryReason());
+        publishDeliveryStarted(task);
+        return new FinishingStatus("DELIVERING", null);
+    }
+
+    /**
+     * 发布 delivery.started 事件（后端3 交付执行器监听）：payload 仅脱敏元数据，不含代码内容。
+     */
+    private void publishDeliveryStarted(TaskEntity task) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("projectId", task.getProjectId());
+        payload.put("taskId", task.getId());
+        payload.put("deliveryMode", task.getDeliveryMode());
+        if (task.getDeliveryReason() != null) {
+            payload.put("reason", task.getDeliveryReason());
+        }
+        eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "delivery.started",
+                task.getId().toString(), payload);
     }
 
     /**
@@ -544,6 +629,12 @@ public class TaskOrchestrator {
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("taskId", task.getId().toString());
         content.put("status", status);
+        if (task.getDeliveryMode() != null) {
+            content.put("deliveryMode", task.getDeliveryMode());
+        }
+        if (task.getDeliveryReason() != null) {
+            content.put("deliveryReason", task.getDeliveryReason());
+        }
         if (node != null) {
             content.put("node", node);
         }
@@ -632,6 +723,7 @@ public class TaskOrchestrator {
     private String taskResultMessage(String status) {
         return switch (status) {
             case WAITING_DIFF_CONFIRMATION -> "任务开发完成，等待你对 Diff 的确认";
+            case "DELIVERING" -> "任务开发完成，已提交 PR 进入代码审查流程";
             case "SUCCEEDED" -> "任务已完成";
             case "FAILED" -> "任务执行失败";
             case "CANCELLED" -> "任务已取消";

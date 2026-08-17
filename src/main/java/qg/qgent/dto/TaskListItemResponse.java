@@ -68,6 +68,12 @@ public class TaskListItemResponse {
     private String deliveryMode;
 
     /**
+     * 交付模式判定理由（Planner scaleReason 或规则依据）；未判定时为 null。
+     */
+    @Schema(description = "交付模式判定理由")
+    private String deliveryReason;
+
+    /**
      * 需求群摘要。
      */
     @Schema(description = "需求群摘要")

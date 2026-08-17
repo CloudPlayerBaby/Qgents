@@ -31,6 +31,7 @@ public final class TaskEventPayloads {
         p.put("requirementGroupId", task.getRequirementGroupId());
         p.put("status", task.getStatus());
         p.put("deliveryMode", task.getDeliveryMode());
+        p.put("deliveryReason", task.getDeliveryReason());
         p.put("workspaceId", task.getWorkspaceId());
         p.put("timestamp", Instant.now().toString());
         return p;
