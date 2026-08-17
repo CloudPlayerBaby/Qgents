@@ -221,7 +221,7 @@ class TaskDisplayServiceTest {
         batch.setReviewStatus("REJECTED");
         when(diffBatches.selectList(any())).thenReturn(List.of(batch));
 
-        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, "req")
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
 
         assertEquals("DIFF_REJECTED", item.getAttention().getKind());
