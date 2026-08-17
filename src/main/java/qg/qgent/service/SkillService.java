@@ -46,7 +46,12 @@ public class SkillService {
     }
 
     /**
-     * 创建 Skill 草稿（DRAFT）。
+     * 创建 Skill。免审批规则：
+     * <ul>
+     *   <li>PRIVATE（仅创建者自己可用，不共享）：任何人创建即 PUBLISHED，无需审核；</li>
+     *   <li>PROJECT_SHARED（项目共享）：Project Admin 自建直接 PUBLISHED，普通成员创建为
+     *       DRAFT，经提交审核后由 Admin 发布。</li>
+     * </ul>
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -73,6 +78,16 @@ public class SkillService {
         skill.setVisibility(visibility);
         skill.setStatus("DRAFT");
         skillMapper.insert(skill);
+        boolean autoPublish = "PRIVATE".equals(visibility) || access.isProjectAdmin(projectId, actor);
+        if (autoPublish) {
+            // PRIVATE 仅自己用无需审核；PROJECT_SHARED 的 Admin 自建免审批
+            skill.setStatus("PUBLISHED");
+            skill.setReviewerId(actor);
+            skill.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
+            skillMapper.updateById(skill);
+            eventService.publish(projectId, null, "skill.published", id(skill.getId()),
+                    deliveryPayload(projectId, skill.getId()));
+        }
         return toResponse(skillMapper.selectById(skill.getId()));
     }
 
@@ -134,12 +149,16 @@ public class SkillService {
     }
 
     /**
-     * 提交审核；仅创建者或 Project Admin，且状态为 DRAFT/REJECTED。
+     * 提交审核；仅创建者或 Project Admin。可提交的状态：
+     * DRAFT/REJECTED（新技能或重新提交），或 PUBLISHED 的 PRIVATE（申请转共享——私有技能
+     * 已直接可用，创建者想共享给项目时提交审核，Admin 批准后转为 PROJECT_SHARED）。
      */
     @Transactional
     public SkillResponse submitReview(UUID actor, UUID projectId, UUID skillId) {
         SkillEntity skill = requireOwned(actor, projectId, skillId);
-        if (!SUBMITTABLE.contains(skill.getStatus())) {
+        boolean submittable = SUBMITTABLE.contains(skill.getStatus())
+                || ("PUBLISHED".equals(skill.getStatus()) && "PRIVATE".equals(skill.getVisibility()));
+        if (!submittable) {
             throw stateConflict(skill.getStatus());
         }
         skill.setStatus("PENDING_REVIEW");

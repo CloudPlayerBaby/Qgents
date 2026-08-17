@@ -602,7 +602,9 @@ public class DeliveryCenterService {
         boolean admin = access.isProjectAdmin(skill.getProjectId(), actor);
         boolean creatorOrAdmin = admin || skill.getCreatedBy().equals(actor);
         String status = skill.getStatus();
-        boolean submittable = creatorOrAdmin && ("DRAFT".equals(status) || "REJECTED".equals(status));
+        // 可提交审核：DRAFT/REJECTED，或 PUBLISHED 的 PRIVATE（申请转共享）
+        boolean submittable = creatorOrAdmin && ("DRAFT".equals(status) || "REJECTED".equals(status)
+                || ("PUBLISHED".equals(status) && "PRIVATE".equals(skill.getVisibility())));
         boolean decidable = admin && "PENDING_REVIEW".equals(status);
         boolean archivable = admin && "PUBLISHED".equals(status);
 

@@ -1,5 +1,6 @@
 package qg.qgent.service;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import org.springframework.ai.chat.client.ChatClient;
@@ -11,10 +12,12 @@ import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
 import qg.qgent.entity.MemoryEntity;
 import qg.qgent.entity.MessageEntity;
+import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.MemoryMapper;
 import qg.qgent.mapper.MemoryMessageSourceMapper;
 import qg.qgent.mapper.MessageMapper;
+import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.UserMapper;
 
 import java.time.LocalDateTime;
@@ -31,13 +34,19 @@ import java.util.*;
 public class MemoryService {
     private static final Set<String> SUBMITTABLE = Set.of("DRAFT", "REJECTED");
     private static final Set<String> EDITABLE = Set.of("DRAFT", "PENDING_REVIEW");
-    private static final String AI_SYSTEM_PROMPT = "你是项目知识沉淀助手。根据给定群聊消息和沉淀指令，输出严格 JSON，"
-            + "格式为 {\"title\":\"简短标题\",\"content\":\"经确认的项目事实陈述，不得编造\","
+    /**
+     * AI 自动沉淀一次性读取的最近消息条数上限（按群内 sequence 倒序取最近 N 条）。
+     */
+    private static final int RECENT_MESSAGE_LIMIT = 40;
+    private static final String DEFAULT_INSTRUCTION = "将最近群聊中值得沉淀的内容沉淀为项目 Memory";
+    private static final String AI_SYSTEM_PROMPT = "你是项目知识沉淀助手。根据给定的最近群聊消息，自动甄别其中值得长期复用的"
+            + "项目事实、约定或工程决策，输出严格 JSON，格式为 {\"title\":\"简短标题\",\"content\":\"经确认的项目事实陈述，不得编造\","
             + "\"category\":\"如 ENGINEERING_DECISION/ARCHITECTURE_CONSTRAINT\",\"tags\":[\"标签\"]}。";
 
     private final MemoryMapper memoryMapper;
     private final MemoryMessageSourceMapper sourceMapper;
     private final MessageMapper messageMapper;
+    private final RequirementGroupMapper requirementGroupMapper;
     private final ProjectAccessService access;
     private final UserMapper userMapper;
     private final ChatClient chatClient;
@@ -45,11 +54,13 @@ public class MemoryService {
     private final EventService eventService;
 
     public MemoryService(MemoryMapper memoryMapper, MemoryMessageSourceMapper sourceMapper,
-                         MessageMapper messageMapper, ProjectAccessService access, UserMapper userMapper,
+                         MessageMapper messageMapper, RequirementGroupMapper requirementGroupMapper,
+                         ProjectAccessService access, UserMapper userMapper,
                          ChatClient.Builder chatClientBuilder, ObjectMapper mapper, EventService eventService) {
         this.memoryMapper = memoryMapper;
         this.sourceMapper = sourceMapper;
         this.messageMapper = messageMapper;
+        this.requirementGroupMapper = requirementGroupMapper;
         this.access = access;
         this.userMapper = userMapper;
         this.chatClient = chatClientBuilder.build();
@@ -58,7 +69,9 @@ public class MemoryService {
     }
 
     /**
-     * 手动创建 Memory 草稿（DRAFT）。
+     * 手动创建 Memory。Project Admin 自建免审批：直接 APPROVED 上架为项目共享知识；
+     * 普通成员创建为 DRAFT，经提交审核后由 Admin 批准。AI 沉淀草稿（createAiDraft）
+     * 即使 Admin 也保持 DRAFT——AI 可生成草稿但不得直接批准（实体约束）。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -78,6 +91,15 @@ public class MemoryService {
         memory.setTags(request.getTags());
         memory.setStatus("DRAFT");
         memoryMapper.insert(memory);
+        if (access.isProjectAdmin(projectId, actor)) {
+            // Admin 自建免审批：直接批准上架，无需到交付中心自行批准
+            memory.setStatus("APPROVED");
+            memory.setReviewerId(actor);
+            memory.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
+            memoryMapper.updateById(memory);
+            eventService.publish(projectId, null, "memory.approved", id(memory.getId()),
+                    deliveryPayload(projectId, memory.getId()));
+        }
         return toResponse(memoryMapper.selectById(memory.getId()));
     }
 
@@ -137,33 +159,52 @@ public class MemoryService {
     }
 
     /**
-     * 根据选中的群聊消息生成 AI 草稿（DRAFT），并记录来源消息（契约 §9 群聊生成草稿）。
+     * 由当前打开的群自动检索最近聊天，生成 AI 草稿（DRAFT），并记录自动选取的来源消息（契约 §9）。
+     * <p>
+     * 客户端不再勾选消息：只需给 {@code groupId}，服务端读取该群最近 {@link #RECENT_MESSAGE_LIMIT} 条，
+     * 交由 AI 甄别值得沉淀的事实并生成一份草稿，供用户/Admin 审核确认（AI 不得直接批准）。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
-     * @param request   生成请求（来源消息 + 沉淀指令）
+     * @param request   生成请求（群 ID + 可选沉淀指令）
      * @return AI 生成的 Memory 草稿
      */
     @Transactional
     public MemoryResponse createAiDraft(UUID actor, UUID projectId, MemoryDraftRequest request) {
         access.requireProjectMember(projectId, actor);
-        List<MemorySourceRef> sources = new ArrayList<>();
+        RequirementGroupEntity group = requirementGroupMapper.selectById(request.getGroupId());
+        if (group == null || !group.getProjectId().equals(projectId)) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GROUP_NOT_IN_PROJECT",
+                    "需求群不存在或不属于该项目");
+        }
+
+        // 自动检索：按群内 sequence 倒序取最近 N 条，再还原为时间正序便于 AI 理解对话脉络
+        List<MessageEntity> recent = new ArrayList<>(messageMapper.selectList(
+                Wrappers.<MessageEntity>lambdaQuery()
+                        .eq(MessageEntity::getRequirementGroupId, request.getGroupId())
+                        .orderByDesc(MessageEntity::getSequenceNo)
+                        .last("LIMIT " + RECENT_MESSAGE_LIMIT)));
+        recent.sort(Comparator.comparing(MessageEntity::getSequenceNo,
+                Comparator.nullsFirst(Long::compareTo)));
+        // 空群不消耗 LLM：群内没有任何消息时直接拒绝，避免空上下文生成无意义草稿浪费 token
+        if (recent.isEmpty()) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GROUP_NO_MESSAGES",
+                    "该需求群暂无消息，无需沉淀");
+        }
+
         StringBuilder transcript = new StringBuilder();
-        for (MemorySourceRef ref : request.getSourceMessages()) {
-            MessageEntity message = messageMapper.selectById(ref.getMessageId());
-            if (message == null || !message.getRequirementGroupId().equals(ref.getGroupId())) {
-                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SOURCE_MESSAGE_NOT_FOUND",
-                        "来源消息不存在或不属于该群");
-            }
-            sources.add(ref);
+        for (MessageEntity message : recent) {
             transcript.append("- [").append(message.getMessageType()).append("] ")
                     .append(readMessageText(message.getContent())).append('\n');
         }
+        String instruction = request.getInstruction() == null || request.getInstruction().isBlank()
+                ? DEFAULT_INSTRUCTION
+                : request.getInstruction().trim();
 
         String content;
         try {
             content = chatClient.prompt().system(AI_SYSTEM_PROMPT)
-                    .user("群聊消息：\n" + transcript + "\n沉淀指令：" + request.getInstruction()).call().content();
+                    .user("最近群聊消息：\n" + transcript + "\n沉淀指令：" + instruction).call().content();
         } catch (Exception e) {
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "AI_DRAFT_FAILED", "AI 草稿生成失败: " + e.getMessage());
         }
@@ -179,8 +220,8 @@ public class MemoryService {
         memory.setTags(draft.getTags());
         memory.setStatus("DRAFT");
         memoryMapper.insert(memory);
-        for (MemorySourceRef source : sources) {
-            sourceMapper.insertSource(memory.getId(), source.getMessageId());
+        for (MessageEntity message : recent) {
+            sourceMapper.insertSource(memory.getId(), message.getId());
         }
         return toResponse(memoryMapper.selectById(memory.getId()));
     }
@@ -359,10 +400,11 @@ public class MemoryService {
                     ref.setGroupId(message == null ? null : message.getRequirementGroupId());
                     return ref;
                 }).toList();
+        String source = sources.isEmpty() ? "MANUAL" : "MESSAGE";
         return new MemoryResponse(memory.getId().toString(), memory.getProjectId().toString(), memory.getTitle(),
                 memory.getContent(), memory.getCategory(), memory.getTags(), memory.getStatus(),
                 userSummary(memory.getCreatedBy()), userSummary(memory.getReviewerId()), memory.getRejectionReason(),
-                memory.getReviewedAt(), memory.getCreatedAt(), sources);
+                memory.getReviewedAt(), memory.getCreatedAt(), source, sources);
     }
 
     private UserSummary userSummary(UUID userId) {
