@@ -1,10 +1,14 @@
 package qg.qgent.orchestration;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import qg.qgent.dto.GroupContext;
+import qg.qgent.dto.MessageSendRequest;
+import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.entity.TaskStepEntity;
+import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.orchestration.result.PlanResult;
@@ -19,6 +23,7 @@ import qg.qgent.service.TaskPlanMaterializationService;
 import qg.qgent.service.TaskRunService;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -58,6 +63,41 @@ class TaskOrchestratorTest {
         verify(fixture.artifacts).createRunArtifact(any(), any(), any(), eq("CODING"), any());
         verify(fixture.artifacts).createRunArtifact(any(), any(), any(), eq("TESTING"), any());
         verify(fixture.artifacts).createRunArtifact(any(), any(), any(), eq("REVIEWING"), any());
+    }
+
+    @Test
+    void sendingDiffCardPostsQuotableDiffMessage() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING));
+
+        UUID batchId = UUID.randomUUID();
+        when(fixture.diffs.createPendingBatch(any(), any(), any())).thenReturn(batchId);
+        DiffEntity diff = new DiffEntity();
+        diff.setId(UUID.randomUUID());
+        diff.setChangeStats(Map.of("files", 1, "additions", 5, "deletions", 3));
+        when(fixture.diffMapper.selectList(any())).thenReturn(List.of(diff));
+
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        ArgumentCaptor<MessageSendRequest> captor = ArgumentCaptor.forClass(MessageSendRequest.class);
+        verify(fixture.messages, atLeastOnce()).sendAsAgent(eq(task.getRequirementGroupId()), any(), captor.capture());
+        List<MessageSendRequest> diffRequests = captor.getAllValues().stream()
+                .filter(request -> "DIFF".equals(request.getType()))
+                .toList();
+        assertThat(diffRequests).hasSize(1);
+        MessageSendRequest diffRequest = diffRequests.get(0);
+        assertThat(diffRequest.getContent().get("diffId")).isEqualTo(diff.getId().toString());
+        assertThat(diffRequest.getContent().get("title")).isEqualTo(task.getTitle());
+        assertThat(diffRequest.getContent().get("additions")).isEqualTo(5);
+        assertThat(diffRequest.getContent().get("deletions")).isEqualTo(3);
     }
 
     @Test
@@ -149,6 +189,9 @@ class TaskOrchestratorTest {
         private final AgentContextAssembler context = mock(AgentContextAssembler.class);
         private final FinalDiffBundleService diffs = mock(FinalDiffBundleService.class);
         private final TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
+        private final DiffMapper diffMapper = mock(DiffMapper.class);
+        private final MessageService messages = mock(MessageService.class);
+        private final OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
         private final ThreadLocal<Agent> currentAgent = new ThreadLocal<>();
 
         TaskEntity task() {
@@ -165,6 +208,7 @@ class TaskOrchestratorTest {
             when(tasks.claimForOrchestration(any(), any())).thenReturn(1);
             when(tasks.claimForResume(any(), any())).thenReturn(1);
             when(diffs.createPendingBatch(any(), any(), any())).thenReturn(UUID.randomUUID());
+            when(orchestratorAgents.resolveIdForTask(task)).thenReturn(UUID.randomUUID());
             return task;
         }
 
@@ -199,7 +243,7 @@ class TaskOrchestratorTest {
             return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry, context,
                     taskRuns, tasks, steps, mock(EventService.class),
                     mock(NotificationService.class), mock(SandboxSessionManager.class), artifacts, diffs,
-                    mock(MessageService.class), mock(OrchestratorAgentService.class),
+                    diffMapper, messages, orchestratorAgents,
                     materialization);
         }
 

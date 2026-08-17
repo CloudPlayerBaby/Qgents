@@ -7,11 +7,16 @@ import qg.qgent.dto.ContextMemory;
 import qg.qgent.dto.ContextMessage;
 import qg.qgent.dto.ContextSkill;
 import qg.qgent.dto.GroupContext;
+import qg.qgent.entity.DiffEntity;
+import qg.qgent.entity.DiffReviewBatchEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskStepEntity;
+import qg.qgent.mapper.DiffMapper;
+import qg.qgent.mapper.DiffReviewBatchMapper;
 import qg.qgent.service.ContextService;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -23,12 +28,15 @@ import static org.mockito.Mockito.when;
 
 /**
  * AgentContextAssembler 上下文接线测试：确认 ContextService 快照（群聊/Skill/Memory）被填充进
- * AgentInput、limit 恒为 50、组装失败仅返回 null 不抛出。
+ * AgentInput、limit 恒为 50、组装失败仅返回 null 不抛出；续作任务会把源 Diff 摘要注入对话头。
  */
 class AgentContextAssemblerTest {
 
     private final ContextService contextService = mock(ContextService.class);
-    private final AgentContextAssembler assembler = new AgentContextAssembler(contextService);
+    private final DiffReviewBatchMapper diffBatches = mock(DiffReviewBatchMapper.class);
+    private final DiffMapper diffMapper = mock(DiffMapper.class);
+    private final AgentContextAssembler assembler =
+            new AgentContextAssembler(contextService, diffBatches, diffMapper);
 
     private TaskEntity task() {
         TaskEntity t = new TaskEntity();
@@ -103,5 +111,90 @@ class AgentContextAssemblerTest {
         assertThat(input.getMemories()).isNull();
         assertThat(input.getRequirementTitle()).isNull();
         assertThat(input.getRequirementDescription()).isNull();
+    }
+
+    @Test void continuationTaskInjectsSourceDiffSummaryAtConversationHead() {
+        TaskEntity task = task();
+        task.setContinuationOfTaskId(UUID.randomUUID());
+        UUID batchId = UUID.randomUUID();
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId);
+        batch.setProjectId(task.getProjectId());
+        batch.setTaskId(task.getContinuationOfTaskId());
+        when(diffBatches.selectList(any())).thenReturn(List.of(batch));
+        DiffEntity diff = new DiffEntity();
+        diff.setId(UUID.randomUUID());
+        diff.setChangeStats(Map.of("files", 1, "additions", 5, "deletions", 3));
+        when(diffMapper.selectList(any())).thenReturn(List.of(diff));
+        GroupContext gc = groupContext(task);
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setInstruction("实现");
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, null,
+                UUID.randomUUID(), null, null, null, gc);
+
+        List<ContextMessage> conversation = input.getConversation();
+        assertThat(conversation).hasSize(gc.getConversation().size() + 1);
+        ContextMessage head = conversation.get(0);
+        assertThat(head.getType()).isEqualTo("DIFF");
+        assertThat(head.getSenderType()).isEqualTo("AGENT");
+        assertThat(head.getText()).contains(diff.getId().toString());
+        assertThat(head.getText()).contains("新增 5 行");
+        assertThat(head.getText()).contains("删除 3 行");
+        // 原群聊消息仍保留，紧随源 Diff 摘要之后
+        assertThat(conversation.get(1).getText()).isEqualTo("补充需求");
+    }
+
+    @Test void nonContinuationTaskLeavesConversationInstanceUntouched() {
+        TaskEntity task = task();
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setInstruction("实现");
+        GroupContext gc = groupContext(task);
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, null,
+                UUID.randomUUID(), null, null, null, gc);
+
+        assertThat(input.getConversation()).isSameAs(gc.getConversation());
+    }
+
+    @Test void continuationTaskWithNoSourceBatchKeepsConversationUntouched() {
+        TaskEntity task = task();
+        task.setContinuationOfTaskId(UUID.randomUUID());
+        when(diffBatches.selectList(any())).thenReturn(List.of());
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setInstruction("实现");
+        GroupContext gc = groupContext(task);
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, null,
+                UUID.randomUUID(), null, null, null, gc);
+
+        assertThat(input.getConversation()).isSameAs(gc.getConversation());
+    }
+
+    @Test void continuationTaskInjectsSourceDiffEvenWhenGroupSnapshotFails() {
+        TaskEntity task = task();
+        task.setContinuationOfTaskId(UUID.randomUUID());
+        UUID batchId = UUID.randomUUID();
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId);
+        batch.setProjectId(task.getProjectId());
+        batch.setTaskId(task.getContinuationOfTaskId());
+        when(diffBatches.selectList(any())).thenReturn(List.of(batch));
+        DiffEntity diff = new DiffEntity();
+        diff.setId(UUID.randomUUID());
+        when(diffMapper.selectList(any())).thenReturn(List.of(diff));
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setInstruction("实现");
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, null,
+                UUID.randomUUID(), null, null, null, null);
+
+        // 群快照缺失时，conversation 至少包含源 Diff 摘要这一条
+        assertThat(input.getConversation()).hasSize(1);
+        assertThat(input.getConversation().get(0).getType()).isEqualTo("DIFF");
     }
 }

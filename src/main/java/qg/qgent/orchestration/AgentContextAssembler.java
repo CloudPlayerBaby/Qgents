@@ -1,17 +1,25 @@
 package qg.qgent.orchestration;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import qg.qgent.dto.ContextMessage;
 import qg.qgent.dto.GroupContext;
+import qg.qgent.entity.DiffEntity;
+import qg.qgent.entity.DiffReviewBatchEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskStepEntity;
+import qg.qgent.mapper.DiffMapper;
+import qg.qgent.mapper.DiffReviewBatchMapper;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.service.ContextService;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -34,9 +42,13 @@ public class AgentContextAssembler {
     private static final int DEFAULT_CONTEXT_MESSAGE_LIMIT = 50;
 
     private final ContextService contextService;
+    private final DiffReviewBatchMapper diffBatches;
+    private final DiffMapper diffMapper;
 
-    public AgentContextAssembler(ContextService contextService) {
+    public AgentContextAssembler(ContextService contextService, DiffReviewBatchMapper diffBatches, DiffMapper diffMapper) {
         this.contextService = contextService;
+        this.diffBatches = diffBatches;
+        this.diffMapper = diffMapper;
     }
 
     /**
@@ -46,7 +58,7 @@ public class AgentContextAssembler {
         AgentInput input = base(task);
         input.setPhase(OrchestrationPhase.PLAN);
         input.setInstruction("分析需求并制定实现计划");
-        applyContext(input, buildGroupContext(task));
+        applyContext(input, task, buildGroupContext(task));
         return input;
     }
 
@@ -67,7 +79,7 @@ public class AgentContextAssembler {
         input.setPlanResult(planResult);
         input.setCodingResult(codingResult);
         input.setTestResult(testResult);
-        applyContext(input, groupContext);
+        applyContext(input, task, groupContext);
         return input;
     }
 
@@ -91,15 +103,88 @@ public class AgentContextAssembler {
     /**
      * 把快照上下文填入 AgentInput；null 视为组装失败，保持字段为空语义。
      */
-    private void applyContext(AgentInput input, GroupContext groupContext) {
-        if (groupContext == null) {
-            return;
+    private void applyContext(AgentInput input, TaskEntity task, GroupContext groupContext) {
+        if (groupContext != null) {
+            input.setRequirementTitle(groupContext.getRequirementTitle());
+            input.setRequirementDescription(groupContext.getRequirementDescription());
+            input.setConversation(groupContext.getConversation());
+            input.setSkills(groupContext.getSkills());
+            input.setMemories(groupContext.getMemories());
         }
-        input.setRequirementTitle(groupContext.getRequirementTitle());
-        input.setRequirementDescription(groupContext.getRequirementDescription());
-        input.setConversation(groupContext.getConversation());
-        input.setSkills(groupContext.getSkills());
-        input.setMemories(groupContext.getMemories());
+        // 续作任务：把源 Task 的正式 Diff 摘要显式注入对话头，让 Agent 明确本轮是基于哪一版 Diff 增量修改；
+        // 顺带补全群上下文缺失（buildForGroup 失效）时仍可见源 Diff 来源。非续作任务保持原列表不变。
+        input.setConversation(attachContinuationDiff(task, input.getConversation()));
+    }
+
+    /**
+     * 续作任务（continuationOfTaskId 非空）时，在对话头追加一条描述源 Task 正式 Diff 的
+     * {@link ContextMessage}（含 diffId 与增删行统计），供 Agent 定位本轮增量修改的基线。
+     * 源批次或 Diff 不存在时原样返回；非续作任务不改变对话。
+     */
+    private List<ContextMessage> attachContinuationDiff(TaskEntity task, List<ContextMessage> conversation) {
+        UUID sourceTaskId = task.getContinuationOfTaskId();
+        if (sourceTaskId == null) {
+            return conversation;
+        }
+        ContextMessage sourceDiff = buildContinuationDiffMessage(task.getProjectId(), sourceTaskId);
+        if (sourceDiff == null) {
+            return conversation;
+        }
+        List<ContextMessage> result = new ArrayList<>();
+        result.add(sourceDiff);
+        if (conversation != null && !conversation.isEmpty()) {
+            result.addAll(conversation);
+        }
+        return result;
+    }
+
+    /**
+     * 组装源 Task 最近一次正式 Diff 批次的摘要消息；无批次或无 Diff 时返回 null。
+     */
+    private ContextMessage buildContinuationDiffMessage(UUID projectId, UUID sourceTaskId) {
+        DiffReviewBatchEntity batch = latestBatch(projectId, sourceTaskId);
+        if (batch == null) {
+            return null;
+        }
+        List<DiffEntity> diffs = diffMapper.selectList(Wrappers.<DiffEntity>lambdaQuery()
+                .eq(DiffEntity::getReviewBatchId, batch.getId())
+                .orderByAsc(DiffEntity::getProjectRepositoryId));
+        if (diffs.isEmpty()) {
+            return null;
+        }
+        List<String> diffIds = diffs.stream().map(d -> d.getId().toString()).toList();
+        int additions = diffs.stream().mapToInt(this::additions).sum();
+        int deletions = diffs.stream().mapToInt(this::deletions).sum();
+        String text = "本任务是源 Task 正式 Diff 的增量修改，基线 Diff：" + diffIds + "，变更统计：新增 "
+                + additions + " 行 / 删除 " + deletions + " 行";
+        return new ContextMessage(0L, "DIFF", "AGENT", null, text);
+    }
+
+    private int additions(DiffEntity diff) {
+        return stat(diff, "additions");
+    }
+
+    private int deletions(DiffEntity diff) {
+        return stat(diff, "deletions");
+    }
+
+    private int stat(DiffEntity diff, String key) {
+        if (diff.getChangeStats() == null) {
+            return 0;
+        }
+        Object value = diff.getChangeStats().get(key);
+        return value instanceof Number n ? n.intValue() : 0;
+    }
+
+    /**
+     * 源 Task 最近一次创建的 Diff 批次（与任务中心详情同序：按创建时间倒序取首条）。
+     */
+    private DiffReviewBatchEntity latestBatch(UUID projectId, UUID taskId) {
+        List<DiffReviewBatchEntity> list = diffBatches.selectList(Wrappers.<DiffReviewBatchEntity>lambdaQuery()
+                .eq(DiffReviewBatchEntity::getProjectId, projectId)
+                .eq(DiffReviewBatchEntity::getTaskId, taskId)
+                .orderByDesc(DiffReviewBatchEntity::getCreatedAt).last("LIMIT 1"));
+        return list.isEmpty() ? null : list.get(0);
     }
 
     private AgentInput base(TaskEntity task) {

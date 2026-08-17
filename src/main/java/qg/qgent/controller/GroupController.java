@@ -39,6 +39,14 @@ public class GroupController {
     }
 
     /**
+     * 契约 §7 补充：群聊工作台聚合——一次返回当前用户所有可见项目的主群（消除三层 N+1）。
+     */
+    @GetMapping("/chat/main-groups")
+    public ApiResponse<?> mainGroups(@AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        return ok(groupService.mainGroups(userId), request);
+    }
+
+    /**
      * 契约 §7：创建 REQUIREMENT 需求群。
      */
     @PostMapping("/projects/{projectId}/groups")
@@ -92,6 +100,17 @@ public class GroupController {
                                 @PathVariable UUID groupId, HttpServletRequest request) {
         groupService.leave(userId, projectId, groupId);
         return ok(Map.of(), request);
+    }
+
+    /**
+     * 契约 §7 未读权威化补充：标记已读（进群全读语义）。
+     */
+    @PostMapping("/projects/{projectId}/groups/{groupId}/read")
+    public ApiResponse<?> markRead(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
+                                   @PathVariable UUID groupId,
+                                   @RequestHeader("Idempotency-Key") String idempotencyKey,
+                                   HttpServletRequest request) {
+        return ok(groupService.markRead(userId, projectId, groupId, idempotencyKey), request);
     }
 
     private ApiResponse<?> ok(Object data, HttpServletRequest request) {

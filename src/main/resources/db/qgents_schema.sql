@@ -1173,3 +1173,14 @@ WHERE t.status = 'ACTIVE'
       WHERE a.team_id = t.id AND a.role = r.role
         AND (a.is_default = 1 OR a.name IN ('规划 Agent', '开发 Agent', '测试 Agent', '审查 Agent'))
   );
+-- 群成员已读游标表（未读数=群最新sequence-已读游标，排除本人）。见迁移 V20260817_04。
+CREATE TABLE IF NOT EXISTS
+    group_read_state (
+        user_id BINARY(16) NOT NULL COMMENT '用户ID',
+        group_id BINARY(16) NOT NULL COMMENT '需求群ID',
+        last_read_sequence_no BIGINT UNSIGNED NULL COMMENT '已读游标（群内消息序号，NULL 视为 0）',
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
+        PRIMARY KEY (user_id, group_id),
+        KEY idx_grs_group (group_id),
+        CONSTRAINT fk_grs_group FOREIGN KEY (group_id) REFERENCES requirement_groups (id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '群成员已读游标（未读数=最新sequence-游标，排除本人）';

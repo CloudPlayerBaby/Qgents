@@ -67,6 +67,7 @@ public class TaskOrchestrator {
     private final SandboxSessionManager sandboxSessionManager;
     private final TaskExecutionArtifactService artifactService;
     private final FinalDiffBundleService finalDiffBundles;
+    private final DiffMapper diffMapper;
     private final MessageService messageService;
     private final OrchestratorAgentService orchestratorAgents;
     private final TaskPlanMaterializationService planMaterialization;
@@ -82,7 +83,8 @@ public class TaskOrchestrator {
                             EventService eventService,
                             NotificationService notificationService, SandboxSessionManager sandboxSessionManager,
                             TaskExecutionArtifactService artifactService, FinalDiffBundleService finalDiffBundles,
-                            MessageService messageService, OrchestratorAgentService orchestratorAgents,
+                            DiffMapper diffMapper, MessageService messageService,
+                            OrchestratorAgentService orchestratorAgents,
                             TaskPlanMaterializationService planMaterialization) {
         this.stateMachine = stateMachine;
         this.workflowGraphBuilder = workflowGraphBuilder;
@@ -96,6 +98,7 @@ public class TaskOrchestrator {
         this.sandboxSessionManager = sandboxSessionManager;
         this.artifactService = artifactService;
         this.finalDiffBundles = finalDiffBundles;
+        this.diffMapper = diffMapper;
         this.messageService = messageService;
         this.orchestratorAgents = orchestratorAgents;
         this.planMaterialization = planMaterialization;
@@ -473,13 +476,16 @@ public class TaskOrchestrator {
      * 其余按取消/失败落终态；随后以编码 Agent 身份把任务结果卡片回群（失败不阻断编排）。
      */
     private void finishTask(TaskEntity task, TaskExecutionContext ctx, StateMachineDecision.Action action) {
-        String status = switch (action) {
+        FinishingStatus finishing = switch (action) {
             case COMPLETE_SUCCESS -> completeWithDiffBatch(task, ctx);
-            case COMPLETE_CANCELLED -> "CANCELLED";
-            default -> "FAILED";
+            case COMPLETE_CANCELLED -> new FinishingStatus("CANCELLED", null);
+            default -> new FinishingStatus("FAILED", null);
         };
-        updateTaskStatus(task, status);
-        sendAgentCard(task, "task-" + task.getId(), status, null, taskResultMessage(status));
+        updateTaskStatus(task, finishing.status());
+        if (finishing.reviewBatchId() != null) {
+            sendDiffCard(task, finishing.reviewBatchId());
+        }
+        sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, taskResultMessage(finishing.status()));
     }
 
     /**
@@ -487,7 +493,7 @@ public class TaskOrchestrator {
      * 降级为 SUCCEEDED 并发布 diff-review.skipped 事件作为依据；其余失败（内部一致性、快照无效、
      * Worker 不可用等）落 FAILED，不伪装成成功（后端3 决策：按异常类型区分，不统一降级）。
      */
-    private String completeWithDiffBatch(TaskEntity task, TaskExecutionContext ctx) {
+    private FinishingStatus completeWithDiffBatch(TaskEntity task, TaskExecutionContext ctx) {
         try {
             UUID finalCodingRunId = ctx.lastCodingRunId;
             if (finalCodingRunId == null) {
@@ -498,21 +504,21 @@ public class TaskOrchestrator {
                     ctx.lastCodingRunId = finalCodingRunId;
                 }
             }
-            finalDiffBundles.createPendingBatch(task.getProjectId(), task.getId(), finalCodingRunId);
-            return WAITING_DIFF_CONFIRMATION;
+            UUID reviewBatchId = finalDiffBundles.createPendingBatch(task.getProjectId(), task.getId(), finalCodingRunId);
+            return new FinishingStatus(WAITING_DIFF_CONFIRMATION, reviewBatchId);
         } catch (ApiException e) {
             if ("FINAL_DIFF_EMPTY".equals(e.code())) {
                 log.warn("final diff empty, task finishes SUCCEEDED, taskId={}: {}", task.getId(), e.getMessage());
                 publishDiffReviewSkipped(task, e.code());
-                return "SUCCEEDED";
+                return new FinishingStatus("SUCCEEDED", null);
             }
             log.warn("final diff batch creation failed, task finishes FAILED, taskId={}, code={}: {}",
                     task.getId(), e.code(), e.getMessage());
-            return "FAILED";
+            return new FinishingStatus("FAILED", null);
         } catch (RuntimeException e) {
             log.error("final diff batch creation failed, task finishes FAILED, taskId={}: {}",
                     task.getId(), e.getMessage(), e);
-            return "FAILED";
+            return new FinishingStatus("FAILED", null);
         }
     }
 
@@ -560,6 +566,54 @@ public class TaskOrchestrator {
         } catch (RuntimeException e) {
             log.warn("agent card skipped, taskId={}, suffix={}: {}", task.getId(), idSuffix, e.getMessage());
         }
+    }
+
+    /**
+     * 正式 Diff 批次生成后以编排助手身份回一条 DIFF 卡（content.diffId 指向批次内首个 Diff）：
+     * 用户引用该卡即可被 TaskTriggerService 识别为续作，复用源 Workspace 发起增量修改。
+     * DIFF 卡的 content 形状满足消息契约（diffId 必填，title/additions/deletions 可选）。
+     * 与 TASK_STATUS 卡不同，缺编排助手时直接跳过并记日志——SYSTEM 通道只承接 TASK_STATUS
+     * 形状，无法携带 diffId；回卡失败不影响任务结果。
+     */
+    private void sendDiffCard(TaskEntity task, UUID reviewBatchId) {
+        List<DiffEntity> values = diffMapper.selectList(Wrappers.<DiffEntity>lambdaQuery()
+                .eq(DiffEntity::getReviewBatchId, reviewBatchId)
+                .orderByAsc(DiffEntity::getProjectRepositoryId));
+        if (values.isEmpty()) {
+            log.warn("diff card skipped, no diff in review batch, taskId={}, reviewBatchId={}",
+                    task.getId(), reviewBatchId);
+            return;
+        }
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("diffId", values.get(0).getId().toString());
+        content.put("title", task.getTitle());
+        content.put("additions", aggregateStat(values, "additions"));
+        content.put("deletions", aggregateStat(values, "deletions"));
+        MessageSendRequest body = new MessageSendRequest();
+        body.setType("DIFF");
+        body.setClientMessageId("agent-task-" + task.getId() + "-diff");
+        body.setContent(content);
+        UUID cardSenderId = orchestratorAgents.resolveIdForTask(task);
+        try {
+            if (cardSenderId != null) {
+                messageService.sendAsAgent(task.getRequirementGroupId(), cardSenderId, body);
+            } else {
+                log.warn("orchestrator agent missing, diff card skipped, taskId={}", task.getId());
+            }
+        } catch (RuntimeException e) {
+            log.warn("diff card skipped, taskId={}, reviewBatchId={}: {}", task.getId(), reviewBatchId, e.getMessage());
+        }
+    }
+
+    /**
+     * 聚合批次内所有 Diff 的某类变更统计（总 Diff 卡按全仓求和）。
+     */
+    private int aggregateStat(List<DiffEntity> values, String key) {
+        return values.stream()
+                .map(DiffEntity::getChangeStats)
+                .filter(Objects::nonNull)
+                .mapToInt(stats -> stats.get(key) instanceof Number n ? n.intValue() : 0)
+                .sum();
     }
 
     /**
@@ -631,6 +685,13 @@ public class TaskOrchestrator {
             throw new IllegalStateException("Task " + taskId + " not found in project " + projectId);
         }
         return task;
+    }
+
+    /**
+     * 终态判定结果：终态状态码，以及（仅 WAITING_DIFF_CONFIRMATION 时）新生成的待确认 Diff 批次号，
+     * 供后续回 DIFF 卡定位批次内首个 Diff。
+     */
+    private record FinishingStatus(String status, UUID reviewBatchId) {
     }
 
     /**

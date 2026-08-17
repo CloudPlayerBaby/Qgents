@@ -276,9 +276,10 @@ public class AuthService {
 
     private List<ProjectResponse> projects(UUID userId) {
         // 单次查询合并项目成员权限与 canonical Team Owner 兜底，并由 SQL 去重。
+        // memberCount 由项目列表/详情接口补齐，此处不额外统计（前端缺失时隐藏）。
         return projectMapper.selectAccessibleByUser(userId).stream()
                 .map(project -> new ProjectResponse(project.getId().toString(), project.getTeamId().toString(),
-                        project.getName(), project.getDescription(), project.getRole(), project.getStatus()))
+                        project.getName(), project.getDescription(), project.getRole(), project.getStatus(), null))
                 .toList();
     }
 

@@ -14,4 +14,5 @@ public class ProjectResponse {
     private String description;
     private String role;
     private String status;
+    private Long memberCount;
 }

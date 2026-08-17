@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import qg.qgent.api.PagedApiResponse;
 import qg.qgent.dto.TaskDetailResponse;
 import qg.qgent.dto.TaskListItemResponse;
+import qg.qgent.dto.DiffReviewSummary;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.DiffReviewBatchEntity;
@@ -49,8 +50,10 @@ import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -253,6 +256,47 @@ class TaskDisplayServiceTest {
         assertEquals(1, detail.getArtifactSummary().getTotal());
         assertEquals(1, detail.getArtifactSummary().getByType().get("TESTING"));
         assertFalse(detail.getDiffReviewSummary().isAvailable());
+    }
+
+    @Test
+    void detailExposesFirstDiffIdInDiffReviewSummary() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, creatorId, workspaceId, "WAITING_DIFF_CONFIRMATION");
+        when(tasks.selectById(task.getId())).thenReturn(task);
+        when(tasks.selectList(any())).thenReturn(List.of(task));
+        when(steps.selectList(any())).thenReturn(List.of());
+        when(runs.selectList(any())).thenReturn(List.of());
+        when(users.selectList(any())).thenReturn(List.of());
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(UUID.randomUUID());
+        batch.setProjectId(projectId);
+        batch.setTaskId(task.getId());
+        batch.setReviewStatus("PENDING_CONFIRMATION");
+        when(diffBatches.selectList(any())).thenReturn(List.of(batch));
+
+        DiffEntity firstRepo = new DiffEntity();
+        firstRepo.setId(UUID.randomUUID());
+        firstRepo.setProjectRepositoryId(UUID.randomUUID());
+        firstRepo.setChangeStats(Map.of("files", 1, "additions", 2, "deletions", 1));
+        DiffEntity secondRepo = new DiffEntity();
+        secondRepo.setId(UUID.randomUUID());
+        secondRepo.setProjectRepositoryId(UUID.randomUUID());
+        secondRepo.setChangeStats(Map.of("files", 1, "additions", 3, "deletions", 2));
+        // 故意乱序返回，断言 diffId 取 projectRepositoryId 升序的第一条
+        when(diffs.selectList(any())).thenReturn(List.of(secondRepo, firstRepo));
+
+        TaskDetailResponse detail = service.detail(projectId, task.getId(), actor);
+
+        DiffReviewSummary summary = detail.getDiffReviewSummary();
+        assertThat(summary.isAvailable()).isTrue();
+        assertThat(summary.getDiffId()).isEqualTo(firstRepo.getId().toString());
+        assertThat(summary.getRepositoryCount()).isEqualTo(2);
+        assertThat(summary.getFilesChanged()).isEqualTo(2);
+        assertThat(summary.getAdditions()).isEqualTo(5);
+        assertThat(summary.getDeletions()).isEqualTo(3);
     }
 
     private TaskEntity task(UUID projectId, UUID groupId, UUID creatorId, UUID workspaceId, String status) {

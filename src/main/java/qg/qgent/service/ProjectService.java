@@ -154,8 +154,7 @@ public class ProjectService {
         List<ProjectMembershipView> rows = projectMapper.selectAccessiblePage(teamId, actor, teamOwner, anchor,
                 size + 1);
         return keysetPage(rows, size, scope, ProjectMembershipView::getId,
-                row -> new ProjectResponse(row.getId().toString(), row.getTeamId().toString(), row.getName(),
-                        row.getDescription(), row.getRole(), row.getStatus()));
+                row -> response(row));
     }
 
     public ProjectResponse get(UUID actor, UUID projectId) {
@@ -364,8 +363,18 @@ public class ProjectService {
     }
 
     private ProjectResponse response(ProjectEntity project, String role) {
-        return new ProjectResponse(project.getId().toString(), project.getTeamId().toString(), project.getName(),
-                project.getDescription(), role, project.getStatus());
+        return response(new ProjectResponse(project.getId().toString(), project.getTeamId().toString(),
+                project.getName(), project.getDescription(), role, project.getStatus(), null));
+    }
+
+    private ProjectResponse response(ProjectMembershipView row) {
+        return response(new ProjectResponse(row.getId().toString(), row.getTeamId().toString(), row.getName(),
+                row.getDescription(), row.getRole(), row.getStatus(), null));
+    }
+
+    private ProjectResponse response(ProjectResponse r) {
+        r.setMemberCount(memberMapper.countMembers(UUID.fromString(r.getId())));
+        return r;
     }
 
     private int pageSize(Integer requested) {

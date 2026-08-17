@@ -18,4 +18,19 @@ public interface RequirementGroupMapper extends BaseMapper<RequirementGroupEntit
     @Select("select * from requirement_groups where project_id=#{projectId}"
             + " order by coalesce(last_message_at, created_at) desc")
     List<RequirementGroupEntity> listByProject(@Param("projectId") UUID projectId);
+
+    /**
+     * 批量取多个项目的主群（PROJECT_MAIN），供群聊工作台聚合（消除三层 N+1）。
+     * 返回这些项目的主群实体，按最近活跃倒序。
+     *
+     * @param projectIds 项目 ID 列表
+     * @return 这些项目的主群实体
+     */
+    @Select({"<script>",
+            "SELECT * FROM requirement_groups WHERE group_type = 'PROJECT_MAIN' ",
+            "AND project_id IN "
+            + "(<foreach collection='projectIds' item='pid' separator=','>#{pid}</foreach>) ",
+            "ORDER BY coalesce(last_message_at, created_at) DESC",
+            "</script>"})
+    List<RequirementGroupEntity> selectMainGroupsByProjectIds(@Param("projectIds") List<UUID> projectIds);
 }

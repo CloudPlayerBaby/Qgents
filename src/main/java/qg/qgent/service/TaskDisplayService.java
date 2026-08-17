@@ -453,7 +453,7 @@ public class TaskDisplayService {
 
     private DiffReviewSummary diffReviewSummary(DiffReviewBatchEntity batch, List<DiffEntity> values) {
         if (batch == null) {
-            return new DiffReviewSummary(false, null, null, 0, 0, 0, 0);
+            return new DiffReviewSummary(false, null, null, null, 0, 0, 0, 0);
         }
         int files = 0, additions = 0, deletions = 0;
         for (DiffEntity diff : values) {
@@ -464,8 +464,12 @@ public class TaskDisplayService {
                 deletions += intValue(stats.get("deletions"));
             }
         }
-        return new DiffReviewSummary(true, batch.getReviewStatus(), batch.getDeliveryStatus(), values.size(), files,
-                additions, deletions);
+        String firstDiffId = values.stream()
+                .sorted(Comparator.comparing(DiffEntity::getProjectRepositoryId,
+                        Comparator.nullsLast(Comparator.naturalOrder())))
+                .map(DiffEntity::getId).map(this::id).findFirst().orElse(null);
+        return new DiffReviewSummary(true, firstDiffId, batch.getReviewStatus(), batch.getDeliveryStatus(),
+                values.size(), files, additions, deletions);
     }
 
     private List<AcceptanceCriterion> acceptanceCriteria(List<TaskAcceptanceCriterionEntity> list) {

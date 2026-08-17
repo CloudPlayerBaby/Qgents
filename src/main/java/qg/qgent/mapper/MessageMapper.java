@@ -3,6 +3,7 @@ package qg.qgent.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.*;
 import qg.qgent.dto.GroupLatestMessageRow;
+import qg.qgent.dto.GroupUnreadRow;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 
@@ -94,4 +95,32 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
     })
     List<MessageEntity> searchByQuery(@Param("projectId") UUID projectId, @Param("groupId") UUID groupId,
                                       @Param("q") String q, @Param("limit") int limit);
+
+    /**
+     * 批量计算某用户在某项目各群的未读消息数（群聊未读状态后端权威化）。
+     * <p>
+     * 未读口径：该群 {@code sequence_no} 大于用户已读游标（无游标视为 0）且**非本人发送**的消息数，
+     * 与 {@code group_read_state} 表配合。仅返回未读数 &gt; 0 的群，Java 侧对无记录群补 0。
+     *
+     * @param projectId 项目 ID（通过 requirement_groups 归属限定，防跨项目泄露）
+     * @param userId    当前用户 ID（排除本人消息）
+     * @return 群 ID → 未读数 的映射，未读数 &gt; 0 的群
+     */
+    @Select({"<script>",
+            "SELECT m.requirement_group_id, COUNT(*) AS unread ",
+            "FROM messages m ",
+            "WHERE m.requirement_group_id IN ",
+            "    (SELECT id FROM requirement_groups WHERE project_id = #{projectId}) ",
+            "AND m.sequence_no &gt; COALESCE(",
+            "    (SELECT last_read_sequence_no FROM group_read_state ",
+            "     WHERE user_id = #{userId} AND group_id = m.requirement_group_id), 0) ",
+            "AND m.author_user_id &lt;&gt; #{userId} ",
+            "GROUP BY m.requirement_group_id",
+            "</script>"})
+    @Results({
+            @Result(column = "requirement_group_id", property = "groupId",
+                    typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "unread", property = "unread")
+    })
+    List<GroupUnreadRow> countUnreadByProject(@Param("projectId") UUID projectId, @Param("userId") UUID userId);
 }

@@ -32,24 +32,31 @@ public class GroupService {
     private final RequirementGroupMapper groupMapper;
     private final RequirementGroupRepositoryMapper groupRepositoryMapper;
     private final ProjectMemberMapper projectMemberMapper;
+    private final ProjectMapper projectMapper;
     private final GroupAgentMapper groupAgentMapper;
     private final AgentMapper agentMapper;
     private final MessageMapper messageMapper;
+    private final GroupReadStateMapper groupReadStateMapper;
     private final ProjectAccessService access;
     private final EventService eventService;
+    private final IdempotencyService idempotencyService;
 
     public GroupService(RequirementGroupMapper groupMapper,
                         RequirementGroupRepositoryMapper groupRepositoryMapper, ProjectMemberMapper projectMemberMapper,
-                        GroupAgentMapper groupAgentMapper, AgentMapper agentMapper, MessageMapper messageMapper,
-                        ProjectAccessService access, EventService eventService) {
+                        ProjectMapper projectMapper, GroupAgentMapper groupAgentMapper, AgentMapper agentMapper,
+                        MessageMapper messageMapper, GroupReadStateMapper groupReadStateMapper,
+                        ProjectAccessService access, EventService eventService, IdempotencyService idempotencyService) {
         this.groupMapper = groupMapper;
         this.groupRepositoryMapper = groupRepositoryMapper;
         this.projectMemberMapper = projectMemberMapper;
+        this.projectMapper = projectMapper;
         this.groupAgentMapper = groupAgentMapper;
         this.agentMapper = agentMapper;
         this.messageMapper = messageMapper;
+        this.groupReadStateMapper = groupReadStateMapper;
         this.access = access;
         this.eventService = eventService;
+        this.idempotencyService = idempotencyService;
     }
 
     /**
@@ -141,9 +148,51 @@ public class GroupService {
         access.requireProjectMember(projectId, actor);
         Map<UUID, GroupLatestMessageRow> latestByGroup = messageMapper.selectLatestByProject(projectId).stream()
                 .collect(Collectors.toMap(GroupLatestMessageRow::getRequirementGroupId, Function.identity()));
+        Map<UUID, Long> unreadByGroup = countUnread(projectId, actor);
         return groupMapper.listByProject(projectId).stream()
-                .map(group -> toResponse(group, latestByGroup.get(group.getId())))
+                .map(group -> toResponse(group, latestByGroup.get(group.getId()), unreadByGroup.get(group.getId())))
                 .toList();
+    }
+
+    /**
+     * 群聊工作台聚合：一次返回当前用户所有可见项目的 PROJECT_MAIN 主群（消除三层 N+1）。
+     * <p>
+     * 通过 {@link ProjectMapper#selectAccessibleByUser} 取全部可见项目，批量取这些项目的
+     * PROJECT_MAIN 群；每群附带最新消息摘要、成员数与未读数。可见项目/主群数量不大，
+     * 未读按项目分次统计（MVP 可接受）。
+     *
+     * @param actor 当前用户 ID
+     * @return 可见项目的主群视图列表（含最新消息与 unreadCount）
+     */
+    public List<GroupResponse> mainGroups(UUID actor) {
+        List<UUID> projectIds = projectMapper.selectAccessibleByUser(actor).stream()
+                .map(ProjectMembershipView::getId).toList();
+        if (projectIds.isEmpty()) {
+            return List.of();
+        }
+        List<RequirementGroupEntity> mainGroups = groupMapper.selectMainGroupsByProjectIds(projectIds);
+        // 逐项目取主群最新消息摘要（key: groupId）
+        Map<UUID, GroupLatestMessageRow> latestByGroup = new java.util.HashMap<>();
+        for (UUID projectId : projectIds) {
+            messageMapper.selectLatestByProject(projectId).forEach(
+                    row -> latestByGroup.put(row.getRequirementGroupId(), row));
+        }
+        // 逐项目统计未读（key: groupId）
+        Map<UUID, Long> unreadByGroup = new java.util.HashMap<>();
+        for (UUID projectId : projectIds) {
+            countUnread(projectId, actor).forEach(unreadByGroup::put);
+        }
+        return mainGroups.stream()
+                .map(g -> toResponse(g, latestByGroup.get(g.getId()), unreadByGroup.get(g.getId())))
+                .toList();
+    }
+
+    /**
+     * 计算某用户在项目各群的未读数（排除本人消息），返回群 ID → 未读数。
+     */
+    private Map<UUID, Long> countUnread(UUID projectId, UUID actor) {
+        return messageMapper.countUnreadByProject(projectId, actor).stream()
+                .collect(Collectors.toMap(GroupUnreadRow::getGroupId, GroupUnreadRow::getUnread));
     }
 
     /**
@@ -156,7 +205,10 @@ public class GroupService {
      */
     public GroupResponse get(UUID actor, UUID projectId, UUID groupId) {
         access.requireProjectMember(projectId, actor);
-        return toResponse(requireGroupInProject(projectId, groupId));
+        RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
+        Map<UUID, Long> unreadByGroup = countUnread(projectId, actor);
+        GroupResponse response = toResponse(group, null, unreadByGroup.get(groupId));
+        return response;
     }
 
     /**
@@ -277,6 +329,41 @@ public class GroupService {
         return value == null ? null : value.toString();
     }
 
+    /**
+     * 标记已读（进群全读语义，契约 §7 未读权威化补充）。
+     * <p>
+     * 将当前用户在该群的已读游标推进到该群当前最新消息的 sequence（全部已读）；
+     * 游标只前进不后退，重复调用幂等。需携带 Idempotency-Key（写操作统一约定）。
+     *
+     * @param actor     当前用户 ID
+     * @param projectId 项目 ID
+     * @param groupId   需求群 ID
+     * @param idempotencyKey Idempotency-Key 头
+     * @return 推进后的已读状态（未读数恒 0）
+     */
+    public GroupReadResponse markRead(UUID actor, UUID projectId, UUID groupId, String idempotencyKey) {
+        access.requireProjectMember(projectId, actor);
+        requireGroupInProject(projectId, groupId);
+        return idempotencyService.execute(actor,
+                "POST:/projects/{projectId}/groups/{groupId}/read", idempotencyKey,
+                Map.of("projectId", projectId, "groupId", groupId), 200, GroupReadResponse.class,
+                () -> {
+                    // 最新游标 = 群内消息最大 sequence（无消息时为 0），进群全读推进到最新
+                    long latest = nextReadSequence(groupId);
+                    groupReadStateMapper.upsertSequence(actor, groupId, latest);
+                    return new GroupReadResponse(id(groupId), latest, 0L);
+                });
+    }
+
+    /**
+     * 取该群当前最新消息序号作为已读游标目标（无消息时为 0）。
+     * nextSequence = max(sequence_no)+1，故最新 max = nextSequence - 1；空群 next=1 → 0。
+     */
+    private long nextReadSequence(UUID groupId) {
+        Long next = messageMapper.nextSequence(groupId);
+        return (next == null || next <= 1) ? 0L : next - 1;
+    }
+
     private List<UUID> validateRepositories(UUID projectId, List<UUID> repositoryIds) {
         if (repositoryIds == null || repositoryIds.isEmpty()) {
             return List.of();
@@ -301,18 +388,24 @@ public class GroupService {
     }
 
     private GroupResponse toResponse(RequirementGroupEntity g) {
-        return toResponse(g, null);
+        return toResponse(g, null, null);
     }
 
     private GroupResponse toResponse(RequirementGroupEntity g, GroupLatestMessageRow latest) {
+        return toResponse(g, latest, null);
+    }
+
+    private GroupResponse toResponse(RequirementGroupEntity g, GroupLatestMessageRow latest, Long unreadCount) {
         GroupLatestMessage latestMessage = latest == null ? null
                 : new GroupLatestMessage(latest.getSenderName(), latest.getText(), latest.getMessageType());
+        long members = projectMemberMapper.countMembers(g.getProjectId())
+                + groupAgentMapper.selectAgentIds(g.getId()).size();
         return new GroupResponse(g.getId().toString(), g.getProjectId().toString(), g.getGroupType(),
                 g.getName(), g.getDescription(), g.getStatus(), id(g.getCreatedBy()), iso(g.getLastMessageAt()),
                 iso(g.getLastMessageAt() != null ? g.getLastMessageAt() : g.getCreatedAt()), latestMessage,
                 iso(g.getCreatedAt()),
                 groupRepositoryMapper.selectRepositoryIds(g.getId()).stream().map(UUID::toString).toList(),
-                projectMemberMapper.countMembers(g.getProjectId()) + groupAgentMapper.selectAgentIds(g.getId()).size());
+                members, unreadCount == null ? 0L : unreadCount);
     }
 
     /**

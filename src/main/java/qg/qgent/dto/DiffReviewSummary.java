@@ -24,6 +24,13 @@ public class DiffReviewSummary {
     private boolean available;
 
     /**
+     * 批次内按 projectRepositoryId 升序第一条 Diff 的 ID（单仓库 Diff 语义，用于 App 定位待确认的总 Diff）；
+     * available=false 或批次无 Diff 时为 null。
+     */
+    @Schema(description = "批次内第一条 Diff 的 ID，用于定位待确认的总 Diff；无批次或无 Diff 时为 null")
+    private String diffId;
+
+    /**
      * 总 Diff 审核状态。
      */
     @Schema(description = "总 Diff 审核状态")

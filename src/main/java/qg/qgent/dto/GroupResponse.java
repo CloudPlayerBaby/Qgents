@@ -92,4 +92,10 @@ public class GroupResponse {
      */
     @Schema(description = "群成员数（= 项目成员数）")
     private Long memberCount;
+
+    /**
+     * 当前用户在该群的未读消息数（排除本人消息），≥ 0。
+     */
+    @Schema(description = "当前用户在该群的未读消息数（排除本人消息），≥ 0")
+    private Long unreadCount;
 }
