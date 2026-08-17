@@ -41,6 +41,13 @@ public class AliyunOssProperties {
      */
     private long presignExpirySeconds = 900;
 
+    /**
+     * 桶内公共读对象的访问基础 URL（如 https://my-bucket.oss-cn-guangzhou.aliyuncs.com 或自定义域名）。
+     * 头像等长生命周期公共读对象用该基础 URL + objectKey 拼出长期稳定地址；不从 endpoint 运行时推导
+     * （虚拟主机式/路径式/自定义域名无法仅凭 endpoint 判定）。启用 OSS 且需要公共读对象时必须配置。
+     */
+    private String publicBaseUrl = "";
+
     public boolean configured() {
         return !endpoint.isBlank() && !bucketName.isBlank() && !accessKeyId.isBlank() && !accessKeySecret.isBlank();
     }
@@ -91,5 +98,13 @@ public class AliyunOssProperties {
 
     public void setPresignExpirySeconds(long presignExpirySeconds) {
         this.presignExpirySeconds = presignExpirySeconds;
+    }
+
+    public String getPublicBaseUrl() {
+        return publicBaseUrl;
+    }
+
+    public void setPublicBaseUrl(String publicBaseUrl) {
+        this.publicBaseUrl = publicBaseUrl;
     }
 }

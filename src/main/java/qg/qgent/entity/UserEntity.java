@@ -16,6 +16,10 @@ public class UserEntity {
     private String email;
     private String displayName;
     private String avatarUrl;
+    /**
+     * 当前头像对象键（OSS avatars/{userId}/...），用于替换旧头像时定位并删除；与 avatarUrl 成对维护。
+     */
+    private String avatarObjectKey;
     private String passwordHash;
     private String passwordAlgorithm;
     private String status;

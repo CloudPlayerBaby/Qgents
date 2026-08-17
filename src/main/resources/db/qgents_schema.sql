@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS
         email VARCHAR(320) NOT NULL COMMENT '归一化后的用户登录邮箱，用于大小写无关唯一校验',
         display_name VARCHAR(120) NOT NULL COMMENT '用户展示名称',
         avatar_url TEXT NULL COMMENT '用户头像URL',
+        avatar_object_key VARCHAR(512) NULL COMMENT '当前头像对象键（OSS avatars/{userId}/...），用于替换时定位并删除旧头像',
         password_hash VARCHAR(255) NOT NULL COMMENT '密码单向哈希，禁止存储明文',
         password_algorithm VARCHAR(32) NOT NULL DEFAULT 'ARGON2ID' COMMENT '密码哈希算法枚举：ARGON2ID/BCRYPT',
         status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '账号状态枚举：ACTIVE/DISABLED',
@@ -1185,3 +1186,16 @@ CREATE TABLE IF NOT EXISTS
         KEY idx_grs_group (group_id),
         CONSTRAINT fk_grs_group FOREIGN KEY (group_id) REFERENCES requirement_groups (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '群成员已读游标（未读数=最新sequence-游标，排除本人）';
+
+-- 幂等增量迁移：users.avatar_object_key（用户头像对象键）。
+-- 全新整库初始化时上方 users 建表已含该列，此处仅服务已存在的库；已存在该列的库自动跳过。
+SET @avatar_key_col_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'avatar_object_key'
+);
+SET @avatar_key_alter_sql = IF(@avatar_key_col_exists = 0,
+    'ALTER TABLE users ADD COLUMN avatar_object_key VARCHAR(512) NULL COMMENT ''当前头像对象键（OSS avatars/{userId}/...）'' AFTER avatar_url',
+    'SELECT 1');
+PREPARE avatar_key_alter_stmt FROM @avatar_key_alter_sql;
+EXECUTE avatar_key_alter_stmt;
+DEALLOCATE PREPARE avatar_key_alter_stmt;
