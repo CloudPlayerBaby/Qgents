@@ -198,8 +198,12 @@ class TaskOrchestratorTest {
         fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
 
         assertThat(fixture.updatedStatuses()).contains("DELIVERING");
+        // MR_FIRST 走系统授权批次：不创建待确认批次，交付意图（含 delivery.started 事件）
+        // 由 FinalDiffBundleService.createSystemAcceptedBatch 在短事务内原子落库
         verify(fixture.diffs, never()).createPendingBatch(any(), any(), any());
-        verify(fixture.events).publish(any(), any(), eq("delivery.started"), any(), any());
+        verify(fixture.diffs).createSystemAcceptedBatch(eq(task.getProjectId()), eq(task.getId()), any());
+        // SYSTEM 批次是内部交付事实，MR_FIRST 不得借它发送需要用户确认的 DIFF 卡片。
+        verify(fixture.diffMapper, never()).selectList(any());
     }
 
     @Test
@@ -266,6 +270,7 @@ class TaskOrchestratorTest {
             when(tasks.claimForOrchestration(any(), any())).thenReturn(1);
             when(tasks.claimForResume(any(), any())).thenReturn(1);
             when(diffs.createPendingBatch(any(), any(), any())).thenReturn(UUID.randomUUID());
+            when(diffs.createSystemAcceptedBatch(any(), any(), any())).thenReturn(UUID.randomUUID());
             when(orchestratorAgents.resolveIdForTask(task)).thenReturn(UUID.randomUUID());
             return task;
         }

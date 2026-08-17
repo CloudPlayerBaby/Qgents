@@ -692,6 +692,7 @@ CREATE TABLE IF NOT EXISTS diff_review_batches (
     workspace_id BINARY(16) NOT NULL COMMENT '工作区ID',
     final_coding_task_run_id BINARY(16) NOT NULL COMMENT '最终成功的代码编写Run ID',
     review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING_CONFIRMATION' COMMENT '审核状态：PENDING_CONFIRMATION/ACCEPTED/REJECTED',
+    confirmation_source VARCHAR(16) NOT NULL DEFAULT 'USER' COMMENT '交付授权来源：USER=用户确认 / SYSTEM=MR_FIRST 系统自动授权',
     delivery_status VARCHAR(32) NOT NULL DEFAULT 'NOT_STARTED' COMMENT '交付状态：NOT_STARTED/DELIVERING/PARTIALLY_DELIVERED/DELIVERED/FAILED',
     delivery_operation_id VARCHAR(64) NULL COMMENT '批次交付幂等操作ID',
     delivery_claim_token VARCHAR(64) NULL COMMENT '当前批次交付 fencing token',
