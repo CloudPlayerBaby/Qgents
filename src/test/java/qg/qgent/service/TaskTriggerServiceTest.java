@@ -319,6 +319,48 @@ class TaskTriggerServiceTest {
         verify(taskService, never()).create(any(), any(), any());
     }
 
+    /** 并发兜底：唯一约束冲突（同消息被并发建 Task）时返回已有任务，不再次创建。 */
+    @Test
+    void triggerConcurrentDuplicateKeyReturnsExistingTask() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID(), repoId = UUID.randomUUID();
+        MessageEntity message = message(groupId, messageId, "{\"text\":\"@agent 做登录\"}");
+        when(messages.selectById(messageId)).thenReturn(message);
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        // 并发另一请求先插入成功：本请求 create 抛唯一键冲突，findByTriggerMessage 返回已有任务
+        when(taskService.create(eq(projectId), eq(actor), any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("uk_task_trigger_message"));
+        TaskResponse existing = mock(TaskResponse.class);
+        when(taskService.findByTriggerMessage(projectId, messageId, actor)).thenReturn(existing);
+
+        TaskTriggerRequest body = new TaskTriggerRequest();
+        body.setTitle("t");
+        TaskResponse result = service.trigger(actor, projectId, groupId, messageId, body);
+
+        assertSame(existing, result);
+        verify(taskService).findByTriggerMessage(projectId, messageId, actor);
+    }
+
+    /** 并发兜底：唯一键冲突但查不到已有任务（异常态）时不得静默吞掉，抛回原异常。 */
+    @Test
+    void triggerConcurrentDuplicateKeyWithoutExistingRejects() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID(), repoId = UUID.randomUUID();
+        MessageEntity message = message(groupId, messageId, "{\"text\":\"@agent 做登录\"}");
+        when(messages.selectById(messageId)).thenReturn(message);
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(taskService.create(eq(projectId), eq(actor), any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("uk_task_trigger_message"));
+        when(taskService.findByTriggerMessage(projectId, messageId, actor)).thenReturn(null);
+
+        TaskTriggerRequest body = new TaskTriggerRequest();
+        body.setTitle("t");
+        assertThrows(org.springframework.dao.DuplicateKeyException.class,
+                () -> service.trigger(actor, projectId, groupId, messageId, body));
+    }
+
     private TaskCreateRequest capturedCreateRequest(UUID projectId, UUID actor) {
         ArgumentCaptor<TaskCreateRequest> captor = ArgumentCaptor.forClass(TaskCreateRequest.class);
         verify(taskService).create(eq(projectId), eq(actor), captor.capture());

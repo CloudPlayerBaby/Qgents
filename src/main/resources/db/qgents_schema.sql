@@ -534,6 +534,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_task_display_code(project_id,display_code),
+    UNIQUE KEY uk_task_trigger_message(trigger_message_id),
     KEY idx_task_project(project_id,status), KEY idx_task_group(requirement_group_id), KEY idx_task_workspace(workspace_id),
     CONSTRAINT fk_task_project FOREIGN KEY(project_id) REFERENCES projects(id),
     CONSTRAINT fk_task_group FOREIGN KEY(requirement_group_id) REFERENCES requirement_groups(id),

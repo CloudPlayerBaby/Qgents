@@ -28,6 +28,12 @@ import java.util.stream.Collectors;
 @Service
 public class TaskRunService {
     private static final Set<String> RETRYABLE = Set.of("FAILED", "CANCELLED", "BLOCKED");
+    /**
+     * 允许续跑的任务状态：仅终态/未启动（FAILED/CANCELLED 等）与尚未进入交付的任务可重试；
+     * RUNNING/WAITING_DIFF_CONFIRMATION/DELIVERING/SUCCEEDED/DELIVERY_FAILED 不接受外部续跑，
+     * 避免与进行中的编排或已交付的代码冲突。
+     */
+    private static final Set<String> RESUMABLE_TASK_STATUSES = Set.of("PLANNING", "PENDING", "FAILED", "CANCELLED");
     private static final Set<String> CANCELLABLE_RUNNING = Set.of("RUNNING", "WAITING_INPUT", "WAITING_APPROVAL",
             "BLOCKED");
     private static final int DEFAULT_LIMIT = 20;
@@ -47,6 +53,7 @@ public class TaskRunService {
     private final ProjectAccessService projectAccess;
     private final EventService eventService;
     private final NotificationService notificationService;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     public TaskRunService(TaskRunMapper taskRunMapper,
                           ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
@@ -54,7 +61,8 @@ public class TaskRunService {
                           TaskMapper taskMapper, RequirementGroupMapper requirementGroupMapper,
                           ProjectRepositoryMapper projectRepositoryMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
                           ProjectAccessService projectAccess, EventService eventService,
-                          NotificationService notificationService) {
+                          NotificationService notificationService,
+                          org.springframework.context.ApplicationEventPublisher eventPublisher) {
         this.taskRunMapper = taskRunMapper;
         this.logMapper = logMapper;
         this.inputRequestMapper = inputRequestMapper;
@@ -69,6 +77,7 @@ public class TaskRunService {
         this.projectAccess = projectAccess;
         this.eventService = eventService;
         this.notificationService = notificationService;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -112,8 +121,12 @@ public class TaskRunService {
     }
 
     /**
-     * 为 FAILED/CANCELLED/BLOCKED 的运行创建一次新的 TaskRun（retryOfTaskRunId 指向原运行），
-     * 新运行置为 QUEUED 并初始化 PENDING 步骤；返回 202 受理。
+     * 重试 FAILED/CANCELLED/BLOCKED 的运行：受理后从该运行所属步骤续跑编排（202 受理）。
+     * <p>
+     * 不再创建无人消费的 QUEUED run；改为发布 {@link TaskResumeRequestedEvent}，由编排触发监听器
+     * （AFTER_COMMIT + @Async）从源步骤调用 {@code TaskOrchestrator.orchestrate(projectId, taskId, stepId)}
+     * 续跑，续跑产生的实际执行 run 以 {@code retryOfTaskRunId} 指向源运行。任务 RUNNING（仍在编排）
+     * 或已交付（WAITING_DIFF_CONFIRMATION 及以后）时拒绝，防止与进行中的编排冲突。
      */
     @Transactional
     public TaskRunSummaryResponse retry(UUID projectId, UUID taskRunId, UUID userId) {
@@ -123,24 +136,23 @@ public class TaskRunService {
         if (!RETRYABLE.contains(source.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_RETRYABLE", "仅 FAILED/CANCELLED/BLOCKED 状态可重试");
         }
-        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        TaskRunEntity run = new TaskRunEntity();
-        run.setId(UuidV7.next());
-        run.setProjectId(projectId);
-        run.setTaskId(source.getTaskId());
-        run.setTaskStepId(source.getTaskStepId());
-        run.setAgentId(source.getAgentId());
-        run.setRole(source.getRole());
-        run.setStatus("QUEUED");
-        run.setRetryOfTaskRunId(source.getId());
-        // 重试复用同一分支上下文，Workspace/Sandbox 由新执行会话重新分配
-        run.setCreatedBy(userId);
-        run.setCreatedAt(now);
-        run.setUpdatedAt(now);
-        taskRunMapper.insert(run);
-        eventService.publish(projectId, null, "task-run.updated", run.getId().toString(),
-                eventPayload(run, 0));
-        return toSummary(run);
+        TaskEntity task = taskMapper.selectById(source.getTaskId());
+        if (task == null || !projectId.equals(task.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "任务不存在或不可见");
+        }
+        if (source.getTaskStepId() == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NO_STEP", "该运行没有关联步骤，无法续跑");
+        }
+        // 进行中的任务由编排器内部重试/质量循环负责，不接受外部续跑；已交付/已完成的任务不接受重试。
+        if (!RESUMABLE_TASK_STATUSES.contains(task.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_NOT_RESUMABLE",
+                    "任务当前状态（" + task.getStatus() + "）不允许续跑");
+        }
+        // 异步续跑在事务提交后触发；认领（claimForResume）在编排侧原子完成，此处仅受理。
+        // retryOfTaskRunId = 源失败运行 ID，续跑产生的首个 TaskRun 指向它，审计链可追溯。
+        eventPublisher.publishEvent(new TaskResumeRequestedEvent(projectId, source.getTaskId(),
+                source.getTaskStepId(), source.getId()));
+        return toSummary(source);
     }
 
     /**

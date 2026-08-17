@@ -27,7 +27,8 @@ import java.util.Map;
  *   <li>{@code END} → 终态。</li>
  * </ul>
  * 每次 orchestrate 按该任务的步骤现建图；步骤即节点，为后续 checkpoint / Agent 打断 / 重试
- * 提供按节点定位的接缝。
+ * 提供按节点定位的接缝。图支持从指定 step 节点启动（{@code startStepId}）：仍构建全部节点
+ * （requeue 边需要回 DEVELOPER 节点），仅把 START 指向起始 step——用于失败步骤续跑 / 崩溃恢复。
  */
 @Service
 public class WorkflowGraphBuilder {
@@ -43,7 +44,7 @@ public class WorkflowGraphBuilder {
     }
 
     /**
-     * 按有序步骤构建并编译编排图。
+     * 按有序步骤构建并编译编排图，从第一个步骤开始执行（全量编排）。
      *
      * @param steps         按执行顺序排列的任务步骤（至少一个；PLANNER 恒在首位）。
      * @param runner        每个节点的执行体（TaskOrchestrator.runStepNode）。
@@ -51,6 +52,23 @@ public class WorkflowGraphBuilder {
      */
     public CompiledGraph<TaskOrchestrationState> build(List<TaskStepEntity> steps, NodeRunner runner,
                                                        String requeueNodeId) {
+        return build(steps, runner, requeueNodeId, null);
+    }
+
+    /**
+     * 按有序步骤构建并编译编排图，从指定 step 节点启动（续跑/重试/恢复）。
+     * <p>
+     * 与 {@link #build(List, NodeRunner, String)} 的区别仅在于 START 边指向：startStepId 为 null
+     * 时指向首个步骤，否则指向该步骤节点。所有步骤节点与条件边仍全部构建，保证质量失败时
+     * requeue 边仍能回 DEVELOPER 节点。
+     *
+     * @param steps         按执行顺序排列的任务步骤（至少一个）。
+     * @param runner        每个节点的执行体（TaskOrchestrator.runStepNode）。
+     * @param requeueNodeId 质量失败回 Coding 的目标节点名（DEVELOPER step 的 stepId）。
+     * @param startStepId   起始步骤 ID；null 表示从第一个步骤开始（全量）。
+     */
+    public CompiledGraph<TaskOrchestrationState> build(List<TaskStepEntity> steps, NodeRunner runner,
+                                                       String requeueNodeId, String startStepId) {
         if (steps == null || steps.isEmpty()) {
             throw new IllegalStateException("cannot build orchestration graph without steps");
         }
@@ -71,7 +89,11 @@ public class WorkflowGraphBuilder {
                 routes.put(GraphDefinition.END, GraphDefinition.END);
                 graph.addConditionalEdges(nodeId, route, routes);
             }
-            graph.addEdge(GraphDefinition.START, steps.get(0).getId().toString());
+            if (startStepId != null && !startStepId.isBlank()) {
+                graph.addEdge(GraphDefinition.START, startStepId);
+            } else {
+                graph.addEdge(GraphDefinition.START, steps.get(0).getId().toString());
+            }
             // 循环上限远高于状态机自身的质量/基础设施重试上限，避免框架先于业务计数终止。
             return graph.compile(CompileConfig.builder().recursionLimit(64).build());
         } catch (GraphStateException e) {

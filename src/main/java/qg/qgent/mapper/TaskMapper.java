@@ -16,10 +16,22 @@ import java.util.UUID;
 public interface TaskMapper extends BaseMapper<TaskEntity> {
     /**
      * 原子领取尚未开始的 Task，防止同一 Task 被多个编排器并发执行。
+     * 正常编排触发（任务创建事件）专用：只认领 PLANNING/PENDING，RUNNING 期间拒绝重入。
      */
     @Update("update tasks set status='RUNNING',updated_at=UTC_TIMESTAMP(6) "
             + "where id=#{taskId} and project_id=#{projectId} and status in ('PLANNING','PENDING')")
     int claimForOrchestration(@Param("projectId") UUID projectId, @Param("taskId") UUID taskId);
+
+    /**
+     * 原子认领一次续跑（用户重试失败步骤 / 恢复卡死任务）：从 PLANNING/PENDING/FAILED 认领到 RUNNING；
+     * 对 RUNNING 状态仅当没有进行中的 TaskRun（崩溃遗留）才认领，正常执行中的任务拒绝——防并发双编排。
+     */
+    @Update("update tasks set status='RUNNING',updated_at=UTC_TIMESTAMP(6) "
+            + "where id=#{taskId} and project_id=#{projectId} and "
+            + "(status in ('PLANNING','PENDING','FAILED') "
+            + " or (status='RUNNING' and not exists (select 1 from task_runs r where r.task_id=#{taskId} "
+            + "and r.status in ('QUEUED','RUNNING','WAITING_INPUT','WAITING_APPROVAL'))))")
+    int claimForResume(@Param("projectId") UUID projectId, @Param("taskId") UUID taskId);
 
     /**
      * Locks one Task while changing execution or continuation state.
@@ -44,4 +56,24 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
             + "AND EXISTS (SELECT 1 FROM workspace_repositories wr "
             + "WHERE wr.workspace_id = t.workspace_id AND wr.project_repository_id = #{projectRepositoryId})")
     int countActiveTasksUsingRepository(@Param("projectRepositoryId") UUID projectRepositoryId);
+
+    /**
+     * 返回任务最近一次 SUCCEEDED 的 DEVELOPER 运行 ID（终态 Diff 批次兜底）；
+     * 无成功 Coding 运行时返回 null。
+     */
+    @Select("select id from task_runs where task_id=#{taskId} and role='DEVELOPER' and status='SUCCEEDED' "
+            + "order by created_at desc limit 1")
+    UUID selectLastSucceededCodingRunId(@Param("taskId") UUID taskId);
+
+    /**
+     * 恢复调度器扫描疑似崩溃遗留的卡死任务：状态 PLANNING/PENDING/RUNNING 且超过阈值未更新，
+     * 且没有任何进行中的 TaskRun（正常编排期间 task 有活跃 run，不会命中）。
+     */
+    @Select("select t.id from tasks t where t.status in ('PLANNING','PENDING','RUNNING') "
+            + "and t.updated_at < #{staleBefore} "
+            + "and not exists (select 1 from task_runs r where r.task_id=t.id "
+            + "and r.status in ('QUEUED','RUNNING','WAITING_INPUT','WAITING_APPROVAL')) "
+            + "order by t.updated_at limit #{limit}")
+    java.util.List<UUID> selectStaleOrphaned(@Param("staleBefore") java.time.LocalDateTime staleBefore,
+                                             @Param("limit") int limit);
 }

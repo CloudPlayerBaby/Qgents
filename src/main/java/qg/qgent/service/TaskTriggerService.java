@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -91,7 +92,7 @@ public class TaskTriggerService {
         ContinuationRef continuation = resolveQuotedDiffContinuation(projectId, groupId, message);
         TaskCreateRequest request = assembleRequest(group, message, body.getTitle(),
                 body.getRequirement(), continuation, body.getRepositoryIds(), body.getBaseRef());
-        return taskService.create(projectId, actor, request);
+        return createIdempotent(projectId, actor, message, request);
     }
 
     /**
@@ -135,7 +136,25 @@ public class TaskTriggerService {
             title = group.getName();
         }
         TaskCreateRequest request = assembleRequest(group, message, title, null, continuation, groupRepositories, null);
-        return taskService.create(projectId, actor, request);
+        return createIdempotent(projectId, actor, message, request);
+    }
+
+    /**
+     * 建任务 + 并发幂等兜底：唯一约束（uk_task_trigger_message）冲突说明同消息已被并发请求建过 Task，
+     * 捕获后返回已有任务而非再次创建，避免 @agent 自动触发与手动触发并发时建出两个 Task。
+     */
+    private TaskResponse createIdempotent(UUID projectId, UUID actor, MessageEntity message, TaskCreateRequest request) {
+        try {
+            return taskService.create(projectId, actor, request);
+        } catch (DuplicateKeyException e) {
+            TaskResponse existing = taskService.findByTriggerMessage(projectId, message.getId(), actor);
+            if (existing != null) {
+                log.warn("task trigger idempotency: duplicate creation for message {} returned existing task {}",
+                        message.getId(), existing.getId());
+                return existing;
+            }
+            throw e;
+        }
     }
 
     private TaskCreateRequest assembleRequest(RequirementGroupEntity group,
