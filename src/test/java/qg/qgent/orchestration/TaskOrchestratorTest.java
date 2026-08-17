@@ -55,6 +55,9 @@ class TaskOrchestratorTest {
                 anyString(), any(), any(), any());
         verify(fixture.materialization).materialize(eq(task), any(PlanResult.class));
         assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        verify(fixture.artifacts).createRunArtifact(any(), any(), any(), eq("CODING"), any());
+        verify(fixture.artifacts).createRunArtifact(any(), any(), any(), eq("TESTING"), any());
+        verify(fixture.artifacts).createRunArtifact(any(), any(), any(), eq("REVIEWING"), any());
     }
 
     @Test
@@ -96,6 +99,47 @@ class TaskOrchestratorTest {
         assertThat(fixture.updatedStatuses()).contains("FAILED");
     }
 
+    @Test
+    void plannerMaterializationFailureTerminatesBeforeAnyFormalTaskRun() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        fixture.stubPlan(task, planner, List.of(planner));
+        doThrow(new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY,
+                "PLAN_STEP_AGENT_UNMATCHED", "no suitable developer agent"))
+                .when(fixture.materialization).materialize(eq(task), any(PlanResult.class));
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess()))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        verifyNoInteractions(fixture.taskRuns);
+        assertThat(planner.getStatus()).isEqualTo("FAILED");
+        verify(fixture.steps, times(2)).updateById(planner);
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+    }
+
+    @Test
+    void plannerInfrastructureFailureRetriesThenContinuesToFormalGraph() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+        Agent agent = fixture.sequenceAgent(fixture.outcome(OrchestrationPhase.PLAN, RunOutcome.FAILED_INFRASTRUCTURE),
+                fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING));
+
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        verify(fixture.materialization).materialize(eq(task), any(PlanResult.class));
+        verify(fixture.taskRuns, times(3)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
+                anyString(), any(), any(), any());
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+    }
+
     private static final class Fixture {
         private final TaskMapper tasks = mock(TaskMapper.class);
         private final TaskStepMapper steps = mock(TaskStepMapper.class);
@@ -104,6 +148,7 @@ class TaskOrchestratorTest {
         private final AgentRegistry registry = mock(AgentRegistry.class);
         private final AgentContextAssembler context = mock(AgentContextAssembler.class);
         private final FinalDiffBundleService diffs = mock(FinalDiffBundleService.class);
+        private final TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
         private final ThreadLocal<Agent> currentAgent = new ThreadLocal<>();
 
         TaskEntity task() {
@@ -153,7 +198,7 @@ class TaskOrchestratorTest {
             currentAgent.set(agent);
             return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry, context,
                     taskRuns, tasks, steps, mock(EventService.class),
-                    mock(NotificationService.class), mock(SandboxSessionManager.class), mock(TaskExecutionArtifactService.class), diffs,
+                    mock(NotificationService.class), mock(SandboxSessionManager.class), artifacts, diffs,
                     mock(MessageService.class), mock(OrchestratorAgentService.class),
                     materialization);
         }

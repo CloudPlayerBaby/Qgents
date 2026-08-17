@@ -48,6 +48,11 @@ logging:
 # 注意1：生产环境的 GitHub App 必须将其 Callback URL 配置为线上真实的 HTTPS 域名地址（例如 https://api.qgents.com/api/v1/integrations/github/callback），否则将面临严重的安全泄露风险并被 GitHub 拦截。
 # 注意2：必须同时在 GitHub App 设置中开启并配置 Webhook 功能（Webhook URL 及 Webhook Secret），用于接收仓库的动态事件（如 MR 状态、代码推送等）。
 github:
+  # GitHub 客户端专用 HTTP 代理。兼容现有 -Dhttps.proxyHost/-Dhttps.proxyPort，
+  # 也可用 GITHUB_PROXY_HOST/GITHUB_PROXY_PORT 覆盖；未配置有效 host + port 时直连。
+  proxy:
+    host: ${GITHUB_PROXY_HOST:${https.proxyHost:}}
+    port: ${GITHUB_PROXY_PORT:${https.proxyPort:0}}
   app:
     app-id: ${GITHUB_APP_ID:}
     slug: ${GITHUB_APP_SLUG:}
@@ -100,7 +105,8 @@ app:
   # 附件大小上限（字节，默认 50MB）与临时下载地址有效期（秒，默认 900）
   attachment-max-size-bytes: ${APP_ATTACHMENT_MAX_SIZE_BYTES:52428800}
   attachment-download-expiry-seconds: ${APP_ATTACHMENT_DOWNLOAD_EXPIRY_SECONDS:900}
-  # Agent 默认预置：启动时为每个 ACTIVE 团队补齐 DEVELOPER/TESTER/REVIEWER Agent（保证回群/方案 A 能查到匹配 Agent）
+  # Agent 默认预置：建团队事务内补齐团队默认 Agent（PLANNER/DEVELOPER/TESTER/REVIEWER + 编排助手）；
+  # 启动时为存量 ACTIVE 团队幂等兜底（DefaultAgentProvisioner）
   agent-preseed:
     enabled: ${APP_AGENT_PRESEED_ENABLED:true}
 

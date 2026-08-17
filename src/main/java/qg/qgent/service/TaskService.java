@@ -39,6 +39,7 @@ public class TaskService {
     private final ProjectAccessService access;
     private final EventService eventService;
     private final ApplicationEventPublisher eventPublisher;
+    private final DefaultAgentProvisioner defaultAgents;
 
     /**
      * Creates the task-domain service with all persistence and authorization
@@ -48,7 +49,7 @@ public class TaskService {
                        TaskStepMapper steps, TaskStepDependencyMapper dependencies, TaskStepRepositoryMapper scopes,
                        RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories, ProjectMapper projects,
                        MessageMapper messages, AgentMapper agents, ProjectAccessService access, EventService eventService,
-                       ApplicationEventPublisher eventPublisher) {
+                       ApplicationEventPublisher eventPublisher, DefaultAgentProvisioner defaultAgents) {
         this.tasks = tasks;
         this.workspaces = workspaces;
         this.repositories = repositories;
@@ -63,6 +64,7 @@ public class TaskService {
         this.access = access;
         this.eventService = eventService;
         this.eventPublisher = eventPublisher;
+        this.defaultAgents = defaultAgents;
     }
 
     /**
@@ -75,7 +77,12 @@ public class TaskService {
     public TaskResponse create(UUID projectId, UUID actor, TaskCreateRequest body) {
         access.requireProjectMember(projectId, actor);
         // 锁定项目行串行化同项目内的 Task 创建，保证 display_code 序号在项目内单调且不重复（沿用消息序号的持行锁模式）。
-        projects.selectByIdForUpdate(projectId);
+        ProjectEntity project = projects.selectByIdForUpdate(projectId);
+        // 任务发起惰性兜底：确保团队默认 Agent 一定在位（存量团队 / 部署间隙 / 建团队失败重试等场景），
+        // 幂等 + 唯一索引并发安全，两人同时发起任务也不会重复创建默认 Agent。
+        if (project != null && project.getTeamId() != null) {
+            defaultAgents.ensureForTeam(project.getTeamId());
+        }
         RequirementGroupEntity group = groups.selectById(body.getRequirementGroupId());
         if (group == null || !projectId.equals(group.getProjectId()) || !"REQUIREMENT".equals(group.getGroupType())
                 || !"ACTIVE".equals(group.getStatus())) {
