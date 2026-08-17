@@ -105,6 +105,8 @@ public class AgentContextAssembler {
     private AgentInput base(TaskEntity task) {
         AgentInput input = new AgentInput();
         input.setProjectId(task.getProjectId());
+        input.setActorId(task.getCreatedBy());
+        input.setRequirementGroupId(task.getRequirementGroupId());
         input.setTaskId(task.getId());
         input.setTaskTitle(task.getTitle());
         input.setRequirement(task.getRequirement());

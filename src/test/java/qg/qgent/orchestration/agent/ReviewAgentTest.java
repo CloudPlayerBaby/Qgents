@@ -18,6 +18,7 @@ import qg.qgent.orchestration.tool.DisabledWorkspaceDiffAccess;
 import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
+import qg.qgent.service.ContextService;
 
 import java.util.List;
 import java.util.UUID;
@@ -48,11 +49,13 @@ class ReviewAgentTest {
     private final UUID workspaceId = UUID.randomUUID();
 
     private ReviewAgent nativeAgent() {
-        return new ReviewAgent(llm, codeAccess, diffAccess, AgentProtocol.nativeDefault());
+        return new ReviewAgent(llm, codeAccess, diffAccess, AgentProtocol.nativeDefault(),
+                mock(ContextService.class), new ContextSearchProperties(10));
     }
 
     private ReviewAgent legacyAgent() {
-        return new ReviewAgent(llm, codeAccess, diffAccess, new AgentProtocol("legacy"));
+        return new ReviewAgent(llm, codeAccess, diffAccess, new AgentProtocol("legacy"),
+                mock(ContextService.class), new ContextSearchProperties(10));
     }
 
     // ---------- 原生 Tool Calling（默认协议） ----------
@@ -213,7 +216,7 @@ class ReviewAgentTest {
     void realDisabledDiffAccessMapsToInfrastructureFailure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         ReviewAgent disabledAgent = new ReviewAgent(llm, codeAccess, new DisabledWorkspaceDiffAccess(),
-                AgentProtocol.nativeDefault());
+                AgentProtocol.nativeDefault(), mock(ContextService.class), new ContextSearchProperties(10));
 
         AgentRunOutcome outcome = disabledAgent.run(input());
 

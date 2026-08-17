@@ -16,6 +16,7 @@ import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
+import qg.qgent.service.ContextService;
 
 import java.util.List;
 import java.util.UUID;
@@ -46,11 +47,13 @@ class CodingAgentTest {
     private final UUID workspaceId = UUID.randomUUID();
 
     private CodingAgent nativeAgent() {
-        return new CodingAgent(llm, codeAccess, writer, AgentProtocol.nativeDefault());
+        return new CodingAgent(llm, codeAccess, writer, AgentProtocol.nativeDefault(),
+                mock(ContextService.class), new ContextSearchProperties(10));
     }
 
     private CodingAgent legacyAgent() {
-        return new CodingAgent(llm, codeAccess, writer, new AgentProtocol("legacy"));
+        return new CodingAgent(llm, codeAccess, writer, new AgentProtocol("legacy"),
+                mock(ContextService.class), new ContextSearchProperties(10));
     }
 
     // ---------- 原生 Tool Calling（默认协议） ----------
@@ -113,7 +116,8 @@ class CodingAgentTest {
         verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("apply_patch", "list_files", "read_file", "search_code", "write_file");
+        assertThat(names).containsExactly("apply_patch", "list_files", "read_file", "search_code", "search_context",
+                "write_file");
     }
 
     @Test

@@ -20,6 +20,7 @@ import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
+import qg.qgent.service.ContextService;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -57,13 +58,24 @@ public class ReviewAgent implements Agent {
     private final ReviewPromptBuilder promptBuilder = new ReviewPromptBuilder();
     private final ReviewResultParser parser = new ReviewResultParser();
     private final ObjectMapper objectMapper = new ObjectMapper();
+    /**
+     * 运行时群聊/Skill/Memory 检索（search_context）的服务端入口，与注入上下文同源、复用成员校验。
+     */
+    private final ContextService contextService;
+    /**
+     * 每次 TaskRun 内检索工具的调用次数上限配置。
+     */
+    private final ContextSearchProperties contextSearchProperties;
 
     public ReviewAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, WorkspaceDiffAccess diffAccess,
-                       AgentProtocol protocol) {
+                       AgentProtocol protocol, ContextService contextService,
+                       ContextSearchProperties contextSearchProperties) {
         this.llm = llm;
         this.codeAccess = codeAccess;
         this.diffAccess = diffAccess;
         this.protocol = protocol;
+        this.contextService = contextService;
+        this.contextSearchProperties = contextSearchProperties;
     }
 
     @Override
@@ -111,7 +123,9 @@ public class ReviewAgent implements Agent {
         history.add(new UserMessage(promptBuilder.buildUser(input, files, diff)));
         String system = promptBuilder.buildSystem(true);
         ReviewTools tools = new ReviewTools(input.getWorkspaceId(), codeAccess);
-        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools));
+        ContextSearchTool contextSearchTool = new ContextSearchTool(contextService, input.getActorId(),
+                input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
+        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, contextSearchTool));
         String finishReason = null;
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             ToolTurnResult turn = llm.nextToolTurn(system, history, callbacks);

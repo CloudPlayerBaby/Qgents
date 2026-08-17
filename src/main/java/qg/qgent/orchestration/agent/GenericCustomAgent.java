@@ -17,6 +17,7 @@ import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.Sha256;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.service.ContextService;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -50,14 +51,25 @@ public class GenericCustomAgent implements Agent {
     private final AgentEntity entity;
     private final CodingWriteObserver writeObserver;
     private final GenericResultParser parser = new GenericResultParser();
+    /**
+     * 运行时群聊/Skill/Memory 检索（search_context）的服务端入口，与注入上下文同源、复用成员校验。
+     */
+    private final ContextService contextService;
+    /**
+     * 每次 TaskRun 内检索工具的调用次数上限配置。
+     */
+    private final ContextSearchProperties contextSearchProperties;
 
     public GenericCustomAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, AgentToolRegistry toolRegistry,
-                              AgentEntity entity, CodingWriteObserver writeObserver) {
+                              AgentEntity entity, CodingWriteObserver writeObserver,
+                              ContextService contextService, ContextSearchProperties contextSearchProperties) {
         this.llm = llm;
         this.codeAccess = codeAccess;
         this.toolRegistry = toolRegistry;
         this.entity = entity;
         this.writeObserver = writeObserver;
+        this.contextService = contextService;
+        this.contextSearchProperties = contextSearchProperties;
     }
 
     @Override
@@ -102,7 +114,9 @@ public class GenericCustomAgent implements Agent {
         if (tools instanceof CodingTools codingTools) {
             codingTools.setWriteObserver(writeObserver, input.getProjectId(), input.getTaskId(), input.getTaskRunId());
         }
-        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools));
+        ContextSearchTool contextSearchTool = new ContextSearchTool(contextService, input.getActorId(),
+                input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
+        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, contextSearchTool));
         String finishReason = null;
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             ToolTurnResult turn = llm.nextToolTurn(system, history, callbacks);
@@ -253,6 +267,7 @@ public class GenericCustomAgent implements Agent {
             - list_files：列出工作区所有代码文件，无参数。
             - read_file：读取文件内容与当前 sha256，参数 {"path": "相对路径"}。
             - search_code：检索关键字命中的文件路径，参数 {"query": "关键字"}。
+            - search_context：在需求群聊天与项目 Skill/Memory 中检索上下文，参数 {"query": "关键字", "tag": "可选标签", "scope": "CHAT/SKILL/MEMORY/ALL"}——仅当现有上下文缺少完成任务所需的关键信息时调用，有把握时不调用；检索预算有限，耗尽后返回 ok=false，请基于现有信息完成。
             """;
 
     private static final String WRITE_TOOLS_CONTRACT = READ_ONLY_TOOLS_CONTRACT + """

@@ -5,6 +5,7 @@ import qg.qgent.entity.AgentEntity;
 import qg.qgent.mapper.AgentMapper;
 import qg.qgent.orchestration.agent.AgentToolRegistry;
 import qg.qgent.orchestration.agent.CodingAgent;
+import qg.qgent.orchestration.agent.ContextSearchProperties;
 import qg.qgent.orchestration.agent.GenericCustomAgent;
 import qg.qgent.orchestration.agent.PlanAgent;
 import qg.qgent.orchestration.agent.ReviewAgent;
@@ -12,6 +13,7 @@ import qg.qgent.orchestration.agent.TestAgent;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.service.ContextService;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -35,8 +37,10 @@ class AgentRegistryTest {
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
     private final WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
     private final AgentToolRegistry toolRegistry = mock(AgentToolRegistry.class);
+    private final ContextService contextService = mock(ContextService.class);
+    private final ContextSearchProperties contextSearchProperties = new ContextSearchProperties(10);
     private final AgentRegistry registry = new AgentRegistry(planAgent, codingAgent, testAgent, reviewAgent,
-            agentMapper, toolRegistry, llm, codeAccess, writer);
+            agentMapper, toolRegistry, llm, codeAccess, writer, contextService, contextSearchProperties);
 
     @Test
     void nullAgentIdFallsBackToBuiltinByRole() {

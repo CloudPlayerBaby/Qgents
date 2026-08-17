@@ -13,6 +13,7 @@ import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.service.ContextService;
 
 import java.util.List;
 import java.util.UUID;
@@ -43,7 +44,8 @@ class GenericCustomAgentTest {
     private final UUID workspaceId = UUID.randomUUID();
 
     private GenericCustomAgent agent(AgentEntity entity) {
-        return new GenericCustomAgent(llm, codeAccess, toolRegistry, entity, null);
+        return new GenericCustomAgent(llm, codeAccess, toolRegistry, entity, null,
+                mock(ContextService.class), new ContextSearchProperties(10));
     }
 
     private AgentEntity customAgent() {
@@ -225,7 +227,8 @@ class GenericCustomAgentTest {
         verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("apply_patch", "list_files", "read_file", "search_code", "write_file");
+        assertThat(names).containsExactly("apply_patch", "list_files", "read_file", "search_code", "search_context",
+                "write_file");
     }
 
     @Test
@@ -241,7 +244,7 @@ class GenericCustomAgentTest {
         verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("list_files", "read_file", "search_code");
+        assertThat(names).containsExactly("list_files", "read_file", "search_code", "search_context");
     }
 
     private ToolTurnResult finalTurn(String json, String finishReason) {

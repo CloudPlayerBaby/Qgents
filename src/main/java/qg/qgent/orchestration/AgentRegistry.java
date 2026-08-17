@@ -7,6 +7,7 @@ import qg.qgent.mapper.AgentMapper;
 import qg.qgent.orchestration.agent.AgentToolRegistry;
 import qg.qgent.orchestration.agent.CodingAgent;
 import qg.qgent.orchestration.agent.CodingWriteObserver;
+import qg.qgent.orchestration.agent.ContextSearchProperties;
 import qg.qgent.orchestration.agent.GenericCustomAgent;
 import qg.qgent.orchestration.agent.PlanAgent;
 import qg.qgent.orchestration.agent.ReviewAgent;
@@ -14,6 +15,7 @@ import qg.qgent.orchestration.agent.TestAgent;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.service.ContextService;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -44,13 +46,22 @@ public class AgentRegistry {
     private final WorkspaceCodeAccess codeAccess;
     private final WorkspaceCodeWriter writer;
     /**
+     * 自定义 Agent 运行时群聊/Skill/Memory 检索的服务端入口。
+     */
+    private final ContextService contextService;
+    /**
+     * 自定义 Agent 每次 TaskRun 检索工具的调用次数上限配置。
+     */
+    private final ContextSearchProperties contextSearchProperties;
+    /**
      * 成功写后的预览回调（阶段 D），可空；由 {@link GenericCustomAgent} 注入写工具。
      */
     private CodingWriteObserver writeObserver;
 
     public AgentRegistry(PlanAgent planAgent, CodingAgent codingAgent, TestAgent testAgent, ReviewAgent reviewAgent,
                          AgentMapper agentMapper, AgentToolRegistry toolRegistry, LlmClient llm,
-                         WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer) {
+                         WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
+                         ContextService contextService, ContextSearchProperties contextSearchProperties) {
         this.planAgent = planAgent;
         this.codingAgent = codingAgent;
         this.testAgent = testAgent;
@@ -60,6 +71,8 @@ public class AgentRegistry {
         this.llm = llm;
         this.codeAccess = codeAccess;
         this.writer = writer;
+        this.contextService = contextService;
+        this.contextSearchProperties = contextSearchProperties;
     }
 
     /**
@@ -86,7 +99,8 @@ public class AgentRegistry {
         if (entity == null) {
             return Optional.empty();
         }
-        return Optional.of(new GenericCustomAgent(llm, codeAccess, toolRegistry, entity, writeObserver));
+        return Optional.of(new GenericCustomAgent(llm, codeAccess, toolRegistry, entity, writeObserver,
+                contextService, contextSearchProperties));
     }
 
     /**

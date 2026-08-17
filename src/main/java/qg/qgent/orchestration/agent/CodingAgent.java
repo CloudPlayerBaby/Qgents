@@ -20,6 +20,7 @@ import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.service.ContextService;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -54,17 +55,28 @@ public class CodingAgent implements Agent {
     private final CodingResultParser parser = new CodingResultParser();
     private final ObjectMapper objectMapper = new ObjectMapper();
     /**
+     * 运行时群聊/Skill/Memory 检索（search_context）的服务端入口，与注入上下文同源、复用成员校验。
+     */
+    private final ContextService contextService;
+    /**
+     * 每次 TaskRun 内检索工具的调用次数上限配置。
+     */
+    private final ContextSearchProperties contextSearchProperties;
+    /**
      * 成功写后的预览回调（阶段 D），可空；Spring 注入 {@link CodingWriteObserver} 实现，
      * 未配置时 Coding 工具静默跳过，不影响编码流程。
      */
     private CodingWriteObserver writeObserver;
 
     public CodingAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
-                       AgentProtocol protocol) {
+                       AgentProtocol protocol, ContextService contextService,
+                       ContextSearchProperties contextSearchProperties) {
         this.llm = llm;
         this.codeAccess = codeAccess;
         this.writer = writer;
         this.protocol = protocol;
+        this.contextService = contextService;
+        this.contextSearchProperties = contextSearchProperties;
     }
 
     /**
@@ -119,7 +131,9 @@ public class CodingAgent implements Agent {
         String system = promptBuilder.buildSystem(true);
         CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer);
         tools.setWriteObserver(writeObserver, input.getProjectId(), input.getTaskId(), input.getTaskRunId());
-        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools));
+        ContextSearchTool contextSearchTool = new ContextSearchTool(contextService, input.getActorId(),
+                input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
+        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, contextSearchTool));
         String finishReason = null;
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             ToolTurnResult turn = llm.nextToolTurn(system, history, callbacks);

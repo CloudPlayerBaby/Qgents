@@ -41,6 +41,7 @@ public class CodingPromptBuilder {
                 - list_files：列出工作区所有代码文件，无参数。
                 - read_file：读取文件内容与当前 sha256，参数 {"path": "相对路径"}。
                 - search_code：检索关键字命中的文件路径，参数 {"query": "关键字"}。
+                - search_context：在需求群聊天与项目 Skill/Memory 中检索上下文，参数 {"query": "关键字", "tag": "可选标签", "scope": "CHAT/SKILL/MEMORY/ALL"}——仅当任务/计划/历史消息缺少完成任务所需的关键信息时才调用，有把握时不调用；检索次数有限，预算耗尽后返回 ok=false，请直接基于现有信息完成，不要反复重试。
                 - apply_patch：对已有文本文件精确应用统一 Diff，参数 {"path": "相对路径", "expectedHash": "read_file 返回的 64 位十六进制 sha256", "patch": "统一 Diff 文本"}；expectedHash 必须来自同一次 read_file。
                 - write_file：创建新文件，参数 {"path": "相对路径", "content": "文件内容"}；目标文件已存在时会被拒绝，改用 apply_patch。
 

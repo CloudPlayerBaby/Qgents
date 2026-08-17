@@ -24,6 +24,14 @@ public class AgentInput {
     private UUID projectId;
     private UUID taskId;
     /**
+     * 任务发起人用户 ID（通常为 Task.createdBy）；供运行时检索工具在服务端按此身份校验项目成员。
+     */
+    private UUID actorId;
+    /**
+     * 需求群 ID，供运行时检索工具在微信群消息范围内补取信息；可允许为空（退化为项目全量消息）。
+     */
+    private UUID requirementGroupId;
+    /**
      * 本次正式执行对应的 TaskRun；PLAN bootstrap 时为 null。
      */
     private UUID taskRunId;
