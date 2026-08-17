@@ -81,12 +81,6 @@ public interface EventMapper extends BaseMapper<EventEntity> {
                                     @Param("fragments") List<String> fragments, @Param("limit") int limit);
 
     /**
-     * 删除指定项目早于 cutoff 的过期事件（发布时顺带清理）。
-     */
-    @Delete("DELETE FROM events WHERE project_id = #{projectId} AND created_at < #{cutoff}")
-    int deleteBefore(@Param("projectId") UUID projectId, @Param("cutoff") LocalDateTime cutoff);
-
-    /**
      * 删除全部早于 cutoff 的过期事件（每日定时清理）。
      */
     @Delete("DELETE FROM events WHERE created_at < #{cutoff}")

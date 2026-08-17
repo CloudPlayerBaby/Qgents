@@ -88,7 +88,10 @@ public class EventService {
     /**
      * 发布一条项目级事件并持久化。
      * 事件以项目内单调递增的 sequenceNo 排序，作为 SSE 游标；payload 必须为已脱敏内容，
-     * 禁止包含 Token、密码、私钥等敏感信息。发布时顺带清理本项目 24 小时前的过期事件。
+     * 禁止包含 Token、密码、私钥等敏感信息。
+     * <p>
+     * 事件保留清理由独立的定时任务处理，不能放在调用方的业务事务中。否则清理 SQL 的死锁会
+     * 回滚 TaskRun、TaskStep 等关键业务写入，造成任务状态与运行记录不一致。
      *
      * @param projectId  所属项目ID（调用方应已校验项目成员身份）
      * @param groupId    可选关联需求群ID，可为 null
@@ -109,12 +112,6 @@ public class EventService {
         event.setPayload(payload);
         event.setCreatedAt(now);
         eventMapper.insert(event);
-        try {
-            eventMapper.deleteBefore(projectId, now.minusHours(RETENTION_HOURS));
-        } catch (Exception e) {
-            // 清理失败不影响事件发布，留待每日定时任务兜底
-            log.warn("event cleanup skipped: {}", e.getMessage());
-        }
     }
 
     /**
@@ -369,7 +366,8 @@ public class EventService {
     }
 
     /**
-     * 每日清理全库 24 小时前的过期事件，兜底发布时的顺带清理。
+     * 每日清理全库 24 小时前的过期事件。清理不参与事件发布所在的业务事务，避免清理死锁
+     * 回滚 TaskRun、TaskStep 等关键状态写入。
      * 依赖 Qgents 全局 {@code @EnableScheduling} 生效。
      */
     @Scheduled(cron = "0 15 3 * * *")
