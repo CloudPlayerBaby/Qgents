@@ -112,6 +112,7 @@ public class ReviewPromptBuilder {
         sb.append("\n\n工作区文件树：\n").append(renderTree(files));
         sb.append("\n\nGit Diff（base ").append(diff.baseCommit()).append(" → head ").append(diff.headCommit()).append("）：\n")
                 .append(nullToBlank(diff.diff()));
+        sb.append(ContextPromptRenderer.render(input));
         return sb.toString();
     }
 

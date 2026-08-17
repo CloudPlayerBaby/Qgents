@@ -57,6 +57,7 @@ public class TestPromptBuilder {
         sb.append("\n真实 exit code：").append(exec.exitCode());
         sb.append("\n--- stdout ---\n").append(nullToBlank(exec.stdout()));
         sb.append("\n--- stderr ---\n").append(nullToBlank(exec.stderr()));
+        sb.append(ContextPromptRenderer.render(input));
         return sb.toString();
     }
 

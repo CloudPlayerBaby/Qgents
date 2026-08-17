@@ -99,6 +99,7 @@ public class CodingPromptBuilder {
         }
         appendTestResult(sb, input.getTestResult());
         sb.append("\n\n工作区文件树：\n").append(renderTree(files));
+        sb.append(ContextPromptRenderer.render(input));
         return sb.toString();
     }
 

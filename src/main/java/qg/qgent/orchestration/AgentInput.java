@@ -1,31 +1,48 @@
 package qg.qgent.orchestration;
 
 import lombok.Data;
+import qg.qgent.dto.ContextMemory;
+import qg.qgent.dto.ContextMessage;
+import qg.qgent.dto.ContextSkill;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
- * Agent 的结构化输入：任务上下文 + 本相位步骤 + 循环反馈。
- * PLAN 阶段（方案 B）不创建 TaskRun，taskRunId/taskStepId 为 null。
+ * Agent 的结构化输入：任务上下文 + 本 step 步骤 + 循环反馈 + 群聊/Skill/Memory 上下文。
+ * P0 起 PLAN 为正式 step（建 TaskRun），凡被执行的 step 均有 TaskRun，taskRunId/taskStepId 恒填充。
+ * <p>
+ * 群聊/Skill/Memory 上下文来自 {@code ContextService.buildForGroup}（后端4 已按用户+项目过滤），
+ * 由 {@link AgentContextAssembler} 在每次 orchestrate 时快照一次注入；缺失时为空列表，属补充信息，
+ * 不替代 taskTitle/requirement 核心需求。
  */
 @Data
 public class AgentInput {
     private UUID projectId;
     private UUID taskId;
     /**
-     * 本相位对应的 TaskRun，PLAN 阶段为 null。
+     * 本 step 对应的 TaskRun（P0 起 PLAN 亦建 TaskRun，执行时恒填充）。
      */
     private UUID taskRunId;
     /**
-     * 本相位对应的 TaskStep，PLAN 阶段为 null。
+     * 本 step 对应的 TaskStep（执行时恒填充）。
      */
     private UUID taskStepId;
     private OrchestrationPhase phase;
     private String taskTitle;
     private String requirement;
+    /**
+     * 需求群标题（需求名称，来自 GroupContext.requirementTitle）；可能与 taskTitle 不同，保留群级称谓。
+     */
+    private String requirementTitle;
+    /**
+     * 需求群背景说明（来自 GroupContext.requirementDescription），比 task.requirement 更完整的讨论背景；
+     * 可为 null/空，属补充信息，不替代 requirement 核心需求。
+     */
+    private String requirementDescription;
     /**
      * 步骤指令或 PLAN 输入。
      */
@@ -54,4 +71,16 @@ public class AgentInput {
      * Test Agent 产出的结构化结果；仅 REVIEWING 相位或质量修复后的重试 Coding 非空。
      */
     private TestResult testResult;
+    /**
+     * 需求群近期消息（旧→新，默认 50 条），供 Agent 理解群聊讨论脉络；可为空列表。
+     */
+    private List<ContextMessage> conversation;
+    /**
+     * 项目已发布 Skill（编码规范/操作指引），供 Agent 遵循团队约定；可为空列表。
+     */
+    private List<ContextSkill> skills;
+    /**
+     * 项目已批准 Memory（架构约定/历史决策），供 Agent 复用确认知识；可为空列表。
+     */
+    private List<ContextMemory> memories;
 }

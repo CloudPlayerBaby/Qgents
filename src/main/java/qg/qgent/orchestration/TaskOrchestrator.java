@@ -1,15 +1,15 @@
 package qg.qgent.orchestration;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import org.bsc.langgraph4j.*;
-import org.bsc.langgraph4j.action.AsyncEdgeAction;
-import org.bsc.langgraph4j.action.AsyncNodeAction;
-import org.bsc.langgraph4j.state.AgentState;
+import org.bsc.langgraph4j.CompiledGraph;
+import org.bsc.langgraph4j.GraphDefinition;
+import org.bsc.langgraph4j.StateGraph;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
+import qg.qgent.dto.GroupContext;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.dto.TaskRepositoryScopeRequest;
 import qg.qgent.dto.TaskStepCreateRequest;
@@ -32,28 +32,28 @@ import java.util.concurrent.ConcurrentHashMap;
  * SUCCESS/FAILED/CANCELLED 的完整链路。不调用 LLM，只负责状态判断、Agent 调度、
  * TaskRun 生命周期、结果路由、Test/Review 失败后的 Coding 重试、循环上限与基础设施重试。
  * <p>
- * 编排图含 plan/coding/test/review 四个节点，节点间用条件边路由：每个节点执行后依据
- * {@link OrchestrationStateMachine#decide} 的决策在图中推进（ADVANCE）、同相位重试
- * （RETRY_PHASE）、回 Coding 修复（REQUEUE_CODING）或进入终态（END）。
+ * 编排图由 {@link WorkflowGraphBuilder} 按任务的步骤列表**数据驱动构建**：每个 TaskStep 一个
+ * 节点（PLANNER 提升为带 TaskRun 的正式 step），节点执行 {@link #runStepNode}——建 TaskRun、
+ * 经 {@link AgentRegistry} 解析 Agent（自定义 Agent 或内置兜底）执行、落产物、依据
+ * {@link OrchestrationStateMachine#decide} 的决策在图中推进（next/retry/requeue/END）。
  * <p>
- * 序列化边界：LangGraph4j 默认状态序列化走 Java ObjectStream，而 {@link AgentState}
+ * 序列化边界：LangGraph4j 默认状态序列化走 Java ObjectStream，而 {@code AgentState}
  * 不实现 Serializable，因此图状态只承载可序列化基本值（projectId/taskId 用于定位执行
  * 现场、route 用于条件边路由）；富结果、循环反馈与计数放进程内 {@link TaskExecutionContext}，
  * 按 taskId 暂存，一次 orchestrate 结束后清理。
- * <p>
- * Phase 1 约束（方案 B）：PLAN 相位不创建 TaskRun（task_runs.task_step_id NOT NULL，
- * 计划产出前没有步骤可挂），由本类内联执行 Plan Agent 并把 PlanResult 经 TaskService.addSteps
- * 落为 DEVELOPER/TESTER/REVIEWER 三个步骤；CODING/TESTING/REVIEWING 各创建真实 TaskRun。
  */
 @Service
 public class TaskOrchestrator {
     private static final Set<String> STARTABLE_TASK_STATUSES = Set.of("PLANNING", "PENDING", "RUNNING");
+
     /**
-     * 条件边路由：route 值 → 下一节点名；终态路由到 {@link GraphDefinition#END}。
+     * 模板步骤的通用指令（PLANNER 产出计划后回填 DEVELOPER/TESTER 指令；
+     * 已回填或用户自写的指令不再覆盖）。
      */
-    private static final Map<String, String> ROUTES = Map.of(
-            "plan", "plan", "coding", "coding", "test", "test", "review", "review",
-            GraphDefinition.END, GraphDefinition.END);
+    private static final String TEMPLATE_PLANNER_INSTRUCTION = "分析需求并制定实现计划";
+    private static final String TEMPLATE_DEVELOPER_INSTRUCTION = "实现任务需求：读取相关代码、按需修改工作区文件，并完成自检";
+    private static final String TEMPLATE_TESTER_INSTRUCTION = "运行测试并判定是否满足验收";
+    private static final String TEMPLATE_REVIEWER_INSTRUCTION = "审查本次改动是否符合需求、质量与安全要求";
 
     private static final Logger log = LoggerFactory.getLogger(TaskOrchestrator.class);
     /**
@@ -62,8 +62,8 @@ public class TaskOrchestrator {
     private static final String WAITING_DIFF_CONFIRMATION = "WAITING_DIFF_CONFIRMATION";
 
     private final OrchestrationStateMachine stateMachine;
-    private final StepScheduler stepScheduler;
-    private final AgentRunExecutor agentRunExecutor;
+    private final WorkflowGraphBuilder workflowGraphBuilder;
+    private final AgentRegistry agentRegistry;
     private final AgentContextAssembler contextAssembler;
     private final TaskService taskService;
     private final TaskRunService taskRunService;
@@ -84,18 +84,16 @@ public class TaskOrchestrator {
      */
     private final Map<UUID, TaskExecutionContext> executions = new ConcurrentHashMap<>();
 
-    private final CompiledGraph<TaskOrchestrationState> graph;
-
-    public TaskOrchestrator(OrchestrationStateMachine stateMachine, StepScheduler stepScheduler,
-                            AgentRunExecutor agentRunExecutor, AgentContextAssembler contextAssembler, TaskService taskService,
+    public TaskOrchestrator(OrchestrationStateMachine stateMachine, WorkflowGraphBuilder workflowGraphBuilder,
+                            AgentRegistry agentRegistry, AgentContextAssembler contextAssembler, TaskService taskService,
                             TaskRunService taskRunService, TaskMapper taskMapper, TaskStepMapper stepMapper,
                             WorkspaceRepositoryMapper workspaceRepositoryMapper, EventService eventService,
                             NotificationService notificationService, SandboxSessionManager sandboxSessionManager,
                             TaskExecutionArtifactService artifactService, FinalDiffBundleService finalDiffBundles,
                             MessageService messageService, AgentMapper agentMapper, ProjectMapper projectMapper) {
         this.stateMachine = stateMachine;
-        this.stepScheduler = stepScheduler;
-        this.agentRunExecutor = agentRunExecutor;
+        this.workflowGraphBuilder = workflowGraphBuilder;
+        this.agentRegistry = agentRegistry;
         this.contextAssembler = contextAssembler;
         this.taskService = taskService;
         this.taskRunService = taskRunService;
@@ -110,12 +108,12 @@ public class TaskOrchestrator {
         this.messageService = messageService;
         this.agentMapper = agentMapper;
         this.projectMapper = projectMapper;
-        this.graph = buildGraph();
     }
 
     /**
-     * 同步驱动一个 Task 的完整编排链路：从 START 进入 plan 节点并沿条件边执行，
-     * 直到任一节点决策到达终态（END）。整条链路同步跑完。
+     * 同步驱动一个 Task 的完整编排链路：先确保步骤就位（模板 + 用户配置合并，resolveAgent
+     * 落 assignedAgentId），再按步骤数据驱动建图并沿条件边执行，直到任一节点决策到达终态
+     * （END）。整条链路同步跑完。
      * <p>
      * 入口为整条链路准备一次 Sandbox 会话（Worker 端口启用时），并在终态后释放；
      * 未启用 Worker 时会话管理器为 no-op，不影响本地端口链路。
@@ -131,6 +129,12 @@ public class TaskOrchestrator {
         executions.put(taskId, ctx);
         try {
             sandboxSessionManager.acquire(task.getId(), task.getProjectId(), task.getWorkspaceId());
+            List<TaskStepEntity> steps = ensureSteps(task);
+            ctx.steps = steps;
+            // 群聊/Skill/Memory 上下文快照：一次 orchestrate 组装一次，跨节点复用（失败不阻断）
+            ctx.groupContext = contextAssembler.buildGroupContext(task);
+            CompiledGraph<TaskOrchestrationState> graph = workflowGraphBuilder.build(steps,
+                    (step, state) -> runStepNode(step, state), developerNodeId(steps));
             graph.invoke(Map.of("projectId", projectId.toString(), "taskId", taskId.toString()));
         } finally {
             sandboxSessionManager.release(task.getWorkspaceId());
@@ -139,46 +143,137 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 构建 plan/coding/test/review 四节点 + 条件边路由的编排图。
+     * 确保任务步骤就位（幂等，只补缺不重复创建）：任务无步骤时按模板创建
+     * [PLANNER, DEVELOPER, TESTER, REVIEWER]；已有步骤时保留用户步骤与 assignedAgentId，
+     * 仅补缺——缺 PLANNER 则补建（恒在首位）、缺 DEVELOPER 则补建（requeue 目标必须存在），
+     * 用户步骤缺失 TESTER/REVIEWER 视为用户选择。返回按执行顺序排列的步骤。
      */
-    private CompiledGraph<TaskOrchestrationState> buildGraph() {
-        try {
-            StateGraph<TaskOrchestrationState> g = new StateGraph<>(TaskOrchestrationState::new);
-            g.addNode("plan", AsyncNodeAction.node_async(
-                    (TaskOrchestrationState s) -> runPhaseNode(OrchestrationPhase.PLAN, s)));
-            g.addNode("coding", AsyncNodeAction.node_async(
-                    (TaskOrchestrationState s) -> runPhaseNode(OrchestrationPhase.CODING, s)));
-            g.addNode("test", AsyncNodeAction.node_async(
-                    (TaskOrchestrationState s) -> runPhaseNode(OrchestrationPhase.TESTING, s)));
-            g.addNode("review", AsyncNodeAction.node_async(
-                    (TaskOrchestrationState s) -> runPhaseNode(OrchestrationPhase.REVIEWING, s)));
-            AsyncEdgeAction<TaskOrchestrationState> route = AsyncEdgeAction.edge_async(
-                    (TaskOrchestrationState s) -> s.<String>value("route").orElse(GraphDefinition.END));
-            for (String node : List.of("plan", "coding", "test", "review")) {
-                g.addConditionalEdges(node, route, ROUTES);
-            }
-            g.addEdge(GraphDefinition.START, "plan");
-            // 循环上限远高于状态机自身的质量/基础设施重试上限，避免框架先于业务计数终止。
-            return g.compile(CompileConfig.builder().recursionLimit(64).build());
-        } catch (GraphStateException e) {
-            // 图结构错误属于编程错误（节点/边名不匹配），包装为运行时异常，不改变构造器签名。
-            throw new IllegalStateException("failed to build orchestration graph", e);
+    private List<TaskStepEntity> ensureSteps(TaskEntity task) {
+        List<TaskStepEntity> existing = loadSteps(task.getId());
+        if (existing.isEmpty()) {
+            createTemplateSteps(task);
+            return normalizeSteps(task, loadSteps(task.getId()));
         }
+        List<TaskStepCreateRequest> toAdd = new ArrayList<>();
+        if (findByRole(existing, "PLANNER") == null) {
+            toAdd.add(gapStep(task, "PLANNER", "Plan", TEMPLATE_PLANNER_INSTRUCTION, "READ"));
+        }
+        if (findByRole(existing, "DEVELOPER") == null) {
+            toAdd.add(gapStep(task, "DEVELOPER", "Implement", TEMPLATE_DEVELOPER_INSTRUCTION, "WRITE"));
+        }
+        if (!toAdd.isEmpty()) {
+            taskService.addSteps(task.getProjectId(), task.getId(), task.getCreatedBy(), toAdd);
+        }
+        return normalizeSteps(task, loadSteps(task.getId()));
     }
 
     /**
-     * 执行一个编排节点：PLAN 内联执行（无 TaskRun），其余相位创建 TaskRun 并推进，
-     * 依据状态机决策在图中路由下一步，返回仅含可序列化基本值的图状态。
+     * 无步骤任务：一次性创建模板四步（依赖链 PLANNER→DEVELOPER→TESTER→REVIEWER，
+     * 仓库 scope DEVELOPER=WRITE、其余 READ），resolveAgent 在落库时定型 assignedAgentId。
      */
-    private Map<String, Object> runPhaseNode(OrchestrationPhase phase, TaskOrchestrationState state) {
+    private void createTemplateSteps(TaskEntity task) {
+        List<UUID> repoIds = repositoryIds(task);
+        UUID plannerId = UuidV7.next();
+        UUID devId = UuidV7.next();
+        UUID testId = UuidV7.next();
+        UUID reviewId = UuidV7.next();
+        List<TaskStepCreateRequest> requests = List.of(
+                planStep(plannerId, "Plan", TEMPLATE_PLANNER_INSTRUCTION, "PLANNER", resolveAgent(task, "PLANNER"),
+                        List.of(), "READ", repoIds),
+                planStep(devId, "Implement", TEMPLATE_DEVELOPER_INSTRUCTION, "DEVELOPER",
+                        resolveAgent(task, "DEVELOPER"), List.of(plannerId), "WRITE", repoIds),
+                planStep(testId, "Verify", TEMPLATE_TESTER_INSTRUCTION, "TESTER", resolveAgent(task, "TESTER"),
+                        List.of(devId), "READ", repoIds),
+                planStep(reviewId, "Review", TEMPLATE_REVIEWER_INSTRUCTION, "REVIEWER",
+                        resolveAgent(task, "REVIEWER"), List.of(testId), "READ", repoIds));
+        taskService.addSteps(task.getProjectId(), task.getId(), task.getCreatedBy(), requests);
+    }
+
+    /**
+     * 已有步骤的补缺单步（PLANNER/DEVELOPER），仓库 scope 按角色（PLANNER=READ，DEVELOPER=WRITE）。
+     */
+    private TaskStepCreateRequest gapStep(TaskEntity task, String role, String title, String instruction,
+                                          String accessMode) {
+        return planStep(UuidV7.next(), title, instruction, role, resolveAgent(task, role), List.of(), accessMode,
+                repositoryIds(task));
+    }
+
+    /**
+     * 步骤排序归一：PLANNER 恒在首位（fill-gap 补建的 PLANNER 在 DB 中 sequenceNo 靠后），
+     * 其余按 sequenceNo 升序；随后把 DB sequenceNo 重排为 1..N，使 UI 展示与图执行顺序一致。
+     */
+    private List<TaskStepEntity> normalizeSteps(TaskEntity task, List<TaskStepEntity> steps) {
+        List<TaskStepEntity> ordered = new ArrayList<>(steps);
+        ordered.sort(Comparator
+                .comparingInt((TaskStepEntity step) -> "PLANNER".equals(step.getRole()) ? 0 : 1)
+                .thenComparingInt(step -> step.getSequenceNo() == null ? Integer.MAX_VALUE : step.getSequenceNo()));
+        renumberSequences(task, ordered);
+        return ordered;
+    }
+
+    private void renumberSequences(TaskEntity task, List<TaskStepEntity> ordered) {
+        int seq = 1;
+        for (TaskStepEntity step : ordered) {
+            Integer current = step.getSequenceNo();
+            if (current != null && current == seq) {
+                seq++;
+                continue;
+            }
+            step.setSequenceNo(seq++);
+            step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+            stepMapper.updateById(step);
+        }
+    }
+
+    private List<TaskStepEntity> loadSteps(UUID taskId) {
+        return stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
+                .eq(TaskStepEntity::getTaskId, taskId)
+                .orderByAsc(TaskStepEntity::getSequenceNo));
+    }
+
+    private TaskStepEntity findByRole(List<TaskStepEntity> steps, String role) {
+        for (TaskStepEntity step : steps) {
+            if (role.equals(step.getRole())) {
+                return step;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 执行一个 step 节点：重查该 step 最新数据（PLANNER 可能回填过指令）→ 解析 Agent →
+     * 建 TaskRun 执行 → 落产物 → 依据状态机决策在图中路由下一步。
+     * 返回仅含可序列化基本值的图状态（projectId/taskId/route）。
+     */
+    private Map<String, Object> runStepNode(TaskStepEntity stepTemplate, TaskOrchestrationState state) {
         TaskExecutionContext ctx = executions.get(state.getTaskId());
         TaskEntity task = ctx.task;
-        PhaseRun result = phase == OrchestrationPhase.PLAN
-                ? new PhaseRun(safeExecute(phase, contextAssembler.assemblePlan(task)), null)
-                : executeStep(task, phase, ctx);
-        AgentRunOutcome outcome = result.outcome;
-        if (result.runId != null) {
-            ctx.lastRunId = result.runId;
+        TaskStepEntity step = stepMapper.selectById(stepTemplate.getId());
+        if (step == null) {
+            log.warn("STEP_MISSING taskId={} stepId={}", task.getId(), stepTemplate.getId());
+            return routeState(state, "next");
+        }
+        OrchestrationPhase phase = stepPhase(step, ctx.steps);
+        Optional<Agent> agent = agentRegistry.resolve(step.getAssignedAgentId(), step.getRole());
+        if (agent.isEmpty()) {
+            log.warn("NO_AGENT step skipped taskId={} stepId={} role={} agentId={}", task.getId(), step.getId(),
+                    step.getRole(), step.getAssignedAgentId());
+            markStepSkipped(task, step);
+            ctx.feedback = null;
+            ctx.retryOf = null;
+            return routeState(state, "next");
+        }
+        markStepRunning(task, step);
+        TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
+                step.getRole(), step.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
+        taskRunService.markRunning(run.getId());
+        AgentInput input = contextAssembler.assemble(task, step, phase, ctx.feedback, run.getId(), ctx.planResult,
+                ctx.codingResult, ctx.testResult, ctx.groupContext);
+        AgentRunOutcome outcome = safeExecute(agent.get(), phase, input);
+        ctx.lastRunId = run.getId();
+        if (phase == OrchestrationPhase.CODING && outcome.getOutcome() == RunOutcome.SUCCEEDED) {
+            ctx.lastCodingRunId = run.getId();
+            ctx.lastCodingAgentId = step.getAssignedAgentId();
         }
         if (phase == OrchestrationPhase.PLAN && outcome.getPlanResult() != null) {
             ctx.planResult = outcome.getPlanResult();
@@ -187,82 +282,115 @@ public class TaskOrchestrator {
         } else if (phase == OrchestrationPhase.TESTING && outcome.getTestResult() != null) {
             ctx.testResult = outcome.getTestResult();
         }
+        // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件（type 用 step.role，修复 PLAN 的 role 为 null）
+        artifactService.createRunArtifact(task, run, step, step.getRole(), runArtifactSummary(step, outcome));
+        taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()));
+        markStepSettled(task, step, outcome.getOutcome());
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
         String route;
         switch (decision.getAction()) {
             case ADVANCE -> {
-                if (phase == OrchestrationPhase.PLAN) {
-                    persistPlanSteps(task, outcome.getPlanResult());
+                if (phase == OrchestrationPhase.PLAN && outcome.getPlanResult() != null) {
+                    backfillPlanSteps(task, outcome.getPlanResult());
                     updateTaskStatus(task, "RUNNING");
                 }
                 ctx.feedback = null;
                 ctx.retryOf = null;
-                route = nodeName(decision.getNextPhase());
+                route = "next";
             }
             case REQUEUE_CODING -> {
                 ctx.feedback = outcome;
                 ctx.retryOf = ctx.lastRunId;
-                route = nodeName(decision.getNextPhase());
+                route = "requeue";
             }
             case RETRY_PHASE -> {
                 ctx.feedback = null;
                 ctx.retryOf = ctx.lastRunId;
-                route = nodeName(decision.getNextPhase());
+                route = "retry";
             }
             default -> {
                 finishTask(task, ctx, decision.getAction());
                 route = GraphDefinition.END;
             }
         }
-        return Map.of("projectId", projectId(task), "taskId", taskId(task), "route", route);
+        return routeState(state, route);
     }
 
     /**
-     * 执行 CODING/TESTING/REVIEWING 相位：定位步骤、创建 TaskRun、执行并落终态。
+     * step 角色 → 编排相位；自定义角色按序列位置推断：REVIEWER 步骤之前 → TESTING，
+     * 之后/无 REVIEWER → REVIEWING（专项检查的失败语义挂测试或审查环节）。
      */
-    private PhaseRun executeStep(TaskEntity task, OrchestrationPhase phase, TaskExecutionContext ctx) {
-        TaskStepEntity step = stepScheduler.findStepForPhase(task.getId(), phase);
-        markStepRunning(task, step);
-        TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
-                phase.role(), step.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
-        taskRunService.markRunning(run.getId());
-        AgentInput input = contextAssembler.assemble(task, step, phase, ctx.feedback, run.getId(), ctx.planResult,
-                ctx.codingResult, ctx.testResult);
-        AgentRunOutcome outcome = safeExecute(phase, input);
-        if (phase == OrchestrationPhase.CODING && outcome.getOutcome() == RunOutcome.SUCCEEDED) {
-            ctx.lastCodingRunId = run.getId();
-            ctx.lastCodingAgentId = step.getAssignedAgentId();
-        }
-        // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件
-        artifactService.createRunArtifact(task, run, step, phase.name(), runArtifactSummary(phase, outcome));
-        taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()));
-        markStepSettled(task, step, outcome.getOutcome());
-        return new PhaseRun(outcome, run.getId());
-    }
-
-    private String projectId(TaskEntity task) {
-        return task.getProjectId().toString();
-    }
-
-    private String taskId(TaskEntity task) {
-        return task.getId().toString();
-    }
-
-    private String nodeName(OrchestrationPhase phase) {
-        return switch (phase) {
-            case PLAN -> "plan";
-            case CODING -> "coding";
-            case TESTING -> "test";
-            case REVIEWING -> "review";
+    private OrchestrationPhase stepPhase(TaskStepEntity step, List<TaskStepEntity> orderedSteps) {
+        String role = step.getRole();
+        return switch (role == null ? "" : role) {
+            case "PLANNER" -> OrchestrationPhase.PLAN;
+            case "DEVELOPER" -> OrchestrationPhase.CODING;
+            case "TESTER" -> OrchestrationPhase.TESTING;
+            case "REVIEWER" -> OrchestrationPhase.REVIEWING;
+            default -> inferCustomPhase(step, orderedSteps);
         };
+    }
+
+    private OrchestrationPhase inferCustomPhase(TaskStepEntity step, List<TaskStepEntity> orderedSteps) {
+        int reviewIndex = indexOfRole(orderedSteps, "REVIEWER");
+        if (reviewIndex < 0) {
+            return OrchestrationPhase.REVIEWING;
+        }
+        int stepIndex = indexOfStep(orderedSteps, step);
+        return stepIndex >= 0 && stepIndex < reviewIndex ? OrchestrationPhase.TESTING : OrchestrationPhase.REVIEWING;
+    }
+
+    private int indexOfRole(List<TaskStepEntity> steps, String role) {
+        for (int i = 0; i < steps.size(); i++) {
+            if (role.equals(steps.get(i).getRole())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int indexOfStep(List<TaskStepEntity> steps, TaskStepEntity step) {
+        for (int i = 0; i < steps.size(); i++) {
+            if (steps.get(i).getId().equals(step.getId())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * PLANNER 成功后回填模板步骤指令并落 plan 产物：仅覆盖仍为模板通用指令的
+     * DEVELOPER/TESTER 步骤（用户自写的指令不覆盖），TESTER 回填计划中的测试计划。
+     */
+    private void backfillPlanSteps(TaskEntity task, PlanResult plan) {
+        for (TaskStepEntity step : loadSteps(task.getId())) {
+            if ("DEVELOPER".equals(step.getRole()) && TEMPLATE_DEVELOPER_INSTRUCTION.equals(step.getInstruction())) {
+                step.setInstruction(planInstruction(plan));
+                step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+                stepMapper.updateById(step);
+            } else if ("TESTER".equals(step.getRole()) && TEMPLATE_TESTER_INSTRUCTION.equals(step.getInstruction())) {
+                if (plan.getTestPlan() != null && !plan.getTestPlan().isBlank()) {
+                    step.setInstruction(plan.getTestPlan());
+                    step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+                    stepMapper.updateById(step);
+                }
+            }
+        }
+        // PLAN 产物只属于 Task，不关联 TaskRun/TaskStep（AGENTS.md）
+        artifactService.createPlan(task, planSummary(plan));
+    }
+
+    private Map<String, Object> routeState(TaskOrchestrationState state, String route) {
+        return Map.of("projectId", state.getProjectId().toString(), "taskId", state.getTaskId().toString(),
+                "route", route);
     }
 
     /**
      * Agent 抛异常统一按基础设施失败处理，避免异常破坏状态机推进。
      */
-    private AgentRunOutcome safeExecute(OrchestrationPhase phase, AgentInput input) {
+    private AgentRunOutcome safeExecute(Agent agent, OrchestrationPhase phase, AgentInput input) {
         try {
-            return agentRunExecutor.execute(phase, input);
+            return agent.run(input);
         } catch (RuntimeException e) {
             AgentRunOutcome failure = new AgentRunOutcome();
             failure.setPhase(phase);
@@ -285,9 +413,9 @@ public class TaskOrchestrator {
      * {@link LlmObservation#toSummary()} 序列化为脱敏 Map（仅 phase/round/字符数/结束原因/
      * 工具名/错误码/sha256），路径与敏感键由服务端 sanitize 兜底。
      */
-    private Map<String, Object> runArtifactSummary(OrchestrationPhase phase, AgentRunOutcome outcome) {
+    private Map<String, Object> runArtifactSummary(TaskStepEntity step, AgentRunOutcome outcome) {
         Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("role", phase.role());
+        summary.put("role", step.getRole());
         summary.put("status", terminalStatus(outcome.getOutcome()));
         summary.put("message", outcome.getMessage());
         if (outcome.getObservations() != null && !outcome.getObservations().isEmpty()) {
@@ -300,30 +428,9 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 把 PlanResult 落为 DEVELOPER → TESTER → REVIEWER 三个依赖链步骤，并按角色分配团队内 ACTIVE Agent。
-     */
-    private void persistPlanSteps(TaskEntity task, PlanResult plan) {
-        List<UUID> repoIds = workspaceRepositoryMapper.selectByWorkspace(task.getWorkspaceId()).stream()
-                .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
-        UUID devId = UuidV7.next();
-        UUID testId = UuidV7.next();
-        UUID reviewId = UuidV7.next();
-        List<TaskStepCreateRequest> requests = List.of(
-                planStep(devId, "Implement", planInstruction(plan), "DEVELOPER", resolveAgent(task, "DEVELOPER"),
-                        List.of(), "WRITE", repoIds),
-                planStep(testId, "Verify", plan.getTestPlan(), "TESTER", resolveAgent(task, "TESTER"),
-                        List.of(devId), "READ", repoIds),
-                planStep(reviewId, "Review", "审查本次改动是否符合需求、质量与安全要求", "REVIEWER",
-                        resolveAgent(task, "REVIEWER"), List.of(testId), "READ", repoIds));
-        taskService.addSteps(task.getProjectId(), task.getId(), task.getCreatedBy(), requests);
-        // PLAN 产物只属于 Task，不关联 TaskRun/TaskStep（AGENTS.md）
-        artifactService.createPlan(task, planSummary(plan));
-    }
-
-    /**
-     * 方案 A：按角色在团队内解析 ACTIVE Agent（优先 TEAM 可见；PRIVATE 仅限任务发起人，与
-     * TaskService.validateAgent 的校验条件一致），按名称升序取第一个；查不到时返回 null，
-     * 该步骤不回群（兜底约定，不使任务失败）。
+     * 方案 A + 优先级：按角色在团队内解析 ACTIVE Agent——创建者本人的 PRIVATE Agent 优先于
+     * TEAM Agent（体现「个人变体覆盖团队默认」），同组按名称升序取第一个；查不到返回 null，
+     * 该步骤内置兜底或跳过（不使任务失败）。与 TaskService.validateAgent 的授权条件一致。
      */
     private UUID resolveAgent(TaskEntity task, String role) {
         ProjectEntity project = projectMapper.selectById(task.getProjectId());
@@ -336,9 +443,13 @@ public class TaskOrchestrator {
                 .eq(AgentEntity::getStatus, "ACTIVE")
                 .and(visibility -> visibility.eq(AgentEntity::getVisibility, "TEAM")
                         .or(owner -> owner.eq(AgentEntity::getVisibility, "PRIVATE")
-                                .eq(AgentEntity::getCreatedBy, task.getCreatedBy())))
-                .orderByAsc(AgentEntity::getName));
-        return candidates.isEmpty() ? null : candidates.get(0).getId();
+                                .eq(AgentEntity::getCreatedBy, task.getCreatedBy()))));
+        return candidates.stream()
+                .sorted(Comparator.comparingInt((AgentEntity agent) -> "PRIVATE".equals(agent.getVisibility()) ? 0 : 1)
+                        .thenComparing(AgentEntity::getName, Comparator.nullsLast(String::compareTo)))
+                .map(AgentEntity::getId)
+                .findFirst()
+                .orElse(null);
     }
 
     private TaskStepCreateRequest planStep(UUID id, String title, String instruction, String role, UUID agentId,
@@ -358,6 +469,11 @@ public class TaskOrchestrator {
             return scope;
         }).toList());
         return request;
+    }
+
+    private List<UUID> repositoryIds(TaskEntity task) {
+        return workspaceRepositoryMapper.selectByWorkspace(task.getWorkspaceId()).stream()
+                .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
     }
 
     /**
@@ -386,8 +502,24 @@ public class TaskOrchestrator {
         return sb.toString();
     }
 
+    private String developerNodeId(List<TaskStepEntity> steps) {
+        for (TaskStepEntity step : steps) {
+            if ("DEVELOPER".equals(step.getRole())) {
+                return step.getId().toString();
+            }
+        }
+        return steps.get(0).getId().toString();
+    }
+
     private void markStepRunning(TaskEntity task, TaskStepEntity step) {
         step.setStatus("RUNNING");
+        step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+        stepMapper.updateById(step);
+        publishStepUpdated(task, step);
+    }
+
+    private void markStepSkipped(TaskEntity task, TaskStepEntity step) {
+        step.setStatus("SKIPPED");
         step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         stepMapper.updateById(step);
         publishStepUpdated(task, step);
@@ -516,6 +648,7 @@ public class TaskOrchestrator {
      */
     private String roleLabel(String role) {
         return switch (role) {
+            case "PLANNER" -> "计划";
             case "DEVELOPER" -> "开发";
             case "TESTER" -> "测试";
             case "REVIEWER" -> "审查";
@@ -565,37 +698,13 @@ public class TaskOrchestrator {
     }
 
     /**
-         * 一次相位执行的产物：Agent 结果 + 对应 TaskRun（PLAN 为 null）。
-         */
-        private record PhaseRun(AgentRunOutcome outcome, UUID runId) {
-    }
-
-    /**
-     * StateGraph 节点间传递的图状态视图。LangGraph4j 默认状态序列化走 Java ObjectStream，
-     * 且 {@link AgentState} 不实现 Serializable，因此图状态只承载可序列化基本值：
-     * projectId/taskId 用于定位执行现场，route 用于条件边路由。
-     */
-    private static final class TaskOrchestrationState extends AgentState {
-        private TaskOrchestrationState(Map<String, Object> data) {
-            super(data);
-        }
-
-        private UUID getProjectId() {
-            return UUID.fromString(this.<String>value("projectId").orElse(""));
-        }
-
-        private UUID getTaskId() {
-            return UUID.fromString(this.<String>value("taskId").orElse(""));
-        }
-    }
-
-    /**
-     * 一次 orchestrate 会话内的执行现场：跨节点传递的富结果、循环反馈、最近 TaskRun
-     * 与循环计数。与图状态解耦，仅在进程内按 taskId 暂存，invoke 结束后由 orchestrate 清理。
+     * 一次 orchestrate 会话内的执行现场：跨节点传递的富结果、循环反馈、最近 TaskRun、
+     * 有序步骤与循环计数。与图状态解耦，仅在进程内按 taskId 暂存，invoke 结束后由 orchestrate 清理。
      */
     private static final class TaskExecutionContext {
         private final TaskEntity task;
         private final OrchestrationCounters counters = new OrchestrationCounters();
+        private List<TaskStepEntity> steps;
         private AgentRunOutcome feedback;
         private UUID lastRunId;
         private UUID retryOf;
@@ -610,6 +719,10 @@ public class TaskOrchestrator {
         private PlanResult planResult;
         private CodingResult codingResult;
         private TestResult testResult;
+        /**
+         * 本次 orchestrate 快照的群聊/Skill/Memory 上下文，跨节点复用；组装失败时为 null（不阻断）。
+         */
+        private GroupContext groupContext;
 
         private TaskExecutionContext(TaskEntity task) {
             this.task = task;
