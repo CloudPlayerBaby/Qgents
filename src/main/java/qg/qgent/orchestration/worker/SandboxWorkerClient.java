@@ -3,6 +3,7 @@ package qg.qgent.orchestration.worker;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
@@ -113,10 +114,15 @@ public class SandboxWorkerClient {
 
     /**
      * 生成包含未跟踪文件的完整 Diff。
+     * <p>
+     * Worker 端点声明了 {@code @RequestBody}（暂无参数）；无 Content-Type 的 POST 会被
+     * Spring 按 octet-stream 处理并返回 415，因此这里显式发送空 JSON。
      */
     public WorkerGitDiff createWorkspaceGitDiff(UUID workspaceId, UUID repositoryId) {
         return execute(() -> client.post()
                 .uri(GIT_DIFF, workspaceId, repositoryId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(java.util.Map.of())
                 .retrieve()
                 .body(WorkerGitDiff.class));
     }
