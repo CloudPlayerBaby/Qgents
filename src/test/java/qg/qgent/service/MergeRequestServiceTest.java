@@ -188,6 +188,45 @@ class MergeRequestServiceTest {
     }
 
     @Test
+    void createIsBlockedByPreflightBeforeAnyGithubCall() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        MergeRequestCreateRequest request = new MergeRequestCreateRequest();
+        request.setTaskId(UUID.randomUUID());
+        request.setRepositoryId(repositoryId);
+        request.setTargetBranch("main");
+        request.setTitle("blocked");
+
+        PreflightGateService preflight = mock(PreflightGateService.class);
+        service.setPreflightGates(preflight);
+        when(preflight.resolveTargetCommit(projectId, repositoryId, "main")).thenReturn("target-commit");
+
+        TaskEntity task = new TaskEntity();
+        task.setId(request.getTaskId());
+        task.setProjectId(projectId);
+        task.setCreatedBy(userId);
+        task.setWorkspaceId(UUID.randomUUID());
+        task.setDeliveryMode("DIFF_FIRST");
+        when(taskMapper.selectById(task.getId())).thenReturn(task);
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        when(projectRepositoryMapper.selectById(repositoryId)).thenReturn(repository);
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setSourceBranch("feature/blocked");
+        worktree.setHeadCommit("source-commit");
+        when(workspaceRepositoryMapper.selectForUpdate(task.getWorkspaceId(), repositoryId)).thenReturn(worktree);
+        doThrow(new ApiException(org.springframework.http.HttpStatus.CONFLICT, "MR_PREFLIGHT_NOT_PASSED", "blocked"))
+                .when(preflight).requireReady(task, worktree, repositoryId, "main", "target-commit");
+
+        ApiException error = assertThrows(ApiException.class, () -> service.create(projectId, userId, request));
+
+        assertEquals("MR_PREFLIGHT_NOT_PASSED", error.code());
+        verifyNoInteractions(githubClient);
+    }
+
+    @Test
     void createSucceedsEvenWhenMergeabilityPollFails() {
         UUID projectId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();

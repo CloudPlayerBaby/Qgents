@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.*;
+import qg.qgent.service.PreflightGateService;
 import qg.qgent.service.TestRunService;
 
 import java.util.UUID;
@@ -20,9 +21,11 @@ import java.util.UUID;
 @RequestMapping("/api/v1/projects/{projectId}")
 public class TestRunController {
     private final TestRunService testRunService;
+    private final PreflightGateService preflightGates;
 
-    public TestRunController(TestRunService testRunService) {
+    public TestRunController(TestRunService testRunService, PreflightGateService preflightGates) {
         this.testRunService = testRunService;
+        this.preflightGates = preflightGates;
     }
 
     /**
@@ -65,6 +68,36 @@ public class TestRunController {
                                        @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         DryRunReportResponse data = testRunService.dryRunReport(projectId, dryRunId, userId);
         return ok(data, request);
+    }
+
+    /**
+     * 查询当前 Task 仓库提交创建 MR 前的真实门禁快照。
+     */
+    @GetMapping("/tasks/{taskId}/repositories/{repositoryId}/preflight")
+    public ApiResponse<?> preflight(@PathVariable UUID projectId, @PathVariable UUID taskId,
+                                    @PathVariable UUID repositoryId, @RequestParam String targetBranch,
+                                    @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        return ok(preflightGates.get(projectId, taskId, repositoryId, targetBranch, userId), request);
+    }
+
+    /**
+     * 对通过且仍未失效的 Dry Run 提交 MR 前 CQ+1。
+     */
+    @PostMapping("/dry-runs/{dryRunId}/cq-approvals")
+    public ApiResponse<?> preflightCqApproval(@PathVariable UUID projectId, @PathVariable UUID dryRunId,
+                                              @AuthenticationPrincipal UUID userId,
+                                              @Valid @RequestBody(required = false) PreflightCqDecisionRequest body,
+                                              HttpServletRequest request) {
+        return ok(preflightGates.approve(projectId, dryRunId, userId, body == null ? null : body.getReason()), request);
+    }
+
+    /** 拒绝预检 CQ，必须给出修改意见。 */
+    @PostMapping("/dry-runs/{dryRunId}/cq-rejections")
+    public ApiResponse<?> preflightCqRejection(@PathVariable UUID projectId, @PathVariable UUID dryRunId,
+                                               @AuthenticationPrincipal UUID userId,
+                                               @Valid @RequestBody PreflightCqDecisionRequest body,
+                                               HttpServletRequest request) {
+        return ok(preflightGates.reject(projectId, dryRunId, userId, body.getReason()), request);
     }
 
     private ApiResponse<?> ok(Object data, HttpServletRequest request) {

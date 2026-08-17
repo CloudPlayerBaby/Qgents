@@ -29,7 +29,7 @@ public class GlobalExceptionHandler {
         log.warn("API Exception [{}]: {} - {}", request.getRequestURI(), ex.code(), ex.getMessage());
         return ResponseEntity
                 .status(ex.status())
-                .body(error(ex.code(), ex.getMessage(), List.of(), request));
+                .body(error(ex.code(), ex.getMessage(), ex.details(), request));
     }
 
     // 处理请求参数校验异常
