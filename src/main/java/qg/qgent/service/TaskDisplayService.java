@@ -32,7 +32,7 @@ public class TaskDisplayService {
      * 任务终态集合，用于能力派生。
      */
     private static final Set<String> TERMINAL_TASK_STATUSES = Set.of("SUCCEEDED", "FAILED", "DELIVERY_FAILED",
-            "CANCELLED", "CANCELLING");
+            "DIFF_REJECTED", "CANCELLED", "CANCELLING");
     private static final Set<String> CANCELLABLE_TASK_STATUSES = Set.of("PLANNING", "PENDING", "RUNNING");
     private static final Set<String> RUN_WAITING = Set.of("WAITING_INPUT", "WAITING_APPROVAL");
     private static final int DEFAULT_LIMIT = 20;
@@ -336,7 +336,7 @@ public class TaskDisplayService {
 
     /**
      * 按任务状态与最新运行推导待处理事项；无待处理事项返回 null。
-     * batch/batchDiffs 用于 DIFF_CONFIRMATION_REQUIRED/DELIVERY_FAILED 的关联跳转 ID。
+     * batch/batchDiffs 用于 Diff 审核与交付提示的关联跳转 ID。
      */
     private Attention buildAttention(TaskEntity task, List<TaskRunEntity> taskRuns,
                                      Map<UUID, List<InputRequestEntity>> inputByRun,
@@ -344,6 +344,10 @@ public class TaskDisplayService {
         String status = task.getStatus();
         if ("WAITING_DIFF_CONFIRMATION".equals(status)) {
             return new Attention("DIFF_CONFIRMATION_REQUIRED", "等待确认最终 Diff", "已生成多仓库总 Diff，等待确认",
+                    null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
+        }
+        if ("DIFF_REJECTED".equals(status)) {
+            return new Attention("DIFF_REJECTED", "Diff 已拒绝", "Workspace 修改已保留，可回复 Diff 创建续作任务",
                     null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
         }
         if ("DELIVERY_FAILED".equals(status)) {

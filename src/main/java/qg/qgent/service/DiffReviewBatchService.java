@@ -129,6 +129,10 @@ public class DiffReviewBatchService {
                     || !"NOT_STARTED".equals(locked.getDeliveryStatus())) {
                 throw new ApiException(HttpStatus.CONFLICT, "DIFF_REVIEW_NOT_DECIDABLE", "Final Diff is not awaiting review");
             }
+            TaskEntity lockedTask = tasks.selectByIdForUpdate(taskId);
+            if (lockedTask == null || !projectId.equals(lockedTask.getProjectId())) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "Task does not exist or is not visible");
+            }
             LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
             locked.setReviewStatus("REJECTED");
             locked.setReviewReason(reason);
@@ -144,7 +148,12 @@ public class DiffReviewBatchService {
                 diff.setUpdatedAt(now);
                 diffs.updateById(diff);
             }
-            events.publish(projectId, task.getRequirementGroupId(), "diff-review.rejected", locked.getId().toString(),
+            lockedTask.setStatus("DIFF_REJECTED");
+            lockedTask.setUpdatedAt(now);
+            tasks.updateById(lockedTask);
+            events.publish(projectId, lockedTask.getRequirementGroupId(), "task.updated", lockedTask.getId().toString(),
+                    TaskEventPayloads.taskUpdated(lockedTask));
+            events.publish(projectId, lockedTask.getRequirementGroupId(), "diff-review.rejected", locked.getId().toString(),
                     Map.of("projectId", projectId, "taskId", taskId, "reviewBatchId", locked.getId()));
             return locked;
         });

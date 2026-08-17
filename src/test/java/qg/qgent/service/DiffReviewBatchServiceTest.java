@@ -18,6 +18,7 @@ import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class DiffReviewBatchServiceTest {
@@ -65,6 +66,72 @@ class DiffReviewBatchServiceTest {
         assertEquals("MR_CREATED", response.getRepositoryDeliveries().getFirst().getDeliveryStatus());
         assertEquals("https://github.com/qgents/backend/pull/128",
                 response.getRepositoryDeliveries().getFirst().getMergeRequest().getWebUrl());
+    }
+
+    @Test
+    void rejectMarksTaskTerminalAndPublishesTaskUpdate() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        EventService events = mock(EventService.class);
+        SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
+        ProjectAccessService access = mock(ProjectAccessService.class);
+        TransactionTemplate transactions = immediateTransactions();
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID(), batchId = UUID.randomUUID(), diffId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID(), actor = UUID.randomUUID();
+
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setRequirementGroupId(groupId);
+        task.setWorkspaceId(workspaceId);
+        task.setCreatedBy(actor);
+        task.setStatus("WAITING_DIFF_CONFIRMATION");
+        task.setUpdatedAt(LocalDateTime.now());
+
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId);
+        batch.setProjectId(projectId);
+        batch.setTaskId(taskId);
+        batch.setWorkspaceId(workspaceId);
+        batch.setReviewStatus("PENDING_CONFIRMATION");
+        batch.setDeliveryStatus("NOT_STARTED");
+
+        DiffEntity diff = new DiffEntity();
+        diff.setId(diffId);
+        diff.setProjectId(projectId);
+        diff.setTaskId(taskId);
+        diff.setTaskRunId(UUID.randomUUID());
+        diff.setWorkspaceId(workspaceId);
+        diff.setProjectRepositoryId(repositoryId);
+        diff.setBaseCommit("base");
+        diff.setSourceBranch("feat/rejected");
+        diff.setHeadCommit("head");
+        diff.setStatus("PENDING_REVIEW");
+        diff.setCreatedAt(LocalDateTime.now());
+
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(tasks.selectByIdForUpdate(taskId)).thenReturn(task);
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+        when(batches.selectOne(any())).thenReturn(batch);
+        when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
+        when(diffs.selectList(any())).thenReturn(List.of(diff));
+
+        DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
+                mock(ProjectRepositoryMapper.class), worker, mock(MergeRequestService.class),
+                access, events, transactions, mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class),
+                mock(MergeRequestMapper.class), mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
+
+        service.reject(projectId, taskId, actor, "需要补充异常场景");
+
+        assertEquals("REJECTED", batch.getReviewStatus());
+        assertEquals("REJECTED", diff.getStatus());
+        assertEquals("DIFF_REJECTED", task.getStatus());
+        verify(tasks).updateById(task);
+        verify(events).publish(eq(projectId), eq(groupId), eq("task.updated"), eq(taskId.toString()), any());
+        verify(events).publish(eq(projectId), eq(groupId), eq("diff-review.rejected"), eq(batchId.toString()), any());
+        verifyNoInteractions(worker);
     }
 
     @Test

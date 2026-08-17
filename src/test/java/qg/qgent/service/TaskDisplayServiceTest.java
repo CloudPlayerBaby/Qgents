@@ -199,6 +199,30 @@ class TaskDisplayServiceTest {
     }
 
     @Test
+    void rejectedDiffDoesNotRemainAwaitingConfirmation() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, actor, workspaceId, "DIFF_REJECTED");
+        when(tasks.selectList(any())).thenReturn(List.of(task));
+        when(steps.selectList(any())).thenReturn(List.of());
+        when(runs.selectList(any())).thenReturn(List.of());
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(UUID.randomUUID());
+        batch.setProjectId(projectId);
+        batch.setTaskId(task.getId());
+        batch.setReviewStatus("REJECTED");
+        when(diffBatches.selectList(any())).thenReturn(List.of(batch));
+
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, "req")
+                .data().getFirst();
+
+        assertEquals("DIFF_REJECTED", item.getAttention().getKind());
+        assertEquals("Diff 已拒绝", item.getAttention().getTitle());
+    }
+
+    @Test
     void capabilitiesDeriveForOwnerAndStatus() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
         UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
@@ -221,6 +245,13 @@ class TaskDisplayServiceTest {
         assertFalse(finished.getCapabilities().isCanCancel());
         assertEquals("TASK_NOT_CANCELLABLE", finished.getCapabilities().getCancelDisabledReason());
         assertEquals("TASK_TERMINATED", finished.getCapabilities().getReplacePendingStepAgentDisabledReason());
+
+        TaskEntity rejected = task(projectId, groupId, actor, workspaceId, "DIFF_REJECTED");
+        when(tasks.selectById(rejected.getId())).thenReturn(rejected);
+        TaskDetailResponse rejectedDetail = service.detail(projectId, rejected.getId(), actor);
+
+        assertFalse(rejectedDetail.getCapabilities().isCanCancel());
+        assertFalse(rejectedDetail.getCapabilities().isCanReplacePendingStepAgent());
     }
 
     @Test

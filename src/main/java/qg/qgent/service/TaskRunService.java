@@ -30,7 +30,7 @@ public class TaskRunService {
     private static final Set<String> RETRYABLE = Set.of("FAILED", "CANCELLED", "BLOCKED");
     /**
      * 允许续跑的任务状态：仅终态/未启动（FAILED/CANCELLED 等）与尚未进入交付的任务可重试；
-     * RUNNING/WAITING_DIFF_CONFIRMATION/DELIVERING/SUCCEEDED/DELIVERY_FAILED 不接受外部续跑，
+     * RUNNING/WAITING_DIFF_CONFIRMATION/DIFF_REJECTED/DELIVERING/SUCCEEDED/DELIVERY_FAILED 不接受外部续跑，
      * 避免与进行中的编排或已交付的代码冲突。
      */
     private static final Set<String> RESUMABLE_TASK_STATUSES = Set.of("PLANNING", "PENDING", "FAILED", "CANCELLED");
