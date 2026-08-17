@@ -91,6 +91,12 @@ public class MemoryResponse {
     private LocalDateTime createdAt;
 
     /**
+     * 来源标识：MANUAL（手动创建）/ MESSAGE（由群聊消息生成）。
+     */
+    @Schema(description = "来源标识：MANUAL / MESSAGE")
+    private String source;
+
+    /**
      * 来源消息引用列表（AI 草稿有值，手动创建为空）。
      */
     @Schema(description = "来源消息引用列表（AI 草稿有值）")
