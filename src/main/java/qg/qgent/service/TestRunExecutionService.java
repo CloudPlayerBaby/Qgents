@@ -2,12 +2,15 @@ package qg.qgent.service;
 
 import org.springframework.stereotype.Service;
 import qg.qgent.entity.DryRunEntity;
+import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TestRunEntity;
 import qg.qgent.mapper.DryRunMapper;
+import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TestRunMapper;
 import qg.qgent.orchestration.worker.*;
+import qg.qgent.orchestration.ExecutionContentSanitizer;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -26,14 +29,19 @@ public class TestRunExecutionService {
     private final SandboxWorkerClient worker;
     private final EventService events;
     private final TaskMapper tasks;
+    private final ProjectRepositoryMapper projectRepositories;
+    private final GitStoreSyncService gitStores;
 
     public TestRunExecutionService(TestRunMapper testRuns, DryRunMapper dryRuns,
-                                   SandboxWorkerClient worker, EventService events, TaskMapper tasks) {
+                                   SandboxWorkerClient worker, EventService events, TaskMapper tasks,
+                                   ProjectRepositoryMapper projectRepositories, GitStoreSyncService gitStores) {
         this.testRuns = testRuns;
         this.dryRuns = dryRuns;
         this.worker = worker;
         this.events = events;
         this.tasks = tasks;
+        this.projectRepositories = projectRepositories;
+        this.gitStores = gitStores;
     }
 
     /**
@@ -55,7 +63,7 @@ public class TestRunExecutionService {
             String status = response != null && "PASSED".equals(response.getStatus()) ? "PASSED" : "FAILED";
             if (completeTest(run, token, status, summary)) cleanupSnapshot(run);
         } catch (RuntimeException failure) {
-            if (completeTest(run, token, "FAILED", Map.of("failureCode", failureCode(failure)))) cleanupSnapshot(run);
+            if (completeTest(run, token, "FAILED", failureSummary(failure))) cleanupSnapshot(run);
         }
     }
 
@@ -123,7 +131,7 @@ public class TestRunExecutionService {
             }
             completeDry(run, token, status, report, run.getHeadCommit());
         } catch (RuntimeException failure) {
-            completeDry(run, token, "FAILED", Map.of("failureCode", failureCode(failure)), null);
+            completeDry(run, token, "FAILED", failureSummary(failure), null);
         }
     }
 
@@ -143,7 +151,8 @@ public class TestRunExecutionService {
 
     /**
      * Task 测试在受理时已经由稳定 Workspace 固定到 head/base commit；普通 Test Run 则在
-     * 异步执行阶段把用户指定 ref 解析成不可变 SHA，保证一次运行不会在执行途中漂移。
+     * 异步执行阶段先把用户指定分支刷新到 Worker Git Store，再解析成不可变 SHA，保证
+     * Worker 不会因为本地镜像过期或缺少分支而直接返回 GIT_REF_NOT_FOUND。
      */
     private String resolveExecutionRef(TestRunEntity run) {
         String ref = run.getExecutionSourceRef();
@@ -152,16 +161,9 @@ public class TestRunExecutionService {
                     "TEST_RUN_SOURCE_REF_MISSING", "测试运行缺少源提交或引用");
         }
         if (ref.matches("[0-9a-fA-F]{40,64}")) return ref.toLowerCase(java.util.Locale.ROOT);
-        WorkerGitResolveRequest request = new WorkerGitResolveRequest();
-        request.setRepositoryId(run.getProjectRepositoryId());
-        request.setRef(ref);
-        WorkerGitResolveResponse response = worker.resolveGitRef(request);
-        String commit = response == null ? null : response.getCommitSha();
-        if (commit == null || !commit.matches("[0-9a-fA-F]{40,64}")) {
-            throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
-                    "GIT_RESOLUTION_INVALID", "Sandbox Worker 未返回有效的 commit SHA");
-        }
-        return commit.toLowerCase(java.util.Locale.ROOT);
+        ProjectRepositoryEntity repository = projectRepositories.selectById(run.getProjectRepositoryId());
+        // refreshTargetBranch 已包含 GitHub 当前 SHA、一次性 FETCH Grant、Worker sync 和二次 resolve 校验。
+        return gitStores.refreshTargetBranch(run.getProjectId(), repository, ref);
     }
 
     private WorkerTestExecutionRequest testRequest(TestRunEntity run, String executionRef) {
@@ -296,6 +298,21 @@ public class TestRunExecutionService {
 
     private String failureCode(RuntimeException failure) {
         return failure instanceof qg.qgent.api.ApiException api ? api.code() : "EXECUTION_FAILED";
+    }
+
+    /**
+     * 将执行异常转换为可持久化、可展示的脱敏摘要；不把 Worker 原始响应或堆栈写入测试结果。
+     */
+    private Map<String, Object> failureSummary(RuntimeException failure) {
+        String code = failureCode(failure);
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("failureCode", code);
+        String message = failure == null ? null : ExecutionContentSanitizer.sanitize(failure.getMessage());
+        if (message == null || message.isBlank()) {
+            message = ExecutionContentSanitizer.infrastructureDescription(code);
+        }
+        summary.put("message", message);
+        return summary;
     }
 
     private Duration totalTimeout(List<Map<String, Object>> snapshot) {
