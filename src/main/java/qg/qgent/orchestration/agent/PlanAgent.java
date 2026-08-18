@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import qg.qgent.entity.AgentEntity;
+import qg.qgent.api.ApiException;
 import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentDispatcher;
 import qg.qgent.orchestration.AgentInput;
@@ -104,6 +105,13 @@ public class PlanAgent implements Agent {
             failure.setPhase(input.getPhase());
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
             failure.setFailureCode(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
+            failure.setMessage("plan agent failed: " + e.getMessage());
+            return failure;
+        } catch (ApiException e) {
+            AgentRunOutcome failure = new AgentRunOutcome();
+            failure.setPhase(input.getPhase());
+            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setFailureCode(e.code());
             failure.setMessage("plan agent failed: " + e.getMessage());
             return failure;
         } catch (RuntimeException e) {

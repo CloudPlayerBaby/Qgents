@@ -12,6 +12,7 @@ import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.RunOutcome;
+import qg.qgent.api.ApiException;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.LlmMessage;
 import qg.qgent.orchestration.llm.LlmObservation;
@@ -108,6 +109,8 @@ public class ReviewAgent implements Agent {
             log.info("review agent done phase={} workspaceId={} outcome={} observations={}",
                     input.getPhase(), input.getWorkspaceId(), outcome.getOutcome(), observations.size());
             return outcome;
+        } catch (ApiException e) {
+            return infraFailure(input, e.getMessage(), observations, e.code());
         } catch (RuntimeException e) {
             log.error("REVIEW_AGENT_FAILED phase={} workspaceId={} category={}",
                     input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());

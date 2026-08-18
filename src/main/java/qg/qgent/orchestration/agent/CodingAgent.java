@@ -13,6 +13,7 @@ import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.RunOutcome;
+import qg.qgent.api.ApiException;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.LlmMessage;
 import qg.qgent.orchestration.llm.LlmObservation;
@@ -117,6 +118,14 @@ public class CodingAgent implements Agent {
             failure.setPhase(input.getPhase());
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
             failure.setFailureCode(e.getCode().name());
+            failure.setMessage("coding agent failed: " + e.getMessage());
+            failure.setObservations(observations);
+            return failure;
+        } catch (ApiException e) {
+            AgentRunOutcome failure = new AgentRunOutcome();
+            failure.setPhase(input.getPhase());
+            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setFailureCode(e.code());
             failure.setMessage("coding agent failed: " + e.getMessage());
             failure.setObservations(observations);
             return failure;

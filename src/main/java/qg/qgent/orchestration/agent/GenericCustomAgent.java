@@ -6,6 +6,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 import qg.qgent.entity.AgentEntity;
+import qg.qgent.api.ApiException;
 import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
@@ -121,6 +122,14 @@ public class GenericCustomAgent implements Agent {
             log.info("custom agent done agentId={} phase={} outcome={} observations={}",
                     entity.getId(), input.getPhase(), outcome.getOutcome(), observations.size());
             return outcome;
+        } catch (ApiException e) {
+            AgentRunOutcome failure = new AgentRunOutcome();
+            failure.setPhase(input.getPhase());
+            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setFailureCode(e.code());
+            failure.setMessage("custom agent failed: " + e.getMessage());
+            failure.setObservations(observations);
+            return failure;
         } catch (RuntimeException e) {
             log.error("CUSTOM_AGENT_FAILED agentId={} phase={} category={} message={}",
                     entity.getId(), input.getPhase(), e.getClass().getSimpleName(), e.getMessage());

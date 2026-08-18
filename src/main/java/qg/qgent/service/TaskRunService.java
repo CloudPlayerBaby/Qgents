@@ -113,6 +113,7 @@ public class TaskRunService {
         TaskRunEntity run = requireRun(projectId, taskRunId);
         requireTaskVisible(projectId, run.getTaskId(), userId);
         TaskStepEntity step = run.getTaskStepId() == null ? null : taskStepMapper.selectById(run.getTaskStepId());
+        TaskExecutionArtifactEntity latestArtifact = latestRunArtifact(run.getId());
         AgentEntity agent = run.getAgentId() == null ? null : agentMapper.selectById(run.getAgentId());
         List<InputRequestEntity> requests = inputRequestMapper.selectList(
                 Wrappers.<InputRequestEntity>lambdaQuery().eq(InputRequestEntity::getTaskRunId, run.getId()));
@@ -120,7 +121,7 @@ public class TaskRunService {
                 id(run.getId()), id(run.getProjectId()), id(run.getTaskId()), id(run.getTaskStepId()),
                 step == null ? null : step.getTitle(), id(run.getAgentId()), agentSummary(agent),
                 run.getRole(), run.getStatus(), statusSummary(run.getStatus()), id(run.getRetryOfTaskRunId()),
-                statusReason(run, requests),
+                statusReason(run, requests, latestArtifact == null ? null : latestArtifact.getSummary()),
                 artifactSummary(run.getId()), List.of(), iso(run.getStartedAt()), iso(run.getFinishedAt()),
                 durationMs(run.getStartedAt(), run.getFinishedAt()), iso(run.getCreatedAt()),
                 iso(run.getUpdatedAt()));
@@ -580,6 +581,15 @@ public class TaskRunService {
                 .selectList(Wrappers.<InputRequestEntity>lambdaQuery()
                         .in(InputRequestEntity::getTaskRunId, runIds))
                 .stream().collect(Collectors.groupingBy(InputRequestEntity::getTaskRunId));
+        List<TaskExecutionArtifactEntity> artifactRows = runIds.isEmpty() ? List.of()
+                : Optional.ofNullable(artifactMapper.selectList(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
+                        .in(TaskExecutionArtifactEntity::getTaskRunId, runIds)
+                        .orderByDesc(TaskExecutionArtifactEntity::getSequenceNo))).orElse(List.of());
+        Map<UUID, Map<String, Object>> failureSummaryByRun = artifactRows.stream()
+                .filter(artifact -> artifact.getTaskRunId() != null)
+                .filter(artifact -> artifact.getSummary() != null)
+                .collect(Collectors.toMap(TaskExecutionArtifactEntity::getTaskRunId,
+                        TaskExecutionArtifactEntity::getSummary, (first, ignored) -> first));
         Map<UUID, Long> artifactCountByRun = runIds.isEmpty() ? Collections.emptyMap()
                 : artifactMapper
                 .selectList(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
@@ -595,6 +605,7 @@ public class TaskRunService {
                                 : taskById.get(run.getTaskId()).getRequirementGroupId()),
                         repositorySummary(taskById.get(run.getTaskId()), firstWorktreeByWorkspace, bindingById),
                         inputByRun.getOrDefault(run.getId(), List.of()),
+                        failureSummaryByRun.get(run.getId()),
                         artifactCountByRun.getOrDefault(run.getId(), 0L), diffCountByRun.getOrDefault(run.getId(), 0L)))
                 .toList();
     }
@@ -602,6 +613,7 @@ public class TaskRunService {
     private TaskRunListItemResponse toListItem(TaskRunEntity run, TaskStepEntity step, AgentEntity agent,
                                                TaskEntity task, RequirementGroupEntity group,
                                                RepositorySummary repository, List<InputRequestEntity> requests,
+                                               Map<String, Object> failureSummary,
                                                long artifactTotal, long diffCount) {
         Map<String, Object> artifactSummary = new LinkedHashMap<>();
         artifactSummary.put("total", artifactTotal);
@@ -612,7 +624,7 @@ public class TaskRunService {
                 task == null ? null : task.getDisplayCode(), task == null ? null : task.getTitle(),
                 step == null ? null : step.getTitle(), step == null ? null : step.getRole(),
                 groupSummary, repository, run.getRole(), agentSummary(agent), run.getStatus(),
-                statusSummary(run.getStatus()), statusReason(run, requests), id(run.getRetryOfTaskRunId()),
+                statusSummary(run.getStatus()), statusReason(run, requests, failureSummary), id(run.getRetryOfTaskRunId()),
                 iso(run.getStartedAt()), iso(run.getFinishedAt()),
                 durationMs(run.getStartedAt(), run.getFinishedAt()), artifactSummary, iso(run.getCreatedAt()),
                 iso(run.getUpdatedAt()));
@@ -641,7 +653,8 @@ public class TaskRunService {
     /**
      * 等待/阻塞/失败原因摘要，仅返回脱敏用户可见文本；无等待或失败时返回 null。
      */
-    private TaskStatusReason statusReason(TaskRunEntity run, List<InputRequestEntity> requests) {
+    private TaskStatusReason statusReason(TaskRunEntity run, List<InputRequestEntity> requests,
+                                          Map<String, Object> failureSummary) {
         return switch (run.getStatus()) {
             case "WAITING_INPUT" -> {
                 InputRequestEntity req = latestPending(requests, "INPUT");
@@ -662,12 +675,38 @@ public class TaskRunService {
                         reason == null || reason.isBlank() ? "执行流程被阻塞，等待处理" : reason, true,
                         iso(run.getUpdatedAt()));
             }
-            case "FAILED" -> new TaskStatusReason("EXECUTION_FAILED", "执行失败", "任务运行执行失败，可查看执行记录",
-                    true, iso(run.getUpdatedAt()));
+            case "FAILED" -> failedReason(run, failureSummary);
             case "CANCELLING", "CANCELLED" -> new TaskStatusReason("CANCELLED", "已取消", "任务运行已取消", false,
                     iso(run.getUpdatedAt()));
             default -> null;
         };
+    }
+
+    private TaskStatusReason failedReason(TaskRunEntity run, Map<String, Object> failureSummary) {
+        String failureCode = text(failureSummary, "failureCode");
+        String message = text(failureSummary, "message");
+        if (message == null || message.isBlank()) {
+            message = "任务运行执行失败，可查看执行记录";
+        }
+        return new TaskStatusReason("EXECUTION_FAILED", failureCode, "执行失败", message,
+                true, iso(run.getUpdatedAt()));
+    }
+
+    private String text(Map<String, Object> values, String key) {
+        if (values == null || values.get(key) == null) {
+            return null;
+        }
+        String value = String.valueOf(values.get(key)).strip();
+        return value.isBlank() ? null : value;
+    }
+
+    private TaskExecutionArtifactEntity latestRunArtifact(UUID taskRunId) {
+        List<TaskExecutionArtifactEntity> rows = artifactMapper.selectList(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
+                        .eq(TaskExecutionArtifactEntity::getTaskRunId, taskRunId)
+                        .orderByDesc(TaskExecutionArtifactEntity::getSequenceNo)
+                        .last("LIMIT 1"));
+        return Optional.ofNullable(rows).orElse(List.of())
+                .stream().findFirst().orElse(null);
     }
 
     /**

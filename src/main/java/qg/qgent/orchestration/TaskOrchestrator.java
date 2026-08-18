@@ -563,6 +563,8 @@ public class TaskOrchestrator {
     private Map<String, Object> runArtifactSummary(TaskStepEntity step, AgentRunOutcome outcome) {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("role", step.getRole());
+        // 供 ArtifactService 判断是否需要把内部异常归一化为稳定的基础设施错误说明。
+        summary.put("outcome", outcome.getOutcome() == null ? null : outcome.getOutcome().name());
         summary.put("status", terminalStatus(outcome.getOutcome()));
         summary.put("message", outcome.getMessage());
         if (outcome.getFailureCode() != null) {

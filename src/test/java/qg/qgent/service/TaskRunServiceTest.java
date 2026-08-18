@@ -132,6 +132,26 @@ class TaskRunServiceTest {
     }
 
     @Test
+    void failedDetailUsesSanitizedFailureFromRunArtifact() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+        TaskExecutionArtifactEntity artifact = new TaskExecutionArtifactEntity();
+        artifact.setTaskRunId(runId);
+        artifact.setSequenceNo(1);
+        artifact.setSummary(Map.of("failureCode", "GIT_BASE_REF_NOT_FOUND",
+                "message", "找不到任务指定的基线分支或提交"));
+        when(artifacts.selectList(any())).thenReturn(List.of(artifact));
+
+        TaskRunDetailResponse response = service.detail(projectId, runId, UUID.randomUUID());
+
+        assertEquals("GIT_BASE_REF_NOT_FOUND", response.getStatusReason().getFailureCode());
+        assertEquals("找不到任务指定的基线分支或提交", response.getStatusReason().getSummary());
+    }
+
+    @Test
     void summaryBoundaryOmitsExecutionTimingsAndArtifacts() {
         UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
         TaskRunEntity run = run(projectId, runId);
