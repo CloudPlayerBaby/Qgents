@@ -22,7 +22,8 @@ public interface DryRunMapper extends BaseMapper<DryRunEntity> {
                                                      @Param("limit") int limit);
 
     @Update("update dry_runs set status=#{status},report=#{report,typeHandler=com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler},"
-            + "head_commit=coalesce(#{headCommit},head_commit),claim_token=null,lease_expires_at=null "
+            + "head_commit=coalesce(#{headCommit},head_commit),claim_token=null,lease_expires_at=null,"
+            + "updated_at=UTC_TIMESTAMP(6) "
             + "where id=#{id} and claim_token=#{token}")
     int complete(@Param("id") java.util.UUID id, @Param("token") String token,
                  @Param("status") String status, @Param("report") java.util.Map<String, Object> report,

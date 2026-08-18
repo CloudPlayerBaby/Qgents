@@ -11,6 +11,7 @@ import qg.qgent.mapper.*;
 import qg.qgent.service.GitCredentialService;
 import qg.qgent.service.WorkspaceWriteLease;
 import qg.qgent.service.WorkspaceWriteLeaseService;
+import qg.qgent.service.WorkBranchDevelopmentGuard;
 
 import java.time.Duration;
 import java.util.*;
@@ -50,6 +51,7 @@ public class SandboxSessionManager {
     private final GitCredentialService credentialService;
     private final GitHubAppClient githubAppClient;
     private final WorkspaceWriteLeaseService writeLeases;
+    private WorkBranchDevelopmentGuard developmentGuard;
     private final Map<UUID, SandboxSession> sessions = new ConcurrentHashMap<>();
     private final Map<UUID, ReentrantLock> acquireLocks = new ConcurrentHashMap<>();
     private final Map<UUID, WorkspaceWriteLease> workspaceLeases = new ConcurrentHashMap<>();
@@ -71,6 +73,11 @@ public class SandboxSessionManager {
         this.writeLeases = writeLeases;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setDevelopmentGuard(WorkBranchDevelopmentGuard developmentGuard) {
+        this.developmentGuard = developmentGuard;
+    }
+
     /**
      * 为一次 Task 编排准备 Sandbox 会话；已存在则直接返回。
      * 未启用 Worker 时返回 null（本地端口不需要会话）。
@@ -79,11 +86,13 @@ public class SandboxSessionManager {
         if (!properties.isEnabled()) {
             return null;
         }
+        requireWorkerWriteAllowed(projectId, workspaceId);
         ReentrantLock acquireLock = acquireLocks.computeIfAbsent(workspaceId, ignored -> new ReentrantLock());
         acquireLock.lock();
         try {
             SandboxSession existing = sessions.get(workspaceId);
             if (existing != null) {
+                requireWorkerWriteAllowed(projectId, workspaceId);
                 if (!existing.taskId().equals(taskId)) {
                     throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.CONFLICT,
                             "WORKSPACE_WRITE_LEASE_HELD", "Workspace is currently being modified by another Task");
@@ -165,7 +174,14 @@ public class SandboxSessionManager {
             throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.CONFLICT,
                     "WORKSPACE_WRITE_LEASE_LOST", "Workspace write lease is no longer active");
         }
+        requireWorkerWriteAllowed(lease.getProjectId(), workspaceId);
         writeLeases.renew(lease);
+    }
+
+    private void requireWorkerWriteAllowed(UUID projectId, UUID workspaceId) {
+        if (developmentGuard != null) {
+            developmentGuard.requireWorkerWriteAllowed(projectId, workspaceId);
+        }
     }
 
     /**
@@ -192,8 +208,9 @@ public class SandboxSessionManager {
 
     private SandboxSession doAcquire(UUID taskId, UUID projectId, UUID workspaceId) {
         WorkspaceEntity workspace = workspaceMapper.selectById(workspaceId);
-        if (workspace == null) {
-            throw new IllegalStateException("workspace not found: " + workspaceId);
+        if (workspace == null || !projectId.equals(workspace.getProjectId())) {
+            throw new ApiException(org.springframework.http.HttpStatus.NOT_FOUND,
+                    "WORKSPACE_NOT_FOUND", "Workspace does not exist or is not visible");
         }
         List<WorkspaceRepositoryEntity> repositories = repositoryMapper.selectByWorkspace(workspaceId);
         if (repositories == null || repositories.isEmpty()) {

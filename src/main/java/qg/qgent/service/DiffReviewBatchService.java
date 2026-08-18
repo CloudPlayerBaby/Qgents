@@ -53,6 +53,8 @@ public class DiffReviewBatchService {
     private OrchestratorAgentService orchestratorAgents;
     /** 跨实例 Workspace 写租约；生产环境必须注入，纯 Mockito 构造器可不设置。 */
     private WorkspaceWriteLeaseService workspaceWriteLeases;
+    /** commit/push 前的工作分支 MR 锁定门禁。 */
+    private WorkBranchDevelopmentGuard developmentGuard;
 
     public DiffReviewBatchService(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
             ProjectRepositoryMapper repositories, SandboxWorkerClient worker,
@@ -91,6 +93,11 @@ public class DiffReviewBatchService {
         this.workspaceWriteLeases = workspaceWriteLeases;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setDevelopmentGuard(WorkBranchDevelopmentGuard developmentGuard) {
+        this.developmentGuard = developmentGuard;
+    }
+
     public DiffReviewBatchResponse get(UUID projectId, UUID taskId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         DiffReviewBatchEntity batch = latest(projectId, taskId);
@@ -118,6 +125,7 @@ public class DiffReviewBatchService {
     public DiffReviewBatchResponse confirm(UUID projectId, UUID taskId, UUID actor) {
         TaskEntity task = requireTask(projectId, taskId);
         requireOwnerOrAdmin(task, actor);
+        requireDiffDeliveryAllowed(task);
         WorkspaceWriteLease workspaceLease = acquireWorkspaceWriteLease(task);
         try {
             DiffReviewBatchEntity batch = transactions.execute(status -> claim(task));
@@ -203,6 +211,7 @@ public class DiffReviewBatchService {
     public DiffReviewBatchResponse retryDelivery(UUID projectId, UUID taskId, UUID actor) {
         TaskEntity task = requireTask(projectId, taskId);
         requireOwnerOrAdmin(task, actor);
+        requireDiffDeliveryAllowed(task);
         WorkspaceWriteLease workspaceLease = acquireWorkspaceWriteLease(task);
         try {
             DiffReviewBatchEntity batch = transactions.execute(status -> claimRetry(projectId, taskId));
@@ -243,6 +252,7 @@ public class DiffReviewBatchService {
      */
     public void deliverSystemAcceptedBatch(UUID projectId, UUID taskId, UUID reviewBatchId, String claimToken) {
         TaskEntity task = requireTask(projectId, taskId);
+        requireDiffDeliveryAllowed(task);
         // 本方法会执行 Worker/GitHub 外部调用，不能持有 FOR UPDATE 锁；后续每次状态写入均会
         // 在短事务内用 claimToken 再次校验，租约失效或易主时安全退出。
         DiffReviewBatchEntity batch = batches.selectById(reviewBatchId);
@@ -397,6 +407,7 @@ public class DiffReviewBatchService {
         try {
             renewWorkspaceWriteLease(workspaceLease);
             renewBatchLease(diff.getReviewBatchId(), claimToken);
+            requireDiffDeliveryAllowed(task);
             if (!committed && !"PUSHED".equals(diff.getDeliveryStatus())
                     && !"MR_CREATED".equals(diff.getDeliveryStatus())) {
                 String commitSha = deliveryService.commitVerified(task, diff);
@@ -405,6 +416,7 @@ public class DiffReviewBatchService {
                 committed = true;
             }
             if (!"PUSHED".equals(diff.getDeliveryStatus()) && !"MR_CREATED".equals(diff.getDeliveryStatus())) {
+                requireDiffDeliveryAllowed(task);
                 mergeRequests.pushAcceptedBranch(task.getProjectId(), task.getId(), diff.getProjectRepositoryId());
                 transactions.execute(status -> {
                     markPushed(task, diffId, batchId, claimToken);
@@ -478,6 +490,7 @@ public class DiffReviewBatchService {
             task.setStatus(nextTaskStatus);
             task.setUpdatedAt(batch.getUpdatedAt());
             tasks.updateById(task);
+            boolean statusChanged = !nextTaskStatus.equals(previousTaskStatus);
             log.warn("diff delivery finished projectId={} taskId={} reviewBatchId={} status={} allDelivered={} anyDelivered={}",
                     task.getProjectId(), task.getId(), batchId, batch.getDeliveryStatus(), allDelivered, anyDelivered);
             events.publish(task.getProjectId(), task.getRequirementGroupId(), allDelivered ? "delivery.completed" : "delivery.failed",
@@ -487,7 +500,12 @@ public class DiffReviewBatchService {
                 events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated", task.getId().toString(),
                         TaskEventPayloads.taskUpdated(task));
             }
-            boolean statusChanged = !nextTaskStatus.equals(previousTaskStatus);
+            if (statusChanged && "WAITING_PREFLIGHT".equals(nextTaskStatus)) {
+                // 只发布内部预检意图；Dry Run 的目标分支、Testset 和提交 SHA 由异步服务重新读取。
+                events.publish(task.getProjectId(), task.getRequirementGroupId(), "mr-first.preflight.requested",
+                        task.getId().toString(), Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
+                                "deliveryMode", "MR_FIRST"));
+            }
             return new FinishResult(allDelivered, "SUCCEEDED".equals(nextTaskStatus), statusChanged,
                     statusChanged && "WAITING_PREFLIGHT".equals(nextTaskStatus));
         });
@@ -525,6 +543,12 @@ public class DiffReviewBatchService {
     private WorkspaceWriteLease acquireWorkspaceWriteLease(TaskEntity task) {
         return workspaceWriteLeases == null ? null
                 : workspaceWriteLeases.acquire(task.getProjectId(), task.getWorkspaceId(), task.getId());
+    }
+
+    private void requireDiffDeliveryAllowed(TaskEntity task) {
+        if (developmentGuard != null) {
+            developmentGuard.requireDiffDeliveryAllowed(task.getProjectId(), task.getWorkspaceId());
+        }
     }
 
     private void renewWorkspaceWriteLease(WorkspaceWriteLease lease) {

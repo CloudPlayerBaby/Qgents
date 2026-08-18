@@ -40,6 +40,7 @@ class TaskServiceTest {
     private final DefaultAgentProvisioner defaultAgents = mock(DefaultAgentProvisioner.class);
     private final ContextService contextService = mock(ContextService.class);
     private final TaskContextSnapshotCodec contextSnapshotCodec = new TaskContextSnapshotCodec(new ObjectMapper());
+    private final MergeRequestMapper mergeRequests = mock(MergeRequestMapper.class);
     private final TaskService service = new TaskService(tasks, workspaces, repositories, steps, dependencies, scopes,
             groups, projectRepositories, projects, messages, agents, access, events, eventPublisher, defaultAgents,
             contextService, contextSnapshotCodec);
@@ -177,6 +178,40 @@ class TaskServiceTest {
         assertEquals(continuationTaskId.toString(), result.getContinuationOfTaskId());
         assertEquals(List.of(repositoryId.toString()), result.getRepositoryIds());
         verify(workspaces, never()).insert(any(WorkspaceEntity.class));
+    }
+
+    @Test
+    void createContinuationRejectsWorkspaceWithUnmergedMr() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID continuationTaskId = UUID.randomUUID(), workspaceId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        TaskEntity continuation = task(continuationTaskId, projectId, actor);
+        continuation.setRequirementGroupId(groupId);
+        continuation.setWorkspaceId(workspaceId);
+        WorkspaceEntity workspace = new WorkspaceEntity();
+        workspace.setId(workspaceId);
+        workspace.setProjectId(projectId);
+        when(tasks.selectById(continuationTaskId)).thenReturn(continuation);
+        when(workspaces.selectByIdForUpdate(workspaceId)).thenReturn(workspace);
+        when(repositories.selectByWorkspace(workspaceId))
+                .thenReturn(List.of(worktree(repositoryId, "repo-1", "base", "feat/task-x")));
+        MergeRequestEntity blocker = new MergeRequestEntity();
+        blocker.setId(UUID.randomUUID());
+        blocker.setProjectRepositoryId(repositoryId);
+        blocker.setSourceBranch("feat/task-x");
+        blocker.setStatus("OPEN");
+        when(mergeRequests.selectOne(any())).thenReturn(blocker);
+        service.setDevelopmentGuard(new WorkBranchDevelopmentGuard(repositories, mergeRequests));
+
+        TaskCreateRequest request = request(groupId, List.of());
+        request.setWorkspaceId(workspaceId);
+        request.setContinuationOfTaskId(continuationTaskId);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.create(projectId, actor, request));
+
+        assertEquals("WORKSPACE_CONTINUATION_BLOCKED_BY_OPEN_MR", error.code());
+        verify(tasks, never()).insert(any(TaskEntity.class));
     }
 
     @Test

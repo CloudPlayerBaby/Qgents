@@ -35,6 +35,8 @@ public class DiffDeliveryService {
     private final TransactionTemplate transactions;
     private final DiffReviewBatchMapper batches;
     private WorkspaceWriteLeaseService workspaceWriteLeases;
+    /** 真实 Worker commit 前的工作分支 MR 锁定门禁。 */
+    private WorkBranchDevelopmentGuard developmentGuard;
 
     public DiffDeliveryService(DiffMapper diffs, WorkspaceMapper workspaces,
                                WorkspaceRepositoryMapper worktrees, SandboxWorkerClient worker, TransactionTemplate transactions,
@@ -52,10 +54,20 @@ public class DiffDeliveryService {
         this.workspaceWriteLeases = workspaceWriteLeases;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setDevelopmentGuard(WorkBranchDevelopmentGuard developmentGuard) {
+        this.developmentGuard = developmentGuard;
+    }
+
     /**
      * 在 Worker 中校验预期 HEAD 与 Diff hash 后创建 Commit，不持有数据库事务。
      */
     public String commitVerified(TaskEntity task, DiffEntity diff) {
+        if (developmentGuard != null) {
+            developmentGuard.requireBranchWritable(task.getProjectId(), diff.getProjectRepositoryId(),
+                    diff.getSourceBranch(), "DIFF_DELIVERY_BLOCKED_BY_OPEN_MR",
+                    "当前工作分支存在未合并的 MR，不能继续进行 Diff 交付");
+        }
         String expectedHead = diff.getHeadCommit() == null || diff.getHeadCommit().isBlank()
                 ? diff.getBaseCommit() : diff.getHeadCommit();
         if (expectedHead == null || expectedHead.isBlank()) {

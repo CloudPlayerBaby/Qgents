@@ -134,6 +134,11 @@ public class TestRunService {
      */
     public DryRunResponse createDryRun(UUID projectId, UUID userId, DryRunCreateRequest request) {
         projectAccess.requireProjectMember(projectId, userId);
+        return createDryRunWithoutAccessCheck(projectId, userId, request);
+    }
+
+    private DryRunResponse createDryRunWithoutAccessCheck(UUID projectId, UUID userId,
+                                                           DryRunCreateRequest request) {
         ProjectRepositoryEntity repository = requireRepository(projectId, request.getRepositoryId());
         String sourceRef = request.getSourceRef().trim();
         // 门禁查询、Worker 同步和预检匹配必须使用同一个规范化后的分支名。
@@ -178,6 +183,56 @@ public class TestRunService {
         publishDryRunUpdated(run);
         afterCommit(() -> executionDispatcher.dispatchDryRun(run.getId()));
         return toDryRun(run);
+    }
+
+    /**
+     * 为 MR_FIRST 自动发起一条仓库级 Dry Run。
+     * <p>
+     * 该入口只由内部自动化调用，不暴露给 Controller。它复用公开 Dry Run 的完整校验和
+     * Testset 快照逻辑，并在 Worker/GitHub 调用前检查同一 Task、仓库、HEAD 和目标分支的
+     * 活跃运行，避免 delivery.started 重复投递导致重复测试。
+     */
+    public DryRunResponse createAutomaticDryRun(UUID projectId, UUID taskId, UUID repositoryId,
+                                                String targetBranch) {
+        TaskEntity task = taskMapper.selectById(taskId);
+        if (task == null || !projectId.equals(task.getProjectId()) || task.getWorkspaceId() == null
+                || !"MR_FIRST".equals(task.getDeliveryMode())
+                || !"WAITING_PREFLIGHT".equals(task.getStatus())) {
+            return null;
+        }
+        WorkspaceRepositoryEntity worktree = workspaceRepositoryMapper.selectByWorkspace(task.getWorkspaceId()).stream()
+                .filter(value -> repositoryId.equals(value.getProjectRepositoryId())).findFirst().orElse(null);
+        if (worktree == null || worktree.getHeadCommit() == null || worktree.getHeadCommit().isBlank()) {
+            return null;
+        }
+        String branch = gitStores.normalizeTargetBranch(targetBranch);
+        ProjectRepositoryEntity repository = requireRepository(projectId, repositoryId);
+        // 先刷新目标分支，再按固定 targetCommit 判断是否已有可复用的运行；否则目标分支推进后
+        // 旧 QUEUED Dry Run 会被错误复用，后续门禁只能在最后一步才发现上下文过期。
+        String currentTarget = gitStores.refreshTargetBranch(projectId, repository, branch);
+        DryRunEntity latest = dryRunMapper.selectOne(Wrappers.<DryRunEntity>lambdaQuery()
+                .eq(DryRunEntity::getProjectId, projectId)
+                .eq(DryRunEntity::getTaskId, taskId)
+                .eq(DryRunEntity::getProjectRepositoryId, repositoryId)
+                .eq(DryRunEntity::getHeadCommit, worktree.getHeadCommit())
+                .eq(DryRunEntity::getTargetBranch, branch)
+                .orderByDesc(DryRunEntity::getCreatedAt).last("LIMIT 1"));
+        if (latest != null && currentTarget.equalsIgnoreCase(latest.getResolvedTargetCommit())
+                && List.of("QUEUED", "RUNNING", "PASSED").contains(latest.getStatus())) {
+            return toDryRun(latest);
+        }
+        if (latest != null && "FAILED".equals(latest.getStatus()) && latest.getUpdatedAt() != null
+                && latest.getUpdatedAt().isAfter(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(30))) {
+            // 短暂 Worker/GitHub 故障交给下一轮恢复，避免同一错误被调度器高频放大。
+            return toDryRun(latest);
+        }
+        DryRunCreateRequest request = new DryRunCreateRequest();
+        request.setRepositoryId(repositoryId);
+        request.setTaskId(taskId);
+        request.setSourceRef(worktree.getHeadCommit());
+        request.setTargetBranch(branch);
+        // Task 发起人只是持久化 createdBy 的审计主体；该内部入口不依赖其当前登录会话。
+        return createDryRunWithoutAccessCheck(projectId, task.getCreatedBy(), request);
     }
 
     /**
