@@ -100,6 +100,17 @@ class SandboxServiceTest {
     }
 
     @Test
+    void responseContainsSandboxSpecNeededForIdempotentRecovery() {
+        CreateSandboxRequest request = request();
+
+        SandboxResponse response = service().create(request);
+
+        assertEquals(request.getWorkspaceStorageKey(), response.getWorkspaceStorageKey());
+        assertEquals(request.getImageProfile(), response.getImageProfile());
+        assertEquals(java.util.List.of(), response.getRepositoryIds());
+    }
+
+    @Test
     void sameSandboxIdDifferentSpecConflicts() {
         SandboxService service = service();
         CreateSandboxRequest request = request();

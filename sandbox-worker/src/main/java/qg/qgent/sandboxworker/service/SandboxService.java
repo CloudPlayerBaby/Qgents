@@ -53,14 +53,36 @@ public class SandboxService {
                     "IMAGE_PROFILE_NOT_ALLOWED", "镜像配置不在 Worker 允许列表中");
         }
 
+        try {
+            return workspaceLock.execute(request.getWorkspaceStorageKey(), () -> {
+                SandboxAllocation existing = runtime.find(request.getSandboxId()).orElse(null);
+                if (existing != null) {
+                    SandboxAllocation requested = allocation(request);
+                    if (sameSandboxSpec(existing, requested)) {
+                        log.info("sandbox idempotent return sandboxId={} taskRunId={} workspace={}",
+                                existing.getId(), existing.getTaskRunId(), existing.getWorkspaceStorageKey());
+                        return response(existing);
+                    }
+                    throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT", "同名沙箱规格不一致");
+                }
+                SandboxAllocation allocation = allocation(request);
+                SandboxAllocation created = runtime.create(request, allocation);
+                log.info("sandbox created sandboxId={} taskRunId={} workspace={} image={} repos={} container={}",
+                        created.getId(), created.getTaskRunId(), created.getWorkspaceStorageKey(),
+                        created.getImageProfile(), created.getRepositoryPaths().size(), created.getRuntimeHandle());
+                return response(created);
+            });
+        } catch (IllegalStateException exception) {
+            throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT", exception.getMessage());
+        }
+    }
+
+    private SandboxAllocation allocation(CreateSandboxRequest request) {
         Instant now = clock.instant();
-        // 计算出实际租约
         Duration idleTtl = requestedIdleTtl(request.getLimits());
         Duration maxLifetime = requestedMaxLifetime(request.getLimits());
         Duration executionTimeout = requestedExecutionTimeout(request.getLimits());
-
-        // 创建沙箱分配
-        SandboxAllocation allocation = new SandboxAllocation(
+        return new SandboxAllocation(
                 request.getSandboxId(),
                 request.getTaskRunId(),
                 request.getWorkspaceStorageKey(),
@@ -75,31 +97,6 @@ public class SandboxService {
                 null,
                 workspaceMetadataStore.resolveRepositories(request.getWorkspaceStorageKey(),
                         request.getRepositoryIds()));
-
-        // 幂等分支：主后端初始化重试可能用相同 sandboxId 重复请求；相同任务与 Workspace 规格
-        // 视为创建已成功并返回已有沙箱，规格不同才拒绝，避免创建请求超时后重复建容器。
-        if (runtime.find(request.getSandboxId()).isPresent()) {
-            SandboxAllocation existing = runtime.find(request.getSandboxId()).get();
-            if (sameSandboxSpec(existing, allocation)) {
-                log.info("sandbox idempotent return sandboxId={} taskRunId={} workspace={}",
-                        existing.getId(), existing.getTaskRunId(), existing.getWorkspaceStorageKey());
-                return response(existing);
-            }
-            throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT", "同名沙箱规格不一致");
-        }
-
-        try {
-            // 上锁 -> 创建沙箱 -> 返回响应
-            return workspaceLock.execute(request.getWorkspaceStorageKey(), () -> {
-                SandboxAllocation created = runtime.create(request, allocation);
-                log.info("sandbox created sandboxId={} taskRunId={} workspace={} image={} repos={} container={}",
-                        created.getId(), created.getTaskRunId(), created.getWorkspaceStorageKey(),
-                        created.getImageProfile(), created.getRepositoryPaths().size(), created.getRuntimeHandle());
-                return response(created);
-            });
-        } catch (IllegalStateException exception) {
-            throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT", exception.getMessage());
-        }
     }
 
     /**
@@ -213,6 +210,11 @@ public class SandboxService {
         return new SandboxResponse(
                 allocation.getId(),
                 allocation.getTaskRunId(),
+                allocation.getWorkspaceStorageKey(),
+                allocation.getImageProfile(),
+                allocation.getRepositoryPaths().keySet().stream()
+                        .sorted(java.util.Comparator.comparing(UUID::toString))
+                        .toList(),
                 allocation.getStatus(),
                 allocation.getRuntimeKind(),
                 allocation.getCreatedAt(),

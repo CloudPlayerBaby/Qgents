@@ -82,6 +82,8 @@ public class SandboxWorkerProperties {
     @PostConstruct
     void validateLeaseRenewInterval() {
         leaseRenewInterval();
+        acquireMaxAttempts();
+        acquireInitialBackoff();
     }
 
     /**
@@ -92,5 +94,25 @@ public class SandboxWorkerProperties {
             throw new IllegalStateException("app.worker.lease-renew-interval must be greater than zero");
         }
         return leaseRenewInterval;
+    }
+
+    /**
+     * 返回已校验的初始化最大尝试次数，包含首次调用。
+     */
+    public int acquireMaxAttempts() {
+        if (acquireMaxAttempts < 1) {
+            throw new IllegalStateException("app.worker.acquire-max-attempts must be at least one");
+        }
+        return acquireMaxAttempts;
+    }
+
+    /**
+     * 返回已校验的初始化重试初始退避时间。
+     */
+    public Duration acquireInitialBackoff() {
+        if (acquireInitialBackoff == null || acquireInitialBackoff.isNegative()) {
+            throw new IllegalStateException("app.worker.acquire-initial-backoff must not be negative");
+        }
+        return acquireInitialBackoff;
     }
 }

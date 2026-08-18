@@ -309,7 +309,18 @@ components:
         limits: {$ref: '#/components/schemas/ResourceLimits'}
     Sandbox:
       type: object
-      properties: {id: {type: string, format: uuid}, taskRunId: {type: string, format: uuid}, status: {type: string}, runtimeKind: {type: string}, createdAt: {type: string, format: date-time}, lastActiveAt: {type: string, format: date-time}, expiresAt: {type: string, format: date-time}, maxExpiresAt: {type: string, format: date-time}}
+      properties:
+        id: {type: string, format: uuid}
+        taskRunId: {type: string, format: uuid}
+        workspaceStorageKey: {type: string}
+        imageProfile: {type: string}
+        repositoryIds: {type: array, uniqueItems: true, items: {type: string, format: uuid}}
+        status: {type: string}
+        runtimeKind: {type: string}
+        createdAt: {type: string, format: date-time}
+        lastActiveAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        maxExpiresAt: {type: string, format: date-time}
     ToolExecutionRequest:
       type: object
       required: [executionId, tool, arguments]

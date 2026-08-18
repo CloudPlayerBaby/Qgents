@@ -13,6 +13,7 @@ import qg.qgent.service.GitCredentialService;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
 
 /**
@@ -28,8 +29,8 @@ import java.util.regex.Pattern;
  *   <li>{@code app.worker.enabled=false} 时本管理器为 no-op（返回 null），编排链路仍走本地端口；</li>
  *   <li>销毁只销毁 Sandbox，Workspace 持久保留。</li>
  * </ul>
- * 当前编排是同步单线程、单 Workspace 单写者，会话用进程内 Map 按 workspaceId 记录；
- * 若未来接入并行执行，写入租约必须升级为持久状态/锁（见 AGENTS.md）。
+ * 会话用进程内 Map 按 workspaceId 记录，并使用 Workspace 级锁串行化初始化与释放；
+ * 跨进程或多实例部署时，Workspace 写入租约仍必须升级为持久状态/锁（见 AGENTS.md）。
  */
 @Service
 public class SandboxSessionManager {
@@ -46,6 +47,7 @@ public class SandboxSessionManager {
     private final GitCredentialService credentialService;
     private final GitHubAppClient githubAppClient;
     private final Map<UUID, SandboxSession> sessions = new ConcurrentHashMap<>();
+    private final Map<UUID, ReentrantLock> acquireLocks = new ConcurrentHashMap<>();
 
     public SandboxSessionManager(SandboxWorkerClient client, SandboxWorkerProperties properties,
                                  WorkspaceMapper workspaceMapper, WorkspaceRepositoryMapper repositoryMapper,
@@ -71,7 +73,9 @@ public class SandboxSessionManager {
         if (!properties.isEnabled()) {
             return null;
         }
-        synchronized (sessions) {
+        ReentrantLock acquireLock = acquireLocks.computeIfAbsent(workspaceId, ignored -> new ReentrantLock());
+        acquireLock.lock();
+        try {
             SandboxSession existing = sessions.get(workspaceId);
             if (existing != null) {
                 return existing;
@@ -79,6 +83,8 @@ public class SandboxSessionManager {
             SandboxSession created = doAcquire(taskId, projectId, workspaceId);
             sessions.put(workspaceId, created);
             return created;
+        } finally {
+            acquireLock.unlock();
         }
     }
 
@@ -97,14 +103,20 @@ public class SandboxSessionManager {
      * 销毁会话对应的 Sandbox 并移除记录；Workspace 保留。销毁失败不吞结果，仅不阻断任务收尾。
      */
     public void release(UUID workspaceId) {
-        SandboxSession session = sessions.remove(workspaceId);
-        if (session == null) {
-            return;
-        }
+        ReentrantLock acquireLock = acquireLocks.computeIfAbsent(workspaceId, ignored -> new ReentrantLock());
+        acquireLock.lock();
         try {
-            client.destroySandbox(session.sandboxId());
-        } catch (RuntimeException ignored) {
-            // 销毁失败由 Worker 的清理任务兜底，不阻断任务结果返回。
+            SandboxSession session = sessions.remove(workspaceId);
+            if (session == null) {
+                return;
+            }
+            try {
+                client.destroySandbox(session.sandboxId());
+            } catch (RuntimeException ignored) {
+                // 销毁失败由 Worker 的清理任务兜底，不阻断任务结果返回。
+            }
+        } finally {
+            acquireLock.unlock();
         }
     }
 
@@ -168,8 +180,8 @@ public class SandboxSessionManager {
      */
     private String prepareWorkspace(UUID projectId, UUID workspaceId, WorkspaceEntity workspace,
                                     List<WorkspaceRepositoryEntity> repositories) {
-        int attempts = Math.max(1, properties.getAcquireMaxAttempts());
-        long initialBackoffMillis = properties.getAcquireInitialBackoff().toMillis();
+        int attempts = properties.acquireMaxAttempts();
+        long initialBackoffMillis = properties.acquireInitialBackoff().toMillis();
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
                 return prepareWorkspaceOnce(projectId, workspaceId, workspace, repositories);
@@ -178,7 +190,7 @@ public class SandboxSessionManager {
                     throw failure;
                 }
                 try {
-                    Thread.sleep(initialBackoffMillis * (1L << (attempt - 1)));
+                    sleepBackoff(initialBackoffMillis, attempt);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw new IllegalStateException("sandbox acquire interrupted during retry backoff", interrupted);
@@ -282,24 +294,32 @@ public class SandboxSessionManager {
      * sandboxId 查询幂等恢复。Worker 端对相同规格幂等返回，不同规格返回 {@code SANDBOX_ID_CONFLICT}。
      */
     private void createSandboxRetry(WorkerCreateSandboxRequest create) {
-        int attempts = Math.max(1, properties.getAcquireMaxAttempts());
+        int attempts = properties.acquireMaxAttempts();
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
                 client.createSandbox(create);
                 return;
             } catch (ApiException failure) {
-                if (!"SANDBOX_WORKER_UNAVAILABLE".equals(failure.code()) || attempt >= attempts) {
+                if (!"SANDBOX_WORKER_UNAVAILABLE".equals(failure.code())) {
                     throw failure;
                 }
                 WorkerSandbox existing = querySandboxOrNull(create.getSandboxId());
-                if (existing == null) {
-                    continue;
-                }
-                if (create.getTaskRunId().equals(existing.getTaskRunId())) {
+                if (existing != null && sameSandboxSpec(create, existing)) {
                     return;
                 }
-                throw new ApiException(org.springframework.http.HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT",
-                        "sandbox already exists with a different spec");
+                if (existing != null) {
+                    throw new ApiException(org.springframework.http.HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT",
+                            "sandbox already exists with a different spec");
+                }
+                if (attempt >= attempts) {
+                    throw failure;
+                }
+                try {
+                    sleepBackoff(properties.acquireInitialBackoff().toMillis(), attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("sandbox create interrupted during retry backoff", interrupted);
+                }
             }
         }
         throw new IllegalStateException("unreachable: sandbox create exhausted retries");
@@ -308,9 +328,29 @@ public class SandboxSessionManager {
     private WorkerSandbox querySandboxOrNull(UUID sandboxId) {
         try {
             return client.getSandbox(sandboxId);
-        } catch (RuntimeException ignored) {
-            return null;
+        } catch (ApiException failure) {
+            if ("SANDBOX_NOT_FOUND".equals(failure.code())
+                    || "SANDBOX_WORKER_UNAVAILABLE".equals(failure.code())) {
+                return null;
+            }
+            throw failure;
         }
+    }
+
+    private boolean sameSandboxSpec(WorkerCreateSandboxRequest request, WorkerSandbox existing) {
+        return Objects.equals(request.getTaskRunId(), existing.getTaskRunId())
+                && Objects.equals(request.getWorkspaceStorageKey(), existing.getWorkspaceStorageKey())
+                && Objects.equals(request.getImageProfile(), existing.getImageProfile())
+                && existing.getRepositoryIds() != null
+                && new HashSet<>(request.getRepositoryIds()).equals(new HashSet<>(existing.getRepositoryIds()));
+    }
+
+    private void sleepBackoff(long initialBackoffMillis, int attempt) throws InterruptedException {
+        long multiplier = 1L << Math.min(attempt - 1, 30);
+        long cappedInitial = Math.min(30_000L, initialBackoffMillis);
+        long backoff = cappedInitial > 30_000L / multiplier
+                ? 30_000L : cappedInitial * multiplier;
+        Thread.sleep(backoff);
     }
 
     /**

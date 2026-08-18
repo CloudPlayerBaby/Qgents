@@ -33,4 +33,15 @@ class SandboxWorkerPropertiesTest {
 
         assertThrows(IllegalStateException.class, properties::leaseRenewInterval);
     }
+
+    @Test
+    void rejectsInvalidAcquireRetryConfiguration() {
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+        properties.setAcquireMaxAttempts(0);
+        assertThrows(IllegalStateException.class, properties::acquireMaxAttempts);
+
+        properties.setAcquireMaxAttempts(1);
+        properties.setAcquireInitialBackoff(Duration.ofSeconds(-1));
+        assertThrows(IllegalStateException.class, properties::acquireInitialBackoff);
+    }
 }

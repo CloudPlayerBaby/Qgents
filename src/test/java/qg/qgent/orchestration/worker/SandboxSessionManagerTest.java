@@ -468,6 +468,9 @@ class SandboxSessionManagerTest {
                 .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "timeout"));
         WorkerSandbox existing = new WorkerSandbox();
         existing.setTaskRunId(TASK);
+        existing.setWorkspaceStorageKey("workspaces/" + WORKSPACE);
+        existing.setImageProfile("java-node");
+        existing.setRepositoryIds(List.of(REPO));
         when(client.getSandbox(any())).thenReturn(existing);
 
         SandboxSession session = enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE);
@@ -488,12 +491,54 @@ class SandboxSessionManagerTest {
                 .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "timeout"));
         WorkerSandbox existing = new WorkerSandbox();
         existing.setTaskRunId(UUID.fromString("00000000-0000-0000-0000-000000000099"));
+        existing.setWorkspaceStorageKey("workspaces/" + WORKSPACE);
+        existing.setImageProfile("java-node");
+        existing.setRepositoryIds(List.of(REPO));
         when(client.getSandbox(any())).thenReturn(existing);
 
         ApiException exception = assertThrows(ApiException.class,
                 () -> enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE));
 
         assertEquals("SANDBOX_ID_CONFLICT", exception.code());
+    }
+
+    @Test
+    void createTimeoutWithSameTaskButDifferentImageThrowsConflict() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+        when(client.createSandbox(any()))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "timeout"));
+        WorkerSandbox existing = new WorkerSandbox();
+        existing.setTaskRunId(TASK);
+        existing.setWorkspaceStorageKey("workspaces/" + WORKSPACE);
+        existing.setImageProfile("python");
+        existing.setRepositoryIds(List.of(REPO));
+        when(client.getSandbox(any())).thenReturn(existing);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE));
+
+        assertEquals("SANDBOX_ID_CONFLICT", exception.code());
+    }
+
+    @Test
+    void finalCreateTimeoutStillQueriesAndFailsWithoutExistingSandbox() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+        when(client.createSandbox(any()))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "timeout"));
+        when(client.getSandbox(any())).thenReturn(null);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE));
+
+        assertEquals("SANDBOX_WORKER_UNAVAILABLE", exception.code());
+        verify(client, times(3)).createSandbox(any());
+        verify(client, times(3)).getSandbox(any());
     }
 
     @Test
