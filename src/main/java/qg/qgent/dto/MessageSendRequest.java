@@ -49,6 +49,14 @@ public class MessageSendRequest {
     private UUID replyToId;
 
     /**
+     * QUOTE 消息的回复正文（可空，仅 type=QUOTE 时使用，契约 §1.4 冻结）。
+     * 发送时作为顶层字段携带，随 content 持久化并在 MessageResponse 顶层同构回显。
+     */
+    @Size(max = 20000)
+    @Schema(description = "QUOTE 消息的回复正文，仅 type=QUOTE 时使用", maxLength = 20000)
+    private String replyText;
+
+    /**
      * 客户端幂等 ID（≤128，可空），同一群内唯一。
      */
     @Size(max = 128)

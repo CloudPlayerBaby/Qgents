@@ -71,6 +71,12 @@ public class MessageResponse {
     private String replyToId;
 
     /**
+     * QUOTE 消息的回复正文（顶层回显，与发送请求体同构，契约 §1.4）；非 QUOTE 消息为空。
+     */
+    @Schema(description = "QUOTE 消息的回复正文，顶层回显；非 QUOTE 消息为空")
+    private String replyText;
+
+    /**
      * 提及对象列表。
      */
     @Schema(description = "提及对象列表")
