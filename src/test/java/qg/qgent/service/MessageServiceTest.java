@@ -22,6 +22,7 @@ import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.UserMapper;
 
 import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 import java.time.LocalDateTime;
 import java.util.concurrent.atomic.AtomicReference;
@@ -360,5 +361,67 @@ class MessageServiceTest {
 
         assertThat(response.getReplyText()).isNull();
         assertThat(response.getContent()).doesNotContainKey("replyText");
+    }
+
+    @Test
+    void incrementalMessagesAreReadAfterCursorInAscendingOrder() {
+        UUID projectId = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        MessageMapper messages = mock(MessageMapper.class);
+        RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
+        GroupService groupService = mock(GroupService.class);
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        group.setId(groupId);
+        group.setProjectId(projectId);
+        when(groups.selectById(groupId)).thenReturn(group);
+        MessageEntity first = message(groupId, 11L, "第一条");
+        MessageEntity second = message(groupId, 12L, "第二条");
+        when(messages.selectAfterSequence(groupId, 10L, 3)).thenReturn(List.of(first, second));
+
+        MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
+                mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
+                mock(ProjectAccessService.class), groupService, mock(TaskTriggerService.class),
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+
+        var page = service.listAfterSequence(actor, projectId, groupId, 10L, 2);
+
+        assertThat(page.getData()).extracting(MessageResponse::getSequence).containsExactly(11L, 12L);
+        assertThat(page.getPage().isHasMore()).isFalse();
+        verify(groupService).requireGroupMember(projectId, groupId, actor);
+        verify(messages).selectAfterSequence(groupId, 10L, 3);
+    }
+
+    @Test
+    void incrementalMessagesRejectNegativeCursorBeforeQuery() {
+        UUID projectId = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID();
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        group.setId(groupId);
+        group.setProjectId(projectId);
+        MessageMapper messages = mock(MessageMapper.class);
+        RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
+        when(groups.selectById(groupId)).thenReturn(group);
+        MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
+                mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
+                mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+
+        assertThatThrownBy(() -> service.listAfterSequence(UUID.randomUUID(), projectId, groupId, -1, 100))
+                .isInstanceOfSatisfying(ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("INVALID_MESSAGE_CURSOR"));
+        verify(messages, never()).selectAfterSequence(any(), anyLong(), anyInt());
+    }
+
+    private MessageEntity message(UUID groupId, long sequence, String text) {
+        MessageEntity entity = new MessageEntity();
+        entity.setId(UUID.randomUUID());
+        entity.setRequirementGroupId(groupId);
+        entity.setSequenceNo(sequence);
+        entity.setMessageType("TEXT");
+        entity.setContent("{\"text\":\"" + text + "\"}");
+        entity.setMentions("[]");
+        entity.setCreatedAt(LocalDateTime.now());
+        return entity;
     }
 }
