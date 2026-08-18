@@ -26,6 +26,8 @@ import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.service.event.DeliveryStartedDomainEvent;
+import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
+import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 import qg.qgent.websocket.RealtimeFrame;
 
 import java.io.IOException;
@@ -208,6 +210,16 @@ public class EventService {
                     payload.get("reviewBatchId") == null ? null : UUID.fromString(String.valueOf(map.get("reviewBatchId"))),
                     String.valueOf(map.get("operationId")));
             publisher.publishEvent(domainEvent);
+        }
+        if ("mr-first.preflight.requested".equals(eventType) && resourceId != null
+                && payload instanceof Map<?, ?> map && map.get("taskId") != null) {
+            publisher.publishEvent(new MrFirstPreflightRequestedDomainEvent(projectId,
+                    UUID.fromString(String.valueOf(map.get("taskId")))));
+        }
+        if ("preflight.updated".equals(eventType) && payload != null
+                && "APPROVED".equals(String.valueOf(payload.get("decision")))
+                && resourceId != null) {
+            publisher.publishEvent(new PreflightCqApprovedDomainEvent(projectId, UUID.fromString(resourceId)));
         }
     }
 

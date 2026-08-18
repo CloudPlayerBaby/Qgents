@@ -31,6 +31,14 @@ public class WorkBranchResponse {
     private WorkBranchDiffRef latestDiff;
     @Schema(description = "该分支唯一的 Open MR；不存在时为空")
     private WorkBranchMergeRequestRef openMergeRequest;
+    @Schema(description = "该分支最近一个真实 MR；不存在时为空")
+    private WorkBranchMergeRequestRef latestMergeRequest;
+    @Schema(description = "分支开发状态：AVAILABLE/LOCKED_BY_OPEN_MR/MERGED")
+    private String developmentStatus;
+    @Schema(description = "服务端派生的是否允许继续开发")
+    private Boolean canContinueDevelopment;
+    @Schema(description = "不可继续开发时的稳定原因码")
+    private String cannotContinueReason;
     @Schema(description = "仅在测试确实针对 lastKnownHead 时返回")
     private WorkBranchVerificationRef lastVerification;
 }

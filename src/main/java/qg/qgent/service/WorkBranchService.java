@@ -35,6 +35,7 @@ public class WorkBranchService {
     private final RequirementGroupMapper groups;
     private final ProjectRepositoryMapper projectRepositories;
     private final ProjectAccessService access;
+    private GitHubRepositoryMapper githubRepositories;
 
     public WorkBranchService(WorkspaceRepositoryMapper worktrees, TaskMapper tasks, DiffMapper diffs,
                              MergeRequestMapper mergeRequests, TestRunMapper testRuns,
@@ -48,6 +49,11 @@ public class WorkBranchService {
         this.groups = groups;
         this.projectRepositories = projectRepositories;
         this.access = access;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setGithubRepositories(GitHubRepositoryMapper githubRepositories) {
+        this.githubRepositories = githubRepositories;
     }
 
     /**
@@ -88,9 +94,8 @@ public class WorkBranchService {
                 .eq("project_id", projectId)
                 .in("workspace_id", branchWorkspaceIds)
                 .in("project_repository_id", branchRepositoryIds));
-        List<MergeRequestEntity> openMergeRequests = mergeRequests.selectList(Wrappers.<MergeRequestEntity>query()
-                .in("project_repository_id", branchRepositoryIds)
-                .eq("status", "OPEN"));
+        List<MergeRequestEntity> branchMergeRequests = mergeRequests.selectList(Wrappers.<MergeRequestEntity>query()
+                .in("project_repository_id", branchRepositoryIds));
         List<TestRunEntity> completedTests = testRuns.selectList(Wrappers.<TestRunEntity>query()
                 .eq("project_id", projectId)
                 .in("project_repository_id", branchRepositoryIds)
@@ -101,7 +106,7 @@ public class WorkBranchService {
         Map<BranchKey, List<DiffEntity>> diffsByBranch = projectDiffs.stream()
                 .filter(diff -> diff.getSourceBranch() != null)
                 .collect(Collectors.groupingBy(diff -> new BranchKey(diff.getProjectRepositoryId(), diff.getSourceBranch())));
-        Map<BranchKey, List<MergeRequestEntity>> mrsByBranch = openMergeRequests.stream()
+        Map<BranchKey, List<MergeRequestEntity>> mrsByBranch = branchMergeRequests.stream()
                 .filter(mr -> mr.getSourceBranch() != null)
                 .collect(Collectors.groupingBy(mr -> new BranchKey(mr.getProjectRepositoryId(), mr.getSourceBranch())));
 
@@ -136,7 +141,12 @@ public class WorkBranchService {
                     .max(worktreeOrder()).orElse(latestWorktree);
         }
         DiffEntity latestDiff = branchDiffs.stream().max(diffOrder()).orElse(null);
-        MergeRequestEntity openMr = branchMrs.stream().max(mrOrder()).orElse(null);
+        MergeRequestEntity latestMr = branchMrs.stream().max(mrOrder()).orElse(null);
+        MergeRequestEntity openMr = branchMrs.stream().filter(mr -> "OPEN".equals(mr.getStatus()))
+                .max(mrOrder()).orElse(null);
+        boolean locked = branchMrs.stream().anyMatch(mr -> !"MERGED".equals(mr.getStatus()));
+        String developmentStatus = locked ? "LOCKED_BY_OPEN_MR"
+                : (latestMr != null && "MERGED".equals(latestMr.getStatus()) ? "MERGED" : "AVAILABLE");
         WorkBranchVerificationRef verification = latestVerification(completedTests, key.projectRepositoryId(),
                 latestWorktree.getHeadCommit());
         List<WorkBranchRequirementGroupRef> requirementGroups = relatedTasks.stream()
@@ -146,7 +156,8 @@ public class WorkBranchService {
                 .map(group -> new WorkBranchRequirementGroupRef(id(group.getId()), group.getName())).toList();
         WorkBranchResponse response = new WorkBranchResponse(id(key.projectRepositoryId()), key.name(),
                 id(latestWorktree.getWorkspaceId()), latestWorktree.getHeadCommit(), taskRef(latestTask),
-                requirementGroups, diffRef(latestDiff), mrRef(openMr), verification);
+                requirementGroups, diffRef(latestDiff), mrRef(openMr), mrRef(latestMr), developmentStatus,
+                !locked, locked ? "WORK_BRANCH_LOCKED_BY_OPEN_MR" : null, verification);
         LocalDateTime lastActivity = maxTime(latestTask == null ? null : latestTask.getUpdatedAt(),
                 latestWorktree.getUpdatedAt(), latestDiff == null ? null : latestDiff.getCreatedAt(),
                 openMr == null ? null : openMr.getProviderUpdatedAt());
@@ -265,7 +276,20 @@ public class WorkBranchService {
     }
 
     private WorkBranchMergeRequestRef mrRef(MergeRequestEntity mr) {
-        return mr == null ? null : new WorkBranchMergeRequestRef(id(mr.getId()), mr.getProviderNumber(), mr.getStatus());
+        if (mr == null) {
+            return null;
+        }
+        String webUrl = null;
+        if (githubRepositories != null) {
+            ProjectRepositoryEntity binding = projectRepositories.selectById(mr.getProjectRepositoryId());
+            GitHubRepositoryEntity repository = binding == null ? null : githubRepositories.selectById(binding.getRepositoryId());
+            if (repository != null && repository.getOwnerLogin() != null && repository.getName() != null
+                    && mr.getProviderNumber() != null) {
+                webUrl = "https://github.com/" + repository.getOwnerLogin() + "/" + repository.getName()
+                        + "/pull/" + mr.getProviderNumber();
+            }
+        }
+        return new WorkBranchMergeRequestRef(id(mr.getId()), mr.getProviderNumber(), mr.getStatus(), webUrl);
     }
 
     private static BranchKey keyOf(WorkspaceRepositoryEntity worktree) {

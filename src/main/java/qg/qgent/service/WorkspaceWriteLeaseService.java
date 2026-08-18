@@ -17,9 +17,15 @@ import java.util.UUID;
 @Service
 public class WorkspaceWriteLeaseService {
     private final WorkspaceMapper workspaces;
+    private WorkBranchDevelopmentGuard developmentGuard;
 
     public WorkspaceWriteLeaseService(WorkspaceMapper workspaces) {
         this.workspaces = workspaces;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setDevelopmentGuard(WorkBranchDevelopmentGuard developmentGuard) {
+        this.developmentGuard = developmentGuard;
     }
 
     /**
@@ -42,6 +48,9 @@ public class WorkspaceWriteLeaseService {
      * 在实际 Worker 写入前续租。租约已丢失时立即阻断外部写入，不能继续使用过期执行现场。
      */
     public void renew(WorkspaceWriteLease lease) {
+        if (developmentGuard != null && lease != null) {
+            developmentGuard.requireWorkerWriteAllowed(lease.getProjectId(), lease.getWorkspaceId());
+        }
         if (lease == null || workspaces.renewWriteLease(lease.getProjectId(), lease.getWorkspaceId(),
                 lease.getTaskId(), lease.token()) != 1) {
             throw new ApiException(HttpStatus.CONFLICT, "WORKSPACE_WRITE_LEASE_LOST",

@@ -12,6 +12,8 @@ import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.service.event.DeliveryStartedDomainEvent;
+import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
+import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 
 import java.util.Map;
 import java.util.UUID;
@@ -86,6 +88,30 @@ class EventServiceTest {
         assertEquals(taskId, event.taskId());
         assertEquals(batchId, event.reviewBatchId());
         assertEquals("operation-1", event.operationId());
+    }
+
+    @Test
+    void mrFirstPreflightAndCqApprovalPublishTypedDomainEvents() {
+        EventMapper events = mock(EventMapper.class);
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        ProjectMapper projects = mock(ProjectMapper.class);
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID dryRunId = UUID.randomUUID();
+        when(events.nextSequence(projectId)).thenReturn(1L, 2L);
+        EventService service = service(events, projects, publisher);
+
+        service.publish(projectId, null, "mr-first.preflight.requested", taskId.toString(),
+                Map.of("taskId", taskId));
+        service.publish(projectId, null, "preflight.updated", dryRunId.toString(),
+                Map.of("taskId", taskId, "decision", "APPROVED"));
+
+        org.mockito.ArgumentCaptor<Object> captured = org.mockito.ArgumentCaptor.forClass(Object.class);
+        verify(publisher, org.mockito.Mockito.times(2)).publishEvent(captured.capture());
+        assertEquals(taskId, ((MrFirstPreflightRequestedDomainEvent) captured.getAllValues().get(0)).taskId());
+        PreflightCqApprovedDomainEvent approval = (PreflightCqApprovedDomainEvent) captured.getAllValues().get(1);
+        assertEquals(projectId, approval.projectId());
+        assertEquals(dryRunId, approval.dryRunId());
     }
 
     private EventService service(EventMapper events, ProjectMapper projects) {

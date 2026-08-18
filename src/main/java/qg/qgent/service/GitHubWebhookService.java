@@ -664,6 +664,16 @@ public class GitHubWebhookService {
         payload.put("timestamp", Instant.now().toString());
         eventService.publish(binding.getProjectId(), null, "merge-request.updated",
                 mr.getId().toString(), payload);
+        Map<String, Object> branchPayload = new HashMap<>();
+        branchPayload.put("projectId", binding.getProjectId().toString());
+        branchPayload.put("repositoryId", binding.getId().toString());
+        branchPayload.put("sourceBranch", mr.getSourceBranch());
+        branchPayload.put("mergeRequestId", mr.getId().toString());
+        branchPayload.put("status", mr.getStatus());
+        branchPayload.put("developmentStatus", "MERGED".equals(mr.getStatus()) ? "MERGED" : "LOCKED_BY_OPEN_MR");
+        branchPayload.put("canContinueDevelopment", "MERGED".equals(mr.getStatus()));
+        eventService.publish(binding.getProjectId(), null, "work-branch.updated",
+                binding.getId() + ":" + mr.getSourceBranch(), branchPayload);
     }
 
     private void complete(GitHubWebhookDeliveryEntity row, String status) {

@@ -17,6 +17,8 @@ public class WorkBranchMergeRequestRef {
     private String id;
     @Schema(description = "GitHub Pull Request 真实编号")
     private Long number;
-    @Schema(description = "MR 状态，固定为 OPEN")
+    @Schema(description = "MR 状态：OPEN/MERGED/CLOSED")
     private String status;
+    @Schema(description = "MR 详情地址；无法构造时为空")
+    private String webUrl;
 }

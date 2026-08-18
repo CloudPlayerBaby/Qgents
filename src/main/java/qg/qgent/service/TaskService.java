@@ -44,6 +44,8 @@ public class TaskService {
     private final DefaultAgentProvisioner defaultAgents;
     private final ContextService contextService;
     private final TaskContextSnapshotCodec contextSnapshotCodec;
+    /** 续作前的工作分支 MR 锁定门禁；纯领域单测可不注入。 */
+    private WorkBranchDevelopmentGuard developmentGuard;
 
     /**
      * Creates the task-domain service with all persistence and authorization
@@ -72,6 +74,11 @@ public class TaskService {
         this.defaultAgents = defaultAgents;
         this.contextService = contextService;
         this.contextSnapshotCodec = contextSnapshotCodec;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setDevelopmentGuard(WorkBranchDevelopmentGuard developmentGuard) {
+        this.developmentGuard = developmentGuard;
     }
 
     /**
@@ -144,6 +151,9 @@ public class TaskService {
             if (!group.getId().equals(continuation.getRequirementGroupId())) {
                 throw validation("WORKSPACE_CONTINUATION_GROUP_MISMATCH",
                         "The continued Task must belong to the current Requirement Group");
+            }
+            if (developmentGuard != null) {
+                developmentGuard.requireContinuationAllowed(projectId, workspace.getId());
             }
             repositoryIds = repositories.selectByWorkspace(workspace.getId()).stream()
                     .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();

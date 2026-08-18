@@ -83,6 +83,8 @@ public class MergeRequestService {
     private MrQualityGateService qualityGates;
     /** P1 MR 前预检门禁。缺失时必须拒绝创建 MR，不能降级为绕过门禁。 */
     private PreflightGateService preflightGates;
+    /** source branch 进入 MR 生命周期后禁止继续写入。 */
+    private WorkBranchDevelopmentGuard developmentGuard;
     /** 已确认创建真实 MR 后的群聊回卡依赖；发送失败不得改变远端 MR 事实。 */
     private MessageService messageService;
     private OrchestratorAgentService orchestratorAgents;
@@ -95,6 +97,11 @@ public class MergeRequestService {
     @org.springframework.beans.factory.annotation.Autowired
     void setPreflightGates(PreflightGateService preflightGates) {
         this.preflightGates = preflightGates;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setDevelopmentGuard(WorkBranchDevelopmentGuard developmentGuard) {
+        this.developmentGuard = developmentGuard;
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -297,6 +304,11 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.CONFLICT, "WORKSPACE_BRANCH_NOT_COMMITTED",
                     "The repository branch must have a committed head before it can be pushed");
         }
+        if (developmentGuard != null) {
+            developmentGuard.requireBranchWritable(projectId, repositoryId, worktree.getSourceBranch(),
+                    "DIFF_DELIVERY_BLOCKED_BY_OPEN_MR",
+                    "当前工作分支存在未合并的 MR，不能继续进行 Diff 交付");
+        }
         requireAcceptedCommitForPush(task, worktree, repositoryId);
         GitHubRepositoryEntity github = requireGitHubRepository(projectId, repositoryId);
         GitHubInstallationEntity installation = requireInstallation(github);
@@ -333,9 +345,15 @@ public class MergeRequestService {
         MergeRequestEntity existing = mergeRequestMapper.selectOne(Wrappers.<MergeRequestEntity>lambdaQuery()
                 .eq(MergeRequestEntity::getProjectRepositoryId, request.getRepositoryId())
                 .eq(MergeRequestEntity::getSourceBranch, worktree.getSourceBranch())
-                .eq(MergeRequestEntity::getTargetBranch, request.getTargetBranch())
-                .eq(MergeRequestEntity::getStatus, "OPEN").orderByDesc(MergeRequestEntity::getCreatedAt)
+                .ne(MergeRequestEntity::getStatus, "MERGED").orderByDesc(MergeRequestEntity::getProviderUpdatedAt)
+                .orderByDesc(MergeRequestEntity::getCreatedAt)
                 .last("LIMIT 1"));
+        if (existing != null && existing.getStatus() != null && (!"OPEN".equals(existing.getStatus())
+                || !request.getTargetBranch().equals(existing.getTargetBranch()))) {
+            throw new ApiException(HttpStatus.CONFLICT, "MR_BRANCH_LOCKED_BY_OPEN_MR",
+                    "该工作分支已有未合并的 MR，不能创建或更新新的 MR",
+                    List.of(branchLockDetails(existing)));
+        }
         requireTaskReadyForMr(task, worktree);
         // 已完成的 MR_FIRST Task 重放本地 OPEN 镜像时，后续仍会以 GitHub 真实开放 PR 和
         // 相同 head 校验为准。不要因为目标分支后来推进而让已创建 MR 的幂等查询错误地要求
@@ -343,6 +361,12 @@ public class MergeRequestService {
         boolean completedReplayCandidate = "MR_FIRST".equals(task.getDeliveryMode())
                 && "SUCCEEDED".equals(task.getStatus()) && existing != null
                 && sameCommit(worktree.getHeadCommit(), existing.getHeadCommit());
+        if (existing != null && existing.getStatus() != null
+                && !sameCommit(worktree.getHeadCommit(), existing.getHeadCommit())) {
+            throw new ApiException(HttpStatus.CONFLICT, "MR_BRANCH_LOCKED_BY_OPEN_MR",
+                    "该工作分支已有未合并的 MR，不能继续推送新的提交",
+                    List.of(branchLockDetails(existing)));
+        }
         if (!completedReplayCandidate) {
             requirePreflightGates().requireReady(task, worktree, request.getRepositoryId(), request.getTargetBranch(), targetCommit);
         }
@@ -1368,6 +1392,15 @@ public class MergeRequestService {
         return mr.getProviderNumber().intValue();
     }
 
+    private Map<String, Object> branchLockDetails(MergeRequestEntity mr) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("mergeRequestId", mr.getId());
+        details.put("providerNumber", mr.getProviderNumber());
+        details.put("status", mr.getStatus());
+        details.put("sourceBranch", mr.getSourceBranch());
+        return details;
+    }
+
     private String toLocalStatus(GitHubPullRequestDetails remote) {
         if (remote.merged()) {
             return "MERGED";
@@ -1406,6 +1439,18 @@ public class MergeRequestService {
         p.put("timestamp", Instant.now().toString());
         eventService.publish(repo == null ? null : repo.getProjectId(), null, "merge-request.updated",
                 mr.getId().toString(), p);
+        // MR 状态变化会直接改变 source branch 是否可继续开发；前端收到后应重新查询分支列表，
+        // 不要仅凭事件 payload 推断多仓库 Workspace 的聚合状态。
+        Map<String, Object> branchPayload = new HashMap<>();
+        branchPayload.put("projectId", repo == null ? null : repo.getProjectId());
+        branchPayload.put("repositoryId", mr.getProjectRepositoryId());
+        branchPayload.put("sourceBranch", mr.getSourceBranch());
+        branchPayload.put("mergeRequestId", mr.getId());
+        branchPayload.put("status", mr.getStatus());
+        branchPayload.put("developmentStatus", "MERGED".equals(mr.getStatus()) ? "MERGED" : "LOCKED_BY_OPEN_MR");
+        branchPayload.put("canContinueDevelopment", "MERGED".equals(mr.getStatus()));
+        eventService.publish(repo == null ? null : repo.getProjectId(), null, "work-branch.updated",
+                mr.getProjectRepositoryId() + ":" + mr.getSourceBranch(), branchPayload);
         notifyMrPending(mr, repo == null ? null : repo.getProjectId());
     }
 
