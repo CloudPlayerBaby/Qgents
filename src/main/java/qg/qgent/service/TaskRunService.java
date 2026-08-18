@@ -51,6 +51,7 @@ public class TaskRunService {
     private final ProjectRepositoryMapper projectRepositoryMapper;
     private final WorkspaceRepositoryMapper workspaceRepositoryMapper;
     private final ProjectAccessService projectAccess;
+    private final GroupService groupService;
     private final EventService eventService;
     private final NotificationService notificationService;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
@@ -60,7 +61,7 @@ public class TaskRunService {
                           TaskStepMapper taskStepMapper, AgentMapper agentMapper, TaskExecutionArtifactMapper artifactMapper,
                           TaskMapper taskMapper, RequirementGroupMapper requirementGroupMapper,
                           ProjectRepositoryMapper projectRepositoryMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
-                          ProjectAccessService projectAccess, EventService eventService,
+                          ProjectAccessService projectAccess, GroupService groupService, EventService eventService,
                           NotificationService notificationService,
                           org.springframework.context.ApplicationEventPublisher eventPublisher) {
         this.taskRunMapper = taskRunMapper;
@@ -75,6 +76,7 @@ public class TaskRunService {
         this.projectRepositoryMapper = projectRepositoryMapper;
         this.workspaceRepositoryMapper = workspaceRepositoryMapper;
         this.projectAccess = projectAccess;
+        this.groupService = groupService;
         this.eventService = eventService;
         this.notificationService = notificationService;
         this.eventPublisher = eventPublisher;
@@ -88,6 +90,7 @@ public class TaskRunService {
     public ApiPageResponse<TaskRunListItemResponse> listByTask(UUID projectId, UUID taskId, UUID userId,
                                                                String cursor, int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
+        requireTaskVisible(projectId, taskId, userId);
         int size = clampLimit(limit);
         UUID cursorUuid = parseCursor(cursor);
         List<TaskRunEntity> rows = taskRunMapper.selectList(Wrappers.<TaskRunEntity>lambdaQuery()
@@ -108,14 +111,17 @@ public class TaskRunService {
     public TaskRunDetailResponse detail(UUID projectId, UUID taskRunId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
+        requireTaskVisible(projectId, run.getTaskId(), userId);
+        TaskStepEntity step = run.getTaskStepId() == null ? null : taskStepMapper.selectById(run.getTaskStepId());
+        AgentEntity agent = run.getAgentId() == null ? null : agentMapper.selectById(run.getAgentId());
         List<InputRequestEntity> requests = inputRequestMapper.selectList(
                 Wrappers.<InputRequestEntity>lambdaQuery().eq(InputRequestEntity::getTaskRunId, run.getId()));
         return new TaskRunDetailResponse(
                 id(run.getId()), id(run.getProjectId()), id(run.getTaskId()), id(run.getTaskStepId()),
-                id(run.getAgentId()),
-                run.getRole(), run.getStatus(), id(run.getRetryOfTaskRunId()),
+                step == null ? null : step.getTitle(), id(run.getAgentId()), agentSummary(agent),
+                run.getRole(), run.getStatus(), statusSummary(run.getStatus()), id(run.getRetryOfTaskRunId()),
                 statusReason(run, requests),
-                artifactSummary(run.getId()), iso(run.getStartedAt()), iso(run.getFinishedAt()),
+                artifactSummary(run.getId()), List.of(), iso(run.getStartedAt()), iso(run.getFinishedAt()),
                 durationMs(run.getStartedAt(), run.getFinishedAt()), iso(run.getCreatedAt()),
                 iso(run.getUpdatedAt()));
     }
@@ -132,6 +138,7 @@ public class TaskRunService {
     public TaskRunSummaryResponse retry(UUID projectId, UUID taskRunId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         TaskRunEntity source = requireRun(projectId, taskRunId);
+        requireTaskVisible(projectId, source.getTaskId(), userId);
         requireOwner(source, projectId, userId);
         if (!RETRYABLE.contains(source.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_RETRYABLE", "仅 FAILED/CANCELLED/BLOCKED 状态可重试");
@@ -164,6 +171,7 @@ public class TaskRunService {
     public TaskRunSummaryResponse cancel(UUID projectId, UUID taskRunId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
+        requireTaskVisible(projectId, run.getTaskId(), userId);
         requireOwner(run, projectId, userId);
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         if ("QUEUED".equals(run.getStatus())) {
@@ -195,7 +203,8 @@ public class TaskRunService {
     public ApiPageResponse<LogEntryResponse> logs(UUID projectId, UUID taskRunId, UUID userId, String cursor,
                                                   int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
-        requireRun(projectId, taskRunId);
+        TaskRunEntity run = requireRun(projectId, taskRunId);
+        requireTaskVisible(projectId, run.getTaskId(), userId);
         int size = clampLimit(limit);
         long after = parseLongCursor(cursor);
         List<ExecutionLogEntity> rows = logMapper.selectList(Wrappers.<ExecutionLogEntity>lambdaQuery()
@@ -216,19 +225,40 @@ public class TaskRunService {
     public ExecutionContextResponse executionContext(UUID projectId, UUID taskRunId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
-        // 仅返回只读摘要；宿主机路径、容器控制入口与凭据一律不返回
-        return new ExecutionContextResponse(iso(run.getStartedAt()), null);
+        requireTaskVisible(projectId, run.getTaskId(), userId);
+        TaskEntity task = taskMapper.selectById(run.getTaskId());
+        if (task == null || !projectId.equals(task.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "任务不存在或不可见");
+        }
+        // 仅返回只读摘要；宿主机路径、容器控制入口与凭据一律不返回。
+        // 当前没有持久化 Sandbox 实体，sandboxStatus/expiresAt 必须返回 null，不能用 Workspace 状态冒充。
+        // worktree 是当前唯一持久化的仓库/分支事实；无 worktree 的运行仍稳定返回 null 字段。
+        List<WorkspaceRepositoryEntity> worktrees = task.getWorkspaceId() == null ? List.of()
+                : workspaceRepositoryMapper.selectByWorkspace(task.getWorkspaceId());
+        if (worktrees == null) {
+            worktrees = List.of();
+        }
+        WorkspaceRepositoryEntity worktree = worktrees.stream().findFirst().orElse(null);
+        String workspaceId = task.getWorkspaceId() == null ? null : id(task.getWorkspaceId());
+        return new ExecutionContextResponse(workspaceId, null,
+                worktree == null ? null : id(worktree.getProjectRepositoryId()),
+                worktree == null ? null : worktree.getBaseRef(),
+                worktree == null ? null : worktree.getSourceBranch(),
+                iso(run.getStartedAt()), null);
     }
 
     /**
      * 查询运行期间发起的人机输入/审批请求。
      */
-    public List<InputRequestResponse> inputRequests(UUID projectId, UUID taskRunId, UUID userId) {
+    public ApiPageResponse<InputRequestResponse> inputRequests(UUID projectId, UUID taskRunId, UUID userId,
+                                                               String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
-        requireRun(projectId, taskRunId);
-        return inputRequestMapper.selectList(Wrappers.<InputRequestEntity>lambdaQuery()
+        TaskRunEntity run = requireRun(projectId, taskRunId);
+        requireTaskVisible(projectId, run.getTaskId(), userId);
+        List<InputRequestResponse> data = inputRequestMapper.selectList(Wrappers.<InputRequestEntity>lambdaQuery()
                         .eq(InputRequestEntity::getTaskRunId, taskRunId).orderByAsc(InputRequestEntity::getCreatedAt))
                 .stream().map(this::toInput).toList();
+        return new ApiPageResponse<>(data, new PageMeta(null, false), requestId);
     }
 
     /**
@@ -239,6 +269,7 @@ public class TaskRunService {
                                            Map<String, Object> answer) {
         projectAccess.requireProjectMember(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
+        requireTaskVisible(projectId, run.getTaskId(), userId);
         requireOwner(run, projectId, userId);
         InputRequestEntity req = requireInput(run, requestId);
         if (!"PENDING".equals(req.getStatus()) || !"INPUT".equals(req.getKind())
@@ -266,6 +297,7 @@ public class TaskRunService {
                                              String reason) {
         projectAccess.requireProjectAdmin(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
+        requireTaskVisible(projectId, run.getTaskId(), userId);
         return decideInput(run, requestId, "APPROVED", reason);
     }
 
@@ -277,6 +309,7 @@ public class TaskRunService {
                                             String reason) {
         projectAccess.requireProjectAdmin(projectId, userId);
         TaskRunEntity run = requireRun(projectId, taskRunId);
+        requireTaskVisible(projectId, run.getTaskId(), userId);
         return decideInput(run, requestId, "REJECTED", reason);
     }
 
@@ -410,6 +443,21 @@ public class TaskRunService {
     // ---------- 私有辅助 ----------
 
     /**
+     * TaskRun 的可见性继承所属 Task 的需求群边界，避免项目成员仅凭运行 UUID
+     * 读取其他需求群的日志、执行环境或输入请求。
+     */
+    private TaskEntity requireTaskVisible(UUID projectId, UUID taskId, UUID userId) {
+        TaskEntity task = taskMapper.selectById(taskId);
+        if (task == null || !projectId.equals(task.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "任务不存在或不可见");
+        }
+        if (task.getRequirementGroupId() != null) {
+            groupService.requireGroupMember(projectId, task.getRequirementGroupId(), userId);
+        }
+        return task;
+    }
+
+    /**
      * 加载运行并校验其归属路径项目，防止跨项目仅凭 UUID 查询。
      */
     private TaskRunEntity requireRun(UUID projectId, UUID taskRunId) {
@@ -461,11 +509,21 @@ public class TaskRunService {
                                                                 String status, String cursor, int limit,
                                                                 String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
+        Set<UUID> visibleGroupIds = new HashSet<>(groupService.visibleGroupIds(projectId, userId));
+        Set<UUID> visibleTaskIds = taskMapper.selectList(Wrappers.<TaskEntity>lambdaQuery()
+                        .eq(TaskEntity::getProjectId, projectId)).stream()
+                .filter(task -> task.getRequirementGroupId() == null
+                        || visibleGroupIds.contains(task.getRequirementGroupId()))
+                .map(TaskEntity::getId).collect(Collectors.toSet());
+        if (visibleTaskIds.isEmpty()) {
+            return new ApiPageResponse<>(List.of(), new PageMeta(null, false), requestId);
+        }
         int size = clampLimit(limit);
         UUID cursorUuid = parseCursor(cursor);
         List<TaskRunEntity> rows = taskRunMapper.selectList(Wrappers.<TaskRunEntity>lambdaQuery()
                 .eq(TaskRunEntity::getProjectId, projectId)
                 .eq(TaskRunEntity::getAgentId, agentId)
+                .in(TaskRunEntity::getTaskId, visibleTaskIds)
                 .eq(status != null && !status.isBlank(), TaskRunEntity::getStatus, status)
                 .lt(cursorUuid != null, TaskRunEntity::getId, cursorUuid).orderByDesc(TaskRunEntity::getId)
                 .last("LIMIT " + (size + 1)));
@@ -616,6 +674,9 @@ public class TaskRunService {
      * 脱敏状态摘要：不返回日志原文、Prompt、Token 或环境变量。
      */
     private String statusSummary(String status) {
+        if (status == null) {
+            return null;
+        }
         return switch (status) {
             case "QUEUED" -> "等待执行";
             case "RUNNING" -> "执行中";
