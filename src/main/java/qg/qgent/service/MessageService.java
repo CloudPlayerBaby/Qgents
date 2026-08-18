@@ -297,7 +297,12 @@ public class MessageService {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "MESSAGE_CONTENT_INVALID", "消息内容不能为空");
         }
         switch (type) {
-            case "TEXT", "QUOTE" -> requireField(content, "text", "文本消息缺少 text 字段");
+            case "TEXT" -> requireField(content, "text", "文本消息缺少 text 字段");
+            // QUOTE 引用消息：content 为引用摘要（quotedMessageId/quotedText/quotedSenderName），无 text 字段
+            case "QUOTE" -> {
+                requireField(content, "quotedMessageId", "引用消息缺少 quotedMessageId 字段");
+                requireField(content, "quotedText", "引用消息缺少 quotedText 字段");
+            }
             case "CODE" -> {
                 requireField(content, "language", "代码消息缺少 language 字段");
                 requireField(content, "code", "代码消息缺少 code 字段");

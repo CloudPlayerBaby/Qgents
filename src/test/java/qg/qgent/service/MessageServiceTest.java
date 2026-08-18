@@ -58,7 +58,7 @@ class MessageServiceTest {
 
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectAccessService.class),
-                mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class));
+                mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class));
         MessageSendRequest request = new MessageSendRequest();
         UUID diffId = UUID.randomUUID();
         request.setType("DIFF");
@@ -86,7 +86,7 @@ class MessageServiceTest {
         when(groups.selectOne(any())).thenReturn(group);
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectAccessService.class),
-                mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class));
+                mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class));
         MessageSendRequest request = new MessageSendRequest();
         request.setType("TEXT");
         request.setContent(Map.of("text", "cannot impersonate a system card"));

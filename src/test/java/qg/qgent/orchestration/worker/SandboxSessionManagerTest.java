@@ -85,7 +85,8 @@ class SandboxSessionManagerTest {
         properties.setEnabled(true);
         properties.setAcquireInitialBackoff(Duration.ZERO);
         return new SandboxSessionManager(client, properties, workspaceMapper, repositoryMapper,
-                projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient);
+                projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient,
+                writeLeases);
     }
 
     private WorkspaceEntity workspace() {
