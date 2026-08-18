@@ -32,17 +32,19 @@ public class ContextService {
     private final MemoryMapper memoryMapper;
     private final RequirementGroupRepositoryMapper groupRepoMapper;
     private final ProjectAccessService access;
+    private final GroupService groupService;
     private final ObjectMapper mapper;
 
     public ContextService(RequirementGroupMapper groupMapper, MessageMapper messageMapper, SkillMapper skillMapper,
                           MemoryMapper memoryMapper, RequirementGroupRepositoryMapper groupRepoMapper, ProjectAccessService access,
-                          ObjectMapper mapper) {
+                          GroupService groupService, ObjectMapper mapper) {
         this.groupMapper = groupMapper;
         this.messageMapper = messageMapper;
         this.skillMapper = skillMapper;
         this.memoryMapper = memoryMapper;
         this.groupRepoMapper = groupRepoMapper;
         this.access = access;
+        this.groupService = groupService;
         this.mapper = mapper;
     }
 
@@ -56,7 +58,7 @@ public class ContextService {
      * @return 群聊上下文
      */
     public GroupContext buildForGroup(UUID actor, UUID projectId, UUID groupId, Integer limit) {
-        access.requireProjectMember(projectId, actor);
+        groupService.requireGroupMember(projectId, groupId, actor);
         RequirementGroupEntity group = groupMapper.selectById(groupId);
         if (group == null || !group.getProjectId().equals(projectId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
@@ -110,8 +112,15 @@ public class ContextService {
                 .map(s -> new ContextSkill(s.getName(), s.getContent())).toList();
         List<ContextMemory> memories = memoryMapper.searchByQuery(projectId, actor, isAdmin, tag, q).stream()
                 .map(m -> new ContextMemory(m.getTitle(), m.getContent(), m.getCategory())).toList();
-        List<ContextMessage> messages = q == null || q.isBlank() ? List.of()
-                : messageMapper.searchByQuery(projectId, groupId, q.trim(), messageLimit).stream()
+        List<UUID> visibleGroupIds;
+        if (groupId != null) {
+            groupService.requireGroupMember(projectId, groupId, actor);
+            visibleGroupIds = List.of(groupId);
+        } else {
+            visibleGroupIds = groupService.visibleGroupIds(projectId, actor);
+        }
+        List<ContextMessage> messages = q == null || q.isBlank() || visibleGroupIds.isEmpty() ? List.of()
+                : messageMapper.searchByQuery(projectId, visibleGroupIds, q.trim(), messageLimit).stream()
                 .map(m -> new ContextMessage(m.getSequenceNo(), m.getMessageType(),
                         senderType(m), senderId(m), messageText(m.getContent())))
                 .toList();

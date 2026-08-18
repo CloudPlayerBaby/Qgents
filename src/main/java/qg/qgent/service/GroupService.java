@@ -157,7 +157,7 @@ public class GroupService {
     }
 
     /**
-     * 项目全部群（含主群与已归档），按最近活跃排序；附带每群最新消息摘要。
+     * 当前用户在项目内可见的群（含主群与已归档），按最近活跃排序；附带每群最新消息摘要。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -168,7 +168,7 @@ public class GroupService {
         Map<UUID, GroupLatestMessageRow> latestByGroup = messageMapper.selectLatestByProject(projectId).stream()
                 .collect(Collectors.toMap(GroupLatestMessageRow::getRequirementGroupId, Function.identity()));
         Map<UUID, Long> unreadByGroup = countUnread(projectId, actor);
-        return groupMapper.listByProject(projectId).stream()
+        return groupMapper.listVisibleByProject(projectId, actor).stream()
                 .map(group -> toResponse(group, latestByGroup.get(group.getId()), unreadByGroup.get(group.getId())))
                 .toList();
     }
@@ -223,7 +223,7 @@ public class GroupService {
      * @return 群视图
      */
     public GroupResponse get(UUID actor, UUID projectId, UUID groupId) {
-        access.requireProjectMember(projectId, actor);
+        requireGroupMember(projectId, groupId, actor);
         RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
         Map<UUID, Long> unreadByGroup = countUnread(projectId, actor);
         GroupResponse response = toResponse(group, null, unreadByGroup.get(groupId));
@@ -303,7 +303,7 @@ public class GroupService {
      * @return 成员视图列表
      */
     public List<GroupMemberResponse> members(UUID actor, UUID projectId, UUID groupId) {
-        access.requireProjectMember(projectId, actor);
+        requireGroupMember(projectId, groupId, actor);
         RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
         List<GroupMemberResponse> members = new ArrayList<>();
         if ("PROJECT_MAIN".equals(group.getGroupType())) {
@@ -531,8 +531,7 @@ public class GroupService {
      * @return 推进后的已读状态（未读数恒 0）
      */
     public GroupReadResponse markRead(UUID actor, UUID projectId, UUID groupId, String idempotencyKey) {
-        access.requireProjectMember(projectId, actor);
-        requireGroupInProject(projectId, groupId);
+        requireGroupMember(projectId, groupId, actor);
         return idempotencyService.execute(actor,
                 "POST:/projects/{projectId}/groups/{groupId}/read", idempotencyKey,
                 Map.of("projectId", projectId, "groupId", groupId), 200, GroupReadResponse.class,

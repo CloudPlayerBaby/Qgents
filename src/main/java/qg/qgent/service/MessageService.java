@@ -14,6 +14,7 @@ import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.MessageEntity;
+import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.*;
@@ -39,6 +40,7 @@ public class MessageService {
     private final GroupAgentMapper groupAgentMapper;
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
+    private final ProjectMapper projectMapper;
     private final ProjectAccessService access;
     private final GroupService groupService;
     private final TaskTriggerService taskTriggerService;
@@ -47,7 +49,7 @@ public class MessageService {
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                           GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
-                          ProjectAccessService access, GroupService groupService,
+                          ProjectMapper projectMapper, ProjectAccessService access, GroupService groupService,
                           TaskTriggerService taskTriggerService, ObjectMapper mapper,
                           EventService eventService) {
         this.messageMapper = messageMapper;
@@ -55,6 +57,7 @@ public class MessageService {
         this.groupAgentMapper = groupAgentMapper;
         this.userMapper = userMapper;
         this.agentMapper = agentMapper;
+        this.projectMapper = projectMapper;
         this.access = access;
         this.groupService = groupService;
         this.taskTriggerService = taskTriggerService;
@@ -112,7 +115,7 @@ public class MessageService {
     /**
      * Agent 发送消息（内部方法，供 Agent 编排系统调用，实现用户+Agent 共同参与聊天）。
      * <p>
-     * Agent 不是登录用户，不执行项目成员校验；群与 Agent 的归属一致性由编排系统保证。
+     * Agent 不是登录用户，不执行项目成员校验；服务端校验其 Team 归属与启用状态。
      * 与用户消息共用 sequence 单调递增与 client_message_id 幂等逻辑，响应 senderType=AGENT。
      *
      * @param groupId 需求群 ID
@@ -125,6 +128,21 @@ public class MessageService {
         RequirementGroupEntity group = lockGroup(groupId);
         if (group == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在");
+        }
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "AGENT_NOT_FOUND", "Agent 不存在");
+        }
+        ProjectEntity project = projectMapper.selectById(group.getProjectId());
+        if (project == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_NOT_FOUND", "项目不存在");
+        }
+        if (!project.getTeamId().equals(agent.getTeamId())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "AGENT_NOT_IN_PROJECT_TEAM",
+                    "Agent 不属于当前项目的 Team");
+        }
+        if (!"ACTIVE".equals(agent.getStatus())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "AGENT_NOT_ACTIVE", "Agent 未启用");
         }
         return doSend(group.getProjectId(), groupId, null, agentId, body);
     }

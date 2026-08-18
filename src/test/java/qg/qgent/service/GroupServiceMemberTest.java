@@ -6,6 +6,7 @@ import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.GroupCreateRequest;
 import qg.qgent.dto.GroupMemberResponse;
+import qg.qgent.dto.GroupResponse;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.RequirementGroupEntity;
@@ -194,6 +195,33 @@ class GroupServiceMemberTest {
         when(groupMapper.selectById(groupId)).thenReturn(mainGroup());
         service.requireGroupMember(projectId, groupId, memberA);
         verify(groupMemberMapper, never()).countMember(any(), any());
+    }
+
+    @Test
+    void listReturnsOnlyGroupsVisibleToCurrentUser() {
+        when(groupMapper.listVisibleByProject(projectId, memberA)).thenReturn(List.of(requirementGroup()));
+        when(messageMapper.selectLatestByProject(projectId)).thenReturn(List.of());
+        when(messageMapper.countUnreadByProject(projectId, memberA)).thenReturn(List.of());
+
+        List<GroupResponse> groups = service.list(memberA, projectId);
+
+        assertEquals(List.of(groupId.toString()), groups.stream().map(GroupResponse::getId).toList());
+        verify(groupMapper).listVisibleByProject(projectId, memberA);
+        verify(groupMapper, never()).listByProject(projectId);
+    }
+
+    @Test
+    void privateGroupReadOperationsRejectNonMember() {
+        when(groupMemberMapper.countMember(groupId, memberA)).thenReturn(0);
+
+        ApiException get = assertThrows(ApiException.class, () -> service.get(memberA, projectId, groupId));
+        ApiException members = assertThrows(ApiException.class, () -> service.members(memberA, projectId, groupId));
+        ApiException markRead = assertThrows(ApiException.class,
+                () -> service.markRead(memberA, projectId, groupId, "idempotency-key"));
+
+        assertEquals("GROUP_MEMBER_REQUIRED", get.code());
+        assertEquals("GROUP_MEMBER_REQUIRED", members.code());
+        assertEquals("GROUP_MEMBER_REQUIRED", markRead.code());
     }
 
     private static ProjectMemberEntity projectMember() {

@@ -20,6 +20,23 @@ public interface RequirementGroupMapper extends BaseMapper<RequirementGroupEntit
     List<RequirementGroupEntity> listByProject(@Param("projectId") UUID projectId);
 
     /**
+     * 查询当前用户在项目内可见的群：主群对所有项目成员可见，需求群仅创建者或显式成员可见。
+     *
+     * @param projectId 项目 ID
+     * @param userId 当前用户 ID
+     * @return 可见群列表，按最近活跃排序
+     */
+    @Select("SELECT rg.* FROM requirement_groups rg "
+            + "WHERE rg.project_id = #{projectId} "
+            + "AND (rg.group_type = 'PROJECT_MAIN' "
+            + "OR rg.created_by = #{userId} "
+            + "OR EXISTS (SELECT 1 FROM group_members gm "
+            + "           WHERE gm.requirement_group_id = rg.id AND gm.user_id = #{userId})) "
+            + "ORDER BY COALESCE(rg.last_message_at, rg.created_at) DESC")
+    List<RequirementGroupEntity> listVisibleByProject(@Param("projectId") UUID projectId,
+                                                       @Param("userId") UUID userId);
+
+    /**
      * 批量取多个项目的主群（PROJECT_MAIN），供群聊工作台聚合（消除三层 N+1）。
      * 返回这些项目的主群实体，按最近活跃倒序。
      *

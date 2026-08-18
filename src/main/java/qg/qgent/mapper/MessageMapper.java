@@ -64,10 +64,10 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
      * 按关键字检索项目内群消息的文本内容（点6 上下文检索）。
      * <p>
      * 仅检索当前项目下的消息（通过 requirement_groups 归属限定，防跨项目泄露）；
-     * 可选限定单个群。关键字匹配 content JSON 的 {@code $.text}，按 sequence 倒序。
+     * 仅检索调用方已完成访问校验的可见群。关键字匹配 content JSON 的 {@code $.text}，按 sequence 倒序。
      *
      * @param projectId 项目 ID
-     * @param groupId   可选需求群 ID；为空检索项目全部群
+     * @param groupIds  当前用户可见的群 ID，不能为空列表
      * @param q         关键字，不能为空
      * @param limit     返回条数上限
      * @return 匹配的消息实体列表，新的在前
@@ -76,9 +76,10 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             "SELECT m.id, m.requirement_group_id, m.sequence_no, m.author_user_id, m.agent_id, ",
             "m.client_message_id, m.message_type, m.content, m.mentions, m.reply_to_message_id, m.created_at ",
             "FROM messages m ",
-            "WHERE m.requirement_group_id IN ",
-            "    (SELECT id FROM requirement_groups WHERE project_id = #{projectId}) ",
-            "<if test='groupId != null'>AND m.requirement_group_id = #{groupId}</if> ",
+            "INNER JOIN requirement_groups rg ON rg.id = m.requirement_group_id ",
+            "WHERE rg.project_id = #{projectId} ",
+            "AND m.requirement_group_id IN ",
+            "(<foreach collection='groupIds' item='groupId' separator=','>#{groupId}</foreach>) ",
             "AND JSON_UNQUOTE(JSON_EXTRACT(m.content, '$.text')) LIKE CONCAT('%', #{q}, '%') ",
             "ORDER BY m.sequence_no DESC LIMIT #{limit}",
             "</script>"})
@@ -93,7 +94,7 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             @Result(column = "message_type", property = "messageType"),
             @Result(column = "content", property = "content")
     })
-    List<MessageEntity> searchByQuery(@Param("projectId") UUID projectId, @Param("groupId") UUID groupId,
+    List<MessageEntity> searchByQuery(@Param("projectId") UUID projectId, @Param("groupIds") List<UUID> groupIds,
                                       @Param("q") String q, @Param("limit") int limit);
 
     /**
