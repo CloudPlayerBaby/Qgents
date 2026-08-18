@@ -218,7 +218,7 @@ class TaskOrchestratorTest {
         doThrow(new RuntimeException("sandbox worker down"))
                 .when(fixture.sessions).acquire(any(), any(), any());
 
-        fixture.orchestrator(fixture.success(OrchestrationPhase.PLAN))
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess()))
                 .orchestrate(task.getProjectId(), task.getId());
 
         assertThat(fixture.updatedStatuses()).contains("FAILED");
@@ -233,7 +233,7 @@ class TaskOrchestratorTest {
         doThrow(new RuntimeException("sandbox worker down"))
                 .when(fixture.sessions).acquire(any(), any(), any());
 
-        fixture.orchestrator(fixture.success(OrchestrationPhase.PLAN))
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess()))
                 .orchestrate(task.getProjectId(), task.getId());
 
         verifyNoInteractions(fixture.taskRuns);
