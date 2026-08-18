@@ -143,7 +143,7 @@ public class ReviewAgent implements Agent {
                 continue;
             }
             if (turn.isFinalText()) {
-                if ("length".equals(finishReason)) {
+                if ("length".equalsIgnoreCase(finishReason)) {
                     throw new ReviewParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
                             "review output truncated by max tokens");
                 }

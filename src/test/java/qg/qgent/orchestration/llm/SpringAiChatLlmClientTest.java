@@ -174,6 +174,20 @@ class SpringAiChatLlmClientTest {
     }
 
     @Test
+    void nextToolTurnTreatsUppercaseLengthAsTruncation() {
+        String text = "{\"finalResult\":{\"success\":true,\"summary\":\"tr";
+        stubFinalTextOutput(text);
+        ChatGenerationMetadata metadata = mock(ChatGenerationMetadata.class);
+        when(metadata.getFinishReason()).thenReturn("LENGTH");
+        when(generation.getMetadata()).thenReturn(metadata);
+
+        ToolTurnResult turn = client().nextToolTurn("system prompt", List.of(new UserMessage("hi")), List.of());
+
+        assertThat(turn.finishReason()).isEqualTo("LENGTH");
+        assertThat(turn.protocolFailureCode()).isEqualTo(ProtocolFailureCode.LLM_FINISH_LENGTH);
+    }
+
+    @Test
     void nextToolTurnPrependsSystemAndPassesHistoryVerbatim() {
         stubFinalTextOutput("done");
         List<Message> history = List.of(new UserMessage("user text"), new AssistantMessage("assistant text"));

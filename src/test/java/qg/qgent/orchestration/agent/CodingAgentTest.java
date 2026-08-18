@@ -155,7 +155,7 @@ class CodingAgentTest {
     void nativeFinishLengthMapsToLlmFinishLength() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
-                .thenReturn(finalTurn("{\"finalResult\":{\"success\":true,\"summary\":\"tr", "length"));
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":true,\"summary\":\"tr", "LENGTH"));
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 

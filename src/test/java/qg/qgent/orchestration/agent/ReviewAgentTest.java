@@ -167,7 +167,7 @@ class ReviewAgentTest {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
-                .thenReturn(finalTurnWithReason("{\"finalResult\":{\"success\":true,\"summary\":\"tr", "length"));
+                .thenReturn(finalTurnWithReason("{\"finalResult\":{\"success\":true,\"summary\":\"tr", "LENGTH"));
 
         AgentRunOutcome outcome = nativeAgent().run(input());
 

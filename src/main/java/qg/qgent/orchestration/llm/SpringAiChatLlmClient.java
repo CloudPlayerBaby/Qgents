@@ -109,7 +109,8 @@ public class SpringAiChatLlmClient implements LlmClient {
             log.info("llm toolturn final finish={} promptChars={} responseChars={} durationMs={} tail={}",
                     finishReason, promptChars, responseChars,
                     Duration.ofNanos(System.nanoTime() - started).toMillis(), redactTail(text));
-            ProtocolFailureCode code = "length".equals(finishReason) ? ProtocolFailureCode.LLM_FINISH_LENGTH : null;
+            ProtocolFailureCode code = "length".equalsIgnoreCase(finishReason)
+                    ? ProtocolFailureCode.LLM_FINISH_LENGTH : null;
             return ToolTurnResult.finalAnswer(text, finishReason, promptChars, responseChars, responseSha256, code);
         }
         return executeTools(output, springMessages, history, tools, finishReason, promptChars, responseChars,

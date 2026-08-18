@@ -135,7 +135,7 @@ class GenericCustomAgentTest {
     void lengthFinishReasonMapsToLlmFinishLength() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
-                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"tr", "length"));
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"tr", "LENGTH"));
 
         AgentRunOutcome outcome = agent(customAgent()).run(customInput(OrchestrationPhase.REVIEWING));
 
