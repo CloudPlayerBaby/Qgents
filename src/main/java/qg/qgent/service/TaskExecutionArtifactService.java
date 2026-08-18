@@ -13,6 +13,7 @@ import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.mapper.TaskExecutionArtifactMapper;
 import qg.qgent.mapper.TaskMapper;
+import qg.qgent.orchestration.ExecutionContentSanitizer;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -102,11 +103,12 @@ public class TaskExecutionArtifactService {
     /**
      * 用户可见执行卡片仅保留有限的结构化摘要，阻断敏感字段、绝对宿主机路径和原始命令文本。
      */
-    private Map<String, Object> sanitizeSummary(Map<String, Object> summary) {
+    Map<String, Object> sanitizeSummary(Map<String, Object> summary) {
         Map<String, Object> result = new LinkedHashMap<>();
         if (summary == null) {
             return result;
         }
+        boolean infrastructureFailure = "FAILED_INFRASTRUCTURE".equals(String.valueOf(summary.get("outcome")));
         for (Map.Entry<String, Object> entry : summary.entrySet()) {
             if (result.size() == MAX_SUMMARY_ENTRIES || sensitiveKey(entry.getKey())) {
                 continue;
@@ -115,6 +117,12 @@ public class TaskExecutionArtifactService {
             if (value != null) {
                 result.put(entry.getKey(), value);
             }
+        }
+        if (infrastructureFailure) {
+            String code = ExecutionContentSanitizer.stableInfrastructureCode(
+                    summary.get("failureCode") == null ? null : String.valueOf(summary.get("failureCode")));
+            result.put("failureCode", code);
+            result.put("message", ExecutionContentSanitizer.infrastructureDescription(code));
         }
         return result;
     }
@@ -150,17 +158,16 @@ public class TaskExecutionArtifactService {
     }
 
     private String sanitizeText(String value) {
-        String text = value.strip();
-        if (text.startsWith("/") || text.matches("^[A-Za-z]:[\\\\/].*")) {
-            return "[host path omitted]";
-        }
+        String text = ExecutionContentSanitizer.sanitize(value).strip();
         return text.length() <= MAX_TEXT_LENGTH ? text : text.substring(0, MAX_TEXT_LENGTH) + "...";
     }
 
     private boolean sensitiveKey(String key) {
         String normalized = key.toLowerCase(java.util.Locale.ROOT);
         return normalized.contains("token") || normalized.contains("password") || normalized.contains("secret")
-                || normalized.contains("privatekey") || normalized.equals("command") || normalized.equals("stdout")
+                || normalized.contains("privatekey") || normalized.contains("api-key")
+                || normalized.contains("api_key") || normalized.contains("authorization")
+                || normalized.equals("command") || normalized.equals("stdout")
                 || normalized.equals("stderr");
     }
 

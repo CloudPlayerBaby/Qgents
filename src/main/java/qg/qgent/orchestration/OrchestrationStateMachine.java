@@ -20,6 +20,9 @@ public class OrchestrationStateMachine {
      * 依据相位与结果决策下一步；会推进传入 counters 的循环计数。
      */
     public StateMachineDecision decide(OrchestrationPhase phase, RunOutcome outcome, OrchestrationCounters counters) {
+        if (outcome != RunOutcome.FAILED_INFRASTRUCTURE) {
+            counters.resetInfraRetries(phase);
+        }
         return switch (phase) {
             case PLAN -> plan(phase, outcome, counters);
             case CODING -> coding(phase, outcome, counters);
@@ -70,8 +73,8 @@ public class OrchestrationStateMachine {
      * 基础设施失败：计数内同相位重试，超限 Task FAILED。
      */
     private StateMachineDecision retryOrFail(OrchestrationPhase phase, OrchestrationCounters counters) {
-        if (counters.canRetryInfra()) {
-            counters.incrementInfraRetries();
+        if (counters.canRetryInfra(phase)) {
+            counters.incrementInfraRetries(phase);
             return StateMachineDecision.retryPhase(phase);
         }
         return StateMachineDecision.failed();

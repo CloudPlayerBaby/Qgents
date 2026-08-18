@@ -25,9 +25,7 @@ import qg.qgent.service.ContextService;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * 真实 Coding Agent：理解任务与计划，通过只读工具按需读取工作区代码，用 apply_patch
@@ -96,12 +94,12 @@ public class CodingAgent implements Agent {
         log.info("coding agent start phase={} workspaceId={} protocol={}",
                 input.getPhase(), input.getWorkspaceId(), protocol.isNative() ? "native" : "legacy");
         List<LlmObservation> observations = new ArrayList<>();
-        Set<String> observedChangedFiles = new LinkedHashSet<>();
+        ChangedWriteFactLedger observedWrites = new ChangedWriteFactLedger();
         try {
             CodingResult coding = protocol.isNative()
-                    ? executeCodingNative(input, observations, observedChangedFiles)
-                    : executeCodingLegacy(input, observedChangedFiles);
-            validateAndCompleteChanges(coding, observedChangedFiles);
+                    ? executeCodingNative(input, observations, observedWrites)
+                    : executeCodingLegacy(input, observedWrites);
+            validateAndCompleteChanges(coding, observedWrites);
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
             outcome.setOutcome(coding.isSuccess() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED);
@@ -140,7 +138,7 @@ public class CodingAgent implements Agent {
      * {@link IllegalStateException}，由 run() 统一转为 FAILED_INFRASTRUCTURE。
      */
     private CodingResult executeCodingNative(AgentInput input, List<LlmObservation> observations,
-                                             Set<String> observedChangedFiles) {
+                                             ChangedWriteFactLedger observedWrites) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         log.info("coding agent workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
@@ -148,29 +146,33 @@ public class CodingAgent implements Agent {
         history.add(new UserMessage(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem(true);
         CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer);
-        tools.setWriteObserver(trackingObserver(observedChangedFiles), input.getProjectId(), input.getTaskId(),
+        tools.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId());
         ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
                 input.getProjectId());
         ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
                 input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
         List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
-        String finishReason = null;
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
-            ToolTurnResult turn = llm.nextToolTurn(system, history, callbacks);
+            List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round,
+                    observedWrites.changedPaths());
+            ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
             observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
-            finishReason = turn.finishReason();
             if (turn.isInfraAbort()) {
                 log.error("CODING_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
                         input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
                 throw new IllegalStateException(turn.infraFailure());
             }
-            if ("length".equalsIgnoreCase(finishReason)) {
-                throw new CodingParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
-                        "coding output truncated by max tokens");
+            if ("length".equalsIgnoreCase(turn.finishReason())) {
+                return finalizeCoding(system, requestHistory, turn, observations, round, input.getPhase().name(),
+                        ProtocolFailureCode.LLM_FINISH_LENGTH, observedWrites);
             }
             if (turn.continuesToolLoop()) {
                 history = turn.history();
+                if (round == MAX_TOOL_ROUNDS) {
+                    return finalizeCoding(system, requestHistory, turn, observations, round, input.getPhase().name(),
+                            ProtocolFailureCode.LLM_CONTEXT_LIMIT, observedWrites);
+                }
                 continue;
             }
             if (turn.isFinalText()) {
@@ -193,6 +195,23 @@ public class CodingAgent implements Agent {
         }
         throw new CodingParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+    }
+
+    private CodingResult finalizeCoding(String system, List<Message> requestHistory, ToolTurnResult trigger,
+                                        List<LlmObservation> observations, int round,
+                                        String phase, ProtocolFailureCode triggerCode,
+                                        ChangedWriteFactLedger observedWrites) {
+        ToolTurnResult finalization = llm.finalizeToolTurn(system,
+                NativeToolLoopSupport.prepareFinalization(requestHistory, trigger),
+                NativeToolLoopSupport.finalizationInstruction(
+                        "{\"finalResult\":{\"success\":true|false,\"summary\":\"结果摘要\","
+                                + "\"modifiedFiles\":[\"相对路径\"],\"changes\":[\"变更说明\"],"
+                                + "\"errors\":[\"错误说明\"]}}", observedWrites.changedPaths()));
+        observations.add(LlmObservation.of(phase, round + 1, finalization));
+        if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
+            throw new CodingParseException(triggerCode, "bounded coding finalization did not produce complete JSON");
+        }
+        return parser.parse(finalization.text());
     }
 
     /**
@@ -220,7 +239,7 @@ public class CodingAgent implements Agent {
      * legacy 手写 JSON 协议循环：模型输出 toolCall/finalResult 文本，由 {@link CodingToolExecutor}
      * 执行工具。仅灰度期使用，协议切换稳定后删除。
      */
-    private CodingResult executeCodingLegacy(AgentInput input, Set<String> observedChangedFiles) {
+    private CodingResult executeCodingLegacy(AgentInput input, ChangedWriteFactLedger observedWrites) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         log.info("coding agent (legacy) workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
@@ -228,7 +247,7 @@ public class CodingAgent implements Agent {
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem(false);
         CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer);
-        toolExecutor.setWriteObserver(trackingObserver(observedChangedFiles), input.getProjectId(), input.getTaskId(),
+        toolExecutor.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId(), input.getWorkspaceId());
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             String raw = llm.complete(system, history);
@@ -276,7 +295,7 @@ public class CodingAgent implements Agent {
      * 会补入结果，避免模型遗漏 modifiedFiles；没有任何证据时把结果降为协议失败，防止
      * JSON repair 把“未执行任何文件修改”包装成 Developer 成功。
      */
-    private void validateAndCompleteChanges(CodingResult coding, Set<String> observedChangedFiles) {
+    private void validateAndCompleteChanges(CodingResult coding, ChangedWriteFactLedger observedWrites) {
         if (coding == null || !coding.isSuccess()) {
             return;
         }
@@ -284,23 +303,20 @@ public class CodingAgent implements Agent {
         if (declared == null) {
             declared = List.of();
         }
-        if (declared.isEmpty() && observedChangedFiles.isEmpty()) {
+        if (declared.isEmpty() && !observedWrites.hasChangedWrite()) {
             throw new CodingParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
                     "coding success requires at least one actual file modification");
         }
-        if (declared.isEmpty() && !observedChangedFiles.isEmpty()) {
-            coding.setModifiedFiles(new ArrayList<>(observedChangedFiles));
+        if (declared.isEmpty() && observedWrites.hasChangedWrite()) {
+            coding.setModifiedFiles(new ArrayList<>(observedWrites.changedPaths()));
         }
     }
 
     /**
      * 记录本次 run 的真实变更，同时保留已有的 Diff 预览回调。回调异常不能影响 Coding 主循环。
      */
-    private CodingWriteObserver trackingObserver(Set<String> observedChangedFiles) {
-        return (projectId, taskId, taskRunId, workspaceId, result) -> {
-            if (result != null && result.isOk() && result.isChanged() && result.getPath() != null) {
-                observedChangedFiles.add(result.getPath());
-            }
+    private CodingWriteObserver trackingObserver(ChangedWriteFactLedger observedWrites) {
+        CodingWriteObserver delegate = (projectId, taskId, taskRunId, workspaceId, result) -> {
             if (writeObserver != null) {
                 try {
                     writeObserver.onWrite(projectId, taskId, taskRunId, workspaceId, result);
@@ -310,6 +326,7 @@ public class CodingAgent implements Agent {
                 }
             }
         };
+        return observedWrites.observing(delegate);
     }
 
 }

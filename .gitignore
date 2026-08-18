@@ -1,6 +1,7 @@
 # Target directory
 target/
 .m2/
+.m2repo/
 /data/
 
 # Compiled class file

@@ -14,6 +14,9 @@ import java.util.List;
  */
 public class TestPromptBuilder {
 
+    static final int MAX_STDOUT_CHARS = 24_000;
+    static final int MAX_STDERR_CHARS = 24_000;
+
     /**
      * 系统提示：TESTER 角色、真实结果约束与 JSON 输出契约。
      */
@@ -56,8 +59,10 @@ public class TestPromptBuilder {
         }
         sb.append("\n\n实际执行命令：").append(String.join(" ", command));
         sb.append("\n真实 exit code：").append(exec.exitCode());
-        sb.append("\n--- stdout ---\n").append(nullToBlank(exec.stdout()));
-        sb.append("\n--- stderr ---\n").append(nullToBlank(exec.stderr()));
+        sb.append("\n--- stdout ---\n")
+                .append(PromptTextLimiter.limitHeadTail(exec.stdout(), MAX_STDOUT_CHARS));
+        sb.append("\n--- stderr ---\n")
+                .append(PromptTextLimiter.limitHeadTail(exec.stderr(), MAX_STDERR_CHARS));
         sb.append(ContextPromptRenderer.render(input));
         return sb.toString();
     }

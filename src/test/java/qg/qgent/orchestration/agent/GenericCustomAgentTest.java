@@ -132,15 +132,17 @@ class GenericCustomAgentTest {
     }
 
     @Test
-    void lengthFinishReasonMapsToLlmFinishLength() {
+    void lengthFinishReasonFinalizesOnceAndSucceeds() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"success\":true,\"summary\":\"tr", "LENGTH"));
+        when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"recovered\"}", "stop"));
 
         AgentRunOutcome outcome = agent(customAgent()).run(customInput(OrchestrationPhase.REVIEWING));
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
     }
 
     @Test
@@ -177,7 +179,7 @@ class GenericCustomAgentTest {
         when(llm.complete(anyString(), anyList()))
                 .thenReturn("{\"success\":true,\"summary\":\"done\",\"message\":\"all good\"}");
 
-        AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
+        AgentRunOutcome outcome = agent(customAgent()).run(customInput(OrchestrationPhase.CODING));
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         assertThat(outcome.getMessage()).isEqualTo("all good");
@@ -202,16 +204,18 @@ class GenericCustomAgentTest {
     }
 
     @Test
-    void exceedingMaxRoundsFailsContextLimit() {
+    void exceedingMaxRoundsFinalizesOnceAndSucceeds() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenReturn(toolTurn("list_files"));
+        when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"bounded finish\"}", "stop"));
 
         AgentRunOutcome outcome = agent(customAgent()).run(customInput(OrchestrationPhase.TESTING));
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_CONTEXT_LIMIT.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
-        assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS);
+        verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
+        assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS + 1);
     }
 
     @Test
@@ -229,6 +233,35 @@ class GenericCustomAgentTest {
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
         assertThat(names).containsExactly("activate_skill", "apply_patch", "list_files", "read_file",
                 "search_chat_history", "search_code", "write_file");
+    }
+
+    @Test
+    void writeCapableLengthFinalizationWithoutChangedWriteIsRejected() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"tr", "LENGTH"));
+        when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"recovered\"}", "stop"));
+
+        AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getMessage()).contains("actual changed write");
+    }
+
+    @Test
+    void writeCapableTwentyRoundsFinalizationWithoutChangedWriteIsRejected() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenReturn(toolTurn("list_files"));
+        when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"bounded finish\"}", "stop"));
+
+        AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
     }
 
     @Test

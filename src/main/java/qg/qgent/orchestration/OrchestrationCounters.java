@@ -2,6 +2,9 @@ package qg.qgent.orchestration;
 
 import lombok.Data;
 
+import java.util.EnumMap;
+import java.util.Map;
+
 /**
  * 状态机循环计数：质量修复循环与基础设施重试。
  * 由 Orchestrator 在一次 orchestrate 会话内持有并随决策被状态机推进；
@@ -14,9 +17,10 @@ public class OrchestrationCounters {
      */
     private int qualityFixLoops = 0;
     /**
-     * 已发生的基础设施重试次数（同相位重跑）。
+     * 各相位已发生的基础设施重试次数（同相位重跑，互不占用预算）。
      */
-    private int infraRetries = 0;
+    private final Map<OrchestrationPhase, Integer> infraRetriesByPhase =
+            new EnumMap<>(OrchestrationPhase.class);
     /**
      * 质量修复循环上限，超过则 Task FAILED。
      */
@@ -36,15 +40,31 @@ public class OrchestrationCounters {
     /**
      * 是否还能同相位基础设施重试。
      */
-    public boolean canRetryInfra() {
-        return infraRetries < maxInfraRetries;
+    public boolean canRetryInfra(OrchestrationPhase phase) {
+        return getInfraRetries(phase) < maxInfraRetries;
     }
 
     public void incrementQualityFixLoops() {
         qualityFixLoops++;
     }
 
-    public void incrementInfraRetries() {
-        infraRetries++;
+    public void incrementInfraRetries(OrchestrationPhase phase) {
+        infraRetriesByPhase.merge(phase, 1, Integer::sum);
+    }
+
+    public int getInfraRetries(OrchestrationPhase phase) {
+        return infraRetriesByPhase.getOrDefault(phase, 0);
+    }
+
+    public void setInfraRetries(OrchestrationPhase phase, int retries) {
+        if (retries <= 0) {
+            infraRetriesByPhase.remove(phase);
+        } else {
+            infraRetriesByPhase.put(phase, retries);
+        }
+    }
+
+    public void resetInfraRetries(OrchestrationPhase phase) {
+        infraRetriesByPhase.remove(phase);
     }
 }

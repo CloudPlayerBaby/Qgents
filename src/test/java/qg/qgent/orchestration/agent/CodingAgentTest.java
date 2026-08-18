@@ -152,29 +152,48 @@ class CodingAgentTest {
     }
 
     @Test
-    void nativeFinishLengthMapsToLlmFinishLength() {
+    void nativeFinishLengthFinalizesOnceAndSucceeds() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"finalResult\":{\"success\":true,\"summary\":\"tr", "LENGTH"));
+        when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
+                .thenReturn(finalTurn(bareResult(true, "recovered", "src/main/java/X.java"), "stop"));
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
-        verify(llm, never()).complete(anyString(), anyList());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getSummary()).isEqualTo("recovered");
+        verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
     }
 
     @Test
-    void nativeExceedingMaxRoundsFailsContextLimit() {
+    void nativeMaxRoundsFinalizesOnceAndSucceeds() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenReturn(toolTurn("list_files"));
+        when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
+                .thenReturn(finalTurn(bareResult(true, "bounded finish", "src/main/java/X.java"), "stop"));
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
+        verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
+        assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS + 1);
+    }
+
+    @Test
+    void nativeTruncatedFinalizationKeepsOriginalLengthFailure() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":", "LENGTH"));
+        when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
+                .thenReturn(finalTurn("{\"finalResult\":", "LENGTH"));
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_CONTEXT_LIMIT.name());
-        verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
-        assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
+        verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
     }
 
     @Test

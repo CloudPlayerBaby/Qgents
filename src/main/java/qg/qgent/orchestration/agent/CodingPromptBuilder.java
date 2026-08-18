@@ -18,6 +18,8 @@ import java.util.List;
  */
 public class CodingPromptBuilder {
 
+    static final int MAX_FILE_TREE_CHARS = 20_000;
+
     /**
      * 默认使用原生协议的系统提示。
      */
@@ -180,7 +182,8 @@ public class CodingPromptBuilder {
         if (files == null || files.isEmpty()) {
             return "(空，未检测到代码文件)";
         }
-        return files.stream().map(f -> "- " + f).reduce((a, b) -> a + "\n" + b).orElse("");
+        String tree = files.stream().map(f -> "- " + f).reduce((a, b) -> a + "\n" + b).orElse("");
+        return PromptTextLimiter.limitHeadTail(tree, MAX_FILE_TREE_CHARS);
     }
 
     private String nullToBlank(String value) {

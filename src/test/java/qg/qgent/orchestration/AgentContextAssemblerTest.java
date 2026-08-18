@@ -135,6 +135,38 @@ class AgentContextAssemblerTest {
         assertThat(input.getRequirementDescription()).isNull();
     }
 
+    @Test void infrastructureFeedbackUsesStableCodeAndControlledDescriptionOnly() {
+        TaskEntity task = task();
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setInstruction("重试");
+        AgentRunOutcome failure = new AgentRunOutcome();
+        failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+        failure.setFailureCode("LLM_FINISH_LENGTH");
+        failure.setMessage("request failed at C:\\host\\workspace\\secret.env with token=abc");
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.PLAN, failure,
+                null, null, null, null, null);
+
+        assertThat(input.getFeedback()).contains("LLM_FINISH_LENGTH", "长度上限")
+                .doesNotContain("C:\\host", "secret.env", "token=abc", failure.getMessage());
+    }
+
+    @Test void unknownInfrastructureFailureCodeIsNotReflectedIntoPrompt() {
+        TaskEntity task = task();
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        AgentRunOutcome failure = new AgentRunOutcome();
+        failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+        failure.setFailureCode("C:\\host\\private-path");
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, failure,
+                UUID.randomUUID(), null, null, null, null);
+
+        assertThat(input.getFeedback()).contains("FAILED_INFRASTRUCTURE", "基础设施暂不可用")
+                .doesNotContain("private-path", failure.getFailureCode());
+    }
+
     @Test void continuationTaskInjectsSourceDiffSummaryAtConversationHead() {
         TaskEntity task = task();
         task.setContinuationOfTaskId(UUID.randomUUID());

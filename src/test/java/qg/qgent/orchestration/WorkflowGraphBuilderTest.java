@@ -172,4 +172,31 @@ class WorkflowGraphBuilderTest {
 
         assertThat(ran).containsExactly(a.getId(), b.getId());
     }
+
+    @Test
+    void twelveStepsCanExhaustCrossPhaseInfraRetriesAcrossThreeQualityLoops() throws Exception {
+        List<TaskStepEntity> steps = java.util.stream.IntStream.range(0, 12)
+                .mapToObj(i -> step(UUID.randomUUID(), i == 0 ? "DEVELOPER" : "CUSTOM"))
+                .toList();
+        Map<UUID, AtomicInteger> visits = new ConcurrentHashMap<>();
+        AtomicInteger completedQualityCycles = new AtomicInteger();
+        TaskStepEntity last = steps.get(steps.size() - 1);
+
+        CompiledGraph<TaskOrchestrationState> graph = builder.build(steps, (s, state) -> {
+            int visit = visits.computeIfAbsent(s.getId(), ignored -> new AtomicInteger()).incrementAndGet();
+            if (visit % 4 != 0) {
+                return route("retry");
+            }
+            if (s.getId().equals(last.getId()) && completedQualityCycles.getAndIncrement() < 3) {
+                return route("requeue");
+            }
+            return route("next");
+        }, steps.get(0).getId().toString(), null, 3, 3);
+
+        graph.invoke(Map.of("projectId", PID, "taskId", TID));
+
+        assertThat(visits.values()).allSatisfy(count -> assertThat(count.get()).isEqualTo(16));
+        assertThat(visits.values().stream().mapToInt(AtomicInteger::get).sum()).isEqualTo(192);
+        assertThat(WorkflowGraphBuilder.recursionLimit(12, 3, 3)).isGreaterThan(192);
+    }
 }

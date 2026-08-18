@@ -210,7 +210,8 @@ public class TaskOrchestrator {
             String startNodeId = steps.stream().anyMatch(step -> step.getId().equals(startStepId))
                     ? startStepId.toString() : null;
             CompiledGraph<TaskOrchestrationState> graph = workflowGraphBuilder.build(steps,
-                    (step, state) -> runStepNode(step, state), lastDeveloperNodeId(steps), startNodeId);
+                    (step, state) -> runStepNode(step, state), lastDeveloperNodeId(steps), startNodeId,
+                    ctx.counters.getMaxInfraRetries(), ctx.counters.getMaxQualityFixLoops());
             log.info("orchestrate sandbox acquired taskId={}", taskId);
             graph.invoke(Map.of("projectId", projectId.toString(), "taskId", taskId.toString()));
             log.info("orchestrate graph completed taskId={}", taskId);
@@ -270,7 +271,8 @@ public class TaskOrchestrator {
             markStepRunning(task, planner);
             // 规划期心跳：刷新任务 updated_at，防止恢复调度器把长规划任务误判为卡死续跑
             taskMapper.touchUpdatedAt(task.getId());
-            AgentInput input = contextAssembler.assemble(task, planner, OrchestrationPhase.PLAN, null, null,
+            AgentInput input = contextAssembler.assemble(task, planner, OrchestrationPhase.PLAN,
+                    ctx.feedbackFor(planner.getId()), null,
                     null, null, null, ctx.groupContext);
             AgentRunOutcome outcome = safeExecute(agent.get(), OrchestrationPhase.PLAN, input);
             if (outcome.getPlanResult() != null) {
@@ -278,6 +280,7 @@ public class TaskOrchestrator {
             }
             StateMachineDecision decision = stateMachine.decide(OrchestrationPhase.PLAN, outcome.getOutcome(),
                     ctx.counters);
+            ctx.recordOutcome(planner.getId(), OrchestrationPhase.PLAN, outcome);
             if (decision.getAction() == StateMachineDecision.Action.ADVANCE && outcome.getPlanResult() != null) {
                 try {
                     planMaterialization.materialize(task, outcome.getPlanResult());
@@ -392,7 +395,7 @@ public class TaskOrchestrator {
             log.warn("NO_AGENT step skipped taskId={} stepId={} role={} agentId={}", task.getId(), step.getId(),
                     step.getRole(), step.getAssignedAgentId());
             markStepSkipped(task, step);
-            ctx.feedback = null;
+            ctx.clearInfrastructureFeedbackFor(step.getId());
             ctx.retryOf = null;
             return routeState(state, "next");
         }
@@ -400,7 +403,7 @@ public class TaskOrchestrator {
         TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
                 step.getRole(), step.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
         taskRunService.markRunning(run.getId());
-        AgentInput input = contextAssembler.assemble(task, step, phase, ctx.feedback, run.getId(), ctx.planResult,
+        AgentInput input = contextAssembler.assemble(task, step, phase, ctx.feedbackFor(step.getId()), run.getId(), ctx.planResult,
                 ctx.codingResult, ctx.testResult, ctx.groupContext);
         AgentRunOutcome outcome = safeExecute(agent.get(), phase, input);
         ctx.lastRunId = run.getId();
@@ -418,20 +421,22 @@ public class TaskOrchestrator {
         taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()));
         markStepSettled(task, step, outcome.getOutcome());
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
+        if (decision.getAction() == StateMachineDecision.Action.COMPLETE_SUCCESS
+                && hasFollowingStep(step, ctx.steps)) {
+            decision = StateMachineDecision.advance(phase);
+        }
+        ctx.recordOutcome(step.getId(), phase, outcome);
         String route;
         switch (decision.getAction()) {
             case ADVANCE -> {
-                ctx.feedback = null;
                 ctx.retryOf = null;
                 route = "next";
             }
             case REQUEUE_CODING -> {
-                ctx.feedback = outcome;
                 ctx.retryOf = ctx.lastRunId;
                 route = "requeue";
             }
             case RETRY_PHASE -> {
-                ctx.feedback = null;
                 ctx.retryOf = ctx.lastRunId;
                 route = "retry";
             }
@@ -441,6 +446,11 @@ public class TaskOrchestrator {
             }
         }
         return routeState(state, route);
+    }
+
+    private boolean hasFollowingStep(TaskStepEntity current, List<TaskStepEntity> steps) {
+        int index = indexOfStep(steps, current);
+        return index >= 0 && index + 1 < steps.size();
     }
 
     /**
@@ -1039,7 +1049,12 @@ public class TaskOrchestrator {
         private final TaskEntity task;
         private final OrchestrationCounters counters = new OrchestrationCounters();
         private List<TaskStepEntity> steps;
-        private AgentRunOutcome feedback;
+        /** 质量反馈只定向给原失败 step 与被 requeue 的 Coding step。 */
+        private QualityFeedback qualityFeedback;
+        /**
+         * 各相位最近一次基础设施失败，仅在该相位重试时优先回灌；不覆盖仍待复核的质量反馈。
+         */
+        private final java.util.Map<UUID, AgentRunOutcome> infraFeedback = new java.util.HashMap<>();
         private UUID lastRunId;
         private UUID retryOf;
         /**
@@ -1056,6 +1071,58 @@ public class TaskOrchestrator {
 
         private TaskExecutionContext(TaskEntity task) {
             this.task = task;
+        }
+
+        private AgentRunOutcome feedbackFor(UUID stepId) {
+            AgentRunOutcome infrastructure = infraFeedback.get(stepId);
+            if (infrastructure != null) {
+                return infrastructure;
+            }
+            if (qualityFeedback != null && (qualityFeedback.sourceStepId().equals(stepId)
+                    || qualityFeedback.repairCodingStepId().equals(stepId))) {
+                return qualityFeedback.outcome();
+            }
+            return null;
+        }
+
+        private void recordOutcome(UUID stepId, OrchestrationPhase phase, AgentRunOutcome outcome) {
+            if (outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE) {
+                infraFeedback.put(stepId, outcome);
+                return;
+            }
+            infraFeedback.remove(stepId);
+            if (outcome.getOutcome() == RunOutcome.FAILED_QUALITY
+                    && (phase == OrchestrationPhase.TESTING || phase == OrchestrationPhase.REVIEWING)) {
+                UUID repairStepId = repairCodingStepId();
+                if (repairStepId != null) {
+                    qualityFeedback = new QualityFeedback(stepId, repairStepId, outcome);
+                }
+                return;
+            }
+            if (outcome.getOutcome() == RunOutcome.SUCCEEDED && qualityFeedback != null
+                    && qualityFeedback.sourceStepId().equals(stepId)) {
+                qualityFeedback = null;
+            }
+        }
+
+        private void clearInfrastructureFeedbackFor(UUID stepId) {
+            infraFeedback.remove(stepId);
+        }
+
+        private UUID repairCodingStepId() {
+            if (steps == null) {
+                return null;
+            }
+            UUID codingStepId = null;
+            for (TaskStepEntity step : steps) {
+                if ("DEVELOPER".equalsIgnoreCase(step.getRole())) {
+                    codingStepId = step.getId();
+                }
+            }
+            return codingStepId;
+        }
+
+        private record QualityFeedback(UUID sourceStepId, UUID repairCodingStepId, AgentRunOutcome outcome) {
         }
     }
 }

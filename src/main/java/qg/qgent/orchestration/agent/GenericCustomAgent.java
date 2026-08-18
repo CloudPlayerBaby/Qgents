@@ -78,8 +78,13 @@ public class GenericCustomAgent implements Agent {
         log.info("custom agent start agentId={} role={} write={} phase={} workspaceId={}",
                 entity.getId(), entity.getRole(), writeCapable, input.getPhase(), input.getWorkspaceId());
         List<LlmObservation> observations = new ArrayList<>();
+        ChangedWriteFactLedger observedWrites = new ChangedWriteFactLedger();
         try {
-            CustomResult result = executeCustom(input, observations, writeCapable);
+            CustomResult result = executeCustom(input, observations, writeCapable, observedWrites);
+            if (writeCapable && result.success() && !observedWrites.hasChangedWrite()) {
+                throw new GenericParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
+                        "write-capable custom agent success requires at least one actual changed write");
+            }
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
             outcome.setOutcome(result.success() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED_QUALITY);
@@ -108,7 +113,8 @@ public class GenericCustomAgent implements Agent {
      * 每轮写入一条脱敏观测；工具执行遇到基础设施失败抛 {@link IllegalStateException}，由 run()
      * 统一转为 FAILED_INFRASTRUCTURE。
      */
-    private CustomResult executeCustom(AgentInput input, List<LlmObservation> observations, boolean writeCapable) {
+    private CustomResult executeCustom(AgentInput input, List<LlmObservation> observations, boolean writeCapable,
+                                       ChangedWriteFactLedger observedWrites) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         List<Message> history = new ArrayList<>();
         history.add(new UserMessage(buildUser(input, files)));
@@ -118,7 +124,8 @@ public class GenericCustomAgent implements Agent {
         String system = buildSystem(writeCapable, contextToolsAvailable);
         Object tools = toolRegistry.toolsFor(input.getWorkspaceId(), entity.getRole());
         if (tools instanceof CodingTools codingTools) {
-            codingTools.setWriteObserver(writeObserver, input.getProjectId(), input.getTaskId(), input.getTaskRunId());
+            codingTools.setWriteObserver(observedWrites.observing(writeObserver), input.getProjectId(),
+                    input.getTaskId(), input.getTaskRunId());
         }
         List<ToolCallback> callbacks;
         if (contextToolsAvailable) {
@@ -130,30 +137,33 @@ public class GenericCustomAgent implements Agent {
         } else {
             callbacks = List.of(ToolCallbacks.from(tools));
         }
-        String finishReason = null;
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
-            ToolTurnResult turn = llm.nextToolTurn(system, history, callbacks);
+            List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round,
+                    observedWrites.changedPaths());
+            ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
             observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
-            finishReason = turn.finishReason();
             if (turn.isInfraAbort()) {
                 log.error("CUSTOM_INFRA_ABORT agentId={} phase={} workspaceId={} round={} tool={} reason={}",
                         entity.getId(), input.getPhase(), input.getWorkspaceId(), round, turn.toolName(),
                         turn.infraFailure());
                 throw new IllegalStateException(turn.infraFailure());
             }
-            if ("length".equalsIgnoreCase(finishReason)) {
-                throw new GenericParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
-                        "custom agent output truncated by max tokens");
+            if ("length".equalsIgnoreCase(turn.finishReason())) {
+                return finalizeCustom(system, requestHistory, turn, observations, round,
+                        ProtocolFailureCode.LLM_FINISH_LENGTH, input, observedWrites);
             }
             if (turn.continuesToolLoop()) {
                 history = turn.history();
+                if (round == MAX_TOOL_ROUNDS) {
+                    return finalizeCustom(system, requestHistory, turn, observations, round,
+                            ProtocolFailureCode.LLM_CONTEXT_LIMIT, input, observedWrites);
+                }
                 continue;
             }
             if (turn.isFinalText()) {
                 String raw = turn.text();
-                log.info("custom agent finalResult agentId={} phase={} round={} raw={}",
-                        entity.getId(), input.getPhase(), round,
-                        raw == null ? "null" : (raw.length() <= 800 ? raw : raw.substring(0, 800) + "...(len=" + raw.length() + ")"));
+                log.info("custom agent finalResult agentId={} phase={} round={} responseChars={} responseSha256={}",
+                        entity.getId(), input.getPhase(), round, turn.responseChars(), turn.responseSha256());
                 try {
                     return parser.parse(raw);
                 } catch (GenericParseException malformed) {
@@ -171,6 +181,24 @@ public class GenericCustomAgent implements Agent {
         }
         throw new GenericParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+    }
+
+    private CustomResult finalizeCustom(String system, List<Message> requestHistory, ToolTurnResult trigger,
+                                        List<LlmObservation> observations, int round,
+                                        ProtocolFailureCode triggerCode, AgentInput input,
+                                        ChangedWriteFactLedger observedWrites) {
+        ToolTurnResult finalization = llm.finalizeToolTurn(system,
+                NativeToolLoopSupport.prepareFinalization(requestHistory, trigger),
+                NativeToolLoopSupport.finalizationInstruction(
+                        "{\"success\":true|false,\"summary\":\"结果摘要\","
+                                + "\"message\":\"给用户的具体反馈、发现的问题或建议\"}",
+                        observedWrites.changedPaths()));
+        observations.add(LlmObservation.of(input.getPhase().name(), round + 1, finalization));
+        if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
+            throw new GenericParseException(triggerCode,
+                    "bounded custom agent finalization did not produce complete JSON");
+        }
+        return parser.parse(finalization.text());
     }
 
     /**

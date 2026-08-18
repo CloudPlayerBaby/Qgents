@@ -257,6 +257,112 @@ class TaskOrchestratorTest {
         verify(fixture.taskRuns, times(3)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
                 anyString(), any(), any(), any());
         assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.PLAN)).hasSize(2);
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.PLAN).get(0)).isNull();
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.PLAN).get(1).getOutcome())
+                .isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+    }
+
+    @Test
+    void reviewQualityFeedbackOnlyTargetsRepairCodingAndOriginalReviewUntilItPasses() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("MAJOR");
+        finding.setIssue("missing ownership check");
+        reviewResult.setFindings(List.of(finding));
+        failedReview.setReviewResult(reviewResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING), failedReview,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING))).orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly(null, failedReview);
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.TESTING)).containsExactly(null, null);
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.REVIEWING)).containsExactly(null, failedReview);
+    }
+
+    @Test
+    void formalPhaseInfrastructureRetryReceivesPreviousFailure() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+        AgentRunOutcome failedCoding = fixture.outcome(OrchestrationPhase.CODING,
+                RunOutcome.FAILED_INFRASTRUCTURE);
+        failedCoding.setFailureCode("LLM_CONTEXT_LIMIT");
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), failedCoding,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING))).orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly(null, failedCoding);
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void testQualityFeedbackClearsOnlyAfterTestingPasses() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+        AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), failedTest,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING))).orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly(null, failedTest);
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.TESTING)).containsExactly(null, failedTest);
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.REVIEWING)).containsExactly((AgentRunOutcome) null);
+    }
+
+    @Test
+    void qualityFeedbackDoesNotLeakAcrossMultipleTestingOrReviewingSteps() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity testSource = fixture.step(task, "TESTER", 3);
+        TaskStepEntity otherTest = fixture.step(task, "TESTER", 4);
+        TaskStepEntity reviewSource = fixture.step(task, "REVIEWER", 5);
+        TaskStepEntity otherReview = fixture.step(task, "REVIEWER", 6);
+        fixture.stubPlan(task, planner, List.of(planner, developer, testSource, otherTest, reviewSource, otherReview));
+        AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), failedTest,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.TESTING), failedReview,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING),
+                fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.feedbacksForStep(developer.getId())).containsExactly(null, failedTest, failedReview);
+        assertThat(fixture.feedbacksForStep(testSource.getId())).containsExactly(null, failedTest, null);
+        assertThat(fixture.feedbacksForStep(otherTest.getId())).containsOnlyNulls();
+        assertThat(fixture.feedbacksForStep(reviewSource.getId())).containsExactly(null, failedReview);
+        assertThat(fixture.feedbacksForStep(otherReview.getId())).containsOnlyNulls();
     }
 
     @Test
@@ -538,6 +644,22 @@ class TaskOrchestratorTest {
         List<String> updatedStatuses() {
             return mockingDetails(tasks).getInvocations().stream().filter(invocation -> invocation.getMethod().getName()
                     .equals("updateById")).map(invocation -> ((TaskEntity) invocation.getArgument(0)).getStatus()).toList();
+        }
+
+        List<AgentRunOutcome> feedbacksFor(OrchestrationPhase phase) {
+            return mockingDetails(context).getInvocations().stream()
+                    .filter(invocation -> invocation.getMethod().getName().equals("assemble"))
+                    .filter(invocation -> phase == invocation.getArgument(2))
+                    .map(invocation -> (AgentRunOutcome) invocation.getArgument(3))
+                    .toList();
+        }
+
+        List<AgentRunOutcome> feedbacksForStep(UUID stepId) {
+            return mockingDetails(context).getInvocations().stream()
+                    .filter(invocation -> invocation.getMethod().getName().equals("assemble"))
+                    .filter(invocation -> stepId.equals(((TaskStepEntity) invocation.getArgument(1)).getId()))
+                    .map(invocation -> (AgentRunOutcome) invocation.getArgument(3))
+                    .toList();
         }
     }
 }

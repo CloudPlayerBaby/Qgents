@@ -299,6 +299,41 @@ class SpringAiChatLlmClientTest {
                 .hasMessageContaining("rate limited");
     }
 
+    @Test
+    void plainStructuredOutputUppercaseLengthDoesNotReturnTruncatedText() {
+        stubModelOutput("{\"summary\":\"truncated");
+        ChatGenerationMetadata metadata = mock(ChatGenerationMetadata.class);
+        when(metadata.getFinishReason()).thenReturn("LENGTH");
+        when(generation.getMetadata()).thenReturn(metadata);
+        when(response.hasToolCalls()).thenReturn(false);
+
+        assertThatThrownBy(() -> client().complete("system prompt", "user prompt"))
+                .isInstanceOf(LlmOutputTruncatedException.class)
+                .hasMessageContaining("LLM_FINISH_LENGTH");
+    }
+
+    @Test
+    void finalizationUsesJsonObjectWithoutToolCallbacks() {
+        String text = "{\"finalResult\":{\"success\":true,\"summary\":\"done\"}}";
+        stubFinalTextOutput(text);
+
+        ToolTurnResult result = client().finalizeToolTurn("system",
+                List.of(new UserMessage("task")), "finalize now");
+
+        assertThat(result.text()).isEqualTo(text);
+        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chatModel).call(promptCaptor.capture());
+        Prompt prompt = promptCaptor.getValue();
+        assertThat(prompt.getInstructions()).hasSize(3);
+        assertThat(prompt.getInstructions().get(2)).isInstanceOf(UserMessage.class);
+        assertThat(prompt.getInstructions().get(2).getText()).isEqualTo("finalize now");
+        OpenAiChatOptions options = (OpenAiChatOptions) prompt.getOptions();
+        assertThat(options.getResponseFormat().getType())
+                .isEqualTo(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT);
+        assertThat(options.getMaxRetries()).isZero();
+        assertThat(options.getToolCallbacks()).isEmpty();
+    }
+
     // ---------- 测试用白名单工具 ----------
 
     static class EchoTools {

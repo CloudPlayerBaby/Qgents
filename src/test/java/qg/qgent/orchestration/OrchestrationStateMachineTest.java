@@ -59,13 +59,34 @@ class OrchestrationStateMachineTest {
         StateMachineDecision d = stateMachine.decide(OrchestrationPhase.CODING, RunOutcome.FAILED_INFRASTRUCTURE, counters);
         assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.RETRY_PHASE);
         assertThat(d.getNextPhase()).isEqualTo(OrchestrationPhase.CODING);
-        assertThat(counters.getInfraRetries()).isEqualTo(1);
+        assertThat(counters.getInfraRetries(OrchestrationPhase.CODING)).isEqualTo(1);
     }
 
     @Test void infraRetriesExhaustedFailsTask() {
-        counters.setInfraRetries(counters.getMaxInfraRetries());
+        counters.setInfraRetries(OrchestrationPhase.TESTING, counters.getMaxInfraRetries());
         StateMachineDecision d = stateMachine.decide(OrchestrationPhase.TESTING, RunOutcome.FAILED_INFRASTRUCTURE, counters);
         assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.COMPLETE_FAILED);
+    }
+
+    @Test void infrastructureRetryBudgetsAreIndependentPerPhase() {
+        counters.setInfraRetries(OrchestrationPhase.PLAN, counters.getMaxInfraRetries());
+
+        StateMachineDecision coding = stateMachine.decide(OrchestrationPhase.CODING,
+                RunOutcome.FAILED_INFRASTRUCTURE, counters);
+
+        assertThat(coding.getAction()).isEqualTo(StateMachineDecision.Action.RETRY_PHASE);
+        assertThat(counters.getInfraRetries(OrchestrationPhase.PLAN)).isEqualTo(counters.getMaxInfraRetries());
+        assertThat(counters.getInfraRetries(OrchestrationPhase.CODING)).isEqualTo(1);
+    }
+
+    @Test void nonInfrastructureOutcomeResetsOnlyCurrentPhaseBudget() {
+        counters.setInfraRetries(OrchestrationPhase.CODING, 2);
+        counters.setInfraRetries(OrchestrationPhase.TESTING, 1);
+
+        stateMachine.decide(OrchestrationPhase.CODING, RunOutcome.SUCCEEDED, counters);
+
+        assertThat(counters.getInfraRetries(OrchestrationPhase.CODING)).isZero();
+        assertThat(counters.getInfraRetries(OrchestrationPhase.TESTING)).isEqualTo(1);
     }
 
     @Test void cancelCompletesCancelled() {

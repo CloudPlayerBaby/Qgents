@@ -34,6 +34,9 @@ import java.util.Map;
 public class WorkflowGraphBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(WorkflowGraphBuilder.class);
+    private static final int DEFAULT_MAX_INFRA_RETRIES = 3;
+    private static final int DEFAULT_MAX_QUALITY_LOOPS = 3;
+    private static final int MAX_RECURSION_LIMIT = 10_000;
 
     /**
      * 节点执行器：按 step 跑一次 Agent 并返回可序列化图状态（projectId/taskId/route）。
@@ -69,6 +72,13 @@ public class WorkflowGraphBuilder {
      */
     public CompiledGraph<TaskOrchestrationState> build(List<TaskStepEntity> steps, NodeRunner runner,
                                                        String requeueNodeId, String startStepId) {
+        return build(steps, runner, requeueNodeId, startStepId,
+                DEFAULT_MAX_INFRA_RETRIES, DEFAULT_MAX_QUALITY_LOOPS);
+    }
+
+    public CompiledGraph<TaskOrchestrationState> build(List<TaskStepEntity> steps, NodeRunner runner,
+                                                       String requeueNodeId, String startStepId,
+                                                       int maxInfraRetries, int maxQualityLoops) {
         if (steps == null || steps.isEmpty()) {
             throw new IllegalStateException("cannot build orchestration graph without steps");
         }
@@ -94,11 +104,23 @@ public class WorkflowGraphBuilder {
             } else {
                 graph.addEdge(GraphDefinition.START, steps.get(0).getId().toString());
             }
-            // 循环上限远高于状态机自身的质量/基础设施重试上限，避免框架先于业务计数终止。
-            return graph.compile(CompileConfig.builder().recursionLimit(64).build());
+            return graph.compile(CompileConfig.builder()
+                    .recursionLimit(recursionLimit(steps.size(), maxInfraRetries, maxQualityLoops)).build());
         } catch (GraphStateException e) {
             // 图结构错误属于编程错误（节点/边名不匹配），包装为运行时异常，不改变调用方签名。
             throw new IllegalStateException("failed to build step-driven orchestration graph", e);
         }
+    }
+
+    /**
+     * 最坏路径为每轮质量修复重新遍历全部步骤，且每个节点访问均可能先耗尽同相位基础设施重试。
+     * 加 8 覆盖 START/END 及 LangGraph 的条件边迭代记账，并设有限硬上限防止错误配置制造无界图。
+     */
+    static int recursionLimit(int stepCount, int maxInfraRetries, int maxQualityLoops) {
+        if (stepCount <= 0 || maxInfraRetries < 0 || maxQualityLoops < 0) {
+            throw new IllegalArgumentException("graph limits must be non-negative and steps must be positive");
+        }
+        long visits = (long) stepCount * (maxInfraRetries + 1L) * (maxQualityLoops + 1L) + 8L;
+        return (int) Math.min(visits, MAX_RECURSION_LIMIT);
     }
 }

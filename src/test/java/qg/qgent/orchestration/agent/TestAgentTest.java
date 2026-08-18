@@ -127,6 +127,53 @@ class TestAgentTest {
     }
 
     @Test
+    void boundsSanitizedModelAndResultCopiesOfExecutionLogs() {
+        String stdout = "OUT-HEAD\n" + "o".repeat(80_000) + "\nOUT-TAIL";
+        String stderr = "ERR-HEAD\n" + "e".repeat(80_000) + "\nERR-TAIL";
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 1, stdout, stderr, null));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"success\":false,\"summary\":\"failed\",\"failures\":[],\"needsCodingFix\":true}");
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LlmMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(llm).complete(anyString(), captor.capture());
+        String modelInput = captor.getValue().get(0).content();
+        assertThat(modelInput).hasSizeLessThan(TestPromptBuilder.MAX_STDOUT_CHARS
+                        + TestPromptBuilder.MAX_STDERR_CHARS + 5_000)
+                .contains("OUT-HEAD", "OUT-TAIL", "ERR-HEAD", "ERR-TAIL", PromptTextLimiter.TRUNCATION_MARKER);
+        assertThat(outcome.getTestResult().getStdout()).hasSizeLessThanOrEqualTo(TestPromptBuilder.MAX_STDOUT_CHARS)
+                .contains("OUT-HEAD", "OUT-TAIL", PromptTextLimiter.TRUNCATION_MARKER);
+        assertThat(outcome.getTestResult().getStderr()).hasSizeLessThanOrEqualTo(TestPromptBuilder.MAX_STDERR_CHARS)
+                .contains("ERR-HEAD", "ERR-TAIL", PromptTextLimiter.TRUNCATION_MARKER);
+    }
+
+    @Test
+    void credentialsAndHostPathsNeverEnterPromptOrTestResult() {
+        String stdout = "token=top-secret path C:\\Users\\admin\\project\\pom.xml";
+        String stderr = "Authorization: Bearer abc.def and /home/runner/work/output.log";
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 1, stdout, stderr, null));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"success\":false,\"summary\":\"failed\",\"failures\":[],\"needsCodingFix\":true}");
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LlmMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(llm).complete(anyString(), captor.capture());
+        String prompt = captor.getValue().get(0).content();
+        assertThat(prompt).doesNotContain("top-secret", "C:\\Users\\admin", "abc.def", "/home/runner")
+                .contains("[redacted]", "[host path omitted]");
+        assertThat(outcome.getTestResult().getStdout()).doesNotContain("top-secret", "C:\\Users\\admin");
+        assertThat(outcome.getTestResult().getStderr()).doesNotContain("abc.def", "/home/runner");
+    }
+
+    @Test
     void executionPortUnavailableMapsToInfrastructureFailure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any())).thenReturn(ExecutionResult.unavailable());

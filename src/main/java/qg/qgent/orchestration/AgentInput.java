@@ -56,7 +56,7 @@ public class AgentInput {
      */
     private String instruction;
     /**
-     * 前一轮 Test/Review 失败项文本（仅质量修复循环时非空）。
+     * 前一轮重试反馈：质量循环携带 Test/Review finding；基础设施重试只携带稳定失败码与受控描述。
      */
     private String feedback;
     /**

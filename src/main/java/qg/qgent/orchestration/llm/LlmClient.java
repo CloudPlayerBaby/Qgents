@@ -55,4 +55,12 @@ public interface LlmClient {
      * @throws RuntimeException 模型调用本身失败（网络、鉴权）时抛出，由调用方映射基础设施失败。
      */
     ToolTurnResult nextToolTurn(String systemPrompt, List<Message> history, List<ToolCallback> tools);
+
+    /**
+     * 基于已有原生工具历史执行一次无工具的 JSON 最终归纳。
+     * <p>
+     * 实现必须启用 JSON_OBJECT、禁用 SDK 自动重试且不得注册任何工具；调用方负责保证只调用一次，
+     * 并继续使用既有 Parser 与确定性真实性规则校验结果。
+     */
+    ToolTurnResult finalizeToolTurn(String systemPrompt, List<Message> history, String finalizationInstruction);
 }

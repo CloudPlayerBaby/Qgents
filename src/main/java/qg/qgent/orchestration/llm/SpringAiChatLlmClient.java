@@ -78,17 +78,19 @@ public class SpringAiChatLlmClient implements LlmClient {
             ChatResponse response = chatModel.call(new Prompt(springMessages, jsonOptions()));
             text = response.getResult().getOutput().getText();
             finishReason = finishReasonOf(response);
-            log.info("llm complete messages={} promptChars={} responseChars={} durationMs={} finish={} tail={}",
+            String responseSha256 = text == null ? null
+                    : Sha256.hex(text.getBytes(StandardCharsets.UTF_8));
+            log.info("llm complete messages={} promptChars={} responseChars={} durationMs={} finish={} responseSha256={}",
                     messages.size(), promptChars, text == null ? 0 : text.length(),
                     Duration.ofNanos(System.nanoTime() - started).toMillis(),
-                    finishReason, redactTail(text));
+                    finishReason, responseSha256);
         } catch (RuntimeException exception) {
             log.error("LLM_CALL_FAILED messages={} promptChars={} category={} durationMs={}",
                     messages.size(), promptChars, exception.getClass().getSimpleName(),
                     Duration.ofNanos(System.nanoTime() - started).toMillis(), exception);
             throw exception;
         }
-        if ("length".equals(finishReason)) {
+        if ("length".equalsIgnoreCase(finishReason)) {
             throw new LlmOutputTruncatedException(text == null ? 0 : text.length());
         }
         return text;
@@ -112,15 +114,46 @@ public class SpringAiChatLlmClient implements LlmClient {
         int responseChars = text == null ? 0 : text.length();
         String responseSha256 = text == null ? null : Sha256.hex(text.getBytes(StandardCharsets.UTF_8));
         if (!response.hasToolCalls()) {
-            log.info("llm toolturn final finish={} promptChars={} responseChars={} durationMs={} tail={}",
-                    finishReason, promptChars, responseChars,
-                    Duration.ofNanos(System.nanoTime() - started).toMillis(), redactTail(text));
             ProtocolFailureCode code = "length".equalsIgnoreCase(finishReason)
                     ? ProtocolFailureCode.LLM_FINISH_LENGTH : null;
+            log.info("llm toolturn final finish={} promptChars={} responseChars={} durationMs={} code={} responseSha256={}",
+                    finishReason, promptChars, responseChars,
+                    Duration.ofNanos(System.nanoTime() - started).toMillis(),
+                    code == null ? null : code.name(), responseSha256);
             return ToolTurnResult.finalAnswer(text, finishReason, promptChars, responseChars, responseSha256, code);
         }
         return executeTools(output, springMessages, history, tools, finishReason, promptChars, responseChars,
                 responseSha256, started);
+    }
+
+    @Override
+    public ToolTurnResult finalizeToolTurn(String systemPrompt, List<Message> history,
+                                           String finalizationInstruction) {
+        List<Message> springMessages = new ArrayList<>();
+        springMessages.add(new SystemMessage(systemPrompt));
+        int promptChars = systemPrompt.length();
+        for (Message message : history) {
+            springMessages.add(message);
+            promptChars += message.getText() == null ? 0 : message.getText().length();
+        }
+        UserMessage instruction = new UserMessage(finalizationInstruction);
+        springMessages.add(instruction);
+        promptChars += finalizationInstruction.length();
+
+        long started = System.nanoTime();
+        ChatResponse response = chatModel.call(new Prompt(springMessages, jsonOptions()));
+        String finishReason = finishReasonOf(response);
+        AssistantMessage output = response.getResult().getOutput();
+        String text = output == null ? null : output.getText();
+        int responseChars = text == null ? 0 : text.length();
+        String responseSha256 = text == null ? null : Sha256.hex(text.getBytes(StandardCharsets.UTF_8));
+        ProtocolFailureCode code = "length".equalsIgnoreCase(finishReason)
+                ? ProtocolFailureCode.LLM_FINISH_LENGTH : null;
+        log.info("llm finalization finish={} promptChars={} responseChars={} durationMs={} code={} responseSha256={}",
+                finishReason, promptChars, responseChars,
+                Duration.ofNanos(System.nanoTime() - started).toMillis(),
+                code == null ? null : code.name(), responseSha256);
+        return ToolTurnResult.finalAnswer(text, finishReason, promptChars, responseChars, responseSha256, code);
     }
 
     /**
@@ -219,6 +252,7 @@ public class SpringAiChatLlmClient implements LlmClient {
                     .responseFormat(OpenAiChatModel.ResponseFormat.builder()
                             .type(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT)
                             .build())
+                    .toolCallbacks(List.of())
                     // 结构化调用的重试由 Agent/编排器统一控制，避免 SDK 重试造成重复 repair。
                     .maxRetries(0)
                     .build();
@@ -235,18 +269,6 @@ public class SpringAiChatLlmClient implements LlmClient {
             return response.getResult().getMetadata().getFinishReason();
         }
         return null;
-    }
-
-    /**
-     * 取输出末尾一小段用于定位截断位置；内容为空时返回占位。片段很短，避免泄露完整输出。
-     */
-    private String redactTail(String text) {
-        if (text == null || text.isBlank()) {
-            return "(empty)";
-        }
-        String trimmed = text.trim();
-        int tail = Math.min(trimmed.length(), 80);
-        return trimmed.substring(trimmed.length() - tail);
     }
 
     /**

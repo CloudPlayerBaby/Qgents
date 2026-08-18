@@ -5,6 +5,7 @@ import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.result.CodingResult;
 
 import java.util.List;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -56,5 +57,19 @@ class CodingPromptBuilderTest {
                 .contains("repo-2/CHECK_REPORT.md")
                 .contains("已完成 repo-2 检查")
                 .contains("不代表测试失败反馈");
+    }
+
+    @Test
+    void boundsWorkspaceTreeWhileKeepingItsHeadAndTail() {
+        AgentInput input = new AgentInput();
+        input.setTaskTitle("large workspace");
+        List<String> files = IntStream.range(0, 3_000)
+                .mapToObj(i -> "src/main/java/example/File" + i + ".java")
+                .toList();
+
+        String prompt = promptBuilder.buildUser(input, files);
+
+        assertThat(prompt).hasSizeLessThan(CodingPromptBuilder.MAX_FILE_TREE_CHARS + 2_000)
+                .contains(files.get(0), files.get(files.size() - 1), PromptTextLimiter.TRUNCATION_MARKER);
     }
 }

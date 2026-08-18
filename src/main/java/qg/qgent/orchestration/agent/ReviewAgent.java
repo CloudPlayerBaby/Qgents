@@ -132,22 +132,25 @@ public class ReviewAgent implements Agent {
         ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
                 input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
         List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
-        String finishReason = null;
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
-            ToolTurnResult turn = llm.nextToolTurn(system, history, callbacks);
+            List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round);
+            ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
             observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
-            finishReason = turn.finishReason();
             if (turn.isInfraAbort()) {
                 log.error("REVIEW_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
                         input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
                 throw new IllegalStateException(turn.infraFailure());
             }
-            if ("length".equalsIgnoreCase(finishReason)) {
-                throw new ReviewParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
-                        "review output truncated by max tokens");
+            if ("length".equalsIgnoreCase(turn.finishReason())) {
+                return finalizeReview(system, requestHistory, turn, observations, round, input.getPhase().name(),
+                        ProtocolFailureCode.LLM_FINISH_LENGTH);
             }
             if (turn.continuesToolLoop()) {
                 history = turn.history();
+                if (round == MAX_TOOL_ROUNDS) {
+                    return finalizeReview(system, requestHistory, turn, observations, round, input.getPhase().name(),
+                            ProtocolFailureCode.LLM_CONTEXT_LIMIT);
+                }
                 continue;
             }
             if (turn.isFinalText()) {
@@ -170,6 +173,24 @@ public class ReviewAgent implements Agent {
         }
         throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+    }
+
+    private ReviewResult finalizeReview(String system, List<Message> requestHistory, ToolTurnResult trigger,
+                                        List<LlmObservation> observations, int round,
+                                        String phase, ProtocolFailureCode triggerCode) {
+        ToolTurnResult finalization = llm.finalizeToolTurn(system,
+                NativeToolLoopSupport.prepareFinalization(requestHistory, trigger),
+                NativeToolLoopSupport.finalizationInstruction(
+                        "{\"success\":true|false,\"summary\":\"审查摘要\","
+                                + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,"
+                                + "\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\",\"issue\":\"问题\","
+                                + "\"suggestion\":\"建议\"}],\"suggestions\":[\"建议\"],"
+                                + "\"needsCodingFix\":true|false}"));
+        observations.add(LlmObservation.of(phase, round + 1, finalization));
+        if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
+            throw new ReviewParseException(triggerCode, "bounded review finalization did not produce complete JSON");
+        }
+        return parser.parse(finalization.text());
     }
 
     /**

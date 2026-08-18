@@ -5,6 +5,7 @@ import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.RunOutcome;
+import qg.qgent.orchestration.ExecutionContentSanitizer;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.LlmMessage;
 import qg.qgent.orchestration.result.TestResult;
@@ -64,9 +65,11 @@ public class TestAgent implements Agent {
             }
             ExecutionResult exec = executionPort.execute(input.getWorkspaceId(), command, TEST_TIMEOUT);
             if (!exec.ok()) {
-                return infraFailure(input, exec.error() == null ? "test execution unavailable" : exec.error());
+                return infraFailure(input, exec.error() == null ? "test execution unavailable"
+                        : ExecutionContentSanitizer.sanitize(exec.error()));
             }
-            TestResult test = analyze(input, command, exec);
+            ExecutionResult safeExec = sanitizedAndLimited(exec);
+            TestResult test = analyze(input, command, safeExec);
             boolean passed = exec.exitCode() == 0;
             test.setSuccess(passed);
             test.setVerificationMode("COMMAND");
@@ -119,7 +122,7 @@ public class TestAgent implements Agent {
         test.setCommand(String.join(" ", command));
         test.setStdout(exec.stdout());
         test.setStderr(exec.stderr());
-        test.setSummary("测试已执行，LLM 分析失败：" + analysisError);
+        test.setSummary("测试已执行，LLM 分析失败：" + ExecutionContentSanitizer.sanitize(analysisError));
         if (exec.exitCode() != 0) {
             TestResult.Failure failure = new TestResult.Failure();
             failure.setName("test execution");
@@ -287,7 +290,16 @@ public class TestAgent implements Agent {
         AgentRunOutcome failure = new AgentRunOutcome();
         failure.setPhase(input.getPhase());
         failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
-        failure.setMessage("test agent failed: " + message);
+        failure.setMessage("test agent failed: " + ExecutionContentSanitizer.sanitize(message));
         return failure;
+    }
+
+    private ExecutionResult sanitizedAndLimited(ExecutionResult exec) {
+        String stdout = PromptTextLimiter.limitHeadTail(ExecutionContentSanitizer.sanitize(exec.stdout()),
+                TestPromptBuilder.MAX_STDOUT_CHARS);
+        String stderr = PromptTextLimiter.limitHeadTail(ExecutionContentSanitizer.sanitize(exec.stderr()),
+                TestPromptBuilder.MAX_STDERR_CHARS);
+        return new ExecutionResult(exec.ok(), exec.exitCode(), stdout, stderr,
+                ExecutionContentSanitizer.sanitize(exec.error()));
     }
 }

@@ -14,6 +14,10 @@ import java.util.Map;
  */
 public class PlanPromptBuilder {
 
+    static final int MAX_FILE_TREE_CHARS = 20_000;
+    static final int MAX_FILE_CONTENT_CHARS = 16_000;
+    static final int MAX_TOTAL_FILE_CONTENT_CHARS = 48_000;
+
     /**
      * 第一轮系统提示：只输出要读取的文件路径 JSON。
      */
@@ -85,9 +89,21 @@ public class PlanPromptBuilder {
         StringBuilder sb = new StringBuilder();
         sb.append("任务标题：%s\n任务描述：%s\n计划指令：%s\n\n工作区文件树：\n%s"
                 .formatted(input.getTaskTitle(), input.getRequirement(), input.getInstruction(), renderTree(files)));
+        if (input.getFeedback() != null && !input.getFeedback().isBlank()) {
+            sb.append("\n\n上次规划失败反馈：").append(input.getFeedback());
+        }
         if (!fileContents.isEmpty()) {
             sb.append("\n已读取文件内容（供你分析代码结构）：\n");
-            fileContents.forEach((path, content) -> sb.append("--- ").append(path).append(" ---\n").append(content).append('\n'));
+            int remaining = MAX_TOTAL_FILE_CONTENT_CHARS;
+            for (Map.Entry<String, String> entry : fileContents.entrySet()) {
+                if (remaining <= 0) {
+                    break;
+                }
+                int limit = Math.min(MAX_FILE_CONTENT_CHARS, remaining);
+                String modelCopy = PromptTextLimiter.limitHeadTail(entry.getValue(), limit);
+                sb.append("--- ").append(entry.getKey()).append(" ---\n").append(modelCopy).append('\n');
+                remaining -= modelCopy.length();
+            }
         }
         appendAgentPool(sb, agents);
         sb.append(ContextPromptRenderer.render(input));
@@ -122,6 +138,7 @@ public class PlanPromptBuilder {
         if (files == null || files.isEmpty()) {
             return "(空，未检测到代码文件)";
         }
-        return files.stream().map(f -> "- " + f).reduce((a, b) -> a + "\n" + b).orElse("");
+        String tree = files.stream().map(f -> "- " + f).reduce((a, b) -> a + "\n" + b).orElse("");
+        return PromptTextLimiter.limitHeadTail(tree, MAX_FILE_TREE_CHARS);
     }
 }

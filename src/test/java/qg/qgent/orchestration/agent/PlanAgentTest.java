@@ -17,6 +17,7 @@ import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -202,5 +203,45 @@ class PlanAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         assertThat(outcome.getPlanResult().getImplementationSteps()).hasSize(1);
+    }
+
+    @Test void planRetryFeedbackIsVisibleToPlanner() {
+        AgentInput input = input();
+        input.setFeedback("前一轮基础设施失败（LLM_FINISH_LENGTH）：模型结构化输出因长度上限未完成");
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.complete(anyString(), anyString())).thenReturn("{\"readRequests\":[]}", PLAN_JSON);
+
+        agent.run(input);
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(llm, times(2)).complete(anyString(), captor.capture());
+        assertThat(captor.getAllValues().get(1)).contains("上次规划失败反馈", "LLM_FINISH_LENGTH");
+    }
+
+    @Test void boundsFileTreeAndPlannerFileContentsInModelPrompt() {
+        List<String> files = IntStream.range(0, 2_000)
+                .mapToObj(i -> "src/main/java/example/VeryLongFileName" + i + ".java")
+                .toList();
+        when(codeAccess.listFiles(any())).thenReturn(files);
+        when(codeAccess.readFile(any(), anyString())).thenAnswer(invocation -> {
+            String path = invocation.getArgument(1);
+            return WorkspaceFileReadResult.ok(path,
+                    "HEAD-" + path + "\n" + "x".repeat(80_000) + "\n-TAIL-" + path, "hash");
+        });
+        when(llm.complete(anyString(), anyString()))
+                .thenReturn("{\"readRequests\":[\"" + files.get(0) + "\",\"" + files.get(1) + "\",\""
+                                + files.get(2) + "\",\"" + files.get(3) + "\"]}", PLAN_JSON);
+
+        assertThat(agent.run(input()).getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(llm, times(2)).complete(anyString(), captor.capture());
+        String selectionPrompt = captor.getAllValues().get(0);
+        String planPrompt = captor.getAllValues().get(1);
+        assertThat(selectionPrompt).hasSizeLessThan(PlanPromptBuilder.MAX_FILE_TREE_CHARS + 2_000)
+                .contains(files.get(0), files.get(files.size() - 1), PromptTextLimiter.TRUNCATION_MARKER);
+        assertThat(planPrompt).hasSizeLessThan(PlanPromptBuilder.MAX_FILE_TREE_CHARS
+                        + PlanPromptBuilder.MAX_TOTAL_FILE_CONTENT_CHARS + 10_000)
+                .contains("HEAD-", "-TAIL-", PromptTextLimiter.TRUNCATION_MARKER);
     }
 }

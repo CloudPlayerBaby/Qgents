@@ -220,12 +220,17 @@ public class AgentContextAssembler {
     }
 
     private String formatFeedback(AgentRunOutcome feedback) {
+        if (feedback.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE) {
+            String code = ExecutionContentSanitizer.stableInfrastructureCode(feedback.getFailureCode());
+            return "前一轮基础设施失败（" + code + "）："
+                    + ExecutionContentSanitizer.infrastructureDescription(code);
+        }
         TestResult test = feedback.getTestResult();
-        if (test != null && !test.getFailures().isEmpty()) {
+        if (test != null && test.getFailures() != null && !test.getFailures().isEmpty()) {
             return "前一轮测试失败：" + test.getFailures();
         }
         ReviewResult review = feedback.getReviewResult();
-        if (review != null && !review.getFindings().isEmpty()) {
+        if (review != null && review.getFindings() != null && !review.getFindings().isEmpty()) {
             StringBuilder sb = new StringBuilder("前一轮审查问题：").append(review.getFindings());
             if (review.getSuggestions() != null && !review.getSuggestions().isEmpty()) {
                 sb.append("\n审查建议：").append(review.getSuggestions());
@@ -234,4 +239,5 @@ public class AgentContextAssembler {
         }
         return feedback.getMessage();
     }
+
 }

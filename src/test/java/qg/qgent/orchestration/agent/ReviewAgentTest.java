@@ -196,32 +196,35 @@ class ReviewAgentTest {
     }
 
     @Test
-    void nativeFinishLengthMapsToLlmFinishLength() {
+    void nativeFinishLengthFinalizesOnceAndSucceeds() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurnWithReason("{\"finalResult\":{\"success\":true,\"summary\":\"tr", "LENGTH"));
+        when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
+                .thenReturn(finalTurn(reviewJson(true, "recovered", "[]")));
 
         AgentRunOutcome outcome = nativeAgent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
-        verify(llm, never()).complete(anyString(), anyList());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
     }
 
     @Test
-    void nativeExceedingMaxRoundsFailsContextLimit() {
+    void nativeMaxRoundsFinalizesOnceAndSucceeds() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(toolTurn("read_file"));
+        when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
+                .thenReturn(finalTurn(reviewJson(true, "bounded finish", "[]")));
 
         AgentRunOutcome outcome = nativeAgent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_CONTEXT_LIMIT.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
-        assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS);
+        verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
+        assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS + 1);
     }
 
     @Test
