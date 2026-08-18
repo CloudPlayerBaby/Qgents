@@ -95,6 +95,41 @@ class TaskPlanMaterializationServiceTest {
     }
 
     @Test
+    void narrowsDeveloperScopeFromWorktreePrefixedPlanFiles() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        TaskStepRepositoryMapper scopes = mock(TaskStepRepositoryMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        WorkspaceRepositoryEntity backend = repository();
+        backend.setWorkspacePath("repo-1");
+        WorkspaceRepositoryEntity frontend = repository();
+        frontend.setWorkspacePath("repo-2");
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(backend, frontend));
+
+        PlanResult plan = plan();
+        plan.getImplementationSteps().get(0).setFiles(List.of("repo-1/README.md"));
+        plan.getImplementationSteps().get(1).setFiles(List.of("repo-2/README.md"));
+        TransactionSynchronizationManager.initSynchronization();
+
+        service(tasks, steps, mock(TaskStepDependencyMapper.class), scopes, worktrees,
+                mock(TaskExecutionArtifactService.class), mock(EventService.class), mock(AgentDispatcher.class))
+                .materialize(task, plan);
+
+        ArgumentCaptor<TaskStepEntity> inserted = ArgumentCaptor.forClass(TaskStepEntity.class);
+        verify(steps, times(4)).insert(inserted.capture());
+        UUID backendStep = inserted.getAllValues().get(0).getId();
+        UUID frontendStep = inserted.getAllValues().get(1).getId();
+        verify(scopes).insertLink(backendStep, backend.getProjectRepositoryId(), "WRITE");
+        verify(scopes).insertLink(frontendStep, frontend.getProjectRepositoryId(), "WRITE");
+        verify(scopes, never()).insertLink(backendStep, frontend.getProjectRepositoryId(), "WRITE");
+        verify(scopes, never()).insertLink(frontendStep, backend.getProjectRepositoryId(), "WRITE");
+    }
+
+    @Test
     void materializedTaskIsIdempotent() {
         TaskMapper tasks = mock(TaskMapper.class);
         TaskStepMapper steps = mock(TaskStepMapper.class);

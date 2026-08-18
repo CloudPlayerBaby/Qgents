@@ -143,7 +143,7 @@ public class TaskPlanMaterializationService {
                     item.getRequiredCapabilities(), "完成 " + item.getTitle() + " 并通过相关自检");
             steps.insert(step);
             dependencies.insertLink(step.getId(), previous);
-            insertScopes(step.getId(), repositories, "WRITE");
+            insertScopes(step.getId(), repositoriesForStep(item, worktreeList), "WRITE");
             created.add(step);
             previous = step.getId();
         }
@@ -160,6 +160,38 @@ public class TaskPlanMaterializationService {
         insertScopes(reviewer.getId(), repositories, "READ");
         created.add(reviewer);
         created.forEach(step -> registerStepEvent(task, step));
+    }
+
+    /**
+     * 根据 Planner 输出的工作区相对路径收敛开发步骤的仓库范围。
+     *
+     * Planner 文件路径通常带有 worktree 前缀（例如 repo-1/README.md）。
+     * 旧计划可能没有此前缀，或引用了需要新建的文件；此时保留全仓库范围作为兼容回退，
+     * 避免把一个无法可靠归属的步骤错误限制到某个仓库。
+     */
+    private List<UUID> repositoriesForStep(PlanResult.ImplementationStep item,
+                                            List<WorkspaceRepositoryEntity> worktreeList) {
+        List<UUID> all = worktreeList.stream()
+                .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
+        if (worktreeList.size() <= 1 || item == null || item.getFiles() == null || item.getFiles().isEmpty()) {
+            return all;
+        }
+        List<UUID> matched = worktreeList.stream()
+                .filter(worktree -> item.getFiles().stream().anyMatch(file -> belongsToWorktree(file, worktree)))
+                .map(WorkspaceRepositoryEntity::getProjectRepositoryId)
+                .distinct()
+                .toList();
+        return matched.isEmpty() ? all : matched;
+    }
+
+    private boolean belongsToWorktree(String file, WorkspaceRepositoryEntity worktree) {
+        if (file == null || file.isBlank() || worktree.getWorkspacePath() == null
+                || worktree.getWorkspacePath().isBlank()) {
+            return false;
+        }
+        String path = file.replace('\\', '/');
+        String prefix = worktree.getWorkspacePath().replace('\\', '/').replaceAll("^/+|/+$", "");
+        return !prefix.isBlank() && (path.equals(prefix) || path.startsWith(prefix + "/"));
     }
 
     private TaskStepEntity step(TaskEntity task, int sequence, String title, String instruction, String role,
