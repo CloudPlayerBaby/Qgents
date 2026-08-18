@@ -9,6 +9,7 @@ import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
 import qg.qgent.entity.AgentEntity;
+import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.UserEntity;
@@ -128,7 +129,7 @@ public class GroupService {
                     "项目主群由系统管理，不能通过该接口创建");
         }
         List<UUID> repositories = validateRepositories(projectId, body.getRepositoryIds());
-        List<UUID> initialMembers = validateGroupMembers(projectId, body.getMemberIds());
+        List<UUID> initialMembers = validateGroupMembers(projectId, actor, body.getMemberIds());
         RequirementGroupEntity group = new RequirementGroupEntity();
         group.setId(UuidV7.next());
         group.setProjectId(projectId);
@@ -493,13 +494,14 @@ public class GroupService {
     }
 
     /**
-     * 校验初始成员列表全部为项目成员；空/不传返回空列表。
+     * 校验初始成员列表中的其他用户全部为显式项目成员；创建者由服务端自动入群，
+     * 因此即使创建者只有 Team Owner 兜底权限、没有 project_members 行，也不能在此处被拒绝。
      */
-    private List<UUID> validateGroupMembers(UUID projectId, List<UUID> memberIds) {
+    private List<UUID> validateGroupMembers(UUID projectId, UUID actor, List<UUID> memberIds) {
         if (memberIds == null || memberIds.isEmpty()) {
             return List.of();
         }
-        List<UUID> distinct = memberIds.stream().distinct().toList();
+        List<UUID> distinct = memberIds.stream().filter(memberId -> !actor.equals(memberId)).distinct().toList();
         for (UUID memberId : distinct) {
             if (projectMemberMapper.selectByProjectAndUser(projectId, memberId) == null) {
                 throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GROUP_MEMBER_NOT_PROJECT_MEMBER",
@@ -522,6 +524,11 @@ public class GroupService {
     public void leave(UUID actor, UUID projectId, UUID groupId) {
         access.requireProjectMember(projectId, actor);
         requireGroupInProject(projectId, groupId);
+        ProjectEntity project = projectMapper.selectById(projectId);
+        if (project != null && access.isCanonicalTeamOwner(project.getTeamId(), actor)) {
+            throw new ApiException(HttpStatus.CONFLICT, "TEAM_OWNER_CANNOT_LEAVE_PROJECT",
+                    "团队 Owner 具有项目兜底权限，不能退出项目");
+        }
         ProjectMemberEntity member = projectMemberMapper.selectByProjectAndUser(projectId, actor);
         if (member != null && "PROJECT_ADMIN".equals(member.getRole())) {
             int admins = projectMemberMapper.countAdmins(projectId);
@@ -530,6 +537,7 @@ public class GroupService {
                         "最后一名项目 Admin 不可退出项目");
             }
         }
+        groupMemberMapper.deleteByProjectAndUser(projectId, actor);
         projectMemberMapper.deleteByProjectAndUser(projectId, actor);
         eventService.publish(projectId, groupId, "group.member.updated", id(groupId),
                 Map.of("projectId", id(projectId), "groupId", id(groupId)));

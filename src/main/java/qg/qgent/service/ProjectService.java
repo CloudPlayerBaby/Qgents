@@ -15,6 +15,7 @@ import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamMemberEntity;
+import qg.qgent.mapper.GroupMemberMapper;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
@@ -38,11 +39,13 @@ public class ProjectService {
     private final NotificationService notificationService;
     private final EventService eventService;
     private final GitHubRepositoryService githubRepositoryService;
+    private final GroupMemberMapper groupMemberMapper;
 
     public ProjectService(ProjectMapper projectMapper, ProjectMemberMapper memberMapper, TeamMapper teamMapper,
-                          TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher,
-                          NotificationService notificationService, EventService eventService,
-                          GitHubRepositoryService githubRepositoryService, ProjectRepositoryMapper projectRepositoryMapper) {
+                           TeamMemberMapper teamMemberMapper, ProjectAccessService access, ApplicationEventPublisher eventPublisher,
+                           NotificationService notificationService, EventService eventService,
+                           GitHubRepositoryService githubRepositoryService, ProjectRepositoryMapper projectRepositoryMapper,
+                           GroupMemberMapper groupMemberMapper) {
         this.projectMapper = projectMapper;
         this.memberMapper = memberMapper;
         this.teamMapper = teamMapper;
@@ -53,6 +56,7 @@ public class ProjectService {
         this.eventService = eventService;
         this.githubRepositoryService = githubRepositoryService;
         this.projectRepositoryMapper = projectRepositoryMapper;
+        this.groupMemberMapper = groupMemberMapper;
     }
 
     /**
@@ -254,6 +258,7 @@ public class ProjectService {
         ProjectMemberEntity target = requireProjectMember(projectId, userId);
         // Team Owner 兜底不计入项目 Admin，项目内始终保留至少一名 Admin。
         protectLastAdmin(projectId, target, null);
+        groupMemberMapper.deleteByProjectAndUser(projectId, userId);
         memberMapper.deleteByProjectAndUser(projectId, userId);
         return new ProjectMemberResponse(userId.toString(), target.getRole());
     }

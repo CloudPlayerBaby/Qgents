@@ -39,6 +39,19 @@ public interface GroupMemberMapper {
     int deleteMember(@Param("groupId") UUID groupId, @Param("userId") UUID userId);
 
     /**
+     * 用户失去项目成员身份时，清理该项目全部 REQUIREMENT 群中的显式成员关系。
+     * 避免用户后续重新加入项目后继承旧需求群的私有可见性。
+     *
+     * @param projectId 项目 ID
+     * @param userId 用户 ID
+     * @return 删除的群成员关系数
+     */
+    @Delete("DELETE gm FROM group_members gm INNER JOIN requirement_groups rg "
+            + "ON rg.id = gm.requirement_group_id WHERE rg.project_id = #{projectId} "
+            + "AND rg.group_type = 'REQUIREMENT' AND gm.user_id = #{userId}")
+    int deleteByProjectAndUser(@Param("projectId") UUID projectId, @Param("userId") UUID userId);
+
+    /**
      * 查询需求群内的用户成员 ID 列表（不含 Agent，Agent 走 group_agents）。
      *
      * @param groupId 需求群 ID
