@@ -731,6 +731,8 @@ class MergeRequestServiceTest {
         worktree.setSourceBranch("feature/test");
         worktree.setHeadCommit("sha123");
         when(workspaceRepositoryMapper.selectByWorkspace(workspaceId)).thenReturn(java.util.List.of(worktree));
+        when(diffs.selectAcceptedCommittedForPush(taskId, projectId, workspaceId, repositoryId, "sha123"))
+                .thenReturn(new DiffEntity());
 
         GitHubRepositoryEntity githubRepository = new GitHubRepositoryEntity();
         githubRepository.setId(repository.getRepositoryId());
@@ -764,6 +766,8 @@ class MergeRequestServiceTest {
         ApiException ex = assertThrows(ApiException.class,
                 () -> service.pushAcceptedBranch(projectId, taskId, repositoryId));
         assertEquals("WORKER_PUSH_VERIFICATION_FAILED", ex.code());
+        verify(diffs).selectAcceptedCommittedForPush(taskId, projectId, workspaceId, repositoryId, "sha123");
+        verify(diffs, never()).selectAcceptedCommittedForMr(any(), any(), any(), any(), any());
         verify(githubClient, never()).createPullRequest(anyLong(), any(), any(), any());
     }
 
