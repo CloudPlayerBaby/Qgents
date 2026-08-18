@@ -21,9 +21,14 @@ import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.AgentAssignmentListItem;
 import qg.qgent.dto.AgentResponse;
 import qg.qgent.dto.AgentRuntimeSummary;
+import qg.qgent.dto.AvatarConfirmRequest;
+import qg.qgent.dto.AvatarConfirmResponse;
+import qg.qgent.dto.AvatarCredentialRequest;
+import qg.qgent.dto.AvatarCredentialResponse;
 import qg.qgent.dto.CreateAgentRequest;
 import qg.qgent.dto.UpdateAgentRequest;
 import qg.qgent.security.CurrentActorProvider;
+import qg.qgent.service.AgentAvatarStorageService;
 import qg.qgent.service.AgentService;
 import qg.qgent.service.IdempotencyService;
 
@@ -39,12 +44,14 @@ import java.util.UUID;
 @RequestMapping("/api/v1")
 public class AgentController {
     private final AgentService service;
+    private final AgentAvatarStorageService avatarStorage;
     private final CurrentActorProvider currentActor;
     private final IdempotencyService idempotency;
 
-    public AgentController(AgentService service, CurrentActorProvider currentActor,
-                           IdempotencyService idempotency) {
+    public AgentController(AgentService service, AgentAvatarStorageService avatarStorage,
+                           CurrentActorProvider currentActor, IdempotencyService idempotency) {
         this.service = service;
+        this.avatarStorage = avatarStorage;
         this.currentActor = currentActor;
         this.idempotency = idempotency;
     }
@@ -165,5 +172,35 @@ public class AgentController {
                 Map.of("teamId", teamId, "agentId", agentId), 200, AgentResponse.class,
                 () -> service.archive(actor, teamId, agentId));
         return ApiResponse.ok(result, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 签发 Agent 头像直传凭证（团队成员；对象键 agents/{teamId}/{uuid}.{ext}）。
+     */
+    @PostMapping("/teams/{teamId}/agents/avatar/credential")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<AvatarCredentialResponse> avatarCredential(@PathVariable UUID teamId,
+            @AuthenticationPrincipal UUID actor, @Valid @RequestBody AvatarCredentialRequest body,
+            HttpServletRequest request) {
+        service.requireTeamMember(teamId, actor);
+        AgentAvatarStorageService.AgentAvatarCredential credential =
+                avatarStorage.createCredential(teamId, body.getMediaType(), body.getSizeBytes());
+        return ApiResponse.ok(new AvatarCredentialResponse(credential.objectKey(),
+                credential.credential().getUploadUrl(), credential.credential().getMethod(),
+                credential.credential().getHeaders(), credential.credential().getExpiresAt()),
+                (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 确认 Agent 头像上传并返回公共读 URL（不写任何用户字段）。
+     */
+    @PostMapping("/teams/{teamId}/agents/avatar/confirm")
+    public ApiResponse<AvatarConfirmResponse> avatarConfirm(@PathVariable UUID teamId,
+            @AuthenticationPrincipal UUID actor, @Valid @RequestBody AvatarConfirmRequest body,
+            HttpServletRequest request) {
+        service.requireTeamMember(teamId, actor);
+        String avatarUrl = avatarStorage.confirmAvatar(teamId, body.getObjectKey());
+        return ApiResponse.ok(new AvatarConfirmResponse(avatarUrl),
+                (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
 }

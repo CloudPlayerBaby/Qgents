@@ -321,7 +321,7 @@ public class AgentService {
         return toResponse(agent, true);
     }
 
-    private void requireTeamMember(UUID teamId, UUID actor) {
+    public void requireTeamMember(UUID teamId, UUID actor) {
         if (teamMemberMapper.selectByTeamAndUser(teamId, actor) == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "TEAM_NOT_FOUND", "团队不存在或不可见");
         }
