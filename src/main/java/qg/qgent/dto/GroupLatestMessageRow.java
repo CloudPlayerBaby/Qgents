@@ -6,7 +6,7 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 /**
- * 群最新消息批量查询结果行：{@code MessageMapper.selectLatestByProject} 的映射结果。
+ * 群最新消息批量查询结果行：{@code MessageMapper.selectLatestByGroupIds} 的映射结果。
  * <p>
  * 由 Service 转换为 {@link GroupLatestMessage} 供群列表展示；senderName 通过
  * LEFT JOIN users/agents 取 {@code COALESCE(display_name, name)}，SYSTEM 消息为空。

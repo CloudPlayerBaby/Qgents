@@ -266,6 +266,7 @@ public class TaskOrchestrator {
             return false;
         }
         while (true) {
+            sendPlanningStartedCard(task);
             markStepRunning(task, planner);
             // 规划期心跳：刷新任务 updated_at，防止恢复调度器把长规划任务误判为卡死续跑
             taskMapper.touchUpdatedAt(task.getId());
@@ -285,6 +286,9 @@ public class TaskOrchestrator {
                     failTaskIfStartable(task, e.getMessage());
                     return false;
                 }
+                TaskEntity materialized = taskMapper.selectById(task.getId());
+                sendAgentCard(materialized == null ? task : materialized, "task-" + task.getId(),
+                        "PENDING", "PLAN", "执行计划已生成", outcome.getPlanResult());
                 // 规划完成、步骤已物化：任务保持 PLANNING，由 orchestrate 入口统一原子认领到
                 // RUNNING——保证前端在规划期看到 PLANNING，并发编排中仅一个执行器拿到执行权。
                 return true;
@@ -621,6 +625,8 @@ public class TaskOrchestrator {
         step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         stepMapper.updateById(step);
         publishStepUpdated(task, step);
+        sendAgentCard(task, "step-" + step.getId(), task.getStatus(), step.getRole(),
+                roleLabel(step.getRole()) + "步骤开始执行");
     }
 
     private void markStepSkipped(TaskEntity task, TaskStepEntity step) {
@@ -628,6 +634,8 @@ public class TaskOrchestrator {
         step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         stepMapper.updateById(step);
         publishStepUpdated(task, step);
+        sendAgentCard(task, "step-" + step.getId(), task.getStatus(), step.getRole(),
+                roleLabel(step.getRole()) + "步骤已跳过");
     }
 
     private void markStepSettled(TaskEntity task, TaskStepEntity step, RunOutcome outcome) {
@@ -764,10 +772,32 @@ public class TaskOrchestrator {
      * 编排助手时降级为 SYSTEM 系统消息（sendAsSystem），保证卡片永不因缺少发送者而丢失。
      * 发送失败记日志跳过，回群失败不等于任务失败。
      */
+    private void sendPlanningStartedCard(TaskEntity task) {
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("taskId", task.getId().toString());
+        content.put("status", "PLANNING");
+        content.put("phase", "PLAN");
+        if (task.getDeliveryMode() != null) content.put("deliveryMode", task.getDeliveryMode());
+        if (task.getDeliveryReason() != null) content.put("deliveryReason", task.getDeliveryReason());
+        content.put("message", "正在制定执行计划");
+        content.put("currentStepId", null);
+        Map<String, Object> plan = new LinkedHashMap<>();
+        plan.put("summary", null);
+        plan.put("steps", List.of());
+        content.put("plan", plan);
+        publishTaskStatusCard(task, content, "planning");
+    }
+
     private void sendAgentCard(TaskEntity task, String idSuffix, String status, String node, String message) {
+        sendAgentCard(task, idSuffix, status, node, message, null);
+    }
+
+    private void sendAgentCard(TaskEntity task, String idSuffix, String status, String node, String message,
+                               PlanResult planResult) {
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("taskId", task.getId().toString());
         content.put("status", status);
+        content.put("phase", cardPhase(status, node));
         if (task.getDeliveryMode() != null) {
             content.put("deliveryMode", task.getDeliveryMode());
         }
@@ -780,22 +810,89 @@ public class TaskOrchestrator {
         if (message != null) {
             content.put("message", message);
         }
+        UUID currentStepId = currentRunningStepId(task.getId());
+        content.put("currentStepId", currentStepId == null ? null : currentStepId.toString());
+        content.put("plan", taskPlanContent(task, planResult, idSuffix, message));
+        publishTaskStatusCard(task, content, idSuffix);
+    }
+
+    private void publishTaskStatusCard(TaskEntity task, Map<String, Object> content, String idSuffix) {
         MessageSendRequest body = new MessageSendRequest();
         body.setType("TASK_STATUS");
-        body.setClientMessageId("agent-" + idSuffix + "-" + status);
+        body.setClientMessageId("task-card-" + task.getId());
         body.setContent(content);
         UUID cardSenderId = orchestratorAgents.resolveIdForTask(task);
         try {
             if (cardSenderId != null) {
-                messageService.sendAsAgent(task.getRequirementGroupId(), cardSenderId, body);
+                messageService.upsertTaskStatusCard(task.getRequirementGroupId(), cardSenderId, body);
             } else {
                 log.warn("orchestrator agent missing, card degrades to SYSTEM, taskId={}, suffix={}",
                         task.getId(), idSuffix);
-                messageService.sendAsSystem(task.getRequirementGroupId(), body);
+                messageService.upsertTaskStatusCard(task.getRequirementGroupId(), null, body);
             }
         } catch (RuntimeException e) {
             log.warn("agent card skipped, taskId={}, suffix={}: {}", task.getId(), idSuffix, e.getMessage());
         }
+    }
+
+    private String cardPhase(String status, String node) {
+        if (node != null) {
+            return switch (node) {
+                case "PLANNER" -> "PLAN";
+                case "DEVELOPER" -> "CODING";
+                case "TESTER" -> "TESTING";
+                case "REVIEWER" -> "REVIEWING";
+                default -> "RUNNING";
+            };
+        }
+        return Set.of("PLANNING", "PENDING").contains(status) ? "PLAN" : "DELIVERY";
+    }
+
+    private UUID currentRunningStepId(UUID taskId) {
+        List<TaskStepEntity> steps = stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
+                .eq(TaskStepEntity::getTaskId, taskId).orderByAsc(TaskStepEntity::getSequenceNo));
+        if (steps == null) return null;
+        return steps.stream().filter(step -> "RUNNING".equals(step.getStatus()))
+                .map(TaskStepEntity::getId).findFirst().orElse(null);
+    }
+
+    private Map<String, Object> taskPlanContent(TaskEntity task, PlanResult planResult, String idSuffix,
+                                                String message) {
+        List<TaskStepEntity> steps = stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
+                .eq(TaskStepEntity::getTaskId, task.getId()).orderByAsc(TaskStepEntity::getSequenceNo));
+        if (steps == null) steps = List.of();
+        String summary = planResult == null ? null : planResult.getTaskUnderstanding();
+        Map<String, Object> plan = new LinkedHashMap<>();
+        plan.put("summary", summary);
+        plan.put("steps", steps.stream().map(step -> cardStep(step, idSuffix, message)).toList());
+        return plan;
+    }
+
+    private Map<String, Object> cardStep(TaskStepEntity step, String idSuffix, String message) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("stepId", step.getId().toString());
+        value.put("sequence", step.getSequenceNo());
+        value.put("title", step.getTitle());
+        value.put("role", step.getRole());
+        value.put("status", step.getStatus());
+        String stepPrefix = "step-" + step.getId();
+        if (stepPrefix.equals(idSuffix) && message != null) {
+            value.put("message", message);
+        } else {
+            value.put("message", stepMessage(step));
+        }
+        return value;
+    }
+
+    private String stepMessage(TaskStepEntity step) {
+        return switch (step.getStatus()) {
+            case "RUNNING" -> roleLabel(step.getRole()) + "步骤正在执行";
+            case "SUCCEEDED" -> roleLabel(step.getRole()) + "步骤已完成";
+            case "FAILED" -> roleLabel(step.getRole()) + "步骤失败";
+            case "SKIPPED" -> roleLabel(step.getRole()) + "步骤已跳过";
+            case "CANCELLED" -> roleLabel(step.getRole()) + "步骤已取消";
+            default -> null;
+        };
     }
 
     /**
@@ -816,20 +913,24 @@ public class TaskOrchestrator {
         }
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("diffId", values.get(0).getId().toString());
+        content.put("taskId", task.getId().toString());
+        content.put("reviewBatchId", reviewBatchId.toString());
         content.put("title", task.getTitle());
         content.put("additions", aggregateStat(values, "additions"));
         content.put("deletions", aggregateStat(values, "deletions"));
+        content.put("reviewStatus", "PENDING_CONFIRMATION");
+        content.put("deliveryStatus", "NOT_STARTED");
         MessageSendRequest body = new MessageSendRequest();
         body.setType("DIFF");
-        body.setClientMessageId("agent-task-" + task.getId() + "-diff");
+        body.setClientMessageId("diff-card-" + task.getId());
         body.setContent(content);
         UUID cardSenderId = orchestratorAgents.resolveIdForTask(task);
         try {
             if (cardSenderId != null) {
-                messageService.sendAsAgent(task.getRequirementGroupId(), cardSenderId, body);
+                messageService.upsertDiffCard(task.getRequirementGroupId(), cardSenderId, body);
             } else {
                 log.warn("orchestrator agent missing, diff card degrades to SYSTEM, taskId={}", task.getId());
-                messageService.sendAsSystem(task.getRequirementGroupId(), body);
+                messageService.upsertDiffCard(task.getRequirementGroupId(), null, body);
             }
         } catch (RuntimeException e) {
             log.warn("diff card skipped, taskId={}, reviewBatchId={}: {}", task.getId(), reviewBatchId, e.getMessage());

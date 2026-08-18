@@ -220,7 +220,7 @@ class MergeRequestServiceTest {
         // 创建后 publish 一次，轮询落库 mergeable 后再 publish 一次。
         verify(eventService, times(2)).publish(any(), any(), eq("merge-request.updated"), any(), any());
         ArgumentCaptor<MessageSendRequest> mrCard = ArgumentCaptor.forClass(MessageSendRequest.class);
-        verify(messages).sendAsAgent(eq(requirementGroupId), eq(cardAgentId), mrCard.capture());
+        verify(messages).upsertTaskStatusCard(eq(requirementGroupId), eq(cardAgentId), mrCard.capture());
         assertEquals("TASK_STATUS", mrCard.getValue().getType());
         assertEquals("MR_CREATED", mrCard.getValue().getContent().get("status"));
         assertEquals(repositoryId.toString(), mrCard.getValue().getContent().get("repositoryId"));
@@ -731,6 +731,8 @@ class MergeRequestServiceTest {
         worktree.setSourceBranch("feature/test");
         worktree.setHeadCommit("sha123");
         when(workspaceRepositoryMapper.selectByWorkspace(workspaceId)).thenReturn(java.util.List.of(worktree));
+        when(diffs.selectAcceptedCommittedForPush(taskId, projectId, workspaceId, repositoryId, "sha123"))
+                .thenReturn(new DiffEntity());
 
         GitHubRepositoryEntity githubRepository = new GitHubRepositoryEntity();
         githubRepository.setId(repository.getRepositoryId());
@@ -764,6 +766,8 @@ class MergeRequestServiceTest {
         ApiException ex = assertThrows(ApiException.class,
                 () -> service.pushAcceptedBranch(projectId, taskId, repositoryId));
         assertEquals("WORKER_PUSH_VERIFICATION_FAILED", ex.code());
+        verify(diffs).selectAcceptedCommittedForPush(taskId, projectId, workspaceId, repositoryId, "sha123");
+        verify(diffs, never()).selectAcceptedCommittedForMr(any(), any(), any(), any(), any());
         verify(githubClient, never()).createPullRequest(anyLong(), any(), any(), any());
     }
 

@@ -32,6 +32,13 @@ public class CodeDeliveryItem extends DeliveryItem {
     private String diffReviewId;
 
     /**
+     * 代表性 Diff ID（批次内按 projectRepositoryId 升序第一条，与 Task 详情 diffReviewSummary 同源）；
+     * 交付中心「查看 Diff」据此直接跳转 Diff 查看页，无需经任务中心中转。
+     */
+    @Schema(description = "代表性 Diff ID（批次内 projectRepositoryId 升序第一条）")
+    private String diffId;
+
+    /**
      * 批次审核状态：PENDING_CONFIRMATION / ACCEPTED / REJECTED。
      */
     @Schema(description = "批次审核状态")

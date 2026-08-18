@@ -46,12 +46,13 @@ public class MessageService {
     private final TaskTriggerService taskTriggerService;
     private final ObjectMapper mapper;
     private final EventService eventService;
+    private final NotificationService notificationService;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                           GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
                           ProjectMapper projectMapper, ProjectAccessService access, GroupService groupService,
                           TaskTriggerService taskTriggerService, ObjectMapper mapper,
-                          EventService eventService) {
+                          EventService eventService, NotificationService notificationService) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupAgentMapper = groupAgentMapper;
@@ -63,6 +64,7 @@ public class MessageService {
         this.taskTriggerService = taskTriggerService;
         this.mapper = mapper;
         this.eventService = eventService;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -86,9 +88,76 @@ public class MessageService {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
         }
         MessageResponse response = doSend(projectId, groupId, actor, null, body);
+        // @ 用户：对被提及的成员（排除发送者自己）生成通知；@Agent 走自动触发任务
+        notifyMentionedUsers(actor, projectId, groupId, body);
         triggerTaskOnAgentMention(actor, projectId, groupId, response.getId() == null ? null : UUID.fromString(response.getId()),
                 body.getMentions());
         return response;
+    }
+
+    /**
+     * 对被 @ 的用户生成站内通知（MESSAGE_MENTION）：发送者、群名与消息文本摘要进通知内容；
+     * 排除发送者本人；@Agent 不在此处理（走任务触发）。通知失败不影响消息发送（日志兜底）。
+     */
+    private void notifyMentionedUsers(UUID actor, UUID projectId, UUID groupId, MessageSendRequest body) {
+        if (body.getMentions() == null || body.getMentions().isEmpty()) {
+            return;
+        }
+        try {
+            List<UUID> users = body.getMentions().stream()
+                    .filter(m -> "USER".equals(m.getType()))
+                    .filter(m -> m.getId() != null && !m.getId().equals(actor))
+                    .map(Mention::getId)
+                    .distinct()
+                    .toList();
+            if (users.isEmpty()) {
+                return;
+            }
+            RequirementGroupEntity group = groupMapper.selectById(groupId);
+            String groupName = group == null ? "群聊" : group.getName();
+            String senderName = senderDisplayName(actor);
+            String preview = messageText(body.getContent());
+            String title = "有人在群聊中提到了你";
+            String description = senderName + " 在群「" + groupName + "」中提到了你"
+                    + (preview.isBlank() ? "" : "：" + preview);
+            for (UUID userId : users) {
+                notificationService.notify(userId, projectId, groupId, "MESSAGE_MENTION", title, description, null);
+            }
+        } catch (RuntimeException e) {
+            log.warn("mention notification skipped, projectId={}, groupId={}, actor={}: {}",
+                    projectId, groupId, actor, e.getMessage());
+        }
+    }
+
+    /** 发送者显示名（用户）；查询失败回退「成员」。 */
+    private String senderDisplayName(UUID actor) {
+        try {
+            UserEntity sender = userMapper.selectById(actor);
+            return sender == null || sender.getDisplayName() == null || sender.getDisplayName().isBlank()
+                    ? "成员" : sender.getDisplayName();
+        } catch (RuntimeException e) {
+            return "成员";
+        }
+    }
+
+    /** 从消息 content 提取展示文本（TEXT 取 text；QUOTE 取 quotedText；其余返回空）。 */
+    private String messageText(Map<String, Object> content) {
+        if (content == null || content.isEmpty()) {
+            return "";
+        }
+        Object text = content.get("text");
+        if (text instanceof String s && !s.isBlank()) {
+            return truncate(s);
+        }
+        Object quoted = content.get("quotedText");
+        if (quoted instanceof String s && !s.isBlank()) {
+            return truncate(s);
+        }
+        return "";
+    }
+
+    private String truncate(String value) {
+        return value.length() <= 60 ? value : value.substring(0, 60) + "…";
     }
 
     /**
@@ -165,6 +234,115 @@ public class MessageService {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在");
         }
         return doSend(group.getProjectId(), groupId, null, null, body, normalizeSystemCardType(body.getType()));
+    }
+
+    /**
+     * 创建或更新 Task 状态卡。卡片是 Task 在需求群中的唯一自动化状态消息，更新时不改变消息
+     * ID、sequence 和创建时间；调用方只提供本次状态增量，已有 Plan/Steps 会被保留。
+     *
+     * @param groupId 需求群 ID
+     * @param agentId 可选的编排 Agent ID；为空时使用 SYSTEM 身份
+     * @param body    TASK_STATUS 卡片内容，必须包含 taskId
+     * @return 创建或更新后的消息
+     */
+    @Transactional
+    public MessageResponse upsertTaskStatusCard(UUID groupId, UUID agentId, MessageSendRequest body) {
+        return upsertAutomationCard(groupId, agentId, body, "TASK_STATUS");
+    }
+
+    /**
+     * 创建或更新 Task 的唯一 Diff 卡。Diff 卡始终保留 DIFF 类型和顶层 content.diffId，
+     * 以便用户引用原消息时继续进入 Diff 续作流程。
+     *
+     * @param groupId 需求群 ID
+     * @param agentId 可选的编排 Agent ID；为空时使用 SYSTEM 身份
+     * @param body    DIFF 卡片内容，必须包含 taskId 和 diffId
+     * @return 创建或更新后的消息
+     */
+    @Transactional
+    public MessageResponse upsertDiffCard(UUID groupId, UUID agentId, MessageSendRequest body) {
+        return upsertAutomationCard(groupId, agentId, body, "DIFF");
+    }
+
+    private MessageResponse upsertAutomationCard(UUID groupId, UUID agentId, MessageSendRequest body,
+                                                 String expectedType) {
+        RequirementGroupEntity group = lockGroup(groupId);
+        if (group == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在");
+        }
+        if (body == null || !expectedType.equalsIgnoreCase(body.getType())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SYSTEM_MESSAGE_TYPE_INVALID",
+                    "自动化卡片类型不匹配");
+        }
+        if (agentId != null) {
+            validateAgentForProject(group, agentId);
+        }
+        Map<String, Object> incoming = body.getContent() == null ? Map.of() : body.getContent();
+        requireField(incoming, "taskId", "自动化卡片缺少 taskId 字段");
+        String taskId = String.valueOf(incoming.get("taskId"));
+        String clientMessageId = ("TASK_STATUS".equals(expectedType) ? "task-card-" : "diff-card-") + taskId;
+        MessageEntity existing = findByClientMessageId(groupId, clientMessageId);
+        if (existing != null) {
+            if (!expectedType.equals(existing.getMessageType())) {
+                throw new ApiException(HttpStatus.CONFLICT, "CARD_MESSAGE_TYPE_CONFLICT",
+                        "任务卡片消息类型与既有消息不一致");
+            }
+            Map<String, Object> merged = new LinkedHashMap<>(readJson(existing.getContent(),
+                    new TypeReference<Map<String, Object>>() {
+                    }));
+            Object incomingPlan = incoming.get("plan");
+            Object existingPlan = merged.get("plan");
+            if (incomingPlan instanceof Map<?, ?> incomingPlanMap && existingPlan instanceof Map<?, ?> existingPlanMap) {
+                Map<String, Object> plan = new LinkedHashMap<>();
+                existingPlanMap.forEach((key, value) -> plan.put(String.valueOf(key), value));
+                incomingPlanMap.forEach((key, value) -> {
+                    // 后续状态更新通常不重复携带 Planner 摘要，不能用 null 抹掉已生成的 Plan。
+                    if (!"summary".equals(String.valueOf(key)) || value != null) {
+                        plan.put(String.valueOf(key), value);
+                    }
+                });
+                merged.put("plan", plan);
+            }
+            incoming.forEach((key, value) -> {
+                if (!"plan".equals(key)) merged.put(key, value);
+            });
+            validateContent(expectedType, merged);
+            existing.setContent(writeJson(merged));
+            messageMapper.updateById(existing);
+            if (agentId != null && groupAgentMapper.insertAgent(groupId, agentId) > 0) {
+                eventService.publish(group.getProjectId(), groupId, "group.member.updated", id(groupId),
+                        Map.of("projectId", id(group.getProjectId()), "groupId", id(groupId)));
+            }
+            eventService.publish(group.getProjectId(), groupId, "message.updated", id(existing.getId()),
+                    Map.of("projectId", id(group.getProjectId()), "groupId", id(groupId),
+                            "messageId", id(existing.getId())));
+            return toResponse(existing);
+        }
+
+        MessageSendRequest normalized = new MessageSendRequest();
+        normalized.setType(expectedType);
+        normalized.setContent(incoming);
+        normalized.setClientMessageId(clientMessageId);
+        normalized.setMentions(List.of());
+        return doSend(group.getProjectId(), groupId, null, agentId, normalized, expectedType);
+    }
+
+    private void validateAgentForProject(RequirementGroupEntity group, UUID agentId) {
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "AGENT_NOT_FOUND", "Agent 不存在");
+        }
+        ProjectEntity project = projectMapper.selectById(group.getProjectId());
+        if (project == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_NOT_FOUND", "项目不存在");
+        }
+        if (!project.getTeamId().equals(agent.getTeamId())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "AGENT_NOT_IN_PROJECT_TEAM",
+                    "Agent 不属于当前项目的 Team");
+        }
+        if (!"ACTIVE".equals(agent.getStatus())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "AGENT_NOT_ACTIVE", "Agent 未启用");
+        }
     }
 
     private RequirementGroupEntity lockGroup(UUID groupId) {

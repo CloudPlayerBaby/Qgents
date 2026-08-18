@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -122,6 +123,7 @@ public class DiffReviewBatchService {
             DiffReviewBatchEntity batch = transactions.execute(status -> claim(task));
             log.info("diff delivery started projectId={} taskId={} reviewBatchId={} operationId={} mode=confirm",
                     projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
+            refreshDiffCard(task, batch);
             List<DiffEntity> values = diffs(batch.getId());
             try {
                 preflight(task, values);
@@ -137,11 +139,15 @@ public class DiffReviewBatchService {
                 accept(task, batch.getId(), actor, batch.getDeliveryClaimToken());
                 return null;
             });
+            task.setStatus("DELIVERING");
+            publishTaskStatusCard(task, "DELIVERING", "已确认 Diff，正在提交并推送代码");
+            refreshDiffCard(task, requireBatch(batch.getId()));
             for (DiffEntity diff : diffs(batch.getId())) {
                 deliver(task, diff, actor, batch.getDeliveryClaimToken(), workspaceLease);
             }
             finish(task, batch.getId(), batch.getDeliveryClaimToken());
             DiffReviewBatchEntity result = requireBatch(batch.getId());
+            refreshDiffCard(task, result);
             return response(result, diffs(result.getId()));
         } finally {
             releaseWorkspaceWriteLease(workspaceLease);
@@ -188,6 +194,9 @@ public class DiffReviewBatchService {
                     Map.of("projectId", projectId, "taskId", taskId, "reviewBatchId", locked.getId()));
             return locked;
         });
+        task.setStatus("DIFF_REJECTED");
+        publishTaskStatusCard(task, "DIFF_REJECTED", "Diff 已拒绝，保留当前开发现场等待后续处理");
+        refreshDiffCard(task, batch);
         return response(batch, diffs(batch.getId()));
     }
 
@@ -199,6 +208,7 @@ public class DiffReviewBatchService {
             DiffReviewBatchEntity batch = transactions.execute(status -> claimRetry(projectId, taskId));
             log.info("diff delivery retry started projectId={} taskId={} reviewBatchId={} operationId={}",
                     projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
+            refreshDiffCard(task, batch);
             List<DiffEntity> values = diffs(batch.getId());
             List<DiffEntity> uncommitted = values.stream().filter(this::requiresSnapshotPreflight).toList();
             try {
@@ -216,6 +226,7 @@ public class DiffReviewBatchService {
             }
             finish(task, batch.getId(), batch.getDeliveryClaimToken());
             DiffReviewBatchEntity result = requireBatch(batch.getId());
+            refreshDiffCard(task, result);
             return response(result, diffs(result.getId()));
         } finally {
             releaseWorkspaceWriteLease(workspaceLease);
@@ -483,6 +494,12 @@ public class DiffReviewBatchService {
         if (result != null && result.enteredPreflight()) {
             publishPreflightReadyCard(task);
         }
+        if (result != null) {
+            if (!result.enteredPreflight()) {
+                publishTaskStatusCard(task, task.getStatus(), taskStatusMessage(task.getStatus()));
+            }
+            refreshLatestDiffCard(task, batchId);
+        }
         if (result != null && result.statusChanged() && notificationService != null
                 && (result.taskCompleted() || !result.allDelivered())) {
             String kind = result.taskCompleted() ? "TASK_COMPLETED" : "TASK_FAILED";
@@ -538,18 +555,101 @@ public class DiffReviewBatchService {
         content.put("message", "代码已推送，请完成 Dry Run 和独立成员 CQ+1 后创建 MR");
         MessageSendRequest body = new MessageSendRequest();
         body.setType("TASK_STATUS");
-        body.setClientMessageId("agent-task-" + task.getId() + "-waiting-preflight");
+        body.setClientMessageId("task-card-" + task.getId());
         body.setContent(content);
         try {
             UUID senderId = orchestratorAgents == null ? null : orchestratorAgents.resolveIdForTask(task);
             if (senderId != null) {
-                messageService.sendAsAgent(task.getRequirementGroupId(), senderId, body);
+                messageService.upsertTaskStatusCard(task.getRequirementGroupId(), senderId, body);
             } else {
-                messageService.sendAsSystem(task.getRequirementGroupId(), body);
+                messageService.upsertTaskStatusCard(task.getRequirementGroupId(), null, body);
             }
         } catch (RuntimeException failure) {
             log.warn("preflight ready card skipped taskId={}: {}", task.getId(), failure.getMessage());
         }
+    }
+
+    private void publishTaskStatusCard(TaskEntity task, String status, String message) {
+        if (messageService == null || task == null || task.getRequirementGroupId() == null) return;
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("taskId", task.getId().toString());
+        content.put("status", status);
+        content.put("phase", "DELIVERY");
+        content.put("message", message);
+        MessageSendRequest body = new MessageSendRequest();
+        body.setType("TASK_STATUS");
+        body.setClientMessageId("task-card-" + task.getId());
+        body.setContent(content);
+        try {
+            UUID senderId = orchestratorAgents == null ? null : orchestratorAgents.resolveIdForTask(task);
+            messageService.upsertTaskStatusCard(task.getRequirementGroupId(), senderId, body);
+        } catch (RuntimeException failure) {
+            log.warn("task status card refresh skipped taskId={}: {}", task.getId(), failure.getMessage());
+        }
+    }
+
+    private String taskStatusMessage(String status) {
+        return switch (status == null ? "" : status) {
+            case "SUCCEEDED" -> "Diff 已交付完成，任务已完成";
+            case "DELIVERY_FAILED" -> "Diff 交付失败，请检查失败仓库后重试";
+            case "WAITING_PREFLIGHT" -> "代码已推送，等待 MR 前预检";
+            default -> "任务交付状态更新：" + status;
+        };
+    }
+
+    private void refreshDiffCard(TaskEntity task, DiffReviewBatchEntity batch) {
+        if (messageService == null || task == null || batch == null || task.getRequirementGroupId() == null) {
+            return;
+        }
+        List<DiffEntity> values = diffs(batch.getId());
+        if (values.isEmpty()) return;
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("taskId", task.getId().toString());
+        content.put("diffId", values.get(0).getId().toString());
+        content.put("reviewBatchId", batch.getId().toString());
+        content.put("title", task.getTitle());
+        content.put("additions", values.stream().map(DiffEntity::getChangeStats).filter(java.util.Objects::nonNull)
+                .mapToInt(stats -> stats.get("additions") instanceof Number n ? n.intValue() : 0).sum());
+        content.put("deletions", values.stream().map(DiffEntity::getChangeStats).filter(java.util.Objects::nonNull)
+                .mapToInt(stats -> stats.get("deletions") instanceof Number n ? n.intValue() : 0).sum());
+        content.put("reviewStatus", batch.getReviewStatus());
+        content.put("deliveryStatus", diffCardDeliveryStatus(batch, values));
+        MessageSendRequest body = new MessageSendRequest();
+        body.setType("DIFF");
+        body.setClientMessageId("diff-card-" + task.getId());
+        body.setContent(content);
+        try {
+            UUID senderId = orchestratorAgents == null ? null : orchestratorAgents.resolveIdForTask(task);
+            if (senderId != null) {
+                messageService.upsertDiffCard(task.getRequirementGroupId(), senderId, body);
+            } else {
+                messageService.upsertDiffCard(task.getRequirementGroupId(), null, body);
+            }
+        } catch (RuntimeException failure) {
+            log.warn("diff card refresh skipped taskId={} batchId={}: {}", task.getId(), batch.getId(),
+                    failure.getMessage());
+        }
+    }
+
+    private void refreshLatestDiffCard(TaskEntity task, UUID batchId) {
+        DiffReviewBatchEntity batch = batches.selectById(batchId);
+        if (batch != null) refreshDiffCard(task, batch);
+    }
+
+    private String diffCardDeliveryStatus(DiffReviewBatchEntity batch, List<DiffEntity> values) {
+        if ("FAILED".equals(batch.getDeliveryStatus()) || "PARTIALLY_DELIVERED".equals(batch.getDeliveryStatus())) {
+            return "DELIVERY_FAILED";
+        }
+        if (values.stream().anyMatch(diff -> "MR_CREATED".equals(diff.getDeliveryStatus()))) {
+            return "MR_CREATED";
+        }
+        if (values.stream().anyMatch(diff -> "PUSHED".equals(diff.getDeliveryStatus()))) {
+            return "PUSHED";
+        }
+        if (values.stream().anyMatch(diff -> "COMMITTED".equals(diff.getDeliveryStatus()))) {
+            return "COMMITTED";
+        }
+        return "NOT_STARTED";
     }
 
     private boolean isStaleSnapshot(RuntimeException failure) {
@@ -588,6 +688,7 @@ public class DiffReviewBatchService {
                             "reviewBatchId", currentBatch.getId(), "reason", "DIFF_SNAPSHOT_STALE"));
             return null;
         });
+        refreshLatestDiffCard(task, batch.getId());
     }
 
     /**
@@ -630,6 +731,7 @@ public class DiffReviewBatchService {
                             "reviewBatchId", currentBatch.getId(), "reason", "DIFF_SNAPSHOT_STALE"));
             return null;
         });
+        refreshLatestDiffCard(task, batch.getId());
     }
 
     private static final class FinishResult {

@@ -133,7 +133,7 @@ public class GroupController {
                                    @PathVariable UUID groupId,
                                    @RequestHeader("Idempotency-Key") String idempotencyKey,
                                    HttpServletRequest request) {
-        return ok(groupService.markRead(userId, projectId, groupId, idempotencyKey), request);
+        return ok(groupService.markRead(userId, projectId, groupId), request);
     }
 
     private ApiResponse<?> ok(Object data, HttpServletRequest request) {

@@ -61,6 +61,39 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
     List<GroupLatestMessageRow> selectLatestByProject(@Param("projectId") UUID projectId);
 
     /**
+     * 批量查询指定群的最新一条消息摘要。调用方必须先完成项目与群成员权限校验。
+     *
+     * @param groupIds 已确认可见的群 ID
+     * @return 每个有消息群的最新消息摘要
+     */
+    @Select({"<script>",
+            "SELECT m.requirement_group_id, ",
+            "COALESCE(u.display_name, a.name) AS sender_name, ",
+            "JSON_UNQUOTE(JSON_EXTRACT(m.content, '$.text')) AS text, ",
+            "m.message_type, m.created_at ",
+            "FROM messages m ",
+            "LEFT JOIN users u ON u.id = m.author_user_id ",
+            "LEFT JOIN agents a ON a.id = m.agent_id ",
+            "INNER JOIN (SELECT requirement_group_id, MAX(sequence_no) AS max_seq ",
+            "            FROM messages ",
+            "            WHERE requirement_group_id IN ",
+            "            (<foreach collection='groupIds' item='groupId' separator=','>#{groupId}</foreach>) ",
+            "            GROUP BY requirement_group_id) t ",
+            "ON t.requirement_group_id = m.requirement_group_id AND t.max_seq = m.sequence_no ",
+            "WHERE m.requirement_group_id IN ",
+            "(<foreach collection='groupIds' item='groupId' separator=','>#{groupId}</foreach>)",
+            "</script>"})
+    @Results({
+            @Result(column = "requirement_group_id", property = "requirementGroupId",
+                    typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "sender_name", property = "senderName"),
+            @Result(column = "text", property = "text"),
+            @Result(column = "message_type", property = "messageType"),
+            @Result(column = "created_at", property = "createdAt")
+    })
+    List<GroupLatestMessageRow> selectLatestByGroupIds(@Param("groupIds") List<UUID> groupIds);
+
+    /**
      * 按关键字检索项目内群消息的文本内容（点6 上下文检索）。
      * <p>
      * 仅检索当前项目下的消息（通过 requirement_groups 归属限定，防跨项目泄露）；
@@ -98,23 +131,44 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
                                       @Param("q") String q, @Param("limit") int limit);
 
     /**
-     * 批量计算某用户在某项目各群的未读消息数（群聊未读状态后端权威化）。
-     * <p>
-     * 未读口径：该群 {@code sequence_no} 大于用户已读游标（无游标视为 0）且**非本人发送**的消息数，
-     * 与 {@code group_read_state} 表配合。仅返回未读数 &gt; 0 的群，Java 侧对无记录群补 0。
+     * 批量计算指定可见群的未读消息数（排除本人消息）。
+     * <p>已读游标通过 LEFT JOIN 一次关联，避免对每条消息执行相关子查询。</p>
      *
-     * @param projectId 项目 ID（通过 requirement_groups 归属限定，防跨项目泄露）
-     * @param userId    当前用户 ID（排除本人消息）
-     * @return 群 ID → 未读数 的映射，未读数 &gt; 0 的群
+     * @param groupIds 已确认可见的群 ID
+     * @param userId 当前用户 ID
+     * @return 群 ID → 未读数，仅返回未读数大于 0 的群
      */
     @Select({"<script>",
             "SELECT m.requirement_group_id, COUNT(*) AS unread ",
             "FROM messages m ",
+            "LEFT JOIN group_read_state r ON r.user_id = #{userId} ",
+            "AND r.group_id = m.requirement_group_id ",
             "WHERE m.requirement_group_id IN ",
-            "    (SELECT id FROM requirement_groups WHERE project_id = #{projectId}) ",
-            "AND m.sequence_no &gt; COALESCE(",
-            "    (SELECT last_read_sequence_no FROM group_read_state ",
-            "     WHERE user_id = #{userId} AND group_id = m.requirement_group_id), 0) ",
+            "(<foreach collection='groupIds' item='groupId' separator=','>#{groupId}</foreach>) ",
+            "AND m.sequence_no &gt; COALESCE(r.last_read_sequence_no, 0) ",
+            "AND m.author_user_id &lt;&gt; #{userId} ",
+            "GROUP BY m.requirement_group_id",
+            "</script>"})
+    @Results({
+            @Result(column = "requirement_group_id", property = "groupId",
+                    typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "unread", property = "unread")
+    })
+    List<GroupUnreadRow> countUnreadByGroupIds(@Param("groupIds") List<UUID> groupIds,
+                                               @Param("userId") UUID userId);
+
+    /**
+     * 兼容旧调用方的项目级未读统计；新业务代码应优先传入已校验的群 ID 集合。
+     */
+    @Deprecated
+    @Select({"<script>",
+            "SELECT m.requirement_group_id, COUNT(*) AS unread ",
+            "FROM messages m ",
+            "INNER JOIN requirement_groups g ON g.id = m.requirement_group_id ",
+            "LEFT JOIN group_read_state r ON r.user_id = #{userId} ",
+            "AND r.group_id = m.requirement_group_id ",
+            "WHERE g.project_id = #{projectId} ",
+            "AND m.sequence_no &gt; COALESCE(r.last_read_sequence_no, 0) ",
             "AND m.author_user_id &lt;&gt; #{userId} ",
             "GROUP BY m.requirement_group_id",
             "</script>"})
@@ -124,4 +178,57 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             @Result(column = "unread", property = "unread")
     })
     List<GroupUnreadRow> countUnreadByProject(@Param("projectId") UUID projectId, @Param("userId") UUID userId);
+
+    /**
+     * 统计当前用户在指定可见群中「@ 我」的未读消息数（排除本人消息）。
+     * mentions 为 JSON 数组（如 {@code [{"type":"USER","id":"..."}]}），用 JSON_CONTAINS 匹配
+     * {@code {"type":"USER","id":当前用户}}；未读 = sequence_no 大于已读游标。
+     *
+     * @param groupIds 已确认可见的群 ID
+     * @param userId    当前用户 ID
+     * @return 群 ID → @ 我的未读消息数
+     */
+    @Select({"<script>",
+            "SELECT m.requirement_group_id, COUNT(*) AS unread ",
+            "FROM messages m ",
+            "LEFT JOIN group_read_state r ON r.user_id = #{userId} ",
+            "AND r.group_id = m.requirement_group_id ",
+            "WHERE m.requirement_group_id IN ",
+            "(<foreach collection='groupIds' item='groupId' separator=','>#{groupId}</foreach>) ",
+            "AND m.sequence_no &gt; COALESCE(r.last_read_sequence_no, 0) ",
+            "AND m.author_user_id &lt;&gt; #{userId} ",
+            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', #{userId})) ",
+            "GROUP BY m.requirement_group_id",
+            "</script>"})
+    @Results({
+            @Result(column = "requirement_group_id", property = "groupId",
+                    typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "unread", property = "unread")
+    })
+    List<GroupUnreadRow> countMentionUnreadByGroupIds(@Param("groupIds") List<UUID> groupIds,
+                                                      @Param("userId") UUID userId);
+
+    /**
+     * 兼容旧调用方的项目级「@ 我」未读统计；新业务代码应优先传入已校验的群 ID 集合。
+     */
+    @Deprecated
+    @Select({"<script>",
+            "SELECT m.requirement_group_id, COUNT(*) AS unread ",
+            "FROM messages m ",
+            "INNER JOIN requirement_groups g ON g.id = m.requirement_group_id ",
+            "LEFT JOIN group_read_state r ON r.user_id = #{userId} ",
+            "AND r.group_id = m.requirement_group_id ",
+            "WHERE g.project_id = #{projectId} ",
+            "AND m.sequence_no &gt; COALESCE(r.last_read_sequence_no, 0) ",
+            "AND m.author_user_id &lt;&gt; #{userId} ",
+            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', #{userId})) ",
+            "GROUP BY m.requirement_group_id",
+            "</script>"})
+    @Results({
+            @Result(column = "requirement_group_id", property = "groupId",
+                    typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "unread", property = "unread")
+    })
+    List<GroupUnreadRow> countMentionUnreadByProject(@Param("projectId") UUID projectId,
+                                                     @Param("userId") UUID userId);
 }

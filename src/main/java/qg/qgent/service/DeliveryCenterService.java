@@ -385,6 +385,14 @@ public class DeliveryCenterService {
         item.setUpdatedAt(iso(batch.getUpdatedAt()));
 
         item.setDiffReviewId(batchId);
+        // 代表性 Diff：批次内 projectRepositoryId 升序第一条（与 Task 详情 diffReviewSummary 同源），
+        // 交付中心「查看 Diff」直接跳转 Diff 查看页
+        item.setDiffId(batchDiffs.stream()
+                .sorted(Comparator.comparing(DiffEntity::getProjectRepositoryId,
+                        Comparator.nullsLast(Comparator.naturalOrder())))
+                .map(diff -> id(diff.getId()))
+                .findFirst()
+                .orElse(null));
         item.setReviewStatus(batch.getReviewStatus());
         item.setDeliveryStatus(batch.getDeliveryStatus());
         item.setDisplayStatus(codeDisplayStatus(batch));

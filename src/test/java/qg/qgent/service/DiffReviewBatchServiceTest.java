@@ -22,6 +22,8 @@ import java.util.function.Consumer;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.notNull;
 import static org.mockito.Mockito.*;
 
 class DiffReviewBatchServiceTest {
@@ -493,9 +495,9 @@ class DiffReviewBatchServiceTest {
 
         assertEquals("WAITING_PREFLIGHT", task.getStatus());
         verify(notifications, never()).notify(any(), any(), any(), any(), any(), any(), any());
-        verify(messages).sendAsAgent(eq(groupId), eq(orchestratorId), argThat(body ->
+        verify(messages).upsertTaskStatusCard(eq(groupId), eq(orchestratorId), argThat(body ->
                 "TASK_STATUS".equals(body.getType())
-                        && "agent-task-".concat(taskId.toString()).concat("-waiting-preflight")
+                        && "task-card-".concat(taskId.toString())
                         .equals(body.getClientMessageId())
                         && "WAITING_PREFLIGHT".equals(body.getContent().get("status"))
                         && "MR_FIRST".equals(body.getContent().get("deliveryMode"))));
@@ -523,7 +525,8 @@ class DiffReviewBatchServiceTest {
         MessageService messages = mock(MessageService.class);
         OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
         when(orchestratorAgents.resolveIdForTask(task)).thenReturn(null);
-        doThrow(new RuntimeException("message store unavailable")).when(messages).sendAsSystem(eq(groupId), any());
+        doThrow(new RuntimeException("message store unavailable")).when(messages)
+                .upsertTaskStatusCard(eq(groupId), isNull(), any());
         DiffReviewBatchService service = service(batches, diffs, tasks, mock(SandboxWorkerClient.class),
                 mock(ProjectAccessService.class), transactions, mock(NotificationService.class));
         service.setMessageService(messages);
@@ -533,10 +536,10 @@ class DiffReviewBatchServiceTest {
                 .invokeMethod(service, "finish", task, batchId, "claim"));
 
         assertEquals("WAITING_PREFLIGHT", task.getStatus());
-        verify(messages).sendAsSystem(eq(groupId), argThat(body ->
+        verify(messages).upsertTaskStatusCard(eq(groupId), isNull(), argThat(body ->
                 "TASK_STATUS".equals(body.getType())
                         && "WAITING_PREFLIGHT".equals(body.getContent().get("status"))));
-        verify(messages, never()).sendAsAgent(any(), any(), any());
+        verify(messages, never()).upsertTaskStatusCard(eq(groupId), notNull(), any());
     }
 
     private DiffReviewBatchService service(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,

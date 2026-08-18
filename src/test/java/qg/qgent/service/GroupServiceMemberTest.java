@@ -52,11 +52,10 @@ class GroupServiceMemberTest {
     private final GroupReadStateMapper groupReadStateMapper = mock(GroupReadStateMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final EventService eventService = mock(EventService.class);
-    private final IdempotencyService idempotencyService = mock(IdempotencyService.class);
 
     private final GroupService service = new GroupService(groupMapper, groupRepoMapper, projectMemberMapper,
             projectMapper, groupAgentMapper, groupMemberMapper, agentMapper, userMapper,
-            messageMapper, groupReadStateMapper, access, eventService, idempotencyService);
+            messageMapper, groupReadStateMapper, access, eventService);
 
     private final UUID projectId = UUID.randomUUID();
     private final UUID creator = UUID.randomUUID();
@@ -181,7 +180,7 @@ class GroupServiceMemberTest {
         // 创建者兜底为成员
         when(groupMemberMapper.countMember(groupId, creator)).thenReturn(0);
         service.requireGroupMember(projectId, groupId, creator);
-        verify(groupMemberMapper).countMember(groupId, creator);
+        verify(groupMemberMapper, never()).countMember(groupId, creator);
 
         when(groupMemberMapper.countMember(groupId, memberA)).thenReturn(0);
         ApiException ex = assertThrows(ApiException.class,
@@ -200,8 +199,9 @@ class GroupServiceMemberTest {
     @Test
     void listReturnsOnlyGroupsVisibleToCurrentUser() {
         when(groupMapper.listVisibleByProject(projectId, memberA)).thenReturn(List.of(requirementGroup()));
-        when(messageMapper.selectLatestByProject(projectId)).thenReturn(List.of());
-        when(messageMapper.countUnreadByProject(projectId, memberA)).thenReturn(List.of());
+        when(messageMapper.selectLatestByGroupIds(List.of(groupId))).thenReturn(List.of());
+        when(messageMapper.countUnreadByGroupIds(List.of(groupId), memberA)).thenReturn(List.of());
+        when(messageMapper.countMentionUnreadByGroupIds(List.of(groupId), memberA)).thenReturn(List.of());
 
         List<GroupResponse> groups = service.list(memberA, projectId);
 
@@ -211,17 +211,53 @@ class GroupServiceMemberTest {
     }
 
     @Test
+    void emptyVisibleGroupListDoesNotQueryMessages() {
+        when(groupMapper.listVisibleByProject(projectId, memberA)).thenReturn(List.of());
+
+        assertTrue(service.list(memberA, projectId).isEmpty());
+
+        verify(messageMapper, never()).selectLatestByGroupIds(any());
+        verify(messageMapper, never()).countUnreadByGroupIds(any(), any());
+        verify(messageMapper, never()).countMentionUnreadByGroupIds(any(), any());
+    }
+
+    @Test
+    void groupDetailsOnlyCountUnreadForRequestedGroup() {
+        when(groupMemberMapper.countMember(groupId, memberA)).thenReturn(1);
+        when(messageMapper.countUnreadByGroupIds(List.of(groupId), memberA)).thenReturn(List.of());
+        when(messageMapper.countMentionUnreadByGroupIds(List.of(groupId), memberA)).thenReturn(List.of());
+
+        GroupResponse response = service.get(memberA, projectId, groupId);
+
+        assertEquals(groupId.toString(), response.getId());
+        verify(messageMapper).countUnreadByGroupIds(List.of(groupId), memberA);
+        verify(messageMapper).countMentionUnreadByGroupIds(List.of(groupId), memberA);
+    }
+
+    @Test
     void privateGroupReadOperationsRejectNonMember() {
         when(groupMemberMapper.countMember(groupId, memberA)).thenReturn(0);
 
         ApiException get = assertThrows(ApiException.class, () -> service.get(memberA, projectId, groupId));
         ApiException members = assertThrows(ApiException.class, () -> service.members(memberA, projectId, groupId));
         ApiException markRead = assertThrows(ApiException.class,
-                () -> service.markRead(memberA, projectId, groupId, "idempotency-key"));
+                () -> service.markRead(memberA, projectId, groupId));
 
         assertEquals("GROUP_MEMBER_REQUIRED", get.code());
         assertEquals("GROUP_MEMBER_REQUIRED", members.code());
         assertEquals("GROUP_MEMBER_REQUIRED", markRead.code());
+    }
+
+    @Test
+    void markReadAdvancesCursorWithoutServiceIdempotency() {
+        when(groupMemberMapper.countMember(groupId, memberA)).thenReturn(1);
+        when(messageMapper.nextSequence(groupId)).thenReturn(8L);
+
+        GroupReadResponse response = service.markRead(memberA, projectId, groupId);
+
+        assertEquals(groupId.toString(), response.getGroupId());
+        assertEquals(7L, response.getLastReadSequenceNo());
+        verify(groupReadStateMapper).upsertSequence(memberA, groupId, 7L);
     }
 
     private static ProjectMemberEntity projectMember() {

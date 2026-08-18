@@ -3,6 +3,7 @@ package qg.qgent.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -22,6 +23,7 @@ import qg.qgent.mapper.UserMapper;
 
 import java.util.Map;
 import java.util.UUID;
+import java.time.LocalDateTime;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,16 +36,24 @@ import static org.mockito.Mockito.*;
  */
 class MessageServiceTest {
 
+    @BeforeEach
+    void initializeMetadataBeforeEachTest() {
+        initializeMybatisMetadata();
+    }
+
     private static void initializeMybatisMetadata() {
         if (TableInfoHelper.getTableInfo(RequirementGroupEntity.class) == null) {
             TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "MessageServiceTest"),
                     RequirementGroupEntity.class);
         }
+        if (TableInfoHelper.getTableInfo(MessageEntity.class) == null) {
+            TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "MessageServiceTest"),
+                    MessageEntity.class);
+        }
     }
 
     @Test
     void systemDiffCardKeepsDiffTypeAndHasNoSender() {
-        initializeMybatisMetadata();
         MessageMapper messages = mock(MessageMapper.class);
         RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
         RequirementGroupEntity group = new RequirementGroupEntity();
@@ -61,7 +71,8 @@ class MessageServiceTest {
 
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class), mock(ProjectAccessService.class),
-                mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class));
+                mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class),
+                mock(NotificationService.class));
         MessageSendRequest request = new MessageSendRequest();
         UUID diffId = UUID.randomUUID();
         request.setType("DIFF");
@@ -89,7 +100,8 @@ class MessageServiceTest {
         when(groups.selectOne(any())).thenReturn(group);
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class), mock(ProjectAccessService.class),
-                mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class));
+                mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class),
+                mock(NotificationService.class));
         MessageSendRequest request = new MessageSendRequest();
         request.setType("TEXT");
         request.setContent(Map.of("text", "cannot impersonate a system card"));
@@ -121,7 +133,7 @@ class MessageServiceTest {
         when(projects.selectById(projectId)).thenReturn(project);
         MessageService service = new MessageService(messages, groups, groupAgents, mock(UserMapper.class), agents,
                 projects, mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
-                new ObjectMapper(), mock(EventService.class));
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
         MessageSendRequest request = new MessageSendRequest();
         request.setType("TEXT");
         request.setContent(Map.of("text", "任务更新"));
@@ -150,7 +162,6 @@ class MessageServiceTest {
 
     @Test
     void activeAgentInProjectTeamCanSendAndJoinGroup() {
-        initializeMybatisMetadata();
         UUID projectId = UUID.randomUUID();
         UUID groupId = UUID.randomUUID();
         UUID agentId = UUID.randomUUID();
@@ -184,7 +195,7 @@ class MessageServiceTest {
         when(groupAgents.insertAgent(groupId, agentId)).thenReturn(1);
         MessageService service = new MessageService(messages, groups, groupAgents, mock(UserMapper.class), agents,
                 projects, mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
-                new ObjectMapper(), mock(EventService.class));
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
         MessageSendRequest request = new MessageSendRequest();
         request.setType("TEXT");
         request.setContent(Map.of("text", "任务更新"));
@@ -194,5 +205,54 @@ class MessageServiceTest {
         assertThat(response.getSenderType()).isEqualTo("AGENT");
         verify(messages).insert(any(MessageEntity.class));
         verify(groupAgents).insertAgent(groupId, agentId);
+    }
+
+    @Test
+    void taskStatusCardUpsertKeepsMessageIdentityAndPlanSnapshot() {
+        MessageMapper messages = mock(MessageMapper.class);
+        RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        UUID groupId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        group.setId(groupId);
+        group.setProjectId(UUID.randomUUID());
+        when(groups.selectOne(any())).thenReturn(group);
+        when(messages.nextSequence(groupId)).thenReturn(7L);
+        AtomicReference<MessageEntity> stored = new AtomicReference<>();
+        when(messages.selectOne(any())).thenAnswer(invocation -> stored.get());
+        when(messages.insert(any(MessageEntity.class))).thenAnswer(invocation -> {
+            stored.set(invocation.getArgument(0));
+            return 1;
+        });
+        when(messages.selectById(any())).thenAnswer(invocation -> stored.get());
+
+        MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
+                mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
+                mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+
+        MessageSendRequest initial = new MessageSendRequest();
+        initial.setType("TASK_STATUS");
+        initial.setContent(new java.util.LinkedHashMap<>(Map.of(
+                "taskId", taskId.toString(), "status", "PLANNING",
+                "plan", Map.of("summary", "分析权限", "steps", java.util.List.of()))));
+        MessageResponse created = service.upsertTaskStatusCard(groupId, null, initial);
+        UUID messageId = stored.get().getId();
+        LocalDateTime createdAt = stored.get().getCreatedAt();
+
+        MessageSendRequest update = new MessageSendRequest();
+        update.setType("TASK_STATUS");
+        update.setContent(new java.util.LinkedHashMap<>(Map.of(
+                "taskId", taskId.toString(), "status", "RUNNING", "phase", "CODING")));
+        MessageResponse changed = service.upsertTaskStatusCard(groupId, null, update);
+
+        assertThat(created.getId()).isEqualTo(messageId.toString());
+        assertThat(changed.getId()).isEqualTo(messageId.toString());
+        assertThat(stored.get().getSequenceNo()).isEqualTo(7L);
+        assertThat(stored.get().getCreatedAt()).isEqualTo(createdAt);
+        assertThat(changed.getContent()).containsEntry("status", "RUNNING");
+        assertThat((Map<?, ?>) changed.getContent().get("plan"))
+                .containsEntry("summary", "分析权限");
+        verify(messages).updateById(any(MessageEntity.class));
     }
 }

@@ -297,7 +297,7 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.CONFLICT, "WORKSPACE_BRANCH_NOT_COMMITTED",
                     "The repository branch must have a committed head before it can be pushed");
         }
-        requireAcceptedDelivery(task, worktree, repositoryId);
+        requireAcceptedCommitForPush(task, worktree, repositoryId);
         GitHubRepositoryEntity github = requireGitHubRepository(projectId, repositoryId);
         GitHubInstallationEntity installation = requireInstallation(github);
         pushBranch(task, repositoryId, worktree, github, installation, "accepted_diff");
@@ -714,18 +714,20 @@ public class MergeRequestService {
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("taskId", task.getId().toString());
         content.put("status", "MR_CREATED");
+        content.put("phase", "DELIVERY");
+        content.put("message", "Merge Request 已创建");
         if (mr.getProjectRepositoryId() != null) content.put("repositoryId", mr.getProjectRepositoryId().toString());
         content.put("mergeRequest", mergeRequest);
         MessageSendRequest body = new MessageSendRequest();
         body.setType("TASK_STATUS");
-        body.setClientMessageId("agent-task-" + task.getId() + "-mr-" + mr.getId());
+        body.setClientMessageId("task-card-" + task.getId());
         body.setContent(content);
         try {
             UUID senderId = orchestratorAgents == null ? null : orchestratorAgents.resolveIdForTask(task);
             if (senderId != null) {
-                messageService.sendAsAgent(task.getRequirementGroupId(), senderId, body);
+                messageService.upsertTaskStatusCard(task.getRequirementGroupId(), senderId, body);
             } else {
-                messageService.sendAsSystem(task.getRequirementGroupId(), body);
+                messageService.upsertTaskStatusCard(task.getRequirementGroupId(), null, body);
             }
         } catch (RuntimeException failure) {
             log.warn("merge request card skipped taskId={} mergeRequestId={}: {}",
@@ -786,6 +788,22 @@ public class MergeRequestService {
                 task.getWorkspaceId(), repositoryId, worktree.getHeadCommit()) == null) {
             throw new ApiException(HttpStatus.CONFLICT, "MR_REVIEWED_DIFF_REQUIRED",
                     "The current Workspace HEAD is not an accepted and pushed Task Diff");
+        }
+    }
+
+    /**
+     * 推送只要求本任务 Diff 已由用户或系统接受且已真实创建 Commit。MR 创建才额外要求
+     * 远端已核验的 PUSHED/MR_CREATED 事实，两个阶段不能混用同一门禁。
+     */
+    private void requireAcceptedCommitForPush(TaskEntity task, WorkspaceRepositoryEntity worktree, UUID repositoryId) {
+        if (task.getDeliveryMode() == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "MR_DELIVERY_MODE_INVALID",
+                    "Task delivery mode is not determined yet");
+        }
+        if (diffMapper == null || diffMapper.selectAcceptedCommittedForPush(task.getId(), task.getProjectId(),
+                task.getWorkspaceId(), repositoryId, worktree.getHeadCommit()) == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "PUSH_ACCEPTED_COMMIT_REQUIRED",
+                    "The current Workspace HEAD is not an accepted and committed Task Diff");
         }
     }
 

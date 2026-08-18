@@ -33,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 /**
@@ -110,13 +111,9 @@ class TaskOrchestratorTest {
 
         fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
 
-        ArgumentCaptor<MessageSendRequest> captor = ArgumentCaptor.forClass(MessageSendRequest.class);
-        verify(fixture.messages, atLeastOnce()).sendAsAgent(eq(task.getRequirementGroupId()), any(), captor.capture());
-        List<MessageSendRequest> diffRequests = captor.getAllValues().stream()
-                .filter(request -> "DIFF".equals(request.getType()))
-                .toList();
-        assertThat(diffRequests).hasSize(1);
-        MessageSendRequest diffRequest = diffRequests.get(0);
+        ArgumentCaptor<MessageSendRequest> diffCaptor = ArgumentCaptor.forClass(MessageSendRequest.class);
+        verify(fixture.messages).upsertDiffCard(eq(task.getRequirementGroupId()), any(), diffCaptor.capture());
+        MessageSendRequest diffRequest = diffCaptor.getValue();
         assertThat(diffRequest.getContent().get("diffId")).isEqualTo(diff.getId().toString());
         assertThat(diffRequest.getContent().get("title")).isEqualTo(task.getTitle());
         assertThat(diffRequest.getContent().get("additions")).isEqualTo(5);
@@ -146,7 +143,7 @@ class TaskOrchestratorTest {
         fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
 
         ArgumentCaptor<MessageSendRequest> cards = ArgumentCaptor.forClass(MessageSendRequest.class);
-        verify(fixture.messages, atLeastOnce()).sendAsSystem(eq(task.getRequirementGroupId()), cards.capture());
+        verify(fixture.messages, atLeastOnce()).upsertDiffCard(eq(task.getRequirementGroupId()), isNull(), cards.capture());
         MessageSendRequest diffCard = cards.getAllValues().stream()
                 .filter(card -> "DIFF".equals(card.getType()))
                 .findFirst().orElseThrow();
@@ -318,7 +315,7 @@ class TaskOrchestratorTest {
         verify(fixture.events, never()).publish(any(), any(), eq("delivery.completed"), any(), any());
 
         ArgumentCaptor<MessageSendRequest> cards = ArgumentCaptor.forClass(MessageSendRequest.class);
-        verify(fixture.messages, atLeastOnce()).sendAsAgent(eq(task.getRequirementGroupId()), any(), cards.capture());
+        verify(fixture.messages, atLeastOnce()).upsertTaskStatusCard(eq(task.getRequirementGroupId()), any(), cards.capture());
         MessageSendRequest completed = cards.getAllValues().stream()
                 .filter(card -> "TASK_STATUS".equals(card.getType()))
                 .filter(card -> "SUCCEEDED".equals(card.getContent().get("status")))
