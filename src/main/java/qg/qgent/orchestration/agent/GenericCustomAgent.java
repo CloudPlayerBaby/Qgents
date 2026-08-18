@@ -14,6 +14,7 @@ import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.LlmMessage;
 import qg.qgent.orchestration.llm.LlmObservation;
 import qg.qgent.orchestration.llm.ToolTurnResult;
+import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.Sha256;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
@@ -59,6 +60,11 @@ public class GenericCustomAgent implements Agent {
      * 每次 TaskRun 内检索工具的调用次数上限配置。
      */
     private final ContextSearchProperties contextSearchProperties;
+    /**
+     * 本次 run 实际使用的写工具实例（写角色时非空），用于收尾时回填 CodingResult.modifiedFiles。
+     * GenericCustomAgent 由 AgentRegistry 按 run new 实例，字段天然隔离，无并发问题。
+     */
+    private CodingTools lastCodingTools;
 
     public GenericCustomAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, AgentToolRegistry toolRegistry,
                               AgentEntity entity, CodingWriteObserver writeObserver,
@@ -90,6 +96,16 @@ public class GenericCustomAgent implements Agent {
             outcome.setOutcome(result.success() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED_QUALITY);
             outcome.setMessage(pickMessage(result));
             outcome.setObservations(observations);
+            // 写角色成功且本次确实写入过文件时，回填最小 CodingResult（summary + modifiedFiles），
+            // 否则下游 Verify/Review 拿不到"本次修改了哪些文件"（TestPromptBuilder 靠它渲染修改摘要）。
+            if (result.success() && writeCapable && lastCodingTools != null
+                    && !lastCodingTools.getModifiedFiles().isEmpty()) {
+                CodingResult coding = new CodingResult();
+                coding.setSuccess(true);
+                coding.setSummary(result.summary());
+                coding.setModifiedFiles(new ArrayList<>(lastCodingTools.getModifiedFiles()));
+                outcome.setCodingResult(coding);
+            }
             log.info("custom agent done agentId={} phase={} outcome={} observations={}",
                     entity.getId(), input.getPhase(), outcome.getOutcome(), observations.size());
             return outcome;
@@ -126,6 +142,7 @@ public class GenericCustomAgent implements Agent {
         if (tools instanceof CodingTools codingTools) {
             codingTools.setWriteObserver(observedWrites.observing(writeObserver), input.getProjectId(),
                     input.getTaskId(), input.getTaskRunId());
+            this.lastCodingTools = codingTools;
         }
         List<ToolCallback> callbacks;
         if (contextToolsAvailable) {

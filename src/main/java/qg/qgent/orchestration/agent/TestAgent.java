@@ -69,6 +69,10 @@ public class TestAgent implements Agent {
                         : ExecutionContentSanitizer.sanitize(exec.error()));
             }
             ExecutionResult safeExec = sanitizedAndLimited(exec);
+            if (isCommandUnavailable(safeExec)) {
+                return infraFailure(input, "test command unavailable (exit code " + exec.exitCode()
+                        + "): use a workspace-relative wrapper such as ./gradlew or ./mvnw");
+            }
             TestResult test = analyze(input, command, safeExec);
             boolean passed = exec.exitCode() == 0;
             test.setSuccess(passed);
@@ -275,6 +279,18 @@ public class TestAgent implements Agent {
 
     private String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    /** 命令找不到或无执行权限属于 Sandbox 环境问题，不应让 Coding Agent 修改业务代码。 */
+    private boolean isCommandUnavailable(ExecutionResult exec) {
+        if (exec.exitCode() == 126 || exec.exitCode() == 127) {
+            return true;
+        }
+        String output = (safe(exec.stdout()) + "\n" + safe(exec.stderr())).toLowerCase(java.util.Locale.ROOT);
+        return output.contains("command not found")
+                || output.contains("not found in $path")
+                || output.contains("no such file or directory")
+                || output.contains("cannot execute");
     }
 
     /** 优先使用 Worker 返回的原始字节哈希，避免按行读取丢失末尾换行导致误判 0 字节。 */

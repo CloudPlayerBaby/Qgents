@@ -44,18 +44,19 @@ public interface TeamMapper extends BaseMapper<TeamEntity> {
 
     /**
      * 查询当前用户加入的团队（含最后活跃时间），按最后活跃倒序。
-     * 最后活跃 = 该团队下所有项目最后活跃的最大值（项目最后活跃 = 其下群最近消息/创建时间最大值）；
-     * 无项目时以团队创建时间兜底。
+     * 最后活跃 = 该团队下所有项目最后活跃的最大值（项目最后活跃 = 其下群最近消息时间的最大值）；
+     * 旗下任何项目都无消息时为 null（沉底），不兜底创建时间——避免新创建的无活跃团队被
+     * 「伪造」成最新活跃而排首位。
      *
      * @param userId 当前用户 ID
      * @return 团队视图列表（含 lastActivityAt），按最后活跃倒序
      */
     @Select("SELECT t.id, t.owner_user_id, t.name, t.description, t.created_at, tm.role, "
             + "(SELECT COUNT(*) FROM team_members tc WHERE tc.team_id = t.id) AS member_count, "
-            + "COALESCE((SELECT MAX(last_act) FROM ( "
-            + "  SELECT COALESCE((SELECT MAX(COALESCE(rg.last_message_at, rg.created_at)) "
-            + "                  FROM requirement_groups rg WHERE rg.project_id = p.id), p.created_at) AS last_act "
-            + "  FROM projects p WHERE p.team_id = t.id) x), t.created_at) AS last_activity_at "
+            + "(SELECT MAX(p_act) FROM ( "
+            + "  SELECT (SELECT MAX(rg.last_message_at) FROM requirement_groups rg "
+            + "          WHERE rg.project_id = p.id) AS p_act "
+            + "  FROM projects p WHERE p.team_id = t.id) x) AS last_activity_at "
             + "FROM team_members tm INNER JOIN teams t ON t.id = tm.team_id "
             + "WHERE tm.user_id = #{userId} "
             + "ORDER BY last_activity_at DESC, t.id")

@@ -62,7 +62,8 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
 
     /**
      * 查询某团队下当前用户可见的项目（含最后活跃时间），按最后活跃倒序。
-     * 最后活跃 = 该项目下所有群最近消息时间或创建时间的最大值；无群时以项目创建时间兜底。
+     * 最后活跃 = 该项目下所有群最近消息时间的最大值；任何群都无消息时为 null（沉底），
+     * 不兜底创建时间——避免新创建的无活跃项目被「伪造」成最新活跃而排首位。
      *
      * @param teamId    团队 ID
      * @param userId    当前用户 ID
@@ -72,8 +73,8 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
     @Select({"<script>",
             "SELECT p.id, p.team_id, p.name, p.description, p.status, ",
             "CASE WHEN #{teamOwner} THEN 'PROJECT_ADMIN' ELSE pm.role END AS role, ",
-            "COALESCE((SELECT MAX(COALESCE(rg.last_message_at, rg.created_at)) ",
-            "          FROM requirement_groups rg WHERE rg.project_id = p.id), p.created_at) AS last_activity_at ",
+            "(SELECT MAX(rg.last_message_at) FROM requirement_groups rg ",
+            "  WHERE rg.project_id = p.id) AS last_activity_at ",
             "FROM projects p LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = #{userId} ",
             "WHERE p.team_id = #{teamId} ",
             "<if test='teamOwner == false'>AND pm.user_id IS NOT NULL</if> ",

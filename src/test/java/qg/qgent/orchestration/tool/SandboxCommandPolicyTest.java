@@ -7,7 +7,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * SandboxCommandPolicy 纯单元测试：白名单 8 个测试模板放行，危险命令、额外参数、
+ * SandboxCommandPolicy 纯单元测试：白名单测试模板放行，危险命令、额外参数、
  * 自定义命令、null/空向量全部拒绝。无 OS 依赖，不执行任何命令。
  */
 class SandboxCommandPolicyTest {
@@ -19,10 +19,15 @@ class SandboxCommandPolicyTest {
         assertThat(policy.allows(List.of("mvn", "test"))).isTrue();
         assertThat(policy.allows(List.of("mvnw", "test"))).isTrue();
         assertThat(policy.allows(List.of("mvnw.cmd", "test"))).isTrue();
+        assertThat(policy.allows(List.of("./mvnw", "test"))).isTrue();
+        assertThat(policy.allows(List.of("./mvnw.cmd", "test"))).isTrue();
         assertThat(policy.allows(List.of("gradle", "test"))).isTrue();
         assertThat(policy.allows(List.of("gradlew", "test"))).isTrue();
         assertThat(policy.allows(List.of("gradlew.bat", "test"))).isTrue();
         assertThat(policy.allows(List.of("gradlew.cmd", "test"))).isTrue();
+        assertThat(policy.allows(List.of("./gradlew", "test"))).isTrue();
+        assertThat(policy.allows(List.of("./gradlew.bat", "test"))).isTrue();
+        assertThat(policy.allows(List.of("./gradlew.cmd", "test"))).isTrue();
         assertThat(policy.allows(List.of("npm", "test"))).isTrue();
     }
 

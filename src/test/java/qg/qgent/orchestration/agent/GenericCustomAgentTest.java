@@ -297,6 +297,19 @@ class GenericCustomAgentTest {
                 .containsExactly("list_files", "read_file", "search_code");
     }
 
+    @Test
+    void writeRoleSuccessWithoutWritesIsRejected() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"done\",\"message\":\"ok\"}", "stop"));
+
+        AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getMessage()).contains("actual changed write");
+    }
+
     private ToolTurnResult finalTurn(String json, String finishReason) {
         return ToolTurnResult.finalAnswer(json, finishReason, 20, 10, "aabb", null);
     }

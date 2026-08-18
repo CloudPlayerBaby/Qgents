@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class ProjectControllerRouteTest {
     @Test
-    void exposesTenContractRoutesAndSevenIdempotentWrites() {
+    void exposesElevenContractRoutesAndSevenIdempotentWrites() {
         Set<String> routes = new HashSet<>();
         int idempotentWrites = 0;
         for (Method method : ProjectController.class.getDeclaredMethods()) {
@@ -40,6 +40,7 @@ class ProjectControllerRouteTest {
 
         assertEquals(Set.of(
                 "POST /teams/{teamId}/projects", "GET /teams/{teamId}/projects",
+                "GET /teams/{teamId}/projects/by-last-activity",
                 "GET /projects/{projectId}", "PATCH /projects/{projectId}",
                 "POST /projects/{projectId}/archive", "POST /projects/{projectId}/restore",
                 "GET /projects/{projectId}/members", "POST /projects/{projectId}/members",
