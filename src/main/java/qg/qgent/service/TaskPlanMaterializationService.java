@@ -248,6 +248,7 @@ public class TaskPlanMaterializationService {
             return step;
         }).toList());
         result.put("testPlan", plan.getTestPlan());
+        result.put("verificationMode", plan.getVerificationMode());
         result.put("risks", plan.getRisks());
         result.put("deliveryMode", decision.mode());
         result.put("scaleReason", plan.getScaleReason());

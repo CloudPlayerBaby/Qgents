@@ -61,6 +61,7 @@ public class PlanResultParser {
         plan.setTaskUnderstanding(requireText(node, "taskUnderstanding"));
         plan.setObjectives(requireStringArray(node, "implementationGoals", MAX_GOALS, "implementationGoals"));
         plan.setTestPlan(requireText(node, "testPlan"));
+        plan.setVerificationMode(optionalVerificationMode(node, plan.getTestPlan()));
         plan.setImplementationSteps(parseSteps(node));
         plan.setRisks(optionalStringArray(node, "risks", MAX_RISKS));
         plan.setDeliveryMode(optionalDeliveryMode(node));
@@ -215,6 +216,24 @@ public class PlanResultParser {
     private String optionalDeliveryMode(JsonNode node) {
         String value = optionalText(node, "deliveryMode");
         return DeliveryMode.isValid(value) ? value : null;
+    }
+
+    /** Backward-compatible inference for plans created before verificationMode existed. */
+    private String optionalVerificationMode(JsonNode node, String testPlan) {
+        String value = optionalText(node, "verificationMode");
+        if ("MANUAL".equalsIgnoreCase(value)) {
+            return "MANUAL";
+        }
+        if ("AUTOMATED".equalsIgnoreCase(value)) {
+            return "AUTOMATED";
+        }
+        String text = testPlan == null ? "" : testPlan.toLowerCase(Locale.ROOT);
+        if (text.contains("人工核验") || text.contains("不运行自动化")
+                || text.contains("无需自动化") || text.contains("纯检查")
+                || text.contains("manual")) {
+            return "MANUAL";
+        }
+        return "AUTOMATED";
     }
 
     /**

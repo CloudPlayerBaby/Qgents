@@ -29,6 +29,10 @@ public class PlanResult {
      */
     private String testPlan;
     /**
+     * 验证方式：AUTOMATED 需要执行测试命令，MANUAL 由产物和测试计划完成审查验收。
+     */
+    private String verificationMode;
+    /**
      * 风险列表。
      */
     private List<String> risks = new ArrayList<>();

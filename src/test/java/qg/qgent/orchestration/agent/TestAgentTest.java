@@ -15,6 +15,7 @@ import qg.qgent.orchestration.tool.DisabledExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 
 import java.util.List;
 import java.util.UUID;
@@ -166,10 +167,78 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
         verify(executionPort, never()).execute(any(), anyList(), any());
         verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void manualReviewSucceedsWithoutBuildToolWhenDeveloperProducedReport() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("README.md", "notes.txt"));
+        AgentInput manualInput = input();
+        manualInput.getPlanResult().setVerificationMode("MANUAL");
+        manualInput.getCodingResult().setSummary("检查报告：发现 2 项问题");
+        manualInput.getCodingResult().setModifiedFiles(List.of());
+
+        AgentRunOutcome outcome = agent().run(manualInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().getVerificationMode()).isEqualTo("MANUAL");
+        verify(executionPort, never()).execute(any(), anyList(), any());
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void manualReviewFailsWhenDeveloperReportIsMissing() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("README.md"));
+        AgentInput manualInput = input();
+        manualInput.getPlanResult().setVerificationMode("MANUAL");
+        manualInput.getCodingResult().setSummary(null);
+        manualInput.getCodingResult().setModifiedFiles(List.of());
+
+        AgentRunOutcome outcome = agent().run(manualInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getTestResult().getSummary()).contains("缺少 Developer");
+    }
+
+    @Test
+    void pureFileTaskUsesDeterministicFileAssertionWhenNoBuildToolExists() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("xiaomi.html"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("xiaomi.html", "", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+
+        AgentInput fileInput = input();
+        fileInput.setRequirement("清空 xiaomi.html");
+        fileInput.getCodingResult().setModifiedFiles(List.of("xiaomi.html"));
+
+        AgentRunOutcome outcome = agent().run(fileInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().isSuccess()).isTrue();
+        assertThat(outcome.getTestResult().getVerificationMode()).isEqualTo("FILE_ASSERTION");
+        assertThat(outcome.getTestResult().getCommand()).isEqualTo("file assertions");
+        verify(executionPort, never()).execute(any(), anyList(), any());
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void pureFileTaskFailsAssertionWhenClearOperationLeavesContent() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("xiaomi.html"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("xiaomi.html", "not empty", "hash"));
+
+        AgentInput fileInput = input();
+        fileInput.setRequirement("清空 xiaomi.html");
+        fileInput.getCodingResult().setModifiedFiles(List.of("xiaomi.html"));
+
+        AgentRunOutcome outcome = agent().run(fileInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getTestResult().isSuccess()).isFalse();
+        assertThat(outcome.getTestResult().getFailures().get(0).getReason()).contains("为空");
+        verify(executionPort, never()).execute(any(), anyList(), any());
     }
 
     @Test
