@@ -11,7 +11,6 @@ import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.*;
 import qg.qgent.service.TaskRunService;
 
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -109,10 +108,11 @@ public class TaskRunController {
      * 契约 §12.2：查询运行期间发起的人机输入请求。
      */
     @GetMapping("/task-runs/{taskRunId}/input-requests")
-    public ApiResponse<?> inputRequests(@PathVariable UUID projectId, @PathVariable UUID taskRunId,
-                                        @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
-        List<InputRequestResponse> data = taskRunService.inputRequests(projectId, taskRunId, userId);
-        return ok(data, request);
+    public ApiPageResponse<InputRequestResponse> inputRequests(@PathVariable UUID projectId,
+                                                               @PathVariable UUID taskRunId,
+                                                               @AuthenticationPrincipal UUID userId,
+                                                               HttpServletRequest request) {
+        return taskRunService.inputRequests(projectId, taskRunId, userId, requestId(request));
     }
 
     /**

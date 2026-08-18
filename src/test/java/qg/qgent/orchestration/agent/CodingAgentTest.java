@@ -224,7 +224,8 @@ class CodingAgentTest {
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"success\":true,\"summary\":\"将\"和\"字居中\"}", "stop"));
         when(llm.complete(anyString(), anyList()))
-                .thenReturn("{\"finalResult\":{\"success\":true,\"summary\":\"done\"}}");
+                .thenReturn("{\"finalResult\":{\"success\":true,\"summary\":\"done\","
+                        + "\"modifiedFiles\":[\"src/main/java/X.java\"]}}");
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
@@ -232,6 +233,21 @@ class CodingAgentTest {
         assertThat(outcome.getCodingResult().getSummary()).isEqualTo("done");
         assertThat(outcome.getObservations()).hasSize(2);
         verify(llm).complete(anyString(), anyList());
+    }
+
+    @Test
+    void repairedSuccessWithoutAnyModifiedFileIsRejected() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("not json", "stop"));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"finalResult\":{\"success\":true,\"summary\":\"未执行任何文件修改\"}}");
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getMessage()).contains("requires at least one actual file modification");
     }
 
     @Test

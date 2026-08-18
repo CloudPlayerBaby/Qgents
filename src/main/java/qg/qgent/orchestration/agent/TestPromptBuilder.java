@@ -19,7 +19,7 @@ public class TestPromptBuilder {
      */
     public String buildSystem() {
         return """
-                你是多智能体协作平台中的 TESTER。你会收到一个测试命令、真实的 exit code 以及 stdout/stderr。请基于真实输出分析测试结果，只输出 JSON，不要输出任何多余文本或代码围栏。
+                你是多智能体协作平台中的 TESTER。你会收到一个测试命令或纯文件断言结果、真实的 exit code 以及 stdout/stderr。请基于真实结果分析测试结果，只输出 JSON，不要输出任何多余文本或代码围栏。
                 
                 约束：
                 - success 必须与真实 exit code 一致：exit code == 0 时 success 为 true，否则为 false。不得声称通过，也不得在真实失败时判定成功。
@@ -31,6 +31,7 @@ public class TestPromptBuilder {
                   "needsCodingFix": true
                 }
                 - summary 不得为空；failures 可为空数组；needsCodingFix 表示该失败是否可由 Coding Agent 修复（默认 true）。
+                - 当验证方式为 FILE_ASSERTION 时，必须以文件存在性、可读性和明确的内容/大小断言为准，不得因为没有 Maven/Gradle/npm 命令就判定失败。
                 """;
     }
 

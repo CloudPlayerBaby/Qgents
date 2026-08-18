@@ -25,7 +25,9 @@ import qg.qgent.service.ContextService;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 真实 Coding Agent：理解任务与计划，通过只读工具按需读取工作区代码，用 apply_patch
@@ -94,10 +96,12 @@ public class CodingAgent implements Agent {
         log.info("coding agent start phase={} workspaceId={} protocol={}",
                 input.getPhase(), input.getWorkspaceId(), protocol.isNative() ? "native" : "legacy");
         List<LlmObservation> observations = new ArrayList<>();
+        Set<String> observedChangedFiles = new LinkedHashSet<>();
         try {
             CodingResult coding = protocol.isNative()
-                    ? executeCodingNative(input, observations)
-                    : executeCodingLegacy(input);
+                    ? executeCodingNative(input, observations, observedChangedFiles)
+                    : executeCodingLegacy(input, observedChangedFiles);
+            validateAndCompleteChanges(coding, observedChangedFiles);
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
             outcome.setOutcome(coding.isSuccess() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED);
@@ -135,7 +139,8 @@ public class CodingAgent implements Agent {
      * 每轮写入一条脱敏观测；工具执行遇到基础设施失败（Workspace 不可用）抛
      * {@link IllegalStateException}，由 run() 统一转为 FAILED_INFRASTRUCTURE。
      */
-    private CodingResult executeCodingNative(AgentInput input, List<LlmObservation> observations) {
+    private CodingResult executeCodingNative(AgentInput input, List<LlmObservation> observations,
+                                             Set<String> observedChangedFiles) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         log.info("coding agent workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
@@ -143,7 +148,8 @@ public class CodingAgent implements Agent {
         history.add(new UserMessage(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem(true);
         CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer);
-        tools.setWriteObserver(writeObserver, input.getProjectId(), input.getTaskId(), input.getTaskRunId());
+        tools.setWriteObserver(trackingObserver(observedChangedFiles), input.getProjectId(), input.getTaskId(),
+                input.getTaskRunId());
         ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
                 input.getProjectId());
         ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
@@ -224,7 +230,7 @@ public class CodingAgent implements Agent {
      * legacy 手写 JSON 协议循环：模型输出 toolCall/finalResult 文本，由 {@link CodingToolExecutor}
      * 执行工具。仅灰度期使用，协议切换稳定后删除。
      */
-    private CodingResult executeCodingLegacy(AgentInput input) {
+    private CodingResult executeCodingLegacy(AgentInput input, Set<String> observedChangedFiles) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         log.info("coding agent (legacy) workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
@@ -232,7 +238,7 @@ public class CodingAgent implements Agent {
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem(false);
         CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer);
-        toolExecutor.setWriteObserver(writeObserver, input.getProjectId(), input.getTaskId(),
+        toolExecutor.setWriteObserver(trackingObserver(observedChangedFiles), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId(), input.getWorkspaceId());
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             String raw = llm.complete(system, history);
@@ -272,6 +278,48 @@ public class CodingAgent implements Agent {
             return coding.getErrors().get(0);
         }
         return coding.getSummary() == null ? "coding incomplete" : coding.getSummary();
+    }
+
+    /**
+     * Coding 的 success 不能只由模型自报决定：必须至少有一个成功且实际改变内容的写操作，
+     * 或者由模型明确列出修改文件（兼容旧 Worker 未回传 changed 的历史实现）。实际写入路径
+     * 会补入结果，避免模型遗漏 modifiedFiles；没有任何证据时把结果降为协议失败，防止
+     * JSON repair 把“未执行任何文件修改”包装成 Developer 成功。
+     */
+    private void validateAndCompleteChanges(CodingResult coding, Set<String> observedChangedFiles) {
+        if (coding == null || !coding.isSuccess()) {
+            return;
+        }
+        List<String> declared = coding.getModifiedFiles();
+        if (declared == null) {
+            declared = List.of();
+        }
+        if (declared.isEmpty() && observedChangedFiles.isEmpty()) {
+            throw new CodingParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
+                    "coding success requires at least one actual file modification");
+        }
+        if (declared.isEmpty() && !observedChangedFiles.isEmpty()) {
+            coding.setModifiedFiles(new ArrayList<>(observedChangedFiles));
+        }
+    }
+
+    /**
+     * 记录本次 run 的真实变更，同时保留已有的 Diff 预览回调。回调异常不能影响 Coding 主循环。
+     */
+    private CodingWriteObserver trackingObserver(Set<String> observedChangedFiles) {
+        return (projectId, taskId, taskRunId, workspaceId, result) -> {
+            if (result != null && result.isOk() && result.isChanged() && result.getPath() != null) {
+                observedChangedFiles.add(result.getPath());
+            }
+            if (writeObserver != null) {
+                try {
+                    writeObserver.onWrite(projectId, taskId, taskRunId, workspaceId, result);
+                } catch (RuntimeException e) {
+                    log.warn("CODING_WRITE_OBSERVER_FAILED path={} category={}",
+                            result == null ? null : result.getPath(), e.getClass().getSimpleName());
+                }
+            }
+        };
     }
 
     /**

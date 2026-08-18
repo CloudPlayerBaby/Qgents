@@ -149,6 +149,39 @@ class ReviewAgentTest {
     }
 
     @Test
+    void nativePlainTextFinalIsRepairedOnce() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("我已完成对本次改动的审查，未发现问题。"));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn(reviewJson(true, "review repaired", "[]"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getReviewResult().getSummary()).isEqualTo("review repaired");
+        assertThat(outcome.getObservations()).hasSize(2);
+        verify(llm, times(1)).complete(anyString(), anyList());
+    }
+
+    @Test
+    void nativeRepairThatIsStillInvalidRemainsInfrastructureFailure() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("我完成了审查，但无法按格式输出。"));
+        when(llm.complete(anyString(), anyList())).thenReturn("仍然不是 JSON");
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getObservations()).hasSize(2);
+        verify(llm, times(1)).complete(anyString(), anyList());
+    }
+
+    @Test
     void nativeInfraAbortMapsToInfrastructureFailure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
@@ -173,6 +206,7 @@ class ReviewAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
         assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
+        verify(llm, never()).complete(anyString(), anyList());
     }
 
     @Test

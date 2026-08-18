@@ -59,6 +59,16 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
     int deferForWorkspaceWriteLease(@Param("projectId") UUID projectId, @Param("taskId") UUID taskId);
 
     /**
+     * 将因陈旧 TaskRun 被恢复器回收的任务收敛为 FAILED。
+     * 只允许覆盖仍处于编排启动态的任务，避免覆盖用户取消、交付或其他终态。
+     */
+    @Update("update tasks set status='FAILED', updated_at=UTC_TIMESTAMP(6) where id=#{taskId} "
+            + "and project_id=#{projectId} and status in ('PLANNING','PENDING','RUNNING') "
+            + "and not exists (select 1 from task_runs r where r.task_id=#{taskId} "
+            + "and r.status in ('QUEUED','RUNNING','WAITING_INPUT','WAITING_APPROVAL'))")
+    int failAfterStaleRun(@Param("projectId") UUID projectId, @Param("taskId") UUID taskId);
+
+    /**
      * 找出尚未创建活跃 Run、且关联 Workspace 当前没有有效写租约的 PENDING 任务。
      * 恢复器只发布续跑事件，实际认领仍由 claimForResume 的 CAS 完成。
      */

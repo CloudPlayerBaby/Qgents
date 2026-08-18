@@ -29,7 +29,8 @@ import java.util.UUID;
  * <ol>
  *   <li>无进行中 TaskRun 的崩溃任务（进程重启后卡 PLANNING/PENDING/RUNNING）：见 {@code selectStaleOrphaned}；
  *   <li>长期 QUEUED/RUNNING 的陈旧 Run（Worker HTTP 挂起导致 {@code agent.run()} 永不返回）：先原子回收
- *        （reclaimStaleRun CAS 置 FAILED），标其 Step FAILED、落不可变失败产物，再发布续跑事件。
+ *        （reclaimStaleRun CAS 置 FAILED），将所属 Task 收敛为 FAILED、标其 Step FAILED 并落不可变失败产物；
+ *        不自动续跑，避免用户已经看到失败后旧 Task 被后台再次执行。
  * </ol>
  * 多实例并发安全：所有认领都是数据库 CAS（claimForResume / reclaimStaleRun）。
  */
@@ -42,6 +43,7 @@ public class TaskRunRecoveryScheduler {
     private final TaskStepMapper steps;
     private final TaskRunMapper runMapper;
     private final TaskExecutionArtifactService artifactService;
+    private final EventService eventService;
     private final ApplicationEventPublisher eventPublisher;
 
     /**
@@ -51,20 +53,21 @@ public class TaskRunRecoveryScheduler {
 
     public TaskRunRecoveryScheduler(TaskMapper tasks, TaskStepMapper steps, TaskRunMapper runMapper,
                                     TaskExecutionArtifactService artifactService,
+                                    EventService eventService,
                                     ApplicationEventPublisher eventPublisher,
                                     @Value("${qgents.task-recovery.stale-run-threshold:20m}") Duration staleRunThreshold) {
         this.tasks = tasks;
         this.steps = steps;
         this.runMapper = runMapper;
         this.artifactService = artifactService;
+        this.eventService = eventService;
         this.eventPublisher = eventPublisher;
         this.staleRunThreshold = staleRunThreshold;
     }
 
     /**
-     * 扫描并续跑卡死任务；认领由编排入口 {@code orchestrate(projectId, taskId, startStepId)} 内的
-     * claimForResume 原子完成（无进行中 TaskRun 才认领成功），多实例并发安全。
-     * 本调度器只负责发现卡死任务并发布续跑事件（AFTER_COMMIT + @Async 执行）。
+     * 扫描崩溃遗留任务。只有没有任何 Run 的孤儿任务会自动发布续跑事件；陈旧活跃 Run
+     * 被收敛为 FAILED，等待用户显式创建续作 Task。
      */
     @Scheduled(fixedDelayString = "${qgents.task-recovery.poll-delay-ms:30000}")
     public void recover() {
@@ -74,8 +77,8 @@ public class TaskRunRecoveryScheduler {
     }
 
     /**
-     * 回收长期处于 QUEUED/RUNNING 的陈旧 Run（Worker 挂起场景）：CAS 置 FAILED 抢到者才继续——
-     * 标其 Step FAILED、落不可变失败产物 ORPHANED_RUN_TIMEOUT，再发布续跑事件让状态机重试或终止。
+     * 回收长期处于 QUEUED/RUNNING 的陈旧 Run（Worker 挂起场景）：CAS 置 FAILED 抢到者才继续。
+     * 陈旧 Run 表示本次执行已经失败；任务收敛为 FAILED，不再自动续跑旧 Task。
      */
     private void reclaimStaleRuns() {
         LocalDateTime staleBefore = LocalDateTime.now(ZoneOffset.UTC).minus(staleRunThreshold);
@@ -93,20 +96,26 @@ public class TaskRunRecoveryScheduler {
                 if (task == null) {
                     continue;
                 }
+                // 先收敛 Task，再写失败产物。即使产物落库异常，也不能让旧 Task 留在可恢复状态。
+                if (tasks.failAfterStaleRun(task.getProjectId(), task.getId()) == 1) {
+                    task.setStatus("FAILED");
+                    run.setStatus("FAILED");
+                    eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated",
+                            task.getId().toString(), TaskEventPayloads.taskUpdated(task));
+                    eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task-run.updated",
+                            run.getId().toString(), TaskEventPayloads.taskRunUpdated(run, 0));
+                    log.info("reclaimed stale run and failed task runId={} taskId={} projectId={} stepId={}",
+                            runId, run.getTaskId(), task.getProjectId(), run.getTaskStepId());
+                } else {
+                    log.info("reclaimed stale run but task already left executable states runId={} taskId={} status={}",
+                            runId, run.getTaskId(), task.getStatus());
+                }
                 TaskStepEntity step = steps.selectById(run.getTaskStepId());
                 markStepFailedIfActive(run.getTaskId(), run.getTaskStepId());
                 if (step != null) {
                     artifactService.createRunArtifact(task, run, step,
                             artifactTypeForRole(run.getRole()), orphanSummary(run, step));
                 }
-                UUID startStepId = steps.selectFirstIncompleteStep(run.getTaskId());
-                if (startStepId == null) {
-                    startStepId = steps.selectFirstStep(run.getTaskId());
-                }
-                log.info("reclaimed stale run runId={} taskId={} projectId={} stepId={} startStepId={}",
-                        runId, run.getTaskId(), task.getProjectId(), run.getTaskStepId(), startStepId);
-                eventPublisher.publishEvent(new TaskResumeRequestedEvent(task.getProjectId(), task.getId(),
-                        startStepId, null));
             } catch (RuntimeException e) {
                 log.warn("stale run reclaim skipped runId={}: {}", runId, e.getMessage());
             }

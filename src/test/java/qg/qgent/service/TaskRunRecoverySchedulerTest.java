@@ -26,16 +26,18 @@ import static org.mockito.Mockito.when;
 
 /**
  * 崩溃遗留任务恢复调度器测试：扫描卡死任务、从第一个未完成步骤发布续跑事件、无任务不动作；
- * 以及陈旧活跃 Run（Worker 挂起）的原子回收 → 置 Step FAILED → 落失败产物 → 发布续跑事件。
+ * 以及陈旧活跃 Run（Worker 挂起）的原子回收 → Task FAILED → 置 Step FAILED → 落失败产物，
+ * 不再自动续跑旧 Task。
  */
 class TaskRunRecoverySchedulerTest {
     private final TaskMapper tasks = mock(TaskMapper.class);
     private final TaskStepMapper steps = mock(TaskStepMapper.class);
     private final TaskRunMapper runMapper = mock(TaskRunMapper.class);
     private final TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
+    private final EventService taskEvents = mock(EventService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final TaskRunRecoveryScheduler scheduler = new TaskRunRecoveryScheduler(tasks, steps, runMapper,
-            artifacts, events, Duration.ofMinutes(20));
+            artifacts, taskEvents, events, Duration.ofMinutes(20));
 
     @Test
     void recoversOrphanedTaskFromFirstIncompleteStep() {
@@ -114,7 +116,7 @@ class TaskRunRecoverySchedulerTest {
     }
 
     @Test
-    void reclaimsStaleRunAndStepsAndPublishesResume() {
+    void reclaimsStaleRunAndFailsTaskWithoutPublishingResume() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         UUID stepId = UUID.randomUUID();
@@ -138,8 +140,8 @@ class TaskRunRecoverySchedulerTest {
         when(runMapper.reclaimStaleRun(eq(runId), any())).thenReturn(1);
         when(runMapper.selectById(runId)).thenReturn(run);
         when(tasks.selectById(taskId)).thenReturn(task);
+        when(tasks.failAfterStaleRun(projectId, taskId)).thenReturn(1);
         when(steps.selectById(stepId)).thenReturn(step);
-        when(steps.selectFirstIncompleteStep(taskId)).thenReturn(firstIncomplete);
 
         scheduler.recover();
 
@@ -147,8 +149,11 @@ class TaskRunRecoverySchedulerTest {
         ArgumentCaptor<Map> summary = ArgumentCaptor.forClass(Map.class);
         verify(artifacts).createRunArtifact(eq(task), eq(run), eq(step), eq("CODING"), summary.capture());
         assertThat(summary.getValue().get("failureCode")).isEqualTo("ORPHANED_RUN_TIMEOUT");
-        verify(events).publishEvent(org.mockito.ArgumentMatchers.argThat((TaskResumeRequestedEvent e) ->
-                e.taskId().equals(taskId) && e.startStepId().equals(firstIncomplete)));
+        verify(taskEvents).publish(eq(projectId), eq(task.getRequirementGroupId()), eq("task.updated"),
+                eq(taskId.toString()), org.mockito.ArgumentMatchers.anyMap());
+        verify(taskEvents).publish(eq(projectId), eq(task.getRequirementGroupId()), eq("task-run.updated"),
+                eq(runId.toString()), org.mockito.ArgumentMatchers.anyMap());
+        verify(events, never()).publishEvent(any());
     }
 
     @Test
@@ -164,8 +169,8 @@ class TaskRunRecoverySchedulerTest {
     }
 
     @Test
-    void staleRunRecoveredEvenWhenNoTasklessOrphans() {
-        // 回归：selectStaleRuns 命中但 selectStaleOrphaned 为空时，陈旧 run 仍被回收。
+    void staleRunIsTerminalEvenWhenNoTasklessOrphans() {
+        // 回归：selectStaleRuns 命中但 selectStaleOrphaned 为空时，陈旧 run 仍收敛为 FAILED。
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         UUID stepId = UUID.randomUUID();
@@ -189,9 +194,8 @@ class TaskRunRecoverySchedulerTest {
         when(runMapper.reclaimStaleRun(eq(runId), any())).thenReturn(1);
         when(runMapper.selectById(runId)).thenReturn(run);
         when(tasks.selectById(taskId)).thenReturn(task);
+        when(tasks.failAfterStaleRun(projectId, taskId)).thenReturn(1);
         when(steps.selectById(stepId)).thenReturn(step);
-        when(steps.selectFirstIncompleteStep(taskId)).thenReturn(null);
-        when(steps.selectFirstStep(taskId)).thenReturn(firstStep);
         when(tasks.selectStaleOrphaned(any(), anyInt())).thenReturn(List.of());
 
         scheduler.recover();
@@ -199,7 +203,8 @@ class TaskRunRecoverySchedulerTest {
         ArgumentCaptor<Map> summary = ArgumentCaptor.forClass(Map.class);
         verify(artifacts).createRunArtifact(eq(task), eq(run), eq(step), eq("TESTING"), summary.capture());
         assertThat(summary.getValue().get("failureCode")).isEqualTo("ORPHANED_RUN_TIMEOUT");
-        verify(events).publishEvent(org.mockito.ArgumentMatchers.argThat((TaskResumeRequestedEvent e) ->
-                e.startStepId().equals(firstStep)));
+        verify(taskEvents).publish(eq(projectId), eq(task.getRequirementGroupId()), eq("task.updated"),
+                eq(taskId.toString()), org.mockito.ArgumentMatchers.anyMap());
+        verify(events, never()).publishEvent(any());
     }
 }
