@@ -25,6 +25,10 @@ public class TeamResponse {
      */
     private String description;
     /**
+     * 团队头像 URL（OSS 公共读长期地址，可为空）。
+     */
+    private String avatarUrl;
+    /**
      * 创建时间（UTC）。
      */
     private LocalDateTime createdAt;

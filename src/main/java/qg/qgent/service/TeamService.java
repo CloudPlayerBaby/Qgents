@@ -100,6 +100,7 @@ public class TeamService {
         team.setOwnerUserId(actor);
         team.setName(request.getName().trim());
         team.setDescription(request.getDescription());
+        team.setAvatarUrl(blankToNull(request.getAvatarUrl()));
         team.setStatus("ACTIVE");
         teamMapper.insert(team);
         // 给这个团队的owner设置成创建这个的用户
@@ -135,6 +136,7 @@ public class TeamService {
                             effectiveRole(row.getOwnerUserId(), actor, row.getRole()));
                     response.setMemberCount(row.getMemberCount());
                     response.setDescription(row.getDescription());
+                    response.setAvatarUrl(row.getAvatarUrl());
                     response.setCreatedAt(row.getCreatedAt());
                     return response;
                 });
@@ -155,6 +157,7 @@ public class TeamService {
                             effectiveRole(row.getOwnerUserId(), actor, row.getRole()));
                     response.setMemberCount(row.getMemberCount());
                     response.setDescription(row.getDescription());
+                    response.setAvatarUrl(row.getAvatarUrl());
                     response.setCreatedAt(row.getCreatedAt());
                     if (row.getLastActivityAt() != null) {
                         response.setLastActivityAt(row.getLastActivityAt().toInstant(ZoneOffset.UTC).toString());
@@ -197,6 +200,10 @@ public class TeamService {
         if (request.getDescription() != null) {
             team.setDescription(request.getDescription());
         }
+        // avatarUrl：null 保留原值；非 null（含空串清空）覆盖保存
+        if (request.getAvatarUrl() != null) {
+            team.setAvatarUrl(blankToNull(request.getAvatarUrl()));
+        }
         teamMapper.updateById(team);
         return team(team, "TEAM_OWNER");
     }
@@ -224,6 +231,7 @@ public class TeamService {
                             effectiveRole(team.getOwnerUserId(), member.getUserId(), member.getRole()));
                     response.setDisplayName(member.getDisplayName());
                     response.setEmail(member.getEmail());
+                    response.setAvatarUrl(member.getAvatarUrl());
                     return response;
                 });
     }
@@ -815,7 +823,7 @@ public class TeamService {
     }
 
     // 查询到团队和成员信息并检查是否存在
-    private TeamMemberEntity requireMember(UUID teamId, UUID userId) {
+    public TeamMemberEntity requireMember(UUID teamId, UUID userId) {
         TeamMemberEntity member = memberMapper.selectByTeamAndUser(teamId, userId);
         if (member == null) {
             throw notFound();
@@ -904,6 +912,7 @@ public class TeamService {
         TeamResponse response = new TeamResponse(team.getId().toString(), team.getName(), role);
         response.setMemberCount(memberCount(team.getId()));
         response.setDescription(team.getDescription());
+        response.setAvatarUrl(team.getAvatarUrl());
         response.setCreatedAt(team.getCreatedAt());
         return response;
     }
@@ -919,6 +928,7 @@ public class TeamService {
                 effectiveRole(team.getOwnerUserId(), userId, storedRole));
         response.setDisplayName(user == null ? null : user.getDisplayName());
         response.setEmail(user == null ? null : user.getEmail());
+        response.setAvatarUrl(user == null ? null : user.getAvatarUrl());
         return response;
     }
 
@@ -974,6 +984,10 @@ public class TeamService {
 
     private String normalize(String email) {
         return email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private ApiException notFound() {

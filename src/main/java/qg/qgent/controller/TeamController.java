@@ -13,6 +13,7 @@ import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.*;
 import qg.qgent.service.EventService;
 import qg.qgent.service.IdempotencyService;
+import qg.qgent.service.TeamAvatarStorageService;
 import qg.qgent.service.TeamService;
 
 import java.util.List;
@@ -29,11 +30,14 @@ public class TeamController {
     private final TeamService teams;
     private final IdempotencyService idempotency;
     private final EventService eventService;
+    private final TeamAvatarStorageService avatarStorage;
 
-    public TeamController(TeamService teams, IdempotencyService idempotency, EventService eventService) {
+    public TeamController(TeamService teams, IdempotencyService idempotency, EventService eventService,
+                          TeamAvatarStorageService avatarStorage) {
         this.teams = teams;
         this.idempotency = idempotency;
         this.eventService = eventService;
+        this.avatarStorage = avatarStorage;
     }
 
     /**
@@ -201,6 +205,37 @@ public class TeamController {
                 Map.of("teamId", teamId, "userId", userId), 200, TeamMemberResponse.class,
                 () -> teams.removeMember(actor, teamId, userId));
         return ok(result, request);
+    }
+
+    /**
+     * 契约 v2.0.6 补充：签发团队头像直传凭证（团队成员；对象键 teams/{teamId}/{uuid}.{ext}）。
+     */
+    @PostMapping("/{teamId}/avatar/credential")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<AvatarCredentialResponse> avatarCredential(@PathVariable UUID teamId,
+                                                                  @AuthenticationPrincipal UUID actor,
+                                                                  @Valid @RequestBody AvatarCredentialRequest body,
+                                                                  HttpServletRequest request) {
+        teams.requireMember(teamId, actor);
+        TeamAvatarStorageService.TeamAvatarCredential credential =
+                avatarStorage.createCredential(teamId, body.getMediaType(), body.getSizeBytes());
+        return ok(new AvatarCredentialResponse(credential.objectKey(),
+                credential.credential().getUploadUrl(), credential.credential().getMethod(),
+                credential.credential().getHeaders(), credential.credential().getExpiresAt()), request);
+    }
+
+    /**
+     * 契约 v2.0.6 补充：确认团队头像上传并返回公共读 URL（不写任何用户字段；
+     * 前端把 avatarUrl 随创建/编辑团队请求提交）。
+     */
+    @PostMapping("/{teamId}/avatar/confirm")
+    public ApiResponse<AvatarConfirmResponse> avatarConfirm(@PathVariable UUID teamId,
+                                                            @AuthenticationPrincipal UUID actor,
+                                                            @Valid @RequestBody AvatarConfirmRequest body,
+                                                            HttpServletRequest request) {
+        teams.requireMember(teamId, actor);
+        String avatarUrl = avatarStorage.confirmAvatar(teamId, body.getObjectKey());
+        return ok(new AvatarConfirmResponse(avatarUrl), request);
     }
 
     // 构建成功响应

@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS
         owner_user_id BINARY(16) NOT NULL COMMENT '团队所有者用户ID',
         name VARCHAR(255) NOT NULL COMMENT '团队名称',
         description TEXT NULL COMMENT '团队简介',
+        avatar_url TEXT NULL COMMENT '团队头像URL（OSS 公共读长期地址，可为空）',
         status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '团队状态枚举：ACTIVE/ARCHIVED',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',

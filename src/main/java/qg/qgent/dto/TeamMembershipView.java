@@ -18,6 +18,10 @@ public class TeamMembershipView {
     private String description;
     private LocalDateTime createdAt;
     /**
+     * 团队头像 URL（可为空）。
+     */
+    private String avatarUrl;
+    /**
      * 团队最后活跃时间（该团队下所有项目最后活跃的最大值），仅按活跃排序查询返回。
      */
     private LocalDateTime lastActivityAt;

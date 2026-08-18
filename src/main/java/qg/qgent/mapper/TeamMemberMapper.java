@@ -24,7 +24,7 @@ public interface TeamMemberMapper extends BaseMapper<TeamMemberEntity> {
     List<TeamMemberEntity> selectByTeamId(@Param("teamId") UUID teamId);
 
     @Select({"<script>",
-            "SELECT tm.team_id, tm.user_id, tm.role, u.display_name, u.email",
+            "SELECT tm.team_id, tm.user_id, tm.role, u.display_name, u.email, u.avatar_url",
             "FROM team_members tm INNER JOIN users u ON u.id = tm.user_id",
             "WHERE tm.team_id = #{teamId}",
             "<if test='anchor != null'>AND tm.user_id &gt; #{anchor}</if>",
@@ -34,7 +34,8 @@ public interface TeamMemberMapper extends BaseMapper<TeamMemberEntity> {
             @Result(column = "user_id", property = "userId", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "role", property = "role"),
             @Result(column = "display_name", property = "displayName"),
-            @Result(column = "email", property = "email")})
+            @Result(column = "email", property = "email"),
+            @Result(column = "avatar_url", property = "avatarUrl")})
     List<TeamMemberView> selectMemberPage(@Param("teamId") UUID teamId, @Param("anchor") UUID anchor,
                                           @Param("limit") int limit);
 

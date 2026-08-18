@@ -11,19 +11,20 @@ import java.util.UUID;
 
 @Mapper
 public interface TeamMapper extends BaseMapper<TeamEntity> {
-    @Select("SELECT id, owner_user_id, name, description, status, created_at FROM teams WHERE id = #{teamId} FOR UPDATE")
+    @Select("SELECT id, owner_user_id, name, description, avatar_url, status, created_at FROM teams WHERE id = #{teamId} FOR UPDATE")
     @Results({
             @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "owner_user_id", property = "ownerUserId", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "name", property = "name"),
             @Result(column = "description", property = "description"),
+            @Result(column = "avatar_url", property = "avatarUrl"),
             @Result(column = "status", property = "status"),
             @Result(column = "created_at", property = "createdAt")
     })
     TeamEntity selectByIdForUpdate(UUID teamId);
 
     @Select({"<script>",
-            "SELECT t.id, t.owner_user_id, t.name, t.description, t.created_at, tm.role,",
+            "SELECT t.id, t.owner_user_id, t.name, t.description, t.avatar_url, t.created_at, tm.role,",
             "(SELECT COUNT(*) FROM team_members tc WHERE tc.team_id = t.id) AS member_count",
             "FROM team_members tm INNER JOIN teams t ON t.id = tm.team_id",
             "WHERE tm.user_id = #{userId}",
@@ -35,6 +36,7 @@ public interface TeamMapper extends BaseMapper<TeamEntity> {
             @Result(column = "owner_user_id", property = "ownerUserId", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "name", property = "name"),
             @Result(column = "description", property = "description"),
+            @Result(column = "avatar_url", property = "avatarUrl"),
             @Result(column = "created_at", property = "createdAt"),
             @Result(column = "role", property = "role"),
             @Result(column = "member_count", property = "memberCount")
@@ -51,7 +53,7 @@ public interface TeamMapper extends BaseMapper<TeamEntity> {
      * @param userId 当前用户 ID
      * @return 团队视图列表（含 lastActivityAt），按最后活跃倒序
      */
-    @Select("SELECT t.id, t.owner_user_id, t.name, t.description, t.created_at, tm.role, "
+    @Select("SELECT t.id, t.owner_user_id, t.name, t.description, t.avatar_url, t.created_at, tm.role, "
             + "(SELECT COUNT(*) FROM team_members tc WHERE tc.team_id = t.id) AS member_count, "
             + "(SELECT MAX(p_act) FROM ( "
             + "  SELECT (SELECT MAX(rg.last_message_at) FROM requirement_groups rg "
@@ -65,6 +67,7 @@ public interface TeamMapper extends BaseMapper<TeamEntity> {
             @Result(column = "owner_user_id", property = "ownerUserId", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "name", property = "name"),
             @Result(column = "description", property = "description"),
+            @Result(column = "avatar_url", property = "avatarUrl"),
             @Result(column = "created_at", property = "createdAt"),
             @Result(column = "role", property = "role"),
             @Result(column = "member_count", property = "memberCount"),

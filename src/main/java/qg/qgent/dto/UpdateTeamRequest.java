@@ -15,4 +15,9 @@ public class UpdateTeamRequest {
      */
     @Size(max = 2000)
     private String description;
+    /**
+     * 团队头像 URL（可选）：传 null 表示保留原值，传空串表示清空头像。
+     */
+    @Size(max = 4096)
+    private String avatarUrl;
 }

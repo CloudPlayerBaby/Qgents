@@ -19,6 +19,10 @@ public class TeamEntity {
      * 团队简介，可为空；由 Team Owner 在创建/修改团队时设置。
      */
     private String description;
+    /**
+     * 团队头像 URL（OSS 公共读长期地址，可为空；由团队头像上传确认后写入）。
+     */
+    private String avatarUrl;
     private String status;
     /**
      * 创建时间（UTC），由数据库 DEFAULT CURRENT_TIMESTAMP(6) 生成。

@@ -21,6 +21,10 @@ public class TeamMemberResponse {
      * 成员用户邮箱（users.email）。
      */
     private String email;
+    /**
+     * 成员用户头像 URL（users.avatar_url，可为空；OSS 未配置时也为空）。
+     */
+    private String avatarUrl;
 
     public TeamMemberResponse(String userId, String role) {
         this.userId = userId;

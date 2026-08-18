@@ -21,4 +21,8 @@ public class TeamMemberView {
      * 成员用户邮箱（users.email）。
      */
     private String email;
+    /**
+     * 成员用户头像 URL（users.avatar_url，可为空）。
+     */
+    private String avatarUrl;
 }
