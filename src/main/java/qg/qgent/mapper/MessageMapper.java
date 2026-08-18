@@ -123,4 +123,32 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             @Result(column = "unread", property = "unread")
     })
     List<GroupUnreadRow> countUnreadByProject(@Param("projectId") UUID projectId, @Param("userId") UUID userId);
+
+    /**
+     * 统计当前用户在项目各群中「@ 我」的未读消息数（排除本人消息）。
+     * mentions 为 JSON 数组（如 {@code [{"type":"USER","id":"..."}]}），用 JSON_CONTAINS 匹配
+     * {@code {"type":"USER","id":当前用户}}；未读 = sequence_no 大于已读游标。
+     *
+     * @param projectId 项目 ID
+     * @param userId    当前用户 ID
+     * @return 群 ID → @ 我的未读消息数
+     */
+    @Select({"<script>",
+            "SELECT m.requirement_group_id, COUNT(*) AS unread ",
+            "FROM messages m ",
+            "WHERE m.requirement_group_id IN ",
+            "    (SELECT id FROM requirement_groups WHERE project_id = #{projectId}) ",
+            "AND m.sequence_no &gt; COALESCE(",
+            "    (SELECT last_read_sequence_no FROM group_read_state ",
+            "     WHERE user_id = #{userId} AND group_id = m.requirement_group_id), 0) ",
+            "AND m.author_user_id &lt;&gt; #{userId} ",
+            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', #{userId})) ",
+            "GROUP BY m.requirement_group_id",
+            "</script>"})
+    @Results({
+            @Result(column = "requirement_group_id", property = "groupId",
+                    typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "unread", property = "unread")
+    })
+    List<GroupUnreadRow> countMentionUnreadByProject(@Param("projectId") UUID projectId, @Param("userId") UUID userId);
 }

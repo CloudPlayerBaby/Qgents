@@ -168,8 +168,14 @@ public class GroupService {
         Map<UUID, GroupLatestMessageRow> latestByGroup = messageMapper.selectLatestByProject(projectId).stream()
                 .collect(Collectors.toMap(GroupLatestMessageRow::getRequirementGroupId, Function.identity()));
         Map<UUID, Long> unreadByGroup = countUnread(projectId, actor);
+        Map<UUID, Long> mentionUnreadByGroup = countMentionUnread(projectId, actor);
         return groupMapper.listByProject(projectId).stream()
-                .map(group -> toResponse(group, latestByGroup.get(group.getId()), unreadByGroup.get(group.getId())))
+                .map(group -> {
+                    GroupResponse response = toResponse(group, latestByGroup.get(group.getId()),
+                            unreadByGroup.get(group.getId()));
+                    response.setMentionedUnread(mentionUnreadByGroup.getOrDefault(group.getId(), 0L));
+                    return response;
+                })
                 .toList();
     }
 
@@ -201,8 +207,17 @@ public class GroupService {
         for (UUID projectId : projectIds) {
             countUnread(projectId, actor).forEach(unreadByGroup::put);
         }
+        // 逐项目统计「@ 我」未读（key: groupId）
+        Map<UUID, Long> mentionUnreadByGroup = new java.util.HashMap<>();
+        for (UUID projectId : projectIds) {
+            countMentionUnread(projectId, actor).forEach(mentionUnreadByGroup::put);
+        }
         return mainGroups.stream()
-                .map(g -> toResponse(g, latestByGroup.get(g.getId()), unreadByGroup.get(g.getId())))
+                .map(g -> {
+                    GroupResponse response = toResponse(g, latestByGroup.get(g.getId()), unreadByGroup.get(g.getId()));
+                    response.setMentionedUnread(mentionUnreadByGroup.getOrDefault(g.getId(), 0L));
+                    return response;
+                })
                 .toList();
     }
 
@@ -211,6 +226,14 @@ public class GroupService {
      */
     private Map<UUID, Long> countUnread(UUID projectId, UUID actor) {
         return messageMapper.countUnreadByProject(projectId, actor).stream()
+                .collect(Collectors.toMap(GroupUnreadRow::getGroupId, GroupUnreadRow::getUnread));
+    }
+
+    /**
+     * 计算某用户在项目各群中「@ 我」的未读消息数（排除本人消息），返回群 ID → 计数。
+     */
+    private Map<UUID, Long> countMentionUnread(UUID projectId, UUID actor) {
+        return messageMapper.countMentionUnreadByProject(projectId, actor).stream()
                 .collect(Collectors.toMap(GroupUnreadRow::getGroupId, GroupUnreadRow::getUnread));
     }
 
@@ -226,7 +249,9 @@ public class GroupService {
         access.requireProjectMember(projectId, actor);
         RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
         Map<UUID, Long> unreadByGroup = countUnread(projectId, actor);
+        Map<UUID, Long> mentionUnreadByGroup = countMentionUnread(projectId, actor);
         GroupResponse response = toResponse(group, null, unreadByGroup.get(groupId));
+        response.setMentionedUnread(mentionUnreadByGroup.getOrDefault(groupId, 0L));
         return response;
     }
 
@@ -592,12 +617,15 @@ public class GroupService {
                 ? projectMemberMapper.countMembers(g.getProjectId())
                 : groupMemberMapper.countMembers(g.getId()))
                 + groupAgentMapper.selectAgentIds(g.getId()).size();
-        return new GroupResponse(g.getId().toString(), g.getProjectId().toString(), g.getGroupType(),
+        GroupResponse response = new GroupResponse(g.getId().toString(), g.getProjectId().toString(), g.getGroupType(),
                 g.getName(), g.getDescription(), g.getStatus(), id(g.getCreatedBy()), iso(g.getLastMessageAt()),
                 iso(g.getLastMessageAt() != null ? g.getLastMessageAt() : g.getCreatedAt()), latestMessage,
                 iso(g.getCreatedAt()),
                 groupRepositoryMapper.selectRepositoryIds(g.getId()).stream().map(UUID::toString).toList(),
-                members, unreadCount == null ? 0L : unreadCount);
+                members, unreadCount == null ? 0L : unreadCount, 0L);
+        // 「@ 我」未读数默认 0，list/mainGroups/get 按需覆盖
+        response.setMentionedUnread(0L);
+        return response;
     }
 
     /**
