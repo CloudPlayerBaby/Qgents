@@ -2,6 +2,7 @@ package qg.qgent.orchestration.agent;
 
 import org.junit.jupiter.api.Test;
 import qg.qgent.orchestration.AgentInput;
+import qg.qgent.orchestration.result.CodingResult;
 
 import java.util.List;
 
@@ -36,5 +37,24 @@ class CodingPromptBuilderTest {
         String prompt = promptBuilder.buildUser(input, List.of());
 
         assertThat(prompt).doesNotContain("前一轮反馈：");
+    }
+
+    @Test
+    void rendersPreviousCodingResultForSequentialDeveloperSteps() {
+        AgentInput input = new AgentInput();
+        input.setTaskTitle("汇总检查报告");
+        CodingResult previous = new CodingResult();
+        previous.setSuccess(true);
+        previous.setSummary("已完成 repo-2 检查");
+        previous.setModifiedFiles(List.of("repo-2/CHECK_REPORT.md"));
+        previous.setChanges(List.of("写入基础检查结果"));
+        input.setCodingResult(previous);
+
+        String prompt = promptBuilder.buildUser(input, List.of("repo-2/CHECK_REPORT.md"));
+
+        assertThat(prompt).contains("前序 Developer 产物")
+                .contains("repo-2/CHECK_REPORT.md")
+                .contains("已完成 repo-2 检查")
+                .contains("不代表测试失败反馈");
     }
 }

@@ -1,6 +1,7 @@
 package qg.qgent.orchestration.agent;
 
 import qg.qgent.orchestration.AgentInput;
+import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
 
@@ -99,6 +100,7 @@ public class CodingPromptBuilder {
         if (input.getFeedback() != null && !input.getFeedback().isBlank()) {
             sb.append("\n前一轮反馈：").append(input.getFeedback());
         }
+        appendPreviousCodingResult(sb, input.getCodingResult());
         PlanResult plan = input.getPlanResult();
         if (plan != null) {
             appendPlan(sb, plan);
@@ -107,6 +109,32 @@ public class CodingPromptBuilder {
         sb.append("\n\n工作区文件树：\n").append(renderTree(files));
         sb.append(ContextPromptRenderer.render(input));
         return sb.toString();
+    }
+
+    /**
+     * Sequential Developer steps share one Workspace, but each step gets a new
+     * model conversation. Carry the previous structured result explicitly so a
+     * report/aggregation step can continue from earlier work without confusing
+     * it with a Test/Review repair loop.
+     */
+    private void appendPreviousCodingResult(StringBuilder sb, CodingResult result) {
+        if (result == null) {
+            return;
+        }
+        sb.append("\n\n前序 Developer 产物（用于本步骤继续或汇总，不代表测试失败反馈）：");
+        sb.append("\n- 是否完成：").append(result.isSuccess() ? "是" : "否");
+        if (result.getSummary() != null && !result.getSummary().isBlank()) {
+            sb.append("\n- 摘要：").append(result.getSummary());
+        }
+        appendList(sb, "已修改文件", result.getModifiedFiles());
+        appendList(sb, "变更说明", result.getChanges());
+        appendList(sb, "错误", result.getErrors());
+    }
+
+    private void appendList(StringBuilder sb, String label, List<String> values) {
+        if (values != null && !values.isEmpty()) {
+            sb.append("\n- ").append(label).append("：").append(String.join("；", values));
+        }
     }
 
     private void appendTestResult(StringBuilder sb, TestResult test) {
