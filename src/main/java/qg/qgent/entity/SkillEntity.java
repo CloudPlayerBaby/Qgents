@@ -14,7 +14,8 @@ import java.util.UUID;
 /**
  * 项目共享 Skill 实体，对应表 skills（契约 §8）。
  * <p>
- * 成员先创建 PRIVATE Skill 并装配给自己拥有的 Agent；Project Admin 可发布为 PROJECT_SHARED 供项目成员使用。
+ * 成员可创建 PRIVATE Skill；Project Admin 可发布为 PROJECT_SHARED 供项目成员使用。Skill 不绑定 Agent，
+ * 已发布正文仅能由当前 TaskRun 显式激活。
  */
 @Data
 @TableName(value = "skills", autoResultMap = true)

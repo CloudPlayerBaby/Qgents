@@ -14,7 +14,7 @@ import java.util.Map;
 /**
  * 为前端公开接口补充统一的中文分组、接口编号和简明说明。
  * <p>
- * 编号与接口文档章节一致（§4、§5.1、§5.2、§6、§6.1、§7、§7.1、§8、§9、§11.1.1、§11.3、§12.1~§12.4、§13），
+ * 编号与接口文档章节一致（§4、§5.1、§5.2、§6、§6.1、§7、§7.1、§8、§9、§11.3、§12.1~§12.4、§13），
  * 供 Apifox 导入和前后端沟通使用；{@code /internal/**} 是服务间接口，刻意不在此处处理。
  */
 @Configuration
@@ -51,7 +51,7 @@ public class FrontendOpenApiConfiguration {
                 tag("5.2 项目与项目成员", "5.2"), tag("6 GitHub 集成与仓库", "6"),
                 tag("6.1 分支策略与质量门禁", "6.1"), tag("7 群组与消息", "7"),
                 tag("7.1 通知中心", "7.1"), tag("8 共享 Skill", "8"),
-                tag("9 共享 Memory", "9"), tag("11.1.1 Agent 技能绑定", "11.1.1"),
+                tag("9 共享 Memory", "9"),
                 tag("11.3 任务与执行计划", "11.3"), tag("12.1 实时事件流", "12.1"),
                 tag("12.2 任务运行与执行上下文", "12.2"), tag("12.3 Diff 与审查", "12.3"),
                 tag("12.4 测试与预演", "12.4"), tag("13 合并请求", "13")));
@@ -64,7 +64,6 @@ public class FrontendOpenApiConfiguration {
     private ApiGroup group(String path) {
         if (path.contains("/events")) return new ApiGroup("12.1", "实时事件流");
         if (path.startsWith("/api/v1/notifications")) return new ApiGroup("7.1", "通知中心");
-        if (path.contains("/agent-skill-bindings")) return new ApiGroup("11.1.1", "Agent 技能绑定");
         if (path.contains("/branch-policies") || path.contains("/quality-gates"))
             return new ApiGroup("6.1", "分支策略与质量门禁");
         if (path.contains("/task-runs")) return new ApiGroup("12.2", "任务运行与执行上下文");
@@ -142,7 +141,6 @@ public class FrontendOpenApiConfiguration {
     }
 
     private String resource(String path) {
-        if (path.contains("agent-skill-bindings")) return "Agent 技能绑定";
         if (path.contains("attachments")) return "附件直传凭证";
         if (path.contains("branch-policies")) return "分支策略";
         if (path.contains("quality-gates")) return "质量门禁";

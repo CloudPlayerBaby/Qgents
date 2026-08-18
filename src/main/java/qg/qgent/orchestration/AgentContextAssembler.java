@@ -25,8 +25,8 @@ import java.util.UUID;
 /**
  * Agent 输入装配器：把任务、步骤、相位、循环反馈与需求群标题/背景、群聊/Skill/Memory 上下文组装为 AgentInput。
  * 上下文由 {@link ContextService#buildForGroup}（后端4）组装并已按用户+项目过滤；
- * 每次 orchestrate 只快照一次（{@link #buildGroupContext}），失败仅告警、不阻断编排——上下文是
- * 需求文本的补充，不替代 task.requirement。
+ * 新建 Task 在创建时持久化默认上下文快照，编排时通过 {@link #buildGroupContext} 复用；仅迁移前
+ * 历史 Task 缺少快照时才兼容实时读取。上下文是需求文本的补充，不替代 task.requirement。
  * <p>
  * token 预算（消息条数动态收敛、截断策略）留待后续与 Skill/Memory 契约对齐后细化，本期固定
  * 50 条近期消息。
@@ -42,11 +42,14 @@ public class AgentContextAssembler {
     private static final int DEFAULT_CONTEXT_MESSAGE_LIMIT = 50;
 
     private final ContextService contextService;
+    private final TaskContextSnapshotCodec contextSnapshotCodec;
     private final DiffReviewBatchMapper diffBatches;
     private final DiffMapper diffMapper;
 
-    public AgentContextAssembler(ContextService contextService, DiffReviewBatchMapper diffBatches, DiffMapper diffMapper) {
+    public AgentContextAssembler(ContextService contextService, TaskContextSnapshotCodec contextSnapshotCodec,
+                                 DiffReviewBatchMapper diffBatches, DiffMapper diffMapper) {
         this.contextService = contextService;
+        this.contextSnapshotCodec = contextSnapshotCodec;
         this.diffBatches = diffBatches;
         this.diffMapper = diffMapper;
     }
@@ -91,6 +94,22 @@ public class AgentContextAssembler {
      * 后续 Agent 提示词按空上下文渲染。
      */
     public GroupContext buildGroupContext(TaskEntity task) {
+        if (task.getContextSnapshot() != null) {
+            try {
+                GroupContext snapshot = contextSnapshotCodec.decode(task.getContextSnapshot());
+                if (snapshot != null) {
+                    return snapshot;
+                }
+                log.warn("context snapshot invalid taskId={}, no live fallback will overwrite it", task.getId());
+                return null;
+            } catch (RuntimeException e) {
+                log.warn("context snapshot decode failed taskId={}, no live fallback will overwrite it", task.getId());
+                return null;
+            }
+        }
+        // 迁移前历史任务没有快照；明确保留实时读取兼容路径。新建 Task 必须已有 contextSnapshot，
+        // 因而其重试和恢复不会读取后续群消息或 Memory。
+        log.warn("legacy task without context snapshot taskId={}, using live context compatibility fallback", task.getId());
         try {
             return contextService.buildForGroup(task.getCreatedBy(), task.getProjectId(),
                     task.getRequirementGroupId(), DEFAULT_CONTEXT_MESSAGE_LIMIT);

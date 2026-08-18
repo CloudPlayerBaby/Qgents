@@ -524,25 +524,12 @@ CREATE TABLE IF NOT EXISTS group_members (
     CONSTRAINT fk_gm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='需求群显式成员（用户）；PROJECT_MAIN 主群不写入，成员恒为全部项目成员';
 
-CREATE TABLE IF NOT EXISTS
-    agent_skill_bindings (
-        project_id BINARY(16) NOT NULL COMMENT '所属项目ID（隔离同一 Agent 在不同项目的技能集）',
-        agent_id BINARY(16) NOT NULL COMMENT 'Team 级 Agent ID',
-        skill_id BINARY(16) NOT NULL COMMENT '项目内 Skill ID',
-        created_by BINARY(16) NOT NULL COMMENT '绑定发起用户ID',
-        created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '绑定时间（UTC）',
-        PRIMARY KEY (project_id, agent_id, skill_id),
-        KEY idx_asb_agent (agent_id),
-        KEY idx_asb_skill (skill_id),
-        CONSTRAINT fk_asb_agent FOREIGN KEY (agent_id) REFERENCES agents (id) ON DELETE CASCADE,
-        CONSTRAINT fk_asb_skill FOREIGN KEY (skill_id) REFERENCES skills (id) ON DELETE CASCADE
-    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Agent-Skill 绑定关系（按项目隔离，复合主键）';
-
 CREATE TABLE IF NOT EXISTS tasks (
     id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL, requirement_group_id BINARY(16) NOT NULL,
     trigger_message_id BINARY(16) NULL, workspace_id BINARY(16) NOT NULL, continuation_of_task_id BINARY(16) NULL,
     title VARCHAR(255) NOT NULL, display_code VARCHAR(32) NOT NULL COMMENT '项目内唯一展示编号，如 T-1024，创建后不可变',
     requirement TEXT NOT NULL,
+    context_snapshot JSON NULL COMMENT 'Task 创建时冻结的默认 Agent 上下文，仅内部恢复使用',
     status VARCHAR(32) NOT NULL DEFAULT 'PLANNING' COMMENT 'PLANNING/PENDING/RUNNING/WAITING_DIFF_CONFIRMATION/WAITING_PREFLIGHT/DIFF_REJECTED/DELIVERING/SUCCEEDED/DELIVERY_FAILED/FAILED/CANCELLING/CANCELLED', created_by BINARY(16) NOT NULL,
     delivery_mode VARCHAR(32) NULL COMMENT '交付模式：DIFF_FIRST/MR_FIRST；为空时由 Plan 物化自动判定',
     delivery_reason VARCHAR(512) NULL COMMENT '交付模式判定理由（Planner scaleReason 或规则依据）',

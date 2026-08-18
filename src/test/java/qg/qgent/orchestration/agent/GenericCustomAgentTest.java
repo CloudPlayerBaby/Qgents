@@ -227,8 +227,8 @@ class GenericCustomAgentTest {
         verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("apply_patch", "list_files", "read_file", "search_code", "search_context",
-                "write_file");
+        assertThat(names).containsExactly("activate_skill", "apply_patch", "list_files", "read_file",
+                "search_chat_history", "search_code", "write_file");
     }
 
     @Test
@@ -244,7 +244,24 @@ class GenericCustomAgentTest {
         verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("list_files", "read_file", "search_code", "search_context");
+        assertThat(names).containsExactly("list_files", "read_file", "search_code");
+    }
+
+    @Test
+    void contextToolsRequireTaskRunEvenOutsidePlanAndTesting() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"ok\"}", "stop"));
+        AgentInput input = customInput(OrchestrationPhase.REVIEWING);
+        input.setTaskRunId(null);
+
+        agent(customAgent()).run(input);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ToolCallback>> toolsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
+        assertThat(toolsCaptor.getValue().stream().map(callback -> callback.getToolDefinition().name()).sorted().toList())
+                .containsExactly("list_files", "read_file", "search_code");
     }
 
     private ToolTurnResult finalTurn(String json, String finishReason) {

@@ -48,7 +48,7 @@ public class AgentRegistry {
     private final WorkspaceCodeAccess codeAccess;
     private final WorkspaceCodeWriter writer;
     /**
-     * 自定义 Agent 运行时群聊/Skill/Memory 检索的服务端入口。
+     * 自定义 Agent 运行时 Skill 激活与当前群聊天检索的服务端入口。
      */
     private final ContextService contextService;
     /**

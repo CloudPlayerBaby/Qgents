@@ -8,6 +8,7 @@ import org.apache.ibatis.annotations.Result;
 import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 import qg.qgent.entity.SkillEntity;
+import qg.qgent.dto.ContextSkill;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 
 import java.util.List;
@@ -79,4 +80,33 @@ public interface SkillMapper extends BaseMapper<SkillEntity> {
     })
     List<SkillEntity> searchByQuery(@Param("projectId") UUID projectId, @Param("actor") UUID actor,
                                     @Param("tag") String tag, @Param("q") String q);
+
+    /**
+     * 查询默认上下文可见的已发布 Skill 目录。刻意只投影 ID 与名称，不读取正文。
+     */
+    @Select("SELECT id, name FROM skills WHERE project_id = #{projectId} "
+            + "AND (visibility = 'PROJECT_SHARED' OR created_by = #{actor}) "
+            + "AND status = 'PUBLISHED' ORDER BY updated_at DESC")
+    @Results({
+            @Result(column = "id", property = "id", id = true, typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "name", property = "name")
+    })
+    List<ContextSkill> listPublishedCatalog(@Param("projectId") UUID projectId, @Param("actor") UUID actor);
+
+    /**
+     * 读取一条当前用户可见的已发布 Skill 正文，供显式激活使用。
+     */
+    @Select("SELECT * FROM skills WHERE id = #{skillId} AND project_id = #{projectId} "
+            + "AND (visibility = 'PROJECT_SHARED' OR created_by = #{actor}) "
+            + "AND status = 'PUBLISHED'")
+    @Results({
+            @Result(column = "id", property = "id", id = true, typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "project_id", property = "projectId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "created_by", property = "createdBy", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "submitted_by", property = "submittedBy", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "reviewer_id", property = "reviewerId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "tags", property = "tags", typeHandler = JacksonTypeHandler.class)
+    })
+    SkillEntity findVisiblePublishedById(@Param("projectId") UUID projectId, @Param("actor") UUID actor,
+                                         @Param("skillId") UUID skillId);
 }

@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
-import qg.qgent.dto.ContextSearchResponse;
+import qg.qgent.dto.ContextSkill;
+import qg.qgent.dto.ContextMessage;
+import qg.qgent.entity.RequirementGroupEntity;
+import qg.qgent.entity.MessageEntity;
 import qg.qgent.mapper.MemoryMapper;
 import qg.qgent.mapper.MessageMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
@@ -17,6 +20,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -57,37 +61,73 @@ class ContextServiceTest {
     }
 
     @Test
-    void searchRejectsNonMemberSpecifiedGroup() {
+    void buildForGroupUsesSkillCatalogWithoutReadingSkillBodies() {
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        group.setId(groupId);
+        group.setProjectId(projectId);
+        group.setName("需求群");
+        when(groups.selectById(groupId)).thenReturn(group);
+        when(messages.selectList(any())).thenReturn(List.of());
+        when(skills.listPublishedCatalog(projectId, actor))
+                .thenReturn(List.of(new ContextSkill(UUID.randomUUID(), "数据库迁移")));
+        when(memories.listMemories(any(), any(), anyBoolean(), any(), any())).thenReturn(List.of());
+        when(groupRepositories.selectRepositoryIds(groupId)).thenReturn(List.of());
+
+        assertThat(service.buildForGroup(actor, projectId, groupId, 50).getSkills())
+                .extracting(ContextSkill::getName).containsExactly("数据库迁移");
+        verify(skills).listPublishedCatalog(projectId, actor);
+        verify(skills, never()).listSkills(any(), any(), any(), any());
+    }
+
+    @Test
+    void chatHistorySearchRejectsNonMemberBeforeReadingMessages() {
         doThrow(new ApiException(HttpStatus.FORBIDDEN, "GROUP_MEMBER_REQUIRED", "你不是该需求群成员，无法访问"))
                 .when(groupService).requireGroupMember(projectId, groupId, actor);
 
-        assertThatThrownBy(() -> service.search(actor, projectId, "登录", null, groupId, 20))
+        assertThatThrownBy(() -> service.searchChatHistory(actor, projectId, groupId, "登录", 20))
                 .isInstanceOfSatisfying(ApiException.class,
                         error -> assertThat(error.code()).isEqualTo("GROUP_MEMBER_REQUIRED"));
         verify(messages, never()).searchByQuery(any(), any(), any(), anyInt());
     }
 
     @Test
-    void projectSearchRestrictsMessagesToVisibleGroups() {
-        UUID mainGroupId = UUID.randomUUID();
-        UUID joinedGroupId = UUID.randomUUID();
-        List<UUID> visible = List.of(mainGroupId, joinedGroupId);
-        when(groupService.visibleGroupIds(projectId, actor)).thenReturn(visible);
-        when(messages.searchByQuery(projectId, visible, "登录", 20)).thenReturn(List.of());
+    void chatHistorySearchIsStrictlyLimitedToSpecifiedGroup() {
+        when(messages.searchByQuery(projectId, List.of(groupId), "登录", 20)).thenReturn(List.of());
 
-        ContextSearchResponse response = service.search(actor, projectId, "登录", null, null, 20);
-
-        assertThat(response.getMessages()).isEmpty();
-        verify(messages).searchByQuery(projectId, visible, "登录", 20);
+        assertThat(service.searchChatHistory(actor, projectId, groupId, "登录", 20)).isEmpty();
+        verify(messages).searchByQuery(projectId, List.of(groupId), "登录", 20);
     }
 
     @Test
-    void projectSearchSkipsMessageQueryWhenNoGroupsAreVisible() {
-        when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of());
-
-        ContextSearchResponse response = service.search(actor, projectId, "登录", null, null, 20);
-
-        assertThat(response.getMessages()).isEmpty();
+    void chatHistorySearchRejectsBlankQueryWithoutMessageQuery() {
+        assertThatThrownBy(() -> service.searchChatHistory(actor, projectId, groupId, " ", 20))
+                .isInstanceOfSatisfying(ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("CHAT_SEARCH_QUERY_REQUIRED"));
         verify(messages, never()).searchByQuery(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void taskSnapshotAddsOlderTriggerMessageWithoutTruncatingItsText() {
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        group.setId(groupId);
+        group.setProjectId(projectId);
+        group.setName("需求群");
+        UUID triggerId = UUID.randomUUID();
+        MessageEntity trigger = new MessageEntity();
+        trigger.setId(triggerId);
+        trigger.setRequirementGroupId(groupId);
+        trigger.setSequenceNo(1L);
+        trigger.setMessageType("TEXT");
+        trigger.setAuthorUserId(actor);
+        trigger.setContent("{\"text\":\"完整触发需求：需要支持历史导出\"}");
+        when(groups.selectById(groupId)).thenReturn(group);
+        when(messages.selectList(any())).thenReturn(List.of());
+        when(messages.selectById(triggerId)).thenReturn(trigger);
+        when(skills.listPublishedCatalog(projectId, actor)).thenReturn(List.of());
+        when(memories.listMemories(any(), any(), anyBoolean(), any(), any())).thenReturn(List.of());
+        when(groupRepositories.selectRepositoryIds(groupId)).thenReturn(List.of());
+
+        assertThat(service.buildTaskSnapshot(actor, projectId, groupId, triggerId).getConversation())
+                .extracting(ContextMessage::getText).containsExactly("完整触发需求：需要支持历史导出");
     }
 }

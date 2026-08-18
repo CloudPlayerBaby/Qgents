@@ -1,18 +1,21 @@
 package qg.qgent.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import lombok.Data;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.Map;
 
 /**
  * 用户可见的需求执行；deliveryMode 持久化区分 Diff-first 与 MR-first 交付路径。
  */
 @Data
-@TableName("tasks")
+@TableName(value = "tasks", autoResultMap = true)
 public class TaskEntity {
     /**
      * UUIDv7 task identifier.
@@ -51,6 +54,11 @@ public class TaskEntity {
      * Immutable requirement text supplied by the requester.
      */
     private String requirement;
+    /**
+     * 创建任务时冻结的默认 Agent 上下文，仅供内部编排恢复使用，不对外输出。
+     */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private Map<String, Object> contextSnapshot;
     /**
      * Lifecycle state: PLANNING/PENDING/RUNNING/WAITING_DIFF_CONFIRMATION/WAITING_PREFLIGHT/DIFF_REJECTED/DELIVERING/SUCCEEDED/DELIVERY_FAILED/FAILED/CANCELLING/CANCELLED.
      */

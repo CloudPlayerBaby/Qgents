@@ -14,6 +14,7 @@ import qg.qgent.entity.SkillEntity;
 import qg.qgent.mapper.MemoryMapper;
 import qg.qgent.mapper.MemoryMessageSourceMapper;
 import qg.qgent.mapper.MessageMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.SkillMapper;
 import qg.qgent.mapper.UserMapper;
@@ -41,13 +42,14 @@ class SkillMemoryAdminAutoPublishTest {
     private final MemoryMessageSourceMapper sourceMapper = mock(MemoryMessageSourceMapper.class);
     private final MessageMapper messageMapper = mock(MessageMapper.class);
     private final RequirementGroupMapper groupMapper = mock(RequirementGroupMapper.class);
+    private final ProjectMapper projectMapper = mock(ProjectMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final UserMapper userMapper = mock(UserMapper.class);
     private final EventService eventService = mock(EventService.class);
 
     private final SkillService skillService = new SkillService(skillMapper, access, userMapper, eventService);
     private final MemoryService memoryService = new MemoryService(memoryMapper, sourceMapper, messageMapper,
-            groupMapper, access, userMapper, mock(ChatClient.Builder.class), new ObjectMapper(), eventService);
+            groupMapper, projectMapper, access, userMapper, mock(ChatClient.Builder.class), new ObjectMapper(), eventService);
 
     private final UUID projectId = UUID.randomUUID();
     private final UUID admin = UUID.randomUUID();
@@ -130,6 +132,21 @@ class SkillMemoryAdminAutoPublishTest {
         verify(eventService, never()).publish(any(), any(), eq("memory.approved"), any(), any());
     }
 
+    @Test
+    void memoryCreatedByAdminRejectsWhenApprovedContextBudgetWouldBeExceeded() {
+        when(access.isProjectAdmin(projectId, admin)).thenReturn(true);
+        when(memoryMapper.selectApprovedForUpdate(projectId)).thenReturn(java.util.List.of(memoryEntityWithSize(11_999)));
+        MemoryService constrainedService = new MemoryService(memoryMapper, sourceMapper, messageMapper,
+                groupMapper, projectMapper, access, userMapper, mock(ChatClient.Builder.class), new ObjectMapper(), eventService, 12_000);
+
+        ApiException error = org.junit.jupiter.api.Assertions.assertThrows(ApiException.class,
+                () -> constrainedService.create(admin, projectId, memoryRequest("登录约定")));
+
+        assertEquals("MEMORY_APPROVED_CONTEXT_LIMIT_EXCEEDED", error.code());
+        verify(memoryMapper, never()).insert(any(MemoryEntity.class));
+        verify(eventService, never()).publish(any(), any(), eq("memory.approved"), any(), any());
+    }
+
     private SkillCreateRequest skillRequest(String name, String visibility) {
         SkillCreateRequest request = new SkillCreateRequest();
         request.setName(name);
@@ -166,6 +183,14 @@ class SkillMemoryAdminAutoPublishTest {
         memory.setTitle("登录约定");
         memory.setContent("内容");
         memory.setStatus("DRAFT");
+        return memory;
+    }
+
+    private MemoryEntity memoryEntityWithSize(int size) {
+        MemoryEntity memory = memoryEntity();
+        memory.setTitle("x");
+        memory.setContent("x".repeat(size - 1));
+        memory.setStatus("APPROVED");
         return memory;
     }
 }

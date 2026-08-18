@@ -59,7 +59,7 @@ public class ReviewAgent implements Agent {
     private final ReviewResultParser parser = new ReviewResultParser();
     private final ObjectMapper objectMapper = new ObjectMapper();
     /**
-     * 运行时群聊/Skill/Memory 检索（search_context）的服务端入口，与注入上下文同源、复用成员校验。
+     * 运行时 Skill 激活与当前群历史聊天检索的服务端入口。
      */
     private final ContextService contextService;
     /**
@@ -123,9 +123,11 @@ public class ReviewAgent implements Agent {
         history.add(new UserMessage(promptBuilder.buildUser(input, files, diff)));
         String system = promptBuilder.buildSystem(true);
         ReviewTools tools = new ReviewTools(input.getWorkspaceId(), codeAccess);
-        ContextSearchTool contextSearchTool = new ContextSearchTool(contextService, input.getActorId(),
+        ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
+                input.getProjectId());
+        ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
                 input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
-        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, contextSearchTool));
+        List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
         String finishReason = null;
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             ToolTurnResult turn = llm.nextToolTurn(system, history, callbacks);

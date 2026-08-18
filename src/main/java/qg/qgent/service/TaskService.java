@@ -11,6 +11,7 @@ import qg.qgent.dto.*;
 import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
 import qg.qgent.orchestration.DeliveryMode;
+import qg.qgent.orchestration.TaskContextSnapshotCodec;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -41,6 +42,8 @@ public class TaskService {
     private final EventService eventService;
     private final ApplicationEventPublisher eventPublisher;
     private final DefaultAgentProvisioner defaultAgents;
+    private final ContextService contextService;
+    private final TaskContextSnapshotCodec contextSnapshotCodec;
 
     /**
      * Creates the task-domain service with all persistence and authorization
@@ -50,7 +53,8 @@ public class TaskService {
                        TaskStepMapper steps, TaskStepDependencyMapper dependencies, TaskStepRepositoryMapper scopes,
                        RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories, ProjectMapper projects,
                        MessageMapper messages, AgentMapper agents, ProjectAccessService access, EventService eventService,
-                       ApplicationEventPublisher eventPublisher, DefaultAgentProvisioner defaultAgents) {
+                       ApplicationEventPublisher eventPublisher, DefaultAgentProvisioner defaultAgents,
+                       ContextService contextService, TaskContextSnapshotCodec contextSnapshotCodec) {
         this.tasks = tasks;
         this.workspaces = workspaces;
         this.repositories = repositories;
@@ -66,6 +70,8 @@ public class TaskService {
         this.eventService = eventService;
         this.eventPublisher = eventPublisher;
         this.defaultAgents = defaultAgents;
+        this.contextService = contextService;
+        this.contextSnapshotCodec = contextSnapshotCodec;
     }
 
     /**
@@ -110,6 +116,10 @@ public class TaskService {
                         "触发消息不属于当前需求群");
             }
         }
+        // 创建事务内冻结默认上下文。ContextService 首先校验需求群成员关系，拒绝未加入该群的项目成员；
+        // 触发消息即使不在最近 50 条窗口内也会完整写入快照。
+        Map<String, Object> contextSnapshot = contextSnapshotCodec.encode(
+                contextService.buildTaskSnapshot(actor, projectId, group.getId(), body.getTriggerMessageId()));
         boolean reuseWorkspace = body.getWorkspaceId() != null || body.getContinuationOfTaskId() != null;
         if (reuseWorkspace && (body.getWorkspaceId() == null || body.getContinuationOfTaskId() == null)) {
             throw validation("WORKSPACE_CONTINUATION_INCOMPLETE",
@@ -179,6 +189,7 @@ public class TaskService {
         task.setTitle(body.getTitle().trim());
         task.setDisplayCode(nextDisplayCode(projectId));
         task.setRequirement(body.getRequirement().trim());
+        task.setContextSnapshot(contextSnapshot);
         task.setStatus("PLANNING");
         task.setDeliveryMode(resolveDeliveryMode(body, continuation));
         task.setCreatedBy(actor);

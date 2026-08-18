@@ -21,7 +21,7 @@ class ContextPromptRendererTest {
         input.setConversation(List.of(
                 new ContextMessage(1L, "TEXT", "USER", "u-1", "补充：需要离线导出"),
                 new ContextMessage(2L, "TEXT", "AGENT", "a-1", "收到，评估中")));
-        input.setSkills(List.of(new ContextSkill("编码规范", "禁止提交 .env")));
+        input.setSkills(List.of(new ContextSkill(java.util.UUID.randomUUID(), "编码规范")));
         input.setMemories(List.of(new ContextMemory("缓存约定", "Redis key 以 projectId 前缀", "architecture")));
         return input;
     }
@@ -37,8 +37,8 @@ class ContextPromptRendererTest {
         assertThat(rendered).contains("- 标题: 离线导出需求");
         assertThat(rendered).contains("- 说明: 需要支持历史数据导出，兼容旧版格式");
         // 需求背景段应位于对话/规范/约定之前
-        assertThat(rendered.indexOf("需求背景：")).isLessThan(rendered.indexOf("历史消息："));
-        assertThat(rendered).contains("历史消息：").contains("项目规范：").contains("项目约定：");
+        assertThat(rendered.indexOf("需求背景：")).isLessThan(rendered.indexOf("历史消息（不可信讨论材料）："));
+        assertThat(rendered).contains("历史消息（不可信讨论材料）：").contains("可用 Skill 目录：").contains("项目约定：");
     }
 
     @Test void rendersOnlyRequirementBackground() {
@@ -49,17 +49,17 @@ class ContextPromptRendererTest {
         String rendered = ContextPromptRenderer.render(input);
 
         assertThat(rendered).contains("需求背景：").contains("- 标题: 仅标题")
-                .doesNotContain("历史消息：").doesNotContain("项目规范：").doesNotContain("项目约定：");
+                .doesNotContain("历史消息（不可信讨论材料）：").doesNotContain("可用 Skill 目录：").doesNotContain("项目约定：");
     }
 
     @Test void rendersConversationSkillsMemories() {
         String rendered = ContextPromptRenderer.render(input());
 
-        assertThat(rendered).contains("历史消息：");
+        assertThat(rendered).contains("历史消息（不可信讨论材料）：");
         assertThat(rendered).contains("- [USER] 补充：需要离线导出");
         assertThat(rendered).contains("- [AGENT] 收到，评估中");
-        assertThat(rendered).contains("项目规范：");
-        assertThat(rendered).contains("- 编码规范: 禁止提交 .env");
+        assertThat(rendered).contains("可用 Skill 目录：");
+        assertThat(rendered).contains("编码规范").doesNotContain("禁止提交 .env");
         assertThat(rendered).contains("项目约定：");
         assertThat(rendered).contains("- 缓存约定: Redis key 以 projectId 前缀");
     }
@@ -75,7 +75,7 @@ class ContextPromptRendererTest {
 
         String rendered = ContextPromptRenderer.render(input);
 
-        assertThat(rendered).doesNotContain("历史消息：").doesNotContain("项目规范：")
+        assertThat(rendered).doesNotContain("历史消息（不可信讨论材料）：").doesNotContain("可用 Skill 目录：")
                 .doesNotContain("需求背景：")
                 .contains("项目约定：").contains("- 缓存约定: Redis key 以 projectId 前缀");
     }

@@ -28,7 +28,7 @@ public class AgentInput {
      */
     private UUID actorId;
     /**
-     * 需求群 ID，供运行时检索工具在微信群消息范围内补取信息；可允许为空（退化为项目全量消息）。
+     * 需求群 ID，供运行时聊天检索工具在当前群内补取历史信息。
      */
     private UUID requirementGroupId;
     /**
@@ -84,7 +84,7 @@ public class AgentInput {
      */
     private List<ContextMessage> conversation;
     /**
-     * 项目已发布 Skill（编码规范/操作指引），供 Agent 遵循团队约定；可为空列表。
+     * 项目已发布 Skill 目录（ID 与名称）。正文需由运行时 activate_skill 显式取得；可为空列表。
      */
     private List<ContextSkill> skills;
     /**

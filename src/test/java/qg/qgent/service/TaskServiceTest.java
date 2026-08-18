@@ -3,6 +3,9 @@ package qg.qgent.service;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import qg.qgent.dto.GroupContext;
+import qg.qgent.orchestration.TaskContextSnapshotCodec;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.*;
 import qg.qgent.entity.*;
@@ -13,6 +16,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -34,8 +38,11 @@ class TaskServiceTest {
     private final EventService events = mock(EventService.class);
     private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
     private final DefaultAgentProvisioner defaultAgents = mock(DefaultAgentProvisioner.class);
+    private final ContextService contextService = mock(ContextService.class);
+    private final TaskContextSnapshotCodec contextSnapshotCodec = new TaskContextSnapshotCodec(new ObjectMapper());
     private final TaskService service = new TaskService(tasks, workspaces, repositories, steps, dependencies, scopes,
-            groups, projectRepositories, projects, messages, agents, access, events, eventPublisher, defaultAgents);
+            groups, projectRepositories, projects, messages, agents, access, events, eventPublisher, defaultAgents,
+            contextService, contextSnapshotCodec);
 
     @Test
     void createPersistsOneWorkspaceAndMultipleRepositories() {
@@ -74,6 +81,26 @@ class TaskServiceTest {
         verify(eventPublisher).publishEvent(captor.capture());
         assertEquals(projectId, captor.getValue().projectId());
         assertNotNull(captor.getValue().taskId());
+    }
+
+    @Test
+    void createPersistsFrozenContextSnapshot() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID backend = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
+        when(repositories.selectByWorkspace(any(UUID.class)))
+                .thenReturn(List.of(worktree(backend, "repo-1", "base", "feat/task-x")));
+        GroupContext context = new GroupContext(groupId.toString(), projectId.toString(), "需求", "背景", List.of(),
+                List.of(), List.of(), List.of());
+        when(contextService.buildTaskSnapshot(actor, projectId, groupId, null)).thenReturn(context);
+
+        service.create(projectId, actor, request(groupId, List.of(backend)));
+
+        ArgumentCaptor<TaskEntity> captured = ArgumentCaptor.forClass(TaskEntity.class);
+        verify(tasks).insert(captured.capture());
+        assertThat(captured.getValue().getContextSnapshot()).containsEntry("version", 1).containsKey("groupContext");
+        verify(contextService).buildTaskSnapshot(actor, projectId, groupId, null);
     }
 
     @Test

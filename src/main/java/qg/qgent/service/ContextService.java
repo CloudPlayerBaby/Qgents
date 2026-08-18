@@ -8,9 +8,11 @@ import qg.qgent.api.ApiException;
 import qg.qgent.dto.*;
 import qg.qgent.entity.MessageEntity;
 import qg.qgent.entity.RequirementGroupEntity;
+import qg.qgent.entity.SkillEntity;
 import qg.qgent.mapper.*;
 
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -18,7 +20,7 @@ import java.util.UUID;
 /**
  * 群聊上下文组装（点3：聊天上下文管理）。
  * <p>
- * 把需求群的历史消息、需求、关联仓库、已发布 Skill 与已批准 Memory 组装为 Agent 输入上下文，
+ * 把需求群的历史消息、需求、关联仓库、已发布 Skill 目录与已批准 Memory 组装为 Agent 输入上下文，
  * 供 Agent 编排系统（后端1）在创建 Task / 运行 Agent 时作为 prompt 输入。
  */
 @Service
@@ -77,8 +79,8 @@ public class ContextService {
                         senderType(m), senderId(m), messageText(m.getContent())))
                 .toList();
 
-        List<ContextSkill> skills = skillMapper.listSkills(projectId, actor, "PUBLISHED", null).stream()
-                .map(s -> new ContextSkill(s.getName(), s.getContent())).toList();
+        // 默认提示只提供可激活 Skill 的目录，禁止把未显式选择的正文提前读入模型上下文。
+        List<ContextSkill> skills = skillMapper.listPublishedCatalog(projectId, actor);
         List<ContextMemory> memories = memoryMapper.listMemories(projectId, actor, isAdmin, "APPROVED", null).stream()
                 .map(m -> new ContextMemory(m.getTitle(), m.getContent(), m.getCategory())).toList();
         List<String> repositoryIds = groupRepoMapper.selectRepositoryIds(groupId).stream()
@@ -89,42 +91,57 @@ public class ContextService {
     }
 
     /**
-     * 按关键字与标签检索项目上下文（点6：相关性检索，不默认注入全部）。
+     * 创建 Task 时捕获默认上下文，并确保触发消息全文存在于快照中。
      * <p>
-     * 返回匹配的已发布 Skill、已批准 Memory 与可选群消息，专供 Agent 作为 prompt 输入；
-     * 关键字为空时仅按标签/状态过滤，消息检索仅在关键字非空时执行。
-     *
-     * @param actor     当前用户 ID
-     * @param projectId 项目 ID
-     * @param q         关键字，可为空
-     * @param tag       标签过滤，可为空
-     * @param groupId   可选需求群 ID，限定消息检索范围
-     * @param limit     消息条数上限（默认 50，上限 200）
-     * @return 检索结果（Skill + Memory + 消息）
+     * 触发消息可能早于近期窗口；此处按群内序号补入而非截断，避免 Task 核心来源在重试时丢失。
      */
-    public ContextSearchResponse search(UUID actor, UUID projectId, String q, String tag, UUID groupId,
-                                        Integer limit) {
-        access.requireProjectMember(projectId, actor);
-        boolean isAdmin = "PROJECT_ADMIN".equals(access.requireProjectMember(projectId, actor));
-        int messageLimit = Math.min(Math.max(limit == null ? DEFAULT_MESSAGE_LIMIT : limit, 1), MAX_MESSAGE_LIMIT);
-
-        List<ContextSkill> skills = skillMapper.searchByQuery(projectId, actor, tag, q).stream()
-                .map(s -> new ContextSkill(s.getName(), s.getContent())).toList();
-        List<ContextMemory> memories = memoryMapper.searchByQuery(projectId, actor, isAdmin, tag, q).stream()
-                .map(m -> new ContextMemory(m.getTitle(), m.getContent(), m.getCategory())).toList();
-        List<UUID> visibleGroupIds;
-        if (groupId != null) {
-            groupService.requireGroupMember(projectId, groupId, actor);
-            visibleGroupIds = List.of(groupId);
-        } else {
-            visibleGroupIds = groupService.visibleGroupIds(projectId, actor);
+    public GroupContext buildTaskSnapshot(UUID actor, UUID projectId, UUID groupId, UUID triggerMessageId) {
+        GroupContext context = buildForGroup(actor, projectId, groupId, DEFAULT_MESSAGE_LIMIT);
+        if (triggerMessageId == null) {
+            return context;
         }
-        List<ContextMessage> messages = q == null || q.isBlank() || visibleGroupIds.isEmpty() ? List.of()
-                : messageMapper.searchByQuery(projectId, visibleGroupIds, q.trim(), messageLimit).stream()
+        MessageEntity trigger = messageMapper.selectById(triggerMessageId);
+        if (trigger == null || !groupId.equals(trigger.getRequirementGroupId())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "TRIGGER_MESSAGE_GROUP_MISMATCH",
+                    "触发消息不属于当前需求群");
+        }
+        List<ContextMessage> conversation = new ArrayList<>(context.getConversation());
+        if (conversation.stream().noneMatch(message -> trigger.getSequenceNo().equals(message.getSequence()))) {
+            conversation.add(new ContextMessage(trigger.getSequenceNo(), trigger.getMessageType(), senderType(trigger),
+                    senderId(trigger), messageText(trigger.getContent())));
+            conversation.sort(java.util.Comparator.comparing(ContextMessage::getSequence));
+        }
+        return new GroupContext(context.getGroupId(), context.getProjectId(), context.getRequirementTitle(),
+                context.getRequirementDescription(), context.getRepositoryIds(), conversation, context.getSkills(),
+                context.getMemories());
+    }
+
+    /**
+     * 在指定需求群内按关键字检索历史聊天记录。Skill 与 Memory 不属于聊天检索范围。
+     */
+    public List<ContextMessage> searchChatHistory(UUID actor, UUID projectId, UUID groupId, String query,
+                                                   Integer limit) {
+        groupService.requireGroupMember(projectId, groupId, actor);
+        if (query == null || query.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "CHAT_SEARCH_QUERY_REQUIRED", "聊天检索关键字不能为空");
+        }
+        int messageLimit = Math.min(Math.max(limit == null ? 10 : limit, 1), 50);
+        return messageMapper.searchByQuery(projectId, List.of(groupId), query.trim(), messageLimit).stream()
                 .map(m -> new ContextMessage(m.getSequenceNo(), m.getMessageType(),
                         senderType(m), senderId(m), messageText(m.getContent())))
                 .toList();
-        return new ContextSearchResponse(skills, memories, messages);
+    }
+
+    /**
+     * 读取一条当前项目内可见且已发布的 Skill 正文。调用方必须显式选择该 Skill。
+     */
+    public SkillEntity activateSkill(UUID actor, UUID projectId, UUID skillId) {
+        access.requireProjectMember(projectId, actor);
+        SkillEntity skill = skillMapper.findVisiblePublishedById(projectId, actor, skillId);
+        if (skill == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "SKILL_NOT_AVAILABLE", "Skill 不存在、未发布或无权访问");
+        }
+        return skill;
     }
 
     private String senderType(MessageEntity m) {

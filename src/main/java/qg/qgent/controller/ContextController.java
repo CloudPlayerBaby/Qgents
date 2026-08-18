@@ -11,7 +11,7 @@ import java.util.UUID;
 
 /**
  * 群聊上下文接口
- * 只读端点：将需求群消息、需求、关联仓库、已发布 Skill 与已批准 Memory 组装为 Agent 输入上下文。
+ * 只读端点：将需求群消息、需求、关联仓库、Skill 目录与已批准 Memory 组装为 Agent 输入上下文。
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -35,16 +35,14 @@ public class ContextController {
     }
 
     /**
-     * 契约 §7：按关键字与标签检索项目上下文（返回匹配的已发布 Skill、已批准 Memory 与可选群消息）。
+     * 契约 §7：按关键字检索指定需求群的历史消息。
      */
-    @GetMapping("/projects/{projectId}/context/search")
-    public ApiResponse<?> search(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
-                                 @RequestParam(value = "q", required = false) String q,
-                                 @RequestParam(value = "tag", required = false) String tag,
-                                 @RequestParam(value = "groupId", required = false) UUID groupId,
+    @GetMapping("/projects/{projectId}/groups/{groupId}/messages/search")
+    public ApiResponse<?> searchChatHistory(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
+                                 @PathVariable UUID groupId, @RequestParam("q") String q,
                                  @RequestParam(value = "limit", required = false) Integer limit,
                                  HttpServletRequest request) {
-        return ApiResponse.ok(contextService.search(userId, projectId, q, tag, groupId, limit),
+        return ApiResponse.ok(contextService.searchChatHistory(userId, projectId, groupId, q, limit),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
 }

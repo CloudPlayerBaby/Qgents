@@ -116,8 +116,8 @@ class CodingAgentTest {
         verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("apply_patch", "list_files", "read_file", "search_code", "search_context",
-                "write_file");
+        assertThat(names).containsExactly("activate_skill", "apply_patch", "list_files", "read_file", "search_chat_history",
+                "search_code", "write_file");
     }
 
     @Test

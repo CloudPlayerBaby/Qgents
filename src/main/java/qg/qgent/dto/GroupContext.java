@@ -10,7 +10,7 @@ import java.util.List;
 /**
  * 群聊上下文（点3：聊天上下文管理）。
  * <p>
- * 将需求群的历史消息、需求、关联仓库、已发布 Skill 与已批准 Memory 组装为 Agent 输入上下文，
+ * 将需求群的历史消息、需求、关联仓库、已发布 Skill 目录与已批准 Memory 组装为 Agent 输入上下文，
  * 供 Agent 编排系统（后端1）在创建 Task / 运行 Agent 时作为 prompt 输入。
  */
 @Data
@@ -55,9 +55,9 @@ public class GroupContext {
     private List<ContextMessage> conversation;
 
     /**
-     * 项目已发布的共享 Skill（供 Agent 遵循团队规范）。
+     * 项目可见的已发布 Skill 目录（仅 ID 与名称，正文需显式激活）。
      */
-    @Schema(description = "项目已发布的共享 Skill")
+    @Schema(description = "项目已发布 Skill 目录，仅包含 ID 与名称")
     private List<ContextSkill> skills;
 
     /**

@@ -87,7 +87,10 @@ app:
   # legacy=旧手写 JSON 文本协议（灰度期回退用，稳定后删除）
   agent:
     protocol: ${APP_AGENT_PROTOCOL:native}
-    # 每个 TaskRun 内 search_context 检索工具调用次数上限（避免 Agent 反复刷检索撑爆上下文）
+    context:
+      # 全量注入 Agent 上下文的已批准 Memory 标题与正文总字符上限；超过时禁止批准。
+      max-approved-memory-chars: ${APP_AGENT_CONTEXT_MAX_APPROVED_MEMORY_CHARS:12000}
+    # 每个 TaskRun 内 search_chat_history 检索工具调用次数上限（避免 Agent 反复刷检索撑爆上下文）
     context-search:
       max-per-run: ${APP_AGENT_CONTEXT_SEARCH_MAX_PER_RUN:10}
   frontend-url: ${FRONTEND_URL:http://localhost:5173}

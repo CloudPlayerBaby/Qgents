@@ -14,6 +14,8 @@ import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.DiffReviewBatchMapper;
 import qg.qgent.service.ContextService;
+import qg.qgent.orchestration.TaskContextSnapshotCodec;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -33,10 +35,11 @@ import static org.mockito.Mockito.when;
 class AgentContextAssemblerTest {
 
     private final ContextService contextService = mock(ContextService.class);
+    private final TaskContextSnapshotCodec contextSnapshotCodec = new TaskContextSnapshotCodec(new ObjectMapper());
     private final DiffReviewBatchMapper diffBatches = mock(DiffReviewBatchMapper.class);
     private final DiffMapper diffMapper = mock(DiffMapper.class);
     private final AgentContextAssembler assembler =
-            new AgentContextAssembler(contextService, diffBatches, diffMapper);
+            new AgentContextAssembler(contextService, contextSnapshotCodec, diffBatches, diffMapper);
 
     private TaskEntity task() {
         TaskEntity t = new TaskEntity();
@@ -54,7 +57,7 @@ class AgentContextAssemblerTest {
         return new GroupContext(task.getRequirementGroupId().toString(), task.getProjectId().toString(),
                 "需求群", "背景", List.of("repo-1"),
                 List.of(new ContextMessage(1L, "TEXT", "USER", "u-1", "补充需求")),
-                List.of(new ContextSkill("编码规范", "禁止提交 .env")),
+                List.of(new ContextSkill(UUID.randomUUID(), "编码规范")),
                 List.of(new ContextMemory("缓存约定", "Redis 前缀 projectId", "architecture")));
     }
 
@@ -95,6 +98,25 @@ class AgentContextAssemblerTest {
                 .thenThrow(new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在"));
 
         assertThat(assembler.buildGroupContext(task)).isNull();
+    }
+
+    @Test void buildGroupContextUsesPersistedSnapshotInsteadOfLiveContext() {
+        TaskEntity task = task();
+        GroupContext snapshot = groupContext(task);
+        task.setContextSnapshot(contextSnapshotCodec.encode(snapshot));
+
+        GroupContext result = assembler.buildGroupContext(task);
+
+        assertThat(result.getConversation()).extracting(ContextMessage::getText).containsExactly("补充需求");
+        verify(contextService, org.mockito.Mockito.never()).buildForGroup(any(), any(), any(), any());
+    }
+
+    @Test void invalidPersistedSnapshotDoesNotFallBackToLaterLiveMessages() {
+        TaskEntity task = task();
+        task.setContextSnapshot(Map.of("version", 999));
+
+        assertThat(assembler.buildGroupContext(task)).isNull();
+        verify(contextService, org.mockito.Mockito.never()).buildForGroup(any(), any(), any(), any());
     }
 
     @Test void assembleWithNullSnapshotKeepsContextEmpty() {

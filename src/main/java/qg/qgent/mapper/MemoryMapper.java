@@ -80,4 +80,42 @@ public interface MemoryMapper extends BaseMapper<MemoryEntity> {
     })
     List<MemoryEntity> searchByQuery(@Param("projectId") UUID projectId, @Param("actor") UUID actor,
                                      @Param("isAdmin") boolean isAdmin, @Param("tag") String tag, @Param("q") String q);
+
+    /**
+     * 锁定读取项目内全部已批准 Memory。
+     * <p>
+     * 调用方须先锁定对应 {@code projects} 行，再在同一事务内调用本方法并完成状态变更，
+     * 以避免批准预算的“聚合读取后并发写入”竞态。锁定读不复用事务中的一致性读快照，
+     * 因此可看到前一笔批准或归档提交后的最新状态。
+     *
+     * @param projectId 项目 ID
+     * @return 已锁定的已批准 Memory
+     */
+    @Select("SELECT * FROM memories WHERE project_id = #{projectId} AND status = 'APPROVED' FOR UPDATE")
+    @Results({
+            @Result(column = "id", property = "id", id = true, typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "project_id", property = "projectId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "created_by", property = "createdBy", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "submitted_by", property = "submittedBy", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "reviewer_id", property = "reviewerId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "tags", property = "tags", typeHandler = JacksonTypeHandler.class)
+    })
+    List<MemoryEntity> selectApprovedForUpdate(@Param("projectId") UUID projectId);
+
+    /**
+     * 锁定读取单条 Memory，用于在状态迁移前获得当前已提交状态。
+     *
+     * @param memoryId Memory ID
+     * @return 已锁定的 Memory；不存在时返回 {@code null}
+     */
+    @Select("SELECT * FROM memories WHERE id = #{memoryId} FOR UPDATE")
+    @Results({
+            @Result(column = "id", property = "id", id = true, typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "project_id", property = "projectId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "created_by", property = "createdBy", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "submitted_by", property = "submittedBy", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "reviewer_id", property = "reviewerId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "tags", property = "tags", typeHandler = JacksonTypeHandler.class)
+    })
+    MemoryEntity selectByIdForUpdate(@Param("memoryId") UUID memoryId);
 }

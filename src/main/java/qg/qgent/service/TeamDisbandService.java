@@ -87,7 +87,6 @@ public class TeamDisbandService {
         // github_repositories 由 github_installations 外键级联删除
         githubInstallationMapper.delete(Wrappers.<GitHubInstallationEntity>lambdaQuery()
                 .eq(GitHubInstallationEntity::getTeamId, teamId));
-        // agent_skill_bindings 由 agents 外键级联删除；须在 messages/task_runs 等引用行清理之后
         agentMapper.delete(Wrappers.<AgentEntity>lambdaQuery().eq(AgentEntity::getTeamId, teamId));
         teamMapper.deleteById(teamId);
     }

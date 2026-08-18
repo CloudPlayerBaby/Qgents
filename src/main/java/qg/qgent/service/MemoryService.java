@@ -3,6 +3,8 @@ package qg.qgent.service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -17,6 +19,7 @@ import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.MemoryMapper;
 import qg.qgent.mapper.MemoryMessageSourceMapper;
 import qg.qgent.mapper.MessageMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.UserMapper;
 
@@ -47,25 +50,42 @@ public class MemoryService {
     private final MemoryMessageSourceMapper sourceMapper;
     private final MessageMapper messageMapper;
     private final RequirementGroupMapper requirementGroupMapper;
+    private final ProjectMapper projectMapper;
     private final ProjectAccessService access;
     private final UserMapper userMapper;
     private final ChatClient chatClient;
     private final ObjectMapper mapper;
     private final EventService eventService;
+    private final int maxApprovedMemoryChars;
 
+    @Autowired
     public MemoryService(MemoryMapper memoryMapper, MemoryMessageSourceMapper sourceMapper,
                          MessageMapper messageMapper, RequirementGroupMapper requirementGroupMapper,
-                         ProjectAccessService access, UserMapper userMapper,
-                         ChatClient.Builder chatClientBuilder, ObjectMapper mapper, EventService eventService) {
+                         ProjectMapper projectMapper, ProjectAccessService access, UserMapper userMapper,
+                         ChatClient.Builder chatClientBuilder, ObjectMapper mapper, EventService eventService,
+                         @Value("${app.agent.context.max-approved-memory-chars:12000}") int maxApprovedMemoryChars) {
         this.memoryMapper = memoryMapper;
         this.sourceMapper = sourceMapper;
         this.messageMapper = messageMapper;
         this.requirementGroupMapper = requirementGroupMapper;
+        this.projectMapper = projectMapper;
         this.access = access;
         this.userMapper = userMapper;
         this.chatClient = chatClientBuilder.build();
         this.mapper = mapper;
         this.eventService = eventService;
+        this.maxApprovedMemoryChars = Math.max(0, maxApprovedMemoryChars);
+    }
+
+    /**
+     * 供不启动 Spring 上下文的单元测试使用，采用生产默认预算。
+     */
+    public MemoryService(MemoryMapper memoryMapper, MemoryMessageSourceMapper sourceMapper,
+                         MessageMapper messageMapper, RequirementGroupMapper requirementGroupMapper,
+                         ProjectMapper projectMapper, ProjectAccessService access, UserMapper userMapper,
+                         ChatClient.Builder chatClientBuilder, ObjectMapper mapper, EventService eventService) {
+        this(memoryMapper, sourceMapper, messageMapper, requirementGroupMapper, projectMapper, access, userMapper,
+                chatClientBuilder, mapper, eventService, 12000);
     }
 
     /**
@@ -90,15 +110,19 @@ public class MemoryService {
         memory.setCategory(request.getCategory().trim());
         memory.setTags(request.getTags());
         memory.setStatus("DRAFT");
-        memoryMapper.insert(memory);
         if (access.isProjectAdmin(projectId, actor)) {
             // Admin 自建免审批：直接批准上架，无需到交付中心自行批准
+            lockProjectMemoryBudget(projectId);
+            requireApprovedContextCapacity(projectId, memory);
+            memoryMapper.insert(memory);
             memory.setStatus("APPROVED");
             memory.setReviewerId(actor);
             memory.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
             memoryMapper.updateById(memory);
             eventService.publish(projectId, null, "memory.approved", id(memory.getId()),
                     deliveryPayload(projectId, memory.getId()));
+        } else {
+            memoryMapper.insert(memory);
         }
         return toResponse(memoryMapper.selectById(memory.getId()));
     }
@@ -250,10 +274,12 @@ public class MemoryService {
     @Transactional
     public MemoryResponse approve(UUID actor, UUID projectId, UUID memoryId) {
         access.requireProjectAdmin(projectId, actor);
-        MemoryEntity memory = requireMemoryInProject(projectId, memoryId);
+        lockProjectMemoryBudget(projectId);
+        MemoryEntity memory = requireMemoryInProjectForUpdate(projectId, memoryId);
         if (!"PENDING_REVIEW".equals(memory.getStatus())) {
             throw stateConflict(memory.getStatus());
         }
+        requireApprovedContextCapacity(projectId, memory);
         memory.setStatus("APPROVED");
         memory.setReviewerId(actor);
         memory.setReviewedAt(LocalDateTime.now(ZoneOffset.UTC));
@@ -289,7 +315,8 @@ public class MemoryService {
     @Transactional
     public MemoryResponse archive(UUID actor, UUID projectId, UUID memoryId) {
         access.requireProjectAdmin(projectId, actor);
-        MemoryEntity memory = requireMemoryInProject(projectId, memoryId);
+        lockProjectMemoryBudget(projectId);
+        MemoryEntity memory = requireMemoryInProjectForUpdate(projectId, memoryId);
         if (!"APPROVED".equals(memory.getStatus())) {
             throw stateConflict(memory.getStatus());
         }
@@ -325,6 +352,17 @@ public class MemoryService {
         return memory;
     }
 
+    /**
+     * 在项目预算锁已持有时读取并锁定待迁移的 Memory，避免并发重复审批同一条记录。
+     */
+    private MemoryEntity requireMemoryInProjectForUpdate(UUID projectId, UUID memoryId) {
+        MemoryEntity memory = memoryMapper.selectByIdForUpdate(memoryId);
+        if (memory == null || !memory.getProjectId().equals(projectId)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "MEMORY_NOT_FOUND", "Memory 不存在或无权访问");
+        }
+        return memory;
+    }
+
     private MemoryEntity requireOwned(UUID actor, UUID projectId, UUID memoryId) {
         access.requireProjectMember(projectId, actor);
         MemoryEntity memory = requireMemoryInProject(projectId, memoryId);
@@ -344,6 +382,27 @@ public class MemoryService {
 
     private ApiException stateConflict(String status) {
         return new ApiException(HttpStatus.CONFLICT, "MEMORY_STATE_CONFLICT", "Memory 当前状态不允许该操作: " + status);
+    }
+
+    /**
+     * 确保批准后的全部项目 Memory 仍可完整注入 Agent 上下文。
+     */
+    private void requireApprovedContextCapacity(UUID projectId, MemoryEntity candidate) {
+        long candidateChars = (long) candidate.getTitle().length() + candidate.getContent().length();
+        long usedChars = memoryMapper.selectApprovedForUpdate(projectId).stream()
+                .mapToLong(memory -> (long) memory.getTitle().length() + memory.getContent().length())
+                .sum();
+        if (usedChars > (long) maxApprovedMemoryChars - candidateChars) {
+            throw new ApiException(HttpStatus.CONFLICT, "MEMORY_APPROVED_CONTEXT_LIMIT_EXCEEDED",
+                    "已批准 Memory 超出 Agent 上下文字符预算，请归档或精简既有 Memory 后重试");
+        }
+    }
+
+    /**
+     * 预算相关的 APPROVED 状态迁移均先串行化到项目行；随后使用 Memory 锁定读计算总量。
+     */
+    private void lockProjectMemoryBudget(UUID projectId) {
+        projectMapper.selectByIdForUpdate(projectId);
     }
 
     private String blankToNull(String value) {
