@@ -71,8 +71,21 @@ public class FixedAccountAuthIntegrationTest {
         HttpClient httpClient = HttpClient.newHttpClient();
 
         // 2. 尝试注册（如果已存在则忽略失败）
+        // 注册现在需要邮箱验证码：直接向验证码表插入一条已知验证码（模拟邮件已发送），再带码注册。
+        String testCode = "123456";
+        byte[] codeHash = java.security.MessageDigest.getInstance("SHA-256").digest(testCode.getBytes(StandardCharsets.UTF_8));
+        UUID codeIdUuid = UUID.randomUUID();
+        byte[] codeIdBytes = new byte[16];
+        java.nio.ByteBuffer.wrap(codeIdBytes).putLong(codeIdUuid.getMostSignificantBits()).putLong(codeIdUuid.getLeastSignificantBits());
+        jdbcTemplate.update("DELETE FROM email_verification_codes WHERE email = ?", fixedEmail);
+        jdbcTemplate.update("INSERT INTO email_verification_codes (id, email, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+                codeIdBytes, fixedEmail, codeHash,
+                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(10),
+                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+
         RegisterRequest registerReq = new RegisterRequest();
         registerReq.setEmail(fixedEmail);
+        registerReq.setVerificationCode(testCode);
         registerReq.setDisplayName("Fixed Dev User");
         registerReq.setPasswordKeyId(rsaKeyId);
         registerReq.setPassword(encryptedPassword);

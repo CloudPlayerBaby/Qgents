@@ -6,10 +6,12 @@ import qg.qgent.auth.PasswordResetMailer;
 import qg.qgent.auth.RateLimiter;
 import qg.qgent.auth.RsaPasswordDecryptor;
 import qg.qgent.auth.TokenService;
+import qg.qgent.auth.VerificationCodeMailer;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.entity.UserEntity;
 import qg.qgent.dto.ProjectMembershipView;
+import qg.qgent.mapper.EmailVerificationCodeMapper;
 import qg.qgent.mapper.PasswordResetTokenMapper;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.RefreshTokenMapper;
@@ -37,9 +39,10 @@ class AuthServiceTeamRoleTest {
         PasswordEncoder passwords = mock(PasswordEncoder.class);
         when(passwords.encode("qgents-dummy-password-not-used")).thenReturn("dummy");
         AuthService service = new AuthService(userMapper, mock(RefreshTokenMapper.class),
-                mock(PasswordResetTokenMapper.class), teamMapper, memberMapper, mock(ProjectMapper.class),
+                mock(PasswordResetTokenMapper.class), mock(EmailVerificationCodeMapper.class),
+                teamMapper, memberMapper, mock(ProjectMapper.class),
                 mock(RsaPasswordDecryptor.class), passwords, mock(TokenService.class),
-                mock(PasswordResetMailer.class), mock(RateLimiter.class));
+                mock(PasswordResetMailer.class), mock(VerificationCodeMailer.class), mock(RateLimiter.class));
         UserEntity user = new UserEntity();
         user.setId(userId);
         TeamMemberEntity membership = new TeamMemberEntity();
@@ -72,9 +75,10 @@ class AuthServiceTeamRoleTest {
         PasswordEncoder passwords = mock(PasswordEncoder.class);
         when(passwords.encode("qgents-dummy-password-not-used")).thenReturn("dummy");
         AuthService service = new AuthService(userMapper, mock(RefreshTokenMapper.class),
-                mock(PasswordResetTokenMapper.class), teamMapper, memberMapper, projectMapper,
+                mock(PasswordResetTokenMapper.class), mock(EmailVerificationCodeMapper.class),
+                teamMapper, memberMapper, projectMapper,
                 mock(RsaPasswordDecryptor.class), passwords, mock(TokenService.class),
-                mock(PasswordResetMailer.class), mock(RateLimiter.class));
+                mock(PasswordResetMailer.class), mock(VerificationCodeMailer.class), mock(RateLimiter.class));
         UserEntity user = new UserEntity();
         user.setId(userId);
         ProjectMembershipView project = new ProjectMembershipView();

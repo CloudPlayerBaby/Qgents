@@ -27,12 +27,24 @@ public class AuthController {
     }
 
     /**
-     * 契约 §4：注册新用户并签发登录 Token。
+     * 契约 §4：注册新用户并签发登录 Token（需先通过邮箱验证码校验）。
      */
     @PostMapping("/auth/register")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<?> register(@Valid @RequestBody RegisterRequest body, HttpServletRequest request) {
         return ok(authService.register(body), request);
+    }
+
+    /**
+     * 契约 §4 补充：发送注册邮箱验证码（6 位数字，10 分钟有效）。
+     * 邮箱已注册返回 409；限流按 IP+邮箱计，防止验证码轰炸。
+     */
+    @PostMapping("/auth/register/verification-codes")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ApiResponse<?> sendRegisterCode(@Valid @RequestBody SendVerificationCodeRequest body,
+                                           HttpServletRequest request) {
+        authService.sendRegisterCode(body.getEmail(), fingerprint(request));
+        return ok(Map.of("message", "验证码已发送到邮箱，10 分钟内有效"), request);
     }
 
     /**

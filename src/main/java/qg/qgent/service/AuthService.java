@@ -14,6 +14,7 @@ import qg.qgent.mapper.*;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -24,9 +25,13 @@ import java.util.stream.Collectors;
 
 @Service
 public class AuthService {
+    /** 注册验证码有效期（10 分钟）。 */
+    private static final Duration VERIFICATION_TTL = Duration.ofMinutes(10);
+
     private final UserMapper userMapper;
     private final RefreshTokenMapper refreshTokenMapper;
     private final PasswordResetTokenMapper resetTokenMapper;
+    private final EmailVerificationCodeMapper verificationCodeMapper;
     private final TeamMapper teamMapper;
     private final TeamMemberMapper teamMemberMapper;
     private final ProjectMapper projectMapper;
@@ -34,16 +39,20 @@ public class AuthService {
     private final PasswordEncoder passwords;
     private final TokenService tokens;
     private final PasswordResetMailer mailer;
+    private final VerificationCodeMailer verificationMailer;
     private final RateLimiter limiter;
     private final String dummyPasswordHash;
 
     public AuthService(UserMapper userMapper, RefreshTokenMapper refreshTokenMapper,
-                       PasswordResetTokenMapper resetTokenMapper, TeamMapper teamMapper, TeamMemberMapper teamMemberMapper,
+                       PasswordResetTokenMapper resetTokenMapper, EmailVerificationCodeMapper verificationCodeMapper,
+                       TeamMapper teamMapper, TeamMemberMapper teamMemberMapper,
                        ProjectMapper projectMapper, RsaPasswordDecryptor rsa,
-                       PasswordEncoder passwords, TokenService tokens, PasswordResetMailer mailer, RateLimiter limiter) {
+                       PasswordEncoder passwords, TokenService tokens, PasswordResetMailer mailer,
+                       VerificationCodeMailer verificationMailer, RateLimiter limiter) {
         this.userMapper = userMapper;
         this.refreshTokenMapper = refreshTokenMapper;
         this.resetTokenMapper = resetTokenMapper;
+        this.verificationCodeMapper = verificationCodeMapper;
         this.teamMapper = teamMapper;
         this.teamMemberMapper = teamMemberMapper;
         this.projectMapper = projectMapper;
@@ -51,6 +60,7 @@ public class AuthService {
         this.passwords = passwords;
         this.tokens = tokens;
         this.mailer = mailer;
+        this.verificationMailer = verificationMailer;
         this.limiter = limiter;
         this.dummyPasswordHash = passwords.encode("qgents-dummy-password-not-used");
     }
@@ -60,6 +70,8 @@ public class AuthService {
         // 获取邮箱和密码
         String email = normalize(input.getEmail());
         String password = validated(rsa.decrypt(input.getPasswordKeyId(), input.getPassword()));
+        // 注册必须通过邮箱验证码校验，防止假邮箱注册
+        verifyCode(email, input.getVerificationCode());
 
         // 新建一个 User
         UserEntity user = new UserEntity();
@@ -75,6 +87,64 @@ public class AuthService {
             throw conflict("EMAIL_ALREADY_REGISTERED", "该邮箱已注册");
         }
         return issue(user);
+    }
+
+    /**
+     * 发送注册邮箱验证码：校验邮箱未注册后生成 6 位数字验证码并异步发送邮件。
+     * 已注册邮箱不发送，直接返回 409（与注册时的 EMAIL_ALREADY_REGISTERED 一致）。
+     * 限流按 IP+邮箱计，防止验证码轰炸。
+     *
+     * @param rawEmail   原始邮箱
+     * @param fingerprint 请求指纹（IP）
+     */
+    @Transactional
+    public void sendRegisterCode(String rawEmail, String fingerprint) {
+        String email = normalize(rawEmail);
+        if (!limiter.allow("register-code", fingerprint + ":" + email, 5, Duration.ofHours(1))) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMITED", "验证码发送过于频繁，请稍后再试");
+        }
+        if (findByEmail(email) != null) {
+            throw conflict("EMAIL_ALREADY_REGISTERED", "该邮箱已注册");
+        }
+        // 生成 6 位数字验证码
+        String code = String.format(Locale.ROOT, "%06d", new Random().nextInt(1_000_000));
+        // 存储哈希，禁止明文落库
+        EmailVerificationCodeEntity record = new EmailVerificationCodeEntity();
+        record.setId(UuidV7.next());
+        record.setEmail(email);
+        record.setCodeHash(tokens.hash(code));
+        record.setExpiresAt(utc(Instant.now().plus(VERIFICATION_TTL)));
+        verificationCodeMapper.insert(record);
+        verificationMailer.send(email, code);
+    }
+
+    /**
+     * 校验注册验证码：匹配该邮箱最近一条未使用且未过期的验证码，命中后标记已使用。
+     * 校验失败统一返回 422 INVALID_VERIFICATION_CODE，不区分「过期/不存在/已使用」以免枚举。
+     */
+    private void verifyCode(String email, String rawCode) {
+        List<EmailVerificationCodeEntity> candidates = verificationCodeMapper.selectList(
+                Wrappers.<EmailVerificationCodeEntity>lambdaQuery()
+                        .eq(EmailVerificationCodeEntity::getEmail, email)
+                        .isNull(EmailVerificationCodeEntity::getUsedAt)
+                        .gt(EmailVerificationCodeEntity::getExpiresAt, LocalDateTime.now(ZoneOffset.UTC))
+                        .orderByDesc(EmailVerificationCodeEntity::getCreatedAt)
+                        .last("LIMIT 1"));
+        EmailVerificationCodeEntity record = candidates.isEmpty() ? null : candidates.get(0);
+        if (record == null) {
+            throw verificationCodeInvalid();
+        }
+        if (!MessageDigest.isEqual(record.getCodeHash(), tokens.hash(rawCode))) {
+            throw verificationCodeInvalid();
+        }
+        // 一次性使用：标记已用
+        record.setUsedAt(LocalDateTime.now(ZoneOffset.UTC));
+        verificationCodeMapper.updateById(record);
+    }
+
+    private ApiException verificationCodeInvalid() {
+        return new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_VERIFICATION_CODE",
+                "验证码无效或已过期，请重新获取");
     }
 
     @Transactional
