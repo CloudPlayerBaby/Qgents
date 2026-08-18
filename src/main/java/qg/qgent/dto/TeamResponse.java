@@ -31,7 +31,7 @@ public class TeamResponse {
 
     /**
      * 团队最后活跃时间（ISO8601 UTC）：该团队下所有项目最后活跃的最大值；
-     * 无项目时以创建时间兜底。供「按最后活跃排序」的团队列表返回。
+     * 旗下任何项目都无消息时为 null（沉底）。供「按最后活跃排序」的团队列表返回。
      */
     private String lastActivityAt;
 

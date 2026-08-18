@@ -32,8 +32,8 @@ public class ProjectResponse {
     private Long repositoryCount;
 
     /**
-     * 项目最后活跃时间（ISO8601 UTC）：该项目下所有群中最近一条消息或创建时间的最大值；
-     * 无群时以项目创建时间兜底。供「按最后活跃排序」的项目列表返回。
+     * 项目最后活跃时间（ISO8601 UTC）：该项目下所有群中最近一条消息时间的最大值；
+     * 任何群都无消息时为 null（沉底）。供「按最后活跃排序」的项目列表返回。
      */
     @Schema(description = "项目最后活跃时间（ISO8601 UTC）")
     private String lastActivityAt;
