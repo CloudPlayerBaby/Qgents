@@ -38,6 +38,8 @@ import java.util.Set;
 public class TestAgent implements Agent {
 
     private static final Duration TEST_TIMEOUT = Duration.ofMinutes(10);
+    private static final String EMPTY_FILE_SHA256 =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     private final LlmClient llm;
     private final WorkspaceCodeAccess codeAccess;
@@ -165,7 +167,7 @@ public class TestAgent implements Agent {
                 continue;
             }
             String content = read.getContent() == null ? "" : read.getContent();
-            if (requireEmpty && content.getBytes(StandardCharsets.UTF_8).length != 0) {
+            if (requireEmpty && !isEmptyFile(read, content)) {
                 failures.add(failure(target, "任务要求文件为空，但当前仍有内容", "ERROR"));
                 continue;
             }
@@ -257,6 +259,15 @@ public class TestAgent implements Agent {
 
     private String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    /** 优先使用 Worker 返回的原始字节哈希，避免按行读取丢失末尾换行导致误判 0 字节。 */
+    private boolean isEmptyFile(WorkspaceFileReadResult read, String content) {
+        String sha = read.getSha256();
+        if (sha != null && !sha.isBlank()) {
+            return EMPTY_FILE_SHA256.equalsIgnoreCase(sha.replaceFirst("^sha256:", ""));
+        }
+        return content.getBytes(StandardCharsets.UTF_8).length == 0;
     }
 
     private AgentRunOutcome infraFailure(AgentInput input, String message) {
