@@ -27,6 +27,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 /**
@@ -74,7 +75,7 @@ class TaskPlanMaterializationServiceTest {
         when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
         when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
         when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository));
-        when(dispatcher.dispatch(any(), any(), any())).thenReturn(Optional.of(javaAgent));
+        when(dispatcher.dispatch(any(), any(), any(), any())).thenReturn(Optional.of(javaAgent));
         TransactionSynchronizationManager.initSynchronization();
 
         service.materialize(task, plan());
@@ -87,11 +88,48 @@ class TaskPlanMaterializationServiceTest {
         assertThat(generated.get(0).getRequiredCapabilities()).containsExactly("java", "spring-boot");
         assertThat(generated.get(0).getAssignedAgentId()).isEqualTo(javaAgent.getId());
         assertThat(generated.get(1).getAssignedAgentId()).isEqualTo(javaAgent.getId());
-        // 调度 Agent 收到步骤角色 + 步骤能力要求
-        verify(dispatcher, atLeast(1)).dispatch(eq(task), eq("DEVELOPER"), eq(List.of("java", "spring-boot")));
+        // 调度 Agent 收到步骤角色 + 步骤能力要求 + Plan 建议（无建议时为 null）
+        verify(dispatcher, atLeast(1)).dispatch(eq(task), eq("DEVELOPER"), eq(List.of("java", "spring-boot")), any());
         verify(dependencies, times(4)).insertLink(any(), any());
         verify(artifacts).createPlan(eq(task), any());
         assertThat(task.getPlanMaterializedAt()).isNotNull();
+    }
+
+    @Test
+    void planSuggestedAgentIdFlowsToDispatcherAsPrior() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        TaskStepDependencyMapper dependencies = mock(TaskStepDependencyMapper.class);
+        TaskStepRepositoryMapper scopes = mock(TaskStepRepositoryMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
+        EventService events = mock(EventService.class);
+        AgentDispatcher dispatcher = mock(AgentDispatcher.class);
+        TaskPlanMaterializationService service = service(tasks, steps, dependencies, scopes, worktrees, artifacts,
+                events, dispatcher);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        AgentEntity javaAgent = new AgentEntity();
+        javaAgent.setId(UUID.randomUUID());
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository()));
+        when(dispatcher.dispatch(any(), any(), any(), any())).thenReturn(Optional.of(javaAgent));
+        UUID suggested = UUID.randomUUID();
+        PlanResult plan = plan();
+        plan.getImplementationSteps().get(0).setSuggestedAgentId(suggested);
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.materialize(task, plan);
+
+        // 首步（带建议）把 Plan 建议的 id 作为选人先验交给调度 Agent
+        verify(dispatcher).dispatch(eq(task), eq("DEVELOPER"), eq(List.of("java", "spring-boot")), eq(suggested));
+        // 其余无建议步骤先验为 null（TESTER/REVIEWER 角色也一样）
+        verify(dispatcher).dispatch(eq(task), eq("TESTER"), eq(List.of()), isNull());
+        verify(dispatcher).dispatch(eq(task), eq("REVIEWER"), eq(List.of()), isNull());
+        ArgumentCaptor<TaskStepEntity> inserted = ArgumentCaptor.forClass(TaskStepEntity.class);
+        verify(steps, times(4)).insert(inserted.capture());
+        assertThat(inserted.getAllValues().get(0).getAssignedAgentId()).isEqualTo(javaAgent.getId());
     }
 
     @Test
@@ -145,7 +183,7 @@ class TaskPlanMaterializationServiceTest {
 
         assertThat(service.materialize(task, plan())).isSameAs(existing);
         verify(steps, never()).insert(any(TaskStepEntity.class));
-        verify(dispatcher, never()).dispatch(any(), any(), any());
+        verify(dispatcher, never()).dispatch(any(), any(), any(), any());
     }
 
     @Test
@@ -157,7 +195,7 @@ class TaskPlanMaterializationServiceTest {
         TaskStepEntity planner = planner(task);
         when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
         when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
-        when(dispatcher.dispatch(any(), any(), any())).thenReturn(Optional.empty());
+        when(dispatcher.dispatch(any(), any(), any(), any())).thenReturn(Optional.empty());
         TaskPlanMaterializationService service = service(tasks, steps, mock(TaskStepDependencyMapper.class),
                 mock(TaskStepRepositoryMapper.class), mock(WorkspaceRepositoryMapper.class),
                 mock(TaskExecutionArtifactService.class), mock(EventService.class), dispatcher);

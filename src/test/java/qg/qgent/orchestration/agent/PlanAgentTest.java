@@ -1,6 +1,9 @@
 package qg.qgent.orchestration.agent;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import qg.qgent.entity.AgentEntity;
+import qg.qgent.orchestration.AgentDispatcher;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.OrchestrationPhase;
@@ -25,14 +28,16 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * PlanAgent 单元测试：两轮按需读取产出结构化 PlanResult；非法/不完整 LLM 响应转为
- * FAILED_INFRASTRUCTURE；并且仅通过只读工具访问 Workspace。全部使用 Mock LLM，不碰真实 Key。
+ * PlanAgent 单元测试：两轮按需读取产出结构化 PlanResult；联合规划会把团队候选 Agent 池注入
+ * 计划提示词（池查询失败降级为空池）；非法/不完整 LLM 响应转为 FAILED_INFRASTRUCTURE；
+ * 并且仅通过只读工具访问 Workspace。全部使用 Mock LLM，不碰真实 Key。
  */
 class PlanAgentTest {
 
     private final LlmClient llm = mock(LlmClient.class);
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
-    private final PlanAgent agent = new PlanAgent(llm, codeAccess);
+    private final AgentDispatcher dispatcher = mock(AgentDispatcher.class);
+    private final PlanAgent agent = new PlanAgent(llm, codeAccess, dispatcher);
 
     private static final String PLAN_JSON = """
             {
@@ -135,5 +140,39 @@ class PlanAgentTest {
         List<String> declaredMethods = List.of(WorkspaceCodeAccess.class.getDeclaredMethods())
                 .stream().map(Method::getName).sorted().toList();
         assertThat(declaredMethods).containsExactly("listFiles", "readFile", "searchCode");
+    }
+
+    @Test void injectsAvailableAgentPoolIntoPlanPrompt() {
+        AgentEntity dev = new AgentEntity();
+        dev.setId(UUID.randomUUID());
+        dev.setName("Java 后端");
+        dev.setRole("DEVELOPER");
+        dev.setDescription("负责后端实现");
+        when(dispatcher.listTeamCandidates(any(), any())).thenReturn(List.of(dev));
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.complete(anyString(), anyString()))
+                .thenReturn("{\"readRequests\":[]}", PLAN_JSON);
+
+        agent.run(input());
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(llm, times(2)).complete(anyString(), captor.capture());
+        String planUser = captor.getAllValues().get(1);
+        assertThat(planUser).contains(dev.getId().toString())
+                .contains("Java 后端")
+                .contains("DEVELOPER")
+                .contains("负责后端实现");
+    }
+
+    @Test void poolQueryFailureDegradesToPlanningWithoutPool() {
+        when(dispatcher.listTeamCandidates(any(), any())).thenThrow(new IllegalStateException("db down"));
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.complete(anyString(), anyString()))
+                .thenReturn("{\"readRequests\":[]}", PLAN_JSON);
+
+        AgentRunOutcome outcome = agent.run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getPlanResult().getImplementationSteps()).hasSize(1);
     }
 }

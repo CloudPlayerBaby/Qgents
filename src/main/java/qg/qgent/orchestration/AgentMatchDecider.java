@@ -18,7 +18,10 @@ import java.util.UUID;
  * <p>
  * 决策规则：
  * <ol>
- *   <li>候选为空 → 空（不硬选）；候选唯一 → 直接返回（省一次 LLM 调用）；</li>
+ *   <li>候选为空 → 空（不硬选）；</li>
+ *   <li>Plan 建议（{@code suggestedAgentId}）非空且在候选池内 → 直接采用（先验短路，不重复调 LLM）；
+ *       建议非空但不在候选池（角色不匹配 / 已下线 / 越权）→ 记日志忽略，继续走常规决策；</li>
+ *   <li>候选唯一 → 直接返回（省一次 LLM 调用）；</li>
  *   <li>候选多于一个时，用 {@link LlmClient#complete} 询问决策 Agent：给定步骤角色与候选
  *       （id/name/description），输出最合适的 Agent id（或 NONE）；</li>
  *   <li>决策 Agent 返回的 id 必须在候选池内，否则不采信（绝不引入池外 Agent）；</li>
@@ -49,8 +52,29 @@ public class AgentMatchDecider {
      */
     public Optional<AgentEntity> decide(String role, List<AgentEntity> candidates, UUID creatorId,
                                         List<String> stepRequirements) {
+        return decide(role, candidates, creatorId, stepRequirements, null);
+    }
+
+    /**
+     * 带 Plan 先验的决策重载：{@code suggestedAgentId} 是 Plan Agent 给出的建议 Agent id
+     * （联合规划）。建议非空且在候选池内直接采用（省一次 LLM 调用）；不在池内（角色不匹配 /
+     * 已下线 / 越权）则记日志忽略，退回常规决策。绝不因建议引入池外 Agent。
+     *
+     * @param suggestedAgentId Plan 建议的 Agent id；可为 null（无建议时走常规决策）。
+     */
+    public Optional<AgentEntity> decide(String role, List<AgentEntity> candidates, UUID creatorId,
+                                        List<String> stepRequirements, UUID suggestedAgentId) {
         if (candidates == null || candidates.isEmpty()) {
             return Optional.empty();
+        }
+        if (suggestedAgentId != null) {
+            Optional<AgentEntity> prior = candidates.stream()
+                    .filter(candidate -> candidate.getId() != null && candidate.getId().equals(suggestedAgentId))
+                    .findFirst();
+            if (prior.isPresent()) {
+                return prior;
+            }
+            log.warn("suggested agent not in candidate pool, ignored role={} suggested={}", role, suggestedAgentId);
         }
         if (candidates.size() == 1) {
             return Optional.of(candidates.get(0));

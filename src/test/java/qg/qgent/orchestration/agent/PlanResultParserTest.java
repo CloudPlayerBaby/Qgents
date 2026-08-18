@@ -3,6 +3,8 @@ package qg.qgent.orchestration.agent;
 import org.junit.jupiter.api.Test;
 import qg.qgent.orchestration.result.PlanResult;
 
+import java.util.UUID;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -118,5 +120,25 @@ class PlanResultParserTest {
         PlanResult plan = parser.parse(json);
         assertThat(plan.getDeliveryMode()).isEqualTo("DIFF_FIRST");
         assertThat(plan.getScaleReason()).isEqualTo("补丁式修改");
+    }
+
+    @Test void parsesOptionalSuggestedAgentId() {
+        UUID suggested = UUID.randomUUID();
+        String json = VALID_JSON.replace("\"description\":\"do it\"",
+                "\"description\":\"do it\",\"suggestedAgentId\":\"" + suggested + "\"");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getImplementationSteps().get(0).getSuggestedAgentId()).isEqualTo(suggested);
+    }
+
+    @Test void missingSuggestedAgentIdFallsBackToNull() {
+        PlanResult plan = parser.parse(VALID_JSON);
+        assertThat(plan.getImplementationSteps().get(0).getSuggestedAgentId()).isNull();
+    }
+
+    @Test void invalidSuggestedAgentIdIsIgnoredNotFailed() {
+        String json = VALID_JSON.replace("\"description\":\"do it\"",
+                "\"description\":\"do it\",\"suggestedAgentId\":\"not-a-uuid\"");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getImplementationSteps().get(0).getSuggestedAgentId()).isNull();
     }
 }

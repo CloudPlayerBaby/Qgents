@@ -2,8 +2,12 @@ package qg.qgent.orchestration.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import qg.qgent.entity.AgentEntity;
 import qg.qgent.orchestration.Agent;
+import qg.qgent.orchestration.AgentDispatcher;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.RunOutcome;
@@ -25,24 +29,33 @@ import java.util.Map;
  * 校验后返回。绝不修改、创建、删除文件，不执行 Git 操作，不调用其他 Agent——
  * 上述限制由 {@code WorkspaceCodeAccess} 只读接口在结构上强制保证。
  * <p>
+ * 联合规划：规划前经 {@link AgentDispatcher#listTeamCandidates} 拉取团队候选 Agent 池
+ * （ACTIVE + 对任务创建者可见，不限角色）注入提示词，让 Plan 拆步骤时考虑可用 Agent
+ * 的职责分工，并在每个 step 输出可选的 {@code suggestedAgentId} 作为选人先验；候选池
+ * 查询失败/为空时降级为纯业务规划（空池），不阻断编排——池内校验仍在物化选人时兜底。
+ * <p>
  * 任何异常（LLM 调用、响应非法或不完整）统一转为 FAILED_INFRASTRUCTURE，
  * 由 Orchestrator 状态机决定同相位重试，避免破坏链路推进。
  */
 @Component
 public class PlanAgent implements Agent {
 
+    private static final Logger log = LoggerFactory.getLogger(PlanAgent.class);
+
     private static final int MAX_READ_FILES = 8;
     private static final int MAX_READ_REQUESTS = 8;
 
     private final LlmClient llm;
     private final WorkspaceCodeAccess codeAccess;
+    private final AgentDispatcher agentDispatcher;
     private final PlanPromptBuilder promptBuilder = new PlanPromptBuilder();
     private final PlanResultParser parser = new PlanResultParser();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public PlanAgent(LlmClient llm, WorkspaceCodeAccess codeAccess) {
+    public PlanAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, AgentDispatcher agentDispatcher) {
         this.llm = llm;
         this.codeAccess = codeAccess;
+        this.agentDispatcher = agentDispatcher;
     }
 
     @Override
@@ -51,8 +64,9 @@ public class PlanAgent implements Agent {
             List<String> files = codeAccess.listFiles(input.getWorkspaceId());
             List<String> toRead = selectFilesToRead(input, files);
             Map<String, String> contents = readSelectedFiles(input, toRead);
+            List<AgentEntity> pool = loadCandidatePool(input);
             String planJson = llm.complete(promptBuilder.buildPlanSystem(),
-                    promptBuilder.buildPlanUser(input, files, contents));
+                    promptBuilder.buildPlanUser(input, files, contents, pool));
             PlanResult plan = parser.parse(planJson);
 
             AgentRunOutcome outcome = new AgentRunOutcome();
@@ -67,6 +81,19 @@ public class PlanAgent implements Agent {
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
             failure.setMessage("plan agent failed: " + e.getMessage());
             return failure;
+        }
+    }
+
+    /**
+     * 规划期候选池快照：查询失败或返回 null 时降级为空池（纯业务规划），不阻断编排。
+     */
+    private List<AgentEntity> loadCandidatePool(AgentInput input) {
+        try {
+            List<AgentEntity> pool = agentDispatcher.listTeamCandidates(input.getProjectId(), input.getActorId());
+            return pool == null ? List.of() : pool;
+        } catch (RuntimeException e) {
+            log.warn("plan agent pool load failed, degrade to planning without agent pool: {}", e.getMessage());
+            return List.of();
         }
     }
 

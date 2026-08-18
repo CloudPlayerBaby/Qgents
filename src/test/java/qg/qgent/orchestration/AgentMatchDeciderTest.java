@@ -152,4 +152,50 @@ class AgentMatchDeciderTest {
         verify(llm).complete(anyString(), captor.capture());
         assertThat(captor.getValue()).contains("步骤能力要求：java、spring");
     }
+
+    @Test
+    void suggestedAgentInsidePoolIsAdoptedWithoutLlmCall() {
+        AgentEntity a = team(UUID.randomUUID(), "A", "通用开发");
+        AgentEntity b = team(UUID.randomUUID(), "B", "Java 后端专家");
+
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(a, b), creatorId, null, b.getId());
+
+        assertThat(best).containsSame(b);
+        verify(llm, never()).complete(anyString(), anyString());
+    }
+
+    @Test
+    void suggestedAgentAdoptedEvenWhenPoolHasSingleCandidate() {
+        AgentEntity only = team(UUID.randomUUID(), "唯一开发", "负责写代码");
+
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(only), creatorId, null, only.getId());
+
+        assertThat(best).containsSame(only);
+        verify(llm, never()).complete(anyString(), anyString());
+    }
+
+    @Test
+    void suggestedAgentOutsidePoolFallsBackToLlmDecision() {
+        AgentEntity a = team(UUID.randomUUID(), "A", "通用开发");
+        AgentEntity b = team(UUID.randomUUID(), "B", "Java 后端专家");
+        when(llm.complete(anyString(), anyString())).thenReturn(a.getId().toString());
+
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(a, b), creatorId, null,
+                UUID.randomUUID());
+
+        assertThat(best).containsSame(a);
+        verify(llm).complete(anyString(), anyString());
+    }
+
+    @Test
+    void suggestedAgentOutsidePoolAndLlmFailureFallsBackDeterministically() {
+        AgentEntity personal = privateAgent(UUID.randomUUID(), "个人Java", "java 后端");
+        AgentEntity t = team(UUID.randomUUID(), "团队开发", "通用开发");
+        when(llm.complete(anyString(), anyString())).thenThrow(new IllegalStateException("llm down"));
+
+        Optional<AgentEntity> best = decider.decide("DEVELOPER", List.of(t, personal), creatorId, null,
+                UUID.randomUUID());
+
+        assertThat(best).containsSame(personal);
+    }
 }

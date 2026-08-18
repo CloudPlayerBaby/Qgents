@@ -8,6 +8,7 @@ import qg.qgent.orchestration.result.PlanResult;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
@@ -18,7 +19,7 @@ import java.util.regex.Pattern;
  * {
  *   "taskUnderstanding": "...",
  *   "implementationGoals": ["..."],
- *   "steps": [{"title":"...", "files":["..."], "description":"..."}],
+ *   "steps": [{"title":"...", "files":["..."], "description":"...", "requiredCapabilities":["java"], "suggestedAgentId":"..."}],
  *   "testPlan": "...",
  *   "risks": ["..."],
  *   "deliveryMode": "DIFF_FIRST",
@@ -29,6 +30,8 @@ import java.util.regex.Pattern;
  * 且每个 step 必须有 title 和至少一个文件。校验失败抛 {@link PlanParseException}，
  * 由 PlanAgent 转为 FAILED_INFRASTRUCTURE。deliveryMode 为可选字段：仅接受
  * DIFF_FIRST/MR_FIRST，缺失或非法视为未判定（返回 null），由硬规则兜底，不阻断计划。
+ * suggestedAgentId 为可选字段：仅接受合法 UUID，缺失/非法一律忽略（返回 null），
+ * 池内归属校验发生在物化选人时（{@code AgentMatchDecider} 对池外先验不采信）。
  */
 public class PlanResultParser {
 
@@ -88,6 +91,7 @@ public class PlanResultParser {
             step.setFiles(requireStepFiles(stepNode));
             step.setDescription(optionalText(stepNode, "description"));
             step.setRequiredCapabilities(optionalCapabilities(stepNode));
+            step.setSuggestedAgentId(optionalStepAgentId(stepNode));
             steps.add(step);
         }
         return steps;
@@ -187,6 +191,22 @@ public class PlanResultParser {
     private String optionalText(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value != null && value.isTextual() ? value.asText().trim() : null;
+    }
+
+    /**
+     * 可选的建议 Agent id：仅接受合法 UUID 字符串；缺失 / 空白 / 非法一律返回 null（忽略）。
+     * 解析器不感知候选池（池内校验发生在物化选人时），只做语法级收敛。
+     */
+    private UUID optionalStepAgentId(JsonNode stepNode) {
+        String value = optionalText(stepNode, "suggestedAgentId");
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /**
