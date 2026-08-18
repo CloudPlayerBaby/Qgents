@@ -138,6 +138,19 @@ class TestAgentTest {
     }
 
     @Test
+    void missingCommandMapsToInfrastructureFailureWithoutLlmAnalysis() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 127, "", "gradlew: command not found", null));
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getMessage()).contains("workspace-relative wrapper");
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
     void realDisabledExecutionPortMapsToInfrastructureFailure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         TestAgent disabledAgent = new TestAgent(llm, codeAccess, new DisabledExecutionPort());

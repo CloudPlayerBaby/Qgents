@@ -26,13 +26,13 @@ public class TestCommandResolver {
         Set<String> names = Set.copyOf(files);
         if (hasFile(names, "pom.xml")) {
             return hasFile(names, "mvnw") || hasFile(names, "mvnw.cmd")
-                    ? List.of("mvnw", "test")
+                    ? List.of("./mvnw", "test")
                     : List.of("mvn", "test");
         }
         if (hasFile(names, "build.gradle") || hasFile(names, "build.gradle.kts")
                 || hasFile(names, "settings.gradle")) {
             return hasFile(names, "gradlew") || hasFile(names, "gradlew.cmd")
-                    ? List.of("gradlew", "test")
+                    ? List.of("./gradlew", "test")
                     : List.of("gradle", "test");
         }
         if (hasFile(names, "package.json")) {
