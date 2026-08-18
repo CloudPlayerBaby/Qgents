@@ -18,10 +18,12 @@ import qg.qgent.orchestration.llm.LlmObservation;
 import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.tool.GitDiffResult;
+import qg.qgent.orchestration.tool.Sha256;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 import qg.qgent.service.ContextService;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -149,13 +151,56 @@ public class ReviewAgent implements Agent {
                 }
                 log.info("review agent round {} finalResult phase={} workspaceId={}",
                         round, input.getPhase(), input.getWorkspaceId());
-                return parser.parse(turn.text());
+                try {
+                    return parser.parse(turn.text());
+                } catch (ReviewParseException malformed) {
+                    log.warn("review agent final output not valid JSON, repairing phase={} workspaceId={} round={} code={}",
+                            input.getPhase(), input.getWorkspaceId(), round, malformed.getCode());
+                    String repaired = repairJson(system, turn.text(), observations, round, input);
+                    if (repaired != null) {
+                        return parser.parse(repaired);
+                    }
+                    throw malformed;
+                }
             }
             throw new ReviewParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
                     "review tool turn returned no text, history or infra failure");
         }
         throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+    }
+
+    /**
+     * 原生 Tool Calling 的最终文本不能同时依赖 response_format；模型偶尔会返回普通说明。
+     * 解析失败时最多调用一次无工具 repair，只要求模型把原结果重述为 ReviewResult JSON，
+     * 不在服务端自行猜测或修补审查语义。repair 失败时保留原协议错误，交由编排器重试。
+     */
+    private String repairJson(String system, String raw, List<LlmObservation> observations, int round,
+                              AgentInput input) {
+        String original = raw == null ? "" : raw;
+        if (original.length() > 8_000) {
+            original = original.substring(0, 8_000);
+        }
+        String repairUser = "你的上一轮审查结果不是合法 JSON。请仅输出一个原始 JSON 对象（不要输出解释、"
+                + "代码围栏或多余内容），整理为："
+                + "{\"success\":true|false,\"summary\":\"审查摘要\","
+                + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
+                + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
+                + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false}。\n\n"
+                + "上一轮输出：\n" + original;
+        try {
+            String repaired = llm.complete(system, List.of(LlmMessage.user(repairUser)));
+            String repairedSha = repaired == null ? null
+                    : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
+            observations.add(new LlmObservation(input.getPhase().name(), round + 1,
+                    system.length() + repairUser.length(), repaired == null ? 0 : repaired.length(),
+                    "stop", null, null, repairedSha));
+            return repaired;
+        } catch (RuntimeException e) {
+            log.warn("review agent JSON repair call failed phase={} workspaceId={} category={}",
+                    input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());
+            return null;
+        }
     }
 
     /**
