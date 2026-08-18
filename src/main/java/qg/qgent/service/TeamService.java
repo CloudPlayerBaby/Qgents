@@ -141,6 +141,29 @@ public class TeamService {
     }
 
     /**
+     * 获取当前用户所有团队，按最后活跃时间倒序（团队最后活跃 = 该团队下所有项目最后活跃的最大值，
+     * 无项目时以团队创建时间兜底）。不分页，供团队选择/工作台按最近活跃展示。
+     *
+     * @param actor 当前用户 ID
+     * @return 团队视图列表，按最后活跃倒序
+     */
+    public List<TeamResponse> listByLastActivity(UUID actor) {
+        return teamMapper.selectMembershipByActivity(actor).stream()
+                .map(row -> {
+                    TeamResponse response = new TeamResponse(row.getId().toString(), row.getName(),
+                            effectiveRole(row.getOwnerUserId(), actor, row.getRole()));
+                    response.setMemberCount(row.getMemberCount());
+                    response.setDescription(row.getDescription());
+                    response.setCreatedAt(row.getCreatedAt());
+                    if (row.getLastActivityAt() != null) {
+                        response.setLastActivityAt(row.getLastActivityAt().toInstant(ZoneOffset.UTC).toString());
+                    }
+                    return response;
+                })
+                .toList();
+    }
+
+    /**
      * 获取团队详情
      *
      * @param actor

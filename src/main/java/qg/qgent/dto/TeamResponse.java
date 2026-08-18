@@ -29,6 +29,12 @@ public class TeamResponse {
      */
     private LocalDateTime createdAt;
 
+    /**
+     * 团队最后活跃时间（ISO8601 UTC）：该团队下所有项目最后活跃的最大值；
+     * 无项目时以创建时间兜底。供「按最后活跃排序」的团队列表返回。
+     */
+    private String lastActivityAt;
+
     public TeamResponse(String id, String name, String role) {
         this.id = id;
         this.name = name;

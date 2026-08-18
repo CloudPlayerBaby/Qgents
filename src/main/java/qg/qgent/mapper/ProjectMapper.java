@@ -59,4 +59,32 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
             @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class)
     })
     List<ProjectMembershipView> selectAccessibleByUser(@Param("userId") UUID userId);
+
+    /**
+     * 查询某团队下当前用户可见的项目（含最后活跃时间），按最后活跃倒序。
+     * 最后活跃 = 该项目下所有群最近消息时间或创建时间的最大值；无群时以项目创建时间兜底。
+     *
+     * @param teamId    团队 ID
+     * @param userId    当前用户 ID
+     * @param teamOwner 当前用户是否为该团队 canonical Owner（Owner 可见团队全部项目）
+     * @return 项目视图列表（含 lastActivityAt），按最后活跃倒序
+     */
+    @Select({"<script>",
+            "SELECT p.id, p.team_id, p.name, p.description, p.status, ",
+            "CASE WHEN #{teamOwner} THEN 'PROJECT_ADMIN' ELSE pm.role END AS role, ",
+            "COALESCE((SELECT MAX(COALESCE(rg.last_message_at, rg.created_at)) ",
+            "          FROM requirement_groups rg WHERE rg.project_id = p.id), p.created_at) AS last_activity_at ",
+            "FROM projects p LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = #{userId} ",
+            "WHERE p.team_id = #{teamId} ",
+            "<if test='teamOwner == false'>AND pm.user_id IS NOT NULL</if> ",
+            "ORDER BY last_activity_at DESC, p.id",
+            "</script>"})
+    @Results({
+            @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "last_activity_at", property = "lastActivityAt")
+    })
+    List<ProjectMembershipView> selectAccessibleByActivity(@Param("teamId") UUID teamId,
+                                                           @Param("userId") UUID userId,
+                                                           @Param("teamOwner") boolean teamOwner);
 }

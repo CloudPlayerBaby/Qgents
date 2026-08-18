@@ -23,6 +23,7 @@ import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 
 import java.nio.charset.StandardCharsets;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.function.Function;
 
@@ -162,6 +163,34 @@ public class ProjectService {
                 size + 1);
         return keysetPage(rows, size, scope, ProjectMembershipView::getId,
                 row -> response(row));
+    }
+
+    /**
+     * 获取某团队下当前用户可见的项目，按最后活跃时间倒序（项目最后活跃 = 其下所有群
+     * 最近消息/创建时间的最大值，无群时以项目创建时间兜底）。不分页，供项目选择/工作台
+     * 按最近活跃展示。
+     *
+     * @param actor   当前用户 ID
+     * @param teamId  团队 ID
+     * @return 项目视图列表，按最后活跃倒序
+     */
+    public List<ProjectResponse> listByLastActivity(UUID actor, UUID teamId) {
+        requireTeam(teamId);
+        requireTeamMember(teamId, actor);
+        boolean teamOwner = access.isCanonicalTeamOwner(teamId, actor);
+        return projectMapper.selectAccessibleByActivity(teamId, actor, teamOwner).stream()
+                .map(row -> {
+                    ProjectResponse response = new ProjectResponse(row.getId().toString(),
+                            row.getTeamId().toString(), row.getName(), row.getDescription(), row.getRole(),
+                            row.getStatus(), null, null);
+                    response.setMemberCount(memberMapper.countMembers(row.getId()));
+                    response.setRepositoryCount(projectRepositoryMapper.countActiveByProject(row.getId()));
+                    if (row.getLastActivityAt() != null) {
+                        response.setLastActivityAt(row.getLastActivityAt().toInstant(ZoneOffset.UTC).toString());
+                    }
+                    return response;
+                })
+                .toList();
     }
 
     public ProjectResponse get(UUID actor, UUID projectId) {

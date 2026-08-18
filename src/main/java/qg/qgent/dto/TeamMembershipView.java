@@ -17,4 +17,8 @@ public class TeamMembershipView {
     private Integer memberCount;
     private String description;
     private LocalDateTime createdAt;
+    /**
+     * 团队最后活跃时间（该团队下所有项目最后活跃的最大值），仅按活跃排序查询返回。
+     */
+    private LocalDateTime lastActivityAt;
 }

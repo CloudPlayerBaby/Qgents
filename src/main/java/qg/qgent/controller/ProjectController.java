@@ -12,6 +12,7 @@ import qg.qgent.dto.*;
 import qg.qgent.service.IdempotencyService;
 import qg.qgent.service.ProjectService;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -52,6 +53,18 @@ public class ProjectController {
                                                   @RequestParam(required = false) String cursor, @RequestParam(required = false) Integer limit,
                                                   HttpServletRequest request) {
         return page(projects.list(actor, teamId, cursor, limit), request);
+    }
+
+    /**
+     * 契约 v2.0.6 补充：获取某团队下当前用户可见的项目，按最后活跃时间倒序（项目最后活跃 =
+     * 其下所有群最近消息/创建时间的最大值，无群时以项目创建时间兜底）。不分页，供项目选择/工作台
+     * 按最近活跃展示。
+     */
+    @GetMapping("/teams/{teamId}/projects/by-last-activity")
+    public ApiResponse<List<ProjectResponse>> listByLastActivity(@AuthenticationPrincipal UUID actor,
+                                                                 @PathVariable UUID teamId,
+                                                                 HttpServletRequest request) {
+        return ok(projects.listByLastActivity(actor, teamId), request);
     }
 
     /**

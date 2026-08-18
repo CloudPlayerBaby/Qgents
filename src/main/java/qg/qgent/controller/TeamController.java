@@ -15,6 +15,7 @@ import qg.qgent.service.EventService;
 import qg.qgent.service.IdempotencyService;
 import qg.qgent.service.TeamService;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -67,6 +68,16 @@ public class TeamController {
                                                @RequestParam(required = false) String cursor, @RequestParam(required = false) Integer limit,
                                                HttpServletRequest request) {
         return page(teams.list(actor, cursor, limit), request);
+    }
+
+    /**
+     * 契约 v2.0.6 补充：获取我加入的团队，按最后活跃时间倒序（团队最后活跃 = 该团队下
+     * 所有项目最后活跃的最大值，无项目时以创建时间兜底）。不分页，供团队选择/工作台按最近活跃展示。
+     */
+    @GetMapping("/by-last-activity")
+    public ApiResponse<List<TeamResponse>> listByLastActivity(@AuthenticationPrincipal UUID actor,
+                                                              HttpServletRequest request) {
+        return ok(teams.listByLastActivity(actor), request);
     }
 
     /**
