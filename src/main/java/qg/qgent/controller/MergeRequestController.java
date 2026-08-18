@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.*;
+import qg.qgent.service.MergeRequestCommentService;
 import qg.qgent.service.MergeRequestService;
 
 import java.util.List;
@@ -21,9 +22,12 @@ import java.util.UUID;
 @RequestMapping("/api/v1/projects/{projectId}/merge-requests")
 public class MergeRequestController {
     private final MergeRequestService mergeRequestService;
+    private final MergeRequestCommentService commentService;
 
-    public MergeRequestController(MergeRequestService mergeRequestService) {
+    public MergeRequestController(MergeRequestService mergeRequestService,
+                                  MergeRequestCommentService commentService) {
         this.mergeRequestService = mergeRequestService;
+        this.commentService = commentService;
     }
 
     /**
@@ -78,6 +82,22 @@ public class MergeRequestController {
                                   @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         List<MergeRequestReviewResponse> data = mergeRequestService.reviews(projectId, mergeRequestId, userId);
         return ok(data, request);
+    }
+
+    /** 查询 Qgents 创建的 MR 普通评论。行级评论仍通过 Diff 评论接口查询。 */
+    @GetMapping("/{mergeRequestId}/comments")
+    public ApiResponse<?> comments(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
+                                   @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        return ok(commentService.list(projectId, mergeRequestId, userId), request);
+    }
+
+    /** 在真实 GitHub MR 对应的 Issue 讨论中创建普通评论。 */
+    @PostMapping("/{mergeRequestId}/comments")
+    public ApiResponse<?> comment(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
+                                  @AuthenticationPrincipal UUID userId,
+                                  @Valid @RequestBody MergeRequestCommentRequest body,
+                                  HttpServletRequest request) {
+        return ok(commentService.add(projectId, mergeRequestId, userId, body), request);
     }
 
     /**

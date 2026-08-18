@@ -194,6 +194,25 @@ class RestGitHubAppClientTest {
     }
 
     @Test
+    void createsPullRequestIssueComment() {
+        server.expect(once(), requestTo("https://api.github.com/repos/owner/repo/issues/42/comments"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("Authorization", "Bearer test-token"))
+                .andRespond(withSuccess("""
+                        {"id":3001,"body":"Please add a regression test",
+                         "html_url":"https://github.com/owner/repo/pull/42#issuecomment-3001",
+                         "created_at":"2026-08-18T15:00:00Z"}
+                        """, MediaType.APPLICATION_JSON));
+
+        GitHubPullRequestCommentDetails comment = client.createPullRequestComment(12345L, "owner", "repo", 42,
+                new GitHubPullRequestCommentRequest("Please add a regression test"));
+        assertEquals(3001L, comment.id());
+        assertEquals("Please add a regression test", comment.body());
+        assertEquals("https://github.com/owner/repo/pull/42#issuecomment-3001", comment.htmlUrl());
+        server.verify();
+    }
+
+    @Test
     void returnsGitHubMergeOutcomeInsteadOfAssumingSuccess() {
         server.expect(once(), requestTo("https://api.github.com/repos/owner/repo/pulls/42/merge"))
                 .andExpect(method(HttpMethod.PUT))

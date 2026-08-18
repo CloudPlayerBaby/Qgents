@@ -465,6 +465,33 @@ public class RestGitHubAppClient implements GitHubAppClient {
     }
 
     @Override
+    public GitHubPullRequestCommentDetails createPullRequestComment(long installationId, String owner, String repo,
+                                                                      int pullNumber, GitHubPullRequestCommentRequest request) {
+        requireConfigured();
+        try {
+            CommentResponse response = client.post()
+                    .uri("/repos/{owner}/{repo}/issues/{pullNumber}/comments",
+                            owner, repo, pullNumber)
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .body(request)
+                    .retrieve()
+                    .body(CommentResponse.class);
+            if (response == null || response.id() == 0 || response.body() == null) {
+                throw upstreamFailure();
+            }
+            return new GitHubPullRequestCommentDetails(response.id(), response.body(), response.htmlUrl(), response.createdAt());
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub createPullRequestComment rejected: owner={} repo={} number={} status={} body={}",
+                    owner, repo, pullNumber, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            throw upstreamFailure();
+        } catch (RestClientException exception) {
+            log.warn("GitHub createPullRequestComment failed: owner={} repo={} number={} {}",
+                    owner, repo, pullNumber, exception.getMessage());
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
     public GitHubPullRequestMergeResult mergePullRequest(long installationId, String owner, String repo, int pullNumber,
                                                          GitHubPullRequestMergeRequest request) {
         requireConfigured();
@@ -512,6 +539,11 @@ public class RestGitHubAppClient implements GitHubAppClient {
 
     private record ReviewResponse(long id, String state,
                                   @JsonProperty("author_association") String authorAssociation, AccountResponse user) {
+    }
+
+    private record CommentResponse(long id, String body,
+                                   @JsonProperty("html_url") String htmlUrl,
+                                   @JsonProperty("created_at") String createdAt) {
     }
 
     private record MergeRequestBody(@JsonProperty("commit_title") String commitTitle,

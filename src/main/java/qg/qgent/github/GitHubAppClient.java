@@ -123,6 +123,12 @@ public interface GitHubAppClient {
     List<GitHubReviewDetails> getPullRequestReviews(long installationId, String owner, String repo, int pullNumber);
 
     /**
+     * 在 Pull Request 对应的 Issue 讨论中创建普通评论。行级评论由 Diff 审查接口负责。
+     */
+    GitHubPullRequestCommentDetails createPullRequestComment(long installationId, String owner, String repo,
+                                                              int pullNumber, GitHubPullRequestCommentRequest request);
+
+    /**
      * Requests a GitHub merge and returns GitHub's explicit outcome. Callers must not mark a local MR merged when
      * {@link GitHubPullRequestMergeResult#merged()} is false.
      */
