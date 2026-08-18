@@ -2,11 +2,18 @@ package qg.qgent.controller;
 
 import io.swagger.v3.oas.annotations.Parameter;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.PagedApiResponse;
@@ -14,10 +21,14 @@ import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.AgentAssignmentListItem;
 import qg.qgent.dto.AgentResponse;
 import qg.qgent.dto.AgentRuntimeSummary;
+import qg.qgent.dto.CreateAgentRequest;
+import qg.qgent.dto.UpdateAgentRequest;
 import qg.qgent.security.CurrentActorProvider;
 import qg.qgent.service.AgentService;
+import qg.qgent.service.IdempotencyService;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -29,10 +40,13 @@ import java.util.UUID;
 public class AgentController {
     private final AgentService service;
     private final CurrentActorProvider currentActor;
+    private final IdempotencyService idempotency;
 
-    public AgentController(AgentService service, CurrentActorProvider currentActor) {
+    public AgentController(AgentService service, CurrentActorProvider currentActor,
+                           IdempotencyService idempotency) {
         this.service = service;
         this.currentActor = currentActor;
+        this.idempotency = idempotency;
     }
 
     /**
@@ -84,5 +98,72 @@ public class AgentController {
             HttpServletRequest request) {
         return ApiResponse.ok(service.runtime(projectId, agentId, userId),
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 契约 §11.1（接口补充 v2.0.3 §2）：创建自定义 Agent（PRIVATE，仅团队成员）。
+     * 同一 Idempotency-Key 重试返回第一次成功结果；不同请求体复用同一 Key 返回 409。
+     */
+    @PostMapping("/teams/{teamId}/agents")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<AgentResponse> create(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key,
+            @Valid @RequestBody CreateAgentRequest body, HttpServletRequest request) {
+        AgentResponse result = idempotency.execute(actor, "POST:/teams/{teamId}/agents", key, body, 201,
+                AgentResponse.class, () -> service.create(actor, teamId, body));
+        return ApiResponse.ok(result, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 契约 §11.1（接口补充 v2.0.3 §3）：编辑自定义 Agent（仅创建者，系统预置不可编辑）。
+     */
+    @PatchMapping("/teams/{teamId}/agents/{agentId}")
+    public ApiResponse<AgentResponse> update(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
+            @PathVariable UUID agentId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key,
+            @Valid @RequestBody UpdateAgentRequest body, HttpServletRequest request) {
+        AgentResponse result = idempotency.execute(actor, "PATCH:/teams/{teamId}/agents/{agentId}", key,
+                Map.of("teamId", teamId, "agentId", agentId, "body", body), 200, AgentResponse.class,
+                () -> service.update(actor, teamId, agentId, body));
+        return ApiResponse.ok(result, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 契约 §11.1（接口补充 v2.0.3 §4）：发布为 TEAM（仅创建者，PRIVATE+ACTIVE → TEAM+ACTIVE）。
+     */
+    @PostMapping("/teams/{teamId}/agents/{agentId}/publish")
+    public ApiResponse<AgentResponse> publish(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
+            @PathVariable UUID agentId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+        AgentResponse result = idempotency.execute(actor, "POST:/teams/{teamId}/agents/{agentId}/publish", key,
+                Map.of("teamId", teamId, "agentId", agentId), 200, AgentResponse.class,
+                () -> service.publish(actor, teamId, agentId));
+        return ApiResponse.ok(result, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 契约 §11.1（接口补充 v2.0.3 §5）：收回发布（创建者或 Team Owner，TEAM+ACTIVE → PRIVATE+ACTIVE）。
+     */
+    @PostMapping("/teams/{teamId}/agents/{agentId}/unpublish")
+    public ApiResponse<AgentResponse> unpublish(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
+            @PathVariable UUID agentId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+        AgentResponse result = idempotency.execute(actor, "POST:/teams/{teamId}/agents/{agentId}/unpublish", key,
+                Map.of("teamId", teamId, "agentId", agentId), 200, AgentResponse.class,
+                () -> service.unpublish(actor, teamId, agentId));
+        return ApiResponse.ok(result, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 契约 §11.1（接口补充 v2.0.3 §6）：归档 Agent（创建者或 Team Owner，PRIVATE/TEAM+ACTIVE → ARCHIVED）。
+     */
+    @PostMapping("/teams/{teamId}/agents/{agentId}/archive")
+    public ApiResponse<AgentResponse> archive(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
+            @PathVariable UUID agentId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+        AgentResponse result = idempotency.execute(actor, "POST:/teams/{teamId}/agents/{agentId}/archive", key,
+                Map.of("teamId", teamId, "agentId", agentId), 200, AgentResponse.class,
+                () -> service.archive(actor, teamId, agentId));
+        return ApiResponse.ok(result, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
 }
