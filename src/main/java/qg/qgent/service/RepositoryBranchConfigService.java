@@ -33,6 +33,7 @@ public class RepositoryBranchConfigService {
     private final ProjectMemberMapper projectMemberMapper;
     private final TeamMemberMapper teamMemberMapper;
     private final TestsetMapper testsetMapper;
+    private final GitStoreSyncService gitStores;
 
     public RepositoryBranchConfigService(RepositoryBranchConfigMapper branchConfigMapper,
                                          RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper,
@@ -40,7 +41,8 @@ public class RepositoryBranchConfigService {
                                          ProjectMapper projectMapper,
                                          ProjectMemberMapper projectMemberMapper,
                                          TeamMemberMapper teamMemberMapper,
-                                         TestsetMapper testsetMapper) {
+                                         TestsetMapper testsetMapper,
+                                         GitStoreSyncService gitStores) {
         this.branchConfigMapper = branchConfigMapper;
         this.branchConfigTestsetMapper = branchConfigTestsetMapper;
         this.projectRepositoryMapper = projectRepositoryMapper;
@@ -48,6 +50,7 @@ public class RepositoryBranchConfigService {
         this.projectMemberMapper = projectMemberMapper;
         this.teamMemberMapper = teamMemberMapper;
         this.testsetMapper = testsetMapper;
+        this.gitStores = gitStores;
     }
 
     /**
@@ -60,6 +63,7 @@ public class RepositoryBranchConfigService {
      * @return 鍒嗘敮淇濇姢绛栫暐鏁版嵁浼犺緭瀵硅薄 (BranchPolicyDto)
      */
     public BranchPolicyDto getBranchPolicy(UUID actorId, UUID projectId, UUID repositoryId, String branchName) {
+        branchName = gitStores.normalizeTargetBranch(branchName);
         // 鏉冮檺鏍￠獙锛氳嚦灏戦渶瑕佹槸椤圭洰鎴愬憳鎵嶈兘鏌ョ湅鍒嗘敮绛栫暐
         requireProjectMember(actorId, projectId); // 濡傛灉涓嶆槸椤圭洰鎴愬憳锛屽垯鎶涘嚭鏉冮檺涓嶈冻寮傚父
 
@@ -94,6 +98,7 @@ public class RepositoryBranchConfigService {
     @Transactional // 寮€鍚簨鍔★紝淇濊瘉鏇存柊杩囩▼涓彂鐢熷紓甯告椂鏁版嵁鑳藉鍥炴粴
     public BranchPolicyDto updateBranchPolicy(UUID actorId, UUID projectId, UUID repositoryId, String branchName,
                                               UpdateBranchPolicyRequest request) {
+        branchName = gitStores.normalizeTargetBranch(branchName);
         // 鏉冮檺鏍￠獙锛氫慨鏀瑰垎鏀瓥鐣ュ睘浜庨珮鍗辨搷浣滐紝蹇呴』鏄」鐩鐞嗗憳 (Project Admin) 鎵嶈兘鎵ц
         requireProjectAdmin(actorId, projectId);
 
@@ -136,6 +141,7 @@ public class RepositoryBranchConfigService {
      * 鑾峰彇鎸囧畾鍒嗘敮鐨勮川閲忛棬绂侀厤缃紙濡傚繀椤婚€氳繃鐨?Testset 鍒楄〃銆佷唬鐮佹鏌ラ」锛夈€?
      */
     public QualityGateDto getQualityGate(UUID actorId, UUID projectId, UUID repositoryId, String branchName) {
+        branchName = gitStores.normalizeTargetBranch(branchName);
         // 鍙湁椤圭洰鎴愬憳鎵嶈兘鏌ョ湅璐ㄩ噺闂ㄧ閰嶇疆
         requireProjectMember(actorId, projectId);
 
@@ -169,6 +175,7 @@ public class RepositoryBranchConfigService {
     @Transactional
     public QualityGateDto updateQualityGate(UUID actorId, UUID projectId, UUID repositoryId, String branchName,
                                             UpdateQualityGateRequest request) {
+        branchName = gitStores.normalizeTargetBranch(branchName);
         // 蹇呴』鏄」鐩鐞嗗憳鎵嶈兘淇敼闂ㄧ
         requireProjectAdmin(actorId, projectId);
         ProjectRepositoryEntity projectRepo = getProjectRepository(projectId, repositoryId);
