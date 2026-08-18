@@ -79,6 +79,22 @@ class TestAgentTest {
     }
 
     @Test
+    void malformedAnalysisIsRepairedOnce() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 0, "BUILD SUCCESS", "", null));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("测试完成，未发现问题。",
+                        "{\"success\":true,\"summary\":\"repaired\",\"failures\":[],\"needsCodingFix\":false}");
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().getSummary()).isEqualTo("repaired");
+        verify(llm, org.mockito.Mockito.times(2)).complete(anyString(), anyList());
+    }
+
+    @Test
     void nonZeroExitCodeOverridesLlmSuccessClaim() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))

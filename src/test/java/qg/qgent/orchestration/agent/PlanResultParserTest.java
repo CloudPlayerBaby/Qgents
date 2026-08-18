@@ -44,6 +44,12 @@ class PlanResultParserTest {
         assertThat(plan.getImplementationSteps()).hasSize(1);
     }
 
+    @Test void acceptsNestedJsonWithSurroundingExplanation() {
+        String nested = VALID_JSON.replace("\"description\":\"do it\"", "\"description\":\"do {it}\"");
+        PlanResult plan = parser.parse("计划如下：\n```json\n" + nested + "\n```\n结束");
+        assertThat(plan.getImplementationSteps().get(0).getDescription()).isEqualTo("do {it}");
+    }
+
     @Test void toleratesMissingOptionalRisks() {
         PlanResult plan = parser.parse(VALID_JSON.replace("\"risks\": [\"risk1\"]", "\"risks\": []"));
         assertThat(plan.getRisks()).isEmpty();

@@ -117,6 +117,7 @@ class SpringAiChatLlmClientTest {
         OpenAiChatOptions options = (OpenAiChatOptions) prompt.getOptions();
         assertThat(options.getResponseFormat().getType())
                 .isEqualTo(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT);
+        assertThat(options.getMaxRetries()).isZero();
     }
 
     @Test
@@ -152,6 +153,19 @@ class SpringAiChatLlmClientTest {
         assertThatThrownBy(() -> client().complete("system prompt", "user prompt"))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("connection refused");
+    }
+
+    @Test
+    void plainStructuredOutputLengthDoesNotReturnTruncatedText() {
+        stubModelOutput("{\"summary\":\"truncated");
+        ChatGenerationMetadata metadata = mock(ChatGenerationMetadata.class);
+        when(metadata.getFinishReason()).thenReturn("length");
+        when(generation.getMetadata()).thenReturn(metadata);
+        when(response.hasToolCalls()).thenReturn(false);
+
+        assertThatThrownBy(() -> client().complete("system prompt", "user prompt"))
+                .isInstanceOf(LlmOutputTruncatedException.class)
+                .hasMessageContaining("LLM_FINISH_LENGTH");
     }
 
     // ---------- 原生 Tool Calling（阶段 B） ----------

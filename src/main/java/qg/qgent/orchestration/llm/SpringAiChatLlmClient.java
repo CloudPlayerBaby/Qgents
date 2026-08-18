@@ -72,20 +72,26 @@ public class SpringAiChatLlmClient implements LlmClient {
             promptChars += message.content() == null ? 0 : message.content().length();
         }
         long started = System.nanoTime();
+        String text;
+        String finishReason;
         try {
             ChatResponse response = chatModel.call(new Prompt(springMessages, jsonOptions()));
-            String text = response.getResult().getOutput().getText();
+            text = response.getResult().getOutput().getText();
+            finishReason = finishReasonOf(response);
             log.info("llm complete messages={} promptChars={} responseChars={} durationMs={} finish={} tail={}",
                     messages.size(), promptChars, text == null ? 0 : text.length(),
                     Duration.ofNanos(System.nanoTime() - started).toMillis(),
-                    finishReasonOf(response), redactTail(text));
-            return text;
+                    finishReason, redactTail(text));
         } catch (RuntimeException exception) {
             log.error("LLM_CALL_FAILED messages={} promptChars={} category={} durationMs={}",
                     messages.size(), promptChars, exception.getClass().getSimpleName(),
                     Duration.ofNanos(System.nanoTime() - started).toMillis(), exception);
             throw exception;
         }
+        if ("length".equals(finishReason)) {
+            throw new LlmOutputTruncatedException(text == null ? 0 : text.length());
+        }
+        return text;
     }
 
     @Override
@@ -212,6 +218,8 @@ public class SpringAiChatLlmClient implements LlmClient {
                     .responseFormat(OpenAiChatModel.ResponseFormat.builder()
                             .type(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT)
                             .build())
+                    // 结构化调用的重试由 Agent/编排器统一控制，避免 SDK 重试造成重复 repair。
+                    .maxRetries(0)
                     .build();
         }
         throw new IllegalStateException("ChatModel options must be OpenAiChatOptions for JSON mode; got "

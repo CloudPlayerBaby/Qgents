@@ -86,10 +86,23 @@ public class TestAgent implements Agent {
      * 由 LLM 分析真实输出；分析失败或非法时退回基于真实执行的结果，不伪造分析。
      */
     private TestResult analyze(AgentInput input, List<String> command, ExecutionResult exec) {
+        String system = promptBuilder.buildSystem();
         try {
-            String raw = llm.complete(promptBuilder.buildSystem(),
+            String raw = llm.complete(system,
                     List.of(LlmMessage.user(promptBuilder.buildUser(input, command, exec))));
-            TestResult test = parser.parse(raw);
+            TestResult test;
+            try {
+                test = parser.parse(raw);
+            } catch (TestParseException malformed) {
+                String repaired = JsonRepairSupport.repairOnce(llm, system, raw, malformed.getMessage(),
+                        "{\"success\":true|false,\"summary\":\"测试摘要\","
+                                + "\"failures\":[{\"name\":\"测试项\",\"reason\":\"原因\","
+                                + "\"severity\":\"ERROR|WARNING|INFO\"}],\"needsCodingFix\":true|false}");
+                if (repaired == null) {
+                    throw malformed;
+                }
+                test = parser.parse(repaired);
+            }
             test.setExitCode(exec.exitCode());
             test.setCommand(String.join(" ", command));
             test.setStdout(exec.stdout());

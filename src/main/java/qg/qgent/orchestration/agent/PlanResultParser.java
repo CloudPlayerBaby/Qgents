@@ -55,7 +55,7 @@ public class PlanResultParser {
         if (raw == null || raw.isBlank()) {
             throw new PlanParseException("plan response is empty");
         }
-        JsonNode node = toJson(stripFences(raw));
+        JsonNode node = toJson(raw);
         PlanResult plan = new PlanResult();
 
         plan.setTaskUnderstanding(requireText(node, "taskUnderstanding"));
@@ -71,7 +71,7 @@ public class PlanResultParser {
 
     private JsonNode toJson(String text) {
         try {
-            return objectMapper.readTree(text);
+            return JsonTextExtractor.parseObject(objectMapper, text);
         } catch (Exception e) {
             throw new PlanParseException("plan response is not valid JSON: " + e.getMessage());
         }
@@ -236,20 +236,4 @@ public class PlanResultParser {
         return "AUTOMATED";
     }
 
-    /**
-     * 去掉常见的 ```json / ``` 围栏包裹。
-     */
-    private String stripFences(String raw) {
-        String trimmed = raw.trim();
-        if (trimmed.startsWith("```")) {
-            int firstLineBreak = trimmed.indexOf('\n');
-            if (firstLineBreak > 0) {
-                trimmed = trimmed.substring(firstLineBreak + 1);
-            }
-            if (trimmed.endsWith("```")) {
-                trimmed = trimmed.substring(0, trimmed.length() - 3);
-            }
-        }
-        return trimmed.trim();
-    }
 }

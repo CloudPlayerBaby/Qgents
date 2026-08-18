@@ -8,7 +8,18 @@ package qg.qgent.orchestration.agent;
  */
 public class PlanParseException extends RuntimeException {
 
+    private final ProtocolFailureCode code;
+
     public PlanParseException(String message) {
-        super(message);
+        this(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED, message);
+    }
+
+    public PlanParseException(ProtocolFailureCode code, String message) {
+        super((code == null ? ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED : code) + ": " + message);
+        this.code = code == null ? ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED : code;
+    }
+
+    public ProtocolFailureCode getCode() {
+        return code;
     }
 }
