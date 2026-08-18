@@ -7,18 +7,21 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.config.MdcTaskDecorator;
 import qg.qgent.entity.EventEntity;
 import qg.qgent.entity.NotificationEventEntity;
+import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.TeamEventEntity;
 import qg.qgent.mapper.EventMapper;
 import qg.qgent.mapper.GroupMemberMapper;
 import qg.qgent.mapper.NotificationEventMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
@@ -44,8 +47,10 @@ import java.util.stream.Collectors;
  * 项目级实时事件（SSE 数据源）服务。
  * 写接口在状态变更时调用 {@link #publish} 持久化事件，客户端通过项目事件流订阅；
  * 事件至少保留 24 小时，支持 Last-Event-ID 断线续传，游标过期返回 409 EVENT_CURSOR_EXPIRED。
- * publish 以「项目内 MAX(sequence_no)+1」分配序号并落库（并发写存在极小竞态，MVP 可接受，
- * 后续可换 Redis 原子计数器）；stream 用独立轮询线程拉取增量事件，通过 SseEmitter 推送，
+ * publish 的序号分配并发安全：事务内先对 projects 行加排他锁（FOR UPDATE）串行化同项目
+ * 事件写入，再以锁定读（{@code EventMapper#nextSequence}）取当前已提交的最大序号 + 1，
+ * 避免并发「MAX+1」撞 {@code uk_event_seq(project_id, sequence_no)} 唯一键 500；
+ * stream 用独立轮询线程拉取增量事件，通过 SseEmitter 推送，
  * 客户端断开时以 send 失败退出线程并自动清理。
  */
 @Service
@@ -84,12 +89,14 @@ public class EventService {
     private final TeamMemberMapper teamMemberMapper;
     private final RequirementGroupMapper groupMapper;
     private final GroupMemberMapper groupMemberMapper;
+    private final ProjectMapper projectMapper;
 
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
                         NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
                         ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
                         ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
-                        RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper) {
+                        RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
+                        ProjectMapper projectMapper) {
         this.eventMapper = eventMapper;
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
@@ -100,6 +107,7 @@ public class EventService {
         this.teamMemberMapper = teamMemberMapper;
         this.groupMapper = groupMapper;
         this.groupMemberMapper = groupMemberMapper;
+        this.projectMapper = projectMapper;
         // SSE 泵线程执行期间保留提交线程的 MDC（requestId），便于按请求串联日志
         MdcTaskDecorator mdcDecorator = new MdcTaskDecorator();
         AtomicInteger seq = new AtomicInteger(1);
@@ -126,6 +134,7 @@ public class EventService {
      * @param resourceId 关联资源ID字符串，如 taskRunId，可为 null
      * @param payload    脱敏事件载荷 JSON
      */
+    @Transactional
     public void publish(UUID projectId, UUID groupId, String eventType, String resourceId,
                         Map<String, Object> payload) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
@@ -133,7 +142,11 @@ public class EventService {
         event.setId(UuidV7.next());
         event.setProjectId(projectId);
         event.setRequirementGroupId(groupId);
-        event.setSequenceNo(eventMapper.maxSequence(projectId) + 1);
+        // 并发安全：先持有项目行锁，把同项目事件写入串行化；再以锁定读取当前已提交的
+        // 最大序号 + 1。缺少项目行锁时，REPEATABLE READ 的普通快照 MAX 会读到旧值，
+        // 多个并发发布撞 uk_event_seq 唯一键 → 整体 500（群成员多选邀请等场景）。
+        lockProject(projectId);
+        event.setSequenceNo(eventMapper.nextSequence(projectId));
         event.setEventType(eventType);
         event.setResourceId(resourceId);
         event.setPayload(payload);
@@ -146,6 +159,18 @@ public class EventService {
         //   groupId 为需求群 → 仅该群显式成员。
         Set<UUID> members = broadcastMembers(projectId, groupId);
         fan(members, "project", id(projectId), id(groupId), null, null, resourceId, eventType, payload);
+    }
+
+    /**
+     * 持有项目行锁（FOR UPDATE），将同项目的事件写入串行化。
+     * <p>
+     * {@code uk_event_seq(project_id, sequence_no)} 是项目级作用域，因此锁必须升到
+     * 项目级，与消息发送 {@code lockGroup}（群行锁保证消息 sequence 单调）同思路。
+     * 调用方须处于事务内（{@code publish} 已标注 {@code @Transactional}）；项目不存在时
+     * 返回 null（锁对不存在的行不生效），由后续事件插入的外键/唯一约束兜底。
+     */
+    private void lockProject(UUID projectId) {
+        projectMapper.selectByIdForUpdate(projectId);
     }
 
     /**

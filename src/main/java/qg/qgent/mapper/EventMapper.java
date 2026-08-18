@@ -20,6 +20,21 @@ public interface EventMapper extends BaseMapper<EventEntity> {
     long maxSequence(@Param("projectId") UUID projectId);
 
     /**
+     * 以锁定读方式计算项目内下一个事件序号（并发安全，供事件发布专用）。
+     * <p>
+     * {@code FOR UPDATE} 对 {@code uk_event_seq(project_id, sequence_no)} 索引范围加排他
+     * next-key 锁并读取**当前已提交**的最大序号 + 1。调用方必须先在事务内持有对应
+     * projects 行锁（{@link qg.qgent.mapper.ProjectMapper#selectByIdForUpdate}）：同项目
+     * 事件写入串行化后，本锁定读才能拿到最新值，避免 REPEATABLE READ 快照读到旧序号后
+     * 与并发发布撞 {@code uk_event_seq} 唯一键（群成员多选邀请等并发写 500 的根因）。
+     *
+     * @param projectId 项目 ID
+     * @return 下一个事件序号（当前已提交最大序号 + 1；无事件时为 1）
+     */
+    @Select("SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM events WHERE project_id = #{projectId} FOR UPDATE")
+    long nextSequence(@Param("projectId") UUID projectId);
+
+    /**
      * 获取项目内最小事件序号；无事件时返回 null，用于校验 SSE 续传游标是否仍在保留窗口内。
      */
     @Select("SELECT MIN(sequence_no) FROM events WHERE project_id = #{projectId}")

@@ -7,6 +7,7 @@ import qg.qgent.mapper.EventMapper;
 import qg.qgent.mapper.GroupMemberMapper;
 import qg.qgent.mapper.NotificationEventMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
@@ -19,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -27,15 +29,19 @@ import static org.mockito.Mockito.when;
 class EventServiceTest {
 
     @Test
-    void publishOnlyPersistsEventWithoutRunningCleanupSql() {
+    void publishLocksProjectThenUsesConcurrentSafeNextSequence() {
         EventMapper events = mock(EventMapper.class);
+        ProjectMapper projects = mock(ProjectMapper.class);
         UUID projectId = UUID.randomUUID();
-        when(events.maxSequence(projectId)).thenReturn(8L);
-        EventService service = service(events);
+        when(events.nextSequence(projectId)).thenReturn(9L);
+        EventService service = service(events, projects);
 
         service.publish(projectId, null, "task-run.updated", "run-1", Map.of("status", "RUNNING"));
 
-        verify(events).maxSequence(projectId);
+        // 发布前先持有项目行锁，串行化同项目事件写入，避免并发 MAX+1 撞唯一键 500
+        verify(projects).selectByIdForUpdate(projectId);
+        verify(events, never()).maxSequence(any());
+        verify(events).nextSequence(projectId);
         org.mockito.ArgumentCaptor<EventEntity> captured = org.mockito.ArgumentCaptor.forClass(EventEntity.class);
         verify(events).insert(captured.capture());
         EventEntity event = captured.getValue();
@@ -51,7 +57,7 @@ class EventServiceTest {
     void purgeExpiredUsesDedicatedMaintenanceQuery() {
         EventMapper events = mock(EventMapper.class);
         when(events.deleteExpired(any())).thenReturn(3);
-        EventService service = service(events);
+        EventService service = service(events, mock(ProjectMapper.class));
 
         service.purgeExpired();
 
@@ -63,11 +69,12 @@ class EventServiceTest {
     void deliveryStartedPublishesTypedDomainEventWithThePersistedBatchId() {
         EventMapper events = mock(EventMapper.class);
         ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        ProjectMapper projects = mock(ProjectMapper.class);
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         UUID batchId = UUID.randomUUID();
-        when(events.maxSequence(projectId)).thenReturn(0L);
-        EventService service = service(events, publisher);
+        when(events.nextSequence(projectId)).thenReturn(1L);
+        EventService service = service(events, projects, publisher);
 
         service.publish(projectId, null, "delivery.started", taskId.toString(), Map.of(
                 "taskId", taskId, "reviewBatchId", batchId, "operationId", "operation-1"));
@@ -81,14 +88,14 @@ class EventServiceTest {
         assertEquals("operation-1", event.operationId());
     }
 
-    private EventService service(EventMapper events) {
-        return service(events, mock(ApplicationEventPublisher.class));
+    private EventService service(EventMapper events, ProjectMapper projects) {
+        return service(events, projects, mock(ApplicationEventPublisher.class));
     }
 
-    private EventService service(EventMapper events, ApplicationEventPublisher publisher) {
+    private EventService service(EventMapper events, ProjectMapper projects, ApplicationEventPublisher publisher) {
         return new EventService(events, mock(ProjectAccessService.class), mock(NotificationEventMapper.class),
                 mock(TeamEventMapper.class), publisher, mock(RealtimeHub.class),
                 mock(ProjectMemberMapper.class), mock(TeamMemberMapper.class),
-                mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class));
+                mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class), projects);
     }
 }
