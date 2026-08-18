@@ -26,8 +26,10 @@ import java.util.UUID;
  * <ul>
  *   <li>{@code assignedAgentId == null}（内置兜底）：按角色取内置 Agent——PLANNER→PlanAgent、
  *       DEVELOPER→CodingAgent、TESTER→TestAgent、REVIEWER→ReviewAgent；角色未知 → 空；</li>
- *   <li>{@code assignedAgentId != null}：查 {@link AgentEntity}，存在则以 {@link GenericCustomAgent}
- *       包装（自定义 prompt + 角色→工具白名单）；实体不存在 → 空（调用方跳步，不硬跑）；</li>
+ *   <li>{@code assignedAgentId != null}：查 {@link AgentEntity}——团队默认 Agent（isDefault=true，
+ *       系统预置、用户不可编辑）直接复用对应内置 Agent 类（详细系统提示 + 专属解析器）；
+ *       其余（自定义 Agent）以 {@link GenericCustomAgent} 包装（DB prompt + 角色→工具白名单）；
+ *       实体不存在 → 空（调用方跳步，不硬跑）；</li>
  *   <li>角色匹配 / ACTIVE / 可见性的静态授权已在 {@link qg.qgent.service.TaskService#validateAgent}
  *       落库时校验，运行时只做存在性检查。</li>
  * </ul>
@@ -98,6 +100,16 @@ public class AgentRegistry {
         AgentEntity entity = agentMapper.selectById(agentId);
         if (entity == null) {
             return Optional.empty();
+        }
+        // 团队默认 Agent（isDefault=true，系统预置、用户不可编辑）：直接复用对应内置 Agent 类，
+        // 使用其详细系统提示与专属解析器，保证「团队默认四 Agent」就是代码内置实现（并发安全：
+        // 内置 Agent 为无状态单例，可变数据全在 run() 方法内局部创建）。仅当角色不在内置映射内
+        // （防御路径，理论上不出现）时回退通用自定义运行时，避免缺 Agent 挂起。
+        if (Boolean.TRUE.equals(entity.getIsDefault())) {
+            Agent builtin = builtin(entity.getRole());
+            if (builtin != null) {
+                return Optional.of(builtin);
+            }
         }
         return Optional.of(new GenericCustomAgent(llm, codeAccess, toolRegistry, entity, writeObserver,
                 contextService, contextSearchProperties));

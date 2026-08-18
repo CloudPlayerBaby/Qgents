@@ -23,8 +23,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * Agent 运行时注册表解析测试：assignedAgentId==null 按角色回退内置 Agent；非空则查实体并包装为
- * {@link GenericCustomAgent}；实体缺失或内置角色未知返回空 Optional（调用方「缺 Agent 不硬跑」）。
+ * Agent 运行时注册表解析测试：assignedAgentId==null 按角色回退内置 Agent；非空则查实体——团队默认
+ * Agent（isDefault=true）复用对应内置 Agent 类，自定义 Agent 包装为 {@link GenericCustomAgent}；
+ * 实体缺失或内置角色未知返回空 Optional（调用方「缺 Agent 不硬跑」）。
  */
 class AgentRegistryTest {
 
@@ -69,6 +70,50 @@ class AgentRegistryTest {
 
         assertThat(resolved).isPresent();
         assertThat(resolved.get()).isInstanceOf(GenericCustomAgent.class);
+    }
+
+    @Test
+    void defaultEntityReusesBuiltinAgent() {
+        for (String role : new String[]{"PLANNER", "DEVELOPER", "TESTER", "REVIEWER"}) {
+            AgentEntity entity = new AgentEntity();
+            entity.setId(UUID.randomUUID());
+            entity.setRole(role);
+            entity.setStatus("ACTIVE");
+            entity.setIsDefault(true);
+            when(agentMapper.selectById(entity.getId())).thenReturn(entity);
+
+            Optional<Agent> resolved = registry.resolve(entity.getId(), role);
+
+            assertThat(resolved).as("default agent for role %s", role).isPresent();
+            assertThat(resolved.get()).as("default agent for role %s", role)
+                    .isInstanceOf(mappedBuiltinType(role));
+        }
+    }
+
+    @Test
+    void defaultEntityWithUnknownRoleFallsBackToGenericCustomAgent() {
+        AgentEntity entity = new AgentEntity();
+        entity.setId(UUID.randomUUID());
+        entity.setRole("SECURITY");
+        entity.setStatus("ACTIVE");
+        entity.setIsDefault(true);
+        entity.setPrompt("default spec");
+        when(agentMapper.selectById(entity.getId())).thenReturn(entity);
+
+        Optional<Agent> resolved = registry.resolve(entity.getId(), "SECURITY");
+
+        assertThat(resolved).isPresent();
+        assertThat(resolved.get()).isInstanceOf(GenericCustomAgent.class);
+    }
+
+    private Class<?> mappedBuiltinType(String role) {
+        return switch (role) {
+            case "PLANNER" -> PlanAgent.class;
+            case "DEVELOPER" -> CodingAgent.class;
+            case "TESTER" -> TestAgent.class;
+            case "REVIEWER" -> ReviewAgent.class;
+            default -> throw new IllegalArgumentException("unexpected role " + role);
+        };
     }
 
     @Test
