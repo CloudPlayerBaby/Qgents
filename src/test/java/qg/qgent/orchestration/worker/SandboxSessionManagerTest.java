@@ -11,6 +11,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
@@ -34,6 +35,8 @@ import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
 import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.service.GitCredentialService;
+import qg.qgent.service.WorkspaceWriteLease;
+import qg.qgent.service.WorkspaceWriteLeaseService;
 
 /**
  * {@link SandboxSessionManager} 单元测试：验证 provision/创建 Sandbox 的字段映射、
@@ -54,6 +57,7 @@ class SandboxSessionManagerTest {
     private GitHubInstallationMapper installationMapper;
     private GitCredentialService credentialService;
     private qg.qgent.github.GitHubAppClient githubAppClient;
+    private WorkspaceWriteLeaseService writeLeases;
 
     @BeforeEach
     void setUp() {
@@ -65,13 +69,15 @@ class SandboxSessionManagerTest {
         installationMapper = mock(GitHubInstallationMapper.class);
         credentialService = mock(GitCredentialService.class);
         githubAppClient = mock(qg.qgent.github.GitHubAppClient.class);
+        writeLeases = mock(WorkspaceWriteLeaseService.class);
     }
 
     private SandboxSessionManager enabledManager() {
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         properties.setEnabled(true);
         return new SandboxSessionManager(client, properties, workspaceMapper, repositoryMapper,
-                projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient);
+                projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient,
+                writeLeases);
     }
 
     private SandboxSessionManager enabledManagerZeroBackoff() {
@@ -101,6 +107,9 @@ class SandboxSessionManagerTest {
     }
 
     private void mockDependenciesForAcquire() {
+        WorkspaceWriteLease lease = mock(WorkspaceWriteLease.class);
+        when(lease.getTaskId()).thenReturn(TASK);
+        when(writeLeases.acquire(PROJECT, WORKSPACE, TASK)).thenReturn(lease);
         when(workspaceMapper.selectById(WORKSPACE)).thenReturn(workspace());
         when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(repository()));
 
@@ -145,12 +154,14 @@ class SandboxSessionManagerTest {
     void disabledManagerIsNoOp() {
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         SandboxSessionManager manager = new SandboxSessionManager(client, properties, workspaceMapper, repositoryMapper,
-                projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient);
+                projectRepositoryMapper, gitHubRepositoryMapper, installationMapper, credentialService, githubAppClient,
+                writeLeases);
 
         assertThat(manager.acquire(TASK, PROJECT, WORKSPACE)).isNull();
-        manager.release(WORKSPACE);
+        manager.release(WORKSPACE, TASK);
         verify(client, never()).provisionWorkspace(any(), any());
         verify(client, never()).createSandbox(any());
+        verifyNoInteractions(writeLeases);
     }
 
     @Test
@@ -204,6 +215,22 @@ class SandboxSessionManagerTest {
 
         assertThat(second).isSameAs(first);
         verify(client).provisionWorkspace(any(), any());
+        verify(client).createSandbox(any());
+    }
+
+    @Test
+    void acquireRejectsDifferentTaskForExistingWorkspaceSession() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+        SandboxSessionManager manager = enabledManager();
+        manager.acquire(TASK, PROJECT, WORKSPACE);
+
+        qg.qgent.api.ApiException error = assertThrows(qg.qgent.api.ApiException.class,
+                () -> manager.acquire(UUID.randomUUID(), PROJECT, WORKSPACE));
+
+        assertEquals("WORKSPACE_WRITE_LEASE_HELD", error.code());
         verify(client).createSandbox(any());
     }
 
@@ -312,6 +339,128 @@ class SandboxSessionManagerTest {
     }
 
     @Test
+    void acquireUsesTaskBaseRefForBothSyncAndProvisionWhenItDiffersFromProjectDefault() {
+        mockDependenciesForAcquire();
+        ProjectRepositoryEntity binding = projectRepositoryMapper.selectById(REPO);
+        binding.setDefaultBranch("develop");
+        when(githubAppClient.getBranch(eq(12345L), eq("owner"), eq("repo"), eq("main")))
+                .thenReturn(new qg.qgent.github.GitHubBranchDetails("main", "c".repeat(40)));
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+
+        enabledManager().acquire(TASK, PROJECT, WORKSPACE);
+
+        ArgumentCaptor<WorkerGitStoreSyncRequest> syncCaptor =
+                ArgumentCaptor.forClass(WorkerGitStoreSyncRequest.class);
+        verify(client).syncGitStore(eq(REPO), syncCaptor.capture());
+        assertThat(syncCaptor.getValue().getRemoteBranch()).isEqualTo("main");
+
+        ArgumentCaptor<WorkerWorkspaceProvisionRequest> provisionCaptor =
+                ArgumentCaptor.forClass(WorkerWorkspaceProvisionRequest.class);
+        verify(client).provisionWorkspace(eq(WORKSPACE), provisionCaptor.capture());
+        assertThat(provisionCaptor.getValue().getRepositories())
+                .singleElement()
+                .extracting(WorkerWorkspaceRepositoryRequest::getBaseRef)
+                .isEqualTo("main");
+    }
+
+    @Test
+    void acquireKeepsBaseRefWhenBaseCommitAlreadyResolvedToSha() {
+        // 重试场景：base_commit 已被 provision 回填为 SHA，base_ref 仍持有原始基线分支名。
+        // 同步与 provision 必须继续用 main，且 expectedHeadCommit 沿用钉扎 SHA，不换到项目默认分支。
+        mockDependenciesForAcquire();
+        ProjectRepositoryEntity binding = projectRepositoryMapper.selectById(REPO);
+        binding.setDefaultBranch("develop");
+        WorkspaceRepositoryEntity provisioned = repository();
+        provisioned.setBaseRef("main");
+        provisioned.setBaseCommit("f".repeat(40));
+        when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(provisioned));
+        WorkerWorkspace workspaceResult = new WorkerWorkspace();
+        workspaceResult.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(workspaceResult);
+
+        enabledManager().acquire(TASK, PROJECT, WORKSPACE);
+
+        ArgumentCaptor<WorkerGitStoreSyncRequest> syncCaptor =
+                ArgumentCaptor.forClass(WorkerGitStoreSyncRequest.class);
+        verify(client).syncGitStore(eq(REPO), syncCaptor.capture());
+        assertThat(syncCaptor.getValue().getRemoteBranch()).isEqualTo("main");
+        assertThat(syncCaptor.getValue().getExpectedHeadCommit()).isEqualTo("f".repeat(40));
+        verify(githubAppClient, never()).getBranch(org.mockito.ArgumentMatchers.anyLong(), any(), any(), any());
+
+        ArgumentCaptor<WorkerWorkspaceProvisionRequest> provisionCaptor =
+                ArgumentCaptor.forClass(WorkerWorkspaceProvisionRequest.class);
+        verify(client).provisionWorkspace(eq(WORKSPACE), provisionCaptor.capture());
+        assertThat(provisionCaptor.getValue().getRepositories())
+                .singleElement()
+                .extracting(WorkerWorkspaceRepositoryRequest::getBaseRef)
+                .isEqualTo("main");
+    }
+
+    @Test
+    void acquireRecoversLegacyBaseRefFromWorkerMetadataWhenDefaultBranchDiffers() {
+        // 迁移回归：base_commit 已 SHA 化且 base_ref 为空、项目默认分支不同时，
+        // 必须从 Worker 持久化元数据恢复原基线 main，并以钉扎 SHA 校验，不得换 develop。
+        mockDependenciesForAcquire();
+        ProjectRepositoryEntity binding = projectRepositoryMapper.selectById(REPO);
+        binding.setDefaultBranch("develop");
+        WorkspaceRepositoryEntity legacy = repository();
+        legacy.setBaseRef(null);
+        legacy.setBaseCommit("f".repeat(40));
+        when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(legacy));
+        WorkerWorkspace metadata = new WorkerWorkspace();
+        WorkerWorkspaceRepository persistedRepo = new WorkerWorkspaceRepository();
+        persistedRepo.setRepositoryId(REPO);
+        persistedRepo.setBaseRef("main");
+        metadata.setRepositories(List.of(persistedRepo));
+        when(client.getWorkspace(WORKSPACE)).thenReturn(metadata);
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+
+        enabledManager().acquire(TASK, PROJECT, WORKSPACE);
+
+        ArgumentCaptor<WorkerGitStoreSyncRequest> syncCaptor =
+                ArgumentCaptor.forClass(WorkerGitStoreSyncRequest.class);
+        verify(client).syncGitStore(eq(REPO), syncCaptor.capture());
+        assertThat(syncCaptor.getValue().getRemoteBranch()).isEqualTo("main");
+        assertThat(syncCaptor.getValue().getExpectedHeadCommit()).isEqualTo("f".repeat(40));
+        verify(githubAppClient, never()).getBranch(org.mockito.ArgumentMatchers.anyLong(), any(), any(), any());
+        // 恢复出的 base_ref 固化回库，后续 acquire 不再依赖 Worker 元数据
+        verify(repositoryMapper).updateCommits(eq(WORKSPACE), eq(REPO), eq("f".repeat(40)), any(), eq("main"));
+
+        ArgumentCaptor<WorkerWorkspaceProvisionRequest> provisionCaptor =
+                ArgumentCaptor.forClass(WorkerWorkspaceProvisionRequest.class);
+        verify(client).provisionWorkspace(eq(WORKSPACE), provisionCaptor.capture());
+        assertThat(provisionCaptor.getValue().getRepositories())
+                .singleElement()
+                .extracting(WorkerWorkspaceRepositoryRequest::getBaseRef)
+                .isEqualTo("main");
+    }
+
+    @Test
+    void acquireFailsWithExplicitErrorWhenLegacyBaseRefUnrecoverable() {
+        // Worker 元数据也拿不到原基线时必须显式失败，禁止静默回退项目默认分支。
+        mockDependenciesForAcquire();
+        ProjectRepositoryEntity binding = projectRepositoryMapper.selectById(REPO);
+        binding.setDefaultBranch("develop");
+        WorkspaceRepositoryEntity legacy = repository();
+        legacy.setBaseRef(null);
+        legacy.setBaseCommit("f".repeat(40));
+        when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(legacy));
+        when(client.getWorkspace(WORKSPACE)).thenReturn(new WorkerWorkspace());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> enabledManager().acquire(TASK, PROJECT, WORKSPACE))
+                .isInstanceOf(qg.qgent.api.ApiException.class)
+                .hasMessageContaining("原基线分支不可追溯")
+                .extracting("status")
+                .isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+        verify(client, never()).syncGitStore(any(), any());
+        verify(client, never()).provisionWorkspace(any(), any());
+    }
+
+    @Test
     void requireThrowsWithoutSession() {
         SandboxSessionManager manager = enabledManager();
         assertThatThrownBy(() -> manager.require(WORKSPACE))
@@ -330,11 +479,28 @@ class SandboxSessionManagerTest {
         SandboxSessionManager manager = enabledManager();
         SandboxSession session = manager.acquire(TASK, PROJECT, WORKSPACE);
 
-        manager.release(WORKSPACE);
+        manager.release(WORKSPACE, TASK);
 
         verify(client).destroySandbox(session.sandboxId());
+        verify(writeLeases).release(any(WorkspaceWriteLease.class));
         assertThatThrownBy(() -> manager.require(WORKSPACE))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void nonOwnerReleaseCannotDestroyAnotherTasksSandboxOrLease() {
+        mockDependenciesForAcquire();
+        WorkerWorkspace provisioned = new WorkerWorkspace();
+        provisioned.setStorageKey("workspaces/" + WORKSPACE);
+        when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
+        SandboxSessionManager manager = enabledManager();
+        SandboxSession session = manager.acquire(TASK, PROJECT, WORKSPACE);
+
+        manager.release(WORKSPACE, UUID.randomUUID());
+
+        assertThat(manager.require(WORKSPACE)).isSameAs(session);
+        verify(client, never()).destroySandbox(session.sandboxId());
+        verify(writeLeases, never()).release(any(WorkspaceWriteLease.class));
     }
 
     @Test
@@ -359,7 +525,7 @@ class SandboxSessionManagerTest {
         when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
         SandboxSessionManager manager = enabledManager();
         SandboxSession session = manager.acquire(TASK, PROJECT, WORKSPACE);
-        manager.release(WORKSPACE);
+        manager.release(WORKSPACE, TASK);
 
         manager.renewActiveLeases();
 

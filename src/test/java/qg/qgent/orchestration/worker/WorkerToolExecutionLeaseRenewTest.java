@@ -72,6 +72,7 @@ class WorkerToolExecutionLeaseRenewTest {
         WorkerToolExecution result = port.runTool(workspaceId, repositoryId);
 
         assertThat(result.getStatus()).isEqualTo("SUCCEEDED");
+        verify(sessions).renewWriteLease(workspaceId);
         verify(client, times(1)).renewSandbox(sandboxId);
         verify(client, times(1)).submitToolExecution(eq(sandboxId), any());
     }

@@ -20,7 +20,7 @@ import java.util.UUID;
 
 /**
  * MR_FIRST 交付执行器（后端3）：消费 {@link DeliveryStartedDomainEvent} 与兜底扫描，
- * 驱动系统授权批次的逐仓库交付（commit → push → 创建 PR → 状态回写）。
+ * 驱动系统授权批次的逐仓库交付（commit → push → 状态回写），随后等待 MR 前预检。
  * <p>
  * 双通道触发，幂等由批次租约保证：
  * <ul>
@@ -134,7 +134,14 @@ public class MrFirstDeliveryService {
                     projectId, taskId, reviewBatchId);
             return;
         }
-        diffReviewBatches.deliverSystemAcceptedBatch(projectId, taskId, reviewBatchId,
-                batch.getDeliveryClaimToken());
+        String claimToken = batch.getDeliveryClaimToken();
+        try {
+            diffReviewBatches.deliverSystemAcceptedBatch(projectId, taskId, reviewBatchId, claimToken);
+        } catch (RuntimeException failure) {
+            // 监听器会吞掉异常以免影响其他 after-commit 监听器。先交还当前 token，避免
+            // Worker 瞬态故障或 Workspace 写租约竞争把任务无操作地卡在 DELIVERING 半小时。
+            diffReviewBatches.relinquishSystemDeliveryClaim(projectId, taskId, reviewBatchId, claimToken);
+            throw failure;
+        }
     }
 }

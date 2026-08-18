@@ -1,14 +1,17 @@
 package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.test.util.ReflectionTestUtils;
+import qg.qgent.api.ApiException;
 import qg.qgent.dto.DiffReviewBatchResponse;
 import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
+import qg.qgent.orchestration.worker.WorkerGitDiff;
 
 import java.time.LocalDateTime;
 import java.util.Collection;
@@ -178,6 +181,190 @@ class DiffReviewBatchServiceTest {
     }
 
     @Test
+    void mrFirstStaleSnapshotNeverCommitsOrPushesUnreviewedWorkspaceChanges() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        TransactionTemplate transactions = immediateTransactions();
+        SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
+        DiffDeliveryService deliveries = mock(DiffDeliveryService.class);
+        MergeRequestService mergeRequests = mock(MergeRequestService.class);
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        UUID batchId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        task.setDeliveryMode("MR_FIRST"); task.setStatus("DELIVERING");
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId); batch.setProjectId(projectId); batch.setTaskId(taskId);
+        batch.setWorkspaceId(workspaceId); batch.setReviewStatus("ACCEPTED");
+        batch.setConfirmationSource("SYSTEM"); batch.setDeliveryStatus("DELIVERING");
+        batch.setDeliveryClaimToken("claim");
+        DiffEntity diff = new DiffEntity();
+        diff.setId(UUID.randomUUID()); diff.setProjectId(projectId); diff.setTaskId(taskId);
+        diff.setWorkspaceId(workspaceId); diff.setReviewBatchId(batchId); diff.setProjectRepositoryId(repositoryId);
+        diff.setHeadCommit("head"); diff.setWorkingTreeHash("reviewed-hash"); diff.setStatus("ACCEPTED");
+        diff.setDeliveryStatus("NOT_STARTED");
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(batches.selectById(batchId)).thenReturn(batch);
+        when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
+        when(diffs.selectList(any())).thenReturn(List.of(diff));
+        when(diffs.selectByIdForUpdate(diff.getId())).thenReturn(diff);
+        when(worker.createWorkspaceGitDiff(workspaceId, repositoryId)).thenThrow(new ApiException(HttpStatus.CONFLICT,
+                "DIFF_SNAPSHOT_STALE", "workspace changed after final Diff"));
+        DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
+                mock(ProjectRepositoryMapper.class), worker, mergeRequests, mock(ProjectAccessService.class),
+                mock(EventService.class), transactions, mock(DiffSnapshotStorage.class), deliveries,
+                mock(MergeRequestMapper.class), mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
+
+        service.deliverSystemAcceptedBatch(projectId, taskId, batchId, "claim");
+
+        assertEquals("DELIVERY_FAILED", task.getStatus());
+        assertEquals("FAILED", batch.getDeliveryStatus());
+        assertEquals("FAILED", diff.getDeliveryStatus());
+        verifyNoInteractions(deliveries, mergeRequests);
+    }
+
+    @Test
+    void mrFirstDeliveryHoldsWorkspaceWriteLeaseUntilWorkerPreflightFinishes() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        TransactionTemplate transactions = immediateTransactions();
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        UUID batchId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        task.setDeliveryMode("MR_FIRST"); task.setStatus("DELIVERING");
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId); batch.setProjectId(projectId); batch.setTaskId(taskId);
+        batch.setReviewStatus("ACCEPTED"); batch.setConfirmationSource("SYSTEM");
+        batch.setDeliveryStatus("DELIVERING"); batch.setDeliveryClaimToken("claim");
+        DiffEntity diff = new DiffEntity();
+        diff.setId(UUID.randomUUID()); diff.setProjectId(projectId); diff.setTaskId(taskId);
+        diff.setWorkspaceId(workspaceId); diff.setReviewBatchId(batchId); diff.setProjectRepositoryId(repositoryId);
+        diff.setHeadCommit("head"); diff.setWorkingTreeHash("hash"); diff.setDeliveryStatus("COMMITTED");
+        SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
+        WorkerGitDiff current = new WorkerGitDiff();
+        current.setHeadCommit("head"); current.setDiffHash("hash");
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(batches.selectById(batchId)).thenReturn(batch);
+        when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
+        when(diffs.selectList(any())).thenReturn(List.of(diff));
+        when(diffs.selectByIdForUpdate(diff.getId())).thenReturn(diff);
+        doAnswer(invocation -> {
+            diff.setDeliveryStatus("PUSHED");
+            return 1;
+        }).when(diffs).markPushed(eq(diff.getId()), any());
+        when(worker.createWorkspaceGitDiff(workspaceId, repositoryId)).thenReturn(current);
+        DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
+                mock(ProjectRepositoryMapper.class), worker, mock(MergeRequestService.class),
+                mock(ProjectAccessService.class), mock(EventService.class), transactions,
+                mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class), mock(MergeRequestMapper.class),
+                mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
+        WorkspaceWriteLeaseService writeLeases = mock(WorkspaceWriteLeaseService.class);
+        WorkspaceWriteLease lease = mock(WorkspaceWriteLease.class);
+        when(writeLeases.acquire(projectId, workspaceId, taskId)).thenReturn(lease);
+        service.setWorkspaceWriteLeases(writeLeases);
+
+        service.deliverSystemAcceptedBatch(projectId, taskId, batchId, "claim");
+
+        verify(writeLeases).acquire(projectId, workspaceId, taskId);
+        verify(writeLeases).renew(lease);
+        verify(writeLeases).release(lease);
+    }
+
+    @Test
+    void retryOfCommittedRepositoryOnlyPushesAndDoesNotPreflightOldWorkingTree() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        ProjectAccessService access = mock(ProjectAccessService.class);
+        SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
+        MergeRequestService mergeRequests = mock(MergeRequestService.class);
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        UUID batchId = UUID.randomUUID(), repositoryId = UUID.randomUUID(), actor = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        task.setCreatedBy(actor); task.setStatus("DELIVERY_FAILED");
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId); batch.setProjectId(projectId); batch.setTaskId(taskId);
+        batch.setReviewStatus("ACCEPTED"); batch.setDeliveryStatus("FAILED");
+        DiffEntity committed = new DiffEntity();
+        committed.setId(UUID.randomUUID()); committed.setProjectId(projectId); committed.setTaskId(taskId);
+        committed.setTaskRunId(UUID.randomUUID()); committed.setCreatedAt(LocalDateTime.now());
+        committed.setWorkspaceId(workspaceId); committed.setReviewBatchId(batchId);
+        committed.setProjectRepositoryId(repositoryId); committed.setStatus("ACCEPTED");
+        committed.setDeliveryStatus("COMMITTED"); committed.setHeadCommit("committed-head");
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+        when(batches.selectOne(any())).thenReturn(batch);
+        when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
+        when(batches.selectById(batchId)).thenReturn(batch);
+        when(diffs.selectList(any())).thenReturn(List.of(committed));
+        when(diffs.selectByIdForUpdate(committed.getId())).thenReturn(committed);
+        doAnswer(invocation -> {
+            committed.setDeliveryStatus("PUSHED");
+            return 1;
+        }).when(diffs).markPushed(eq(committed.getId()), any());
+        DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
+                mock(ProjectRepositoryMapper.class), worker, mergeRequests, access, mock(EventService.class),
+                immediateTransactions(), mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class),
+                mock(MergeRequestMapper.class), mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
+
+        service.retryDelivery(projectId, taskId, actor);
+
+        verifyNoInteractions(worker);
+        verify(mergeRequests).pushAcceptedBranch(projectId, taskId, repositoryId);
+        assertEquals("PUSHED", committed.getDeliveryStatus());
+        assertEquals("DELIVERED", batch.getDeliveryStatus());
+        assertEquals("SUCCEEDED", task.getStatus());
+    }
+
+    @Test
+    void pushFailureAfterCommitKeepsCommittedStateForRetry() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        ProjectAccessService access = mock(ProjectAccessService.class);
+        SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
+        MergeRequestService mergeRequests = mock(MergeRequestService.class);
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        UUID batchId = UUID.randomUUID(), repositoryId = UUID.randomUUID(), actor = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        task.setCreatedBy(actor); task.setStatus("DELIVERY_FAILED");
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId); batch.setProjectId(projectId); batch.setTaskId(taskId);
+        batch.setReviewStatus("ACCEPTED"); batch.setDeliveryStatus("FAILED");
+        DiffEntity committed = new DiffEntity();
+        committed.setId(UUID.randomUUID()); committed.setProjectId(projectId); committed.setTaskId(taskId);
+        committed.setTaskRunId(UUID.randomUUID()); committed.setCreatedAt(LocalDateTime.now());
+        committed.setWorkspaceId(workspaceId); committed.setReviewBatchId(batchId);
+        committed.setProjectRepositoryId(repositoryId); committed.setStatus("ACCEPTED");
+        committed.setDeliveryStatus("COMMITTED"); committed.setHeadCommit("committed-head");
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+        when(batches.selectOne(any())).thenReturn(batch);
+        when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
+        when(batches.selectById(batchId)).thenReturn(batch);
+        when(diffs.selectList(any())).thenReturn(List.of(committed));
+        when(diffs.selectByIdForUpdate(committed.getId())).thenReturn(committed);
+        doThrow(new ApiException(HttpStatus.BAD_GATEWAY, "WORKER_PUSH_FAILED", "push failed"))
+                .when(mergeRequests).pushAcceptedBranch(projectId, taskId, repositoryId);
+        DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
+                mock(ProjectRepositoryMapper.class), worker, mergeRequests, access, mock(EventService.class),
+                immediateTransactions(), mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class),
+                mock(MergeRequestMapper.class), mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
+
+        service.retryDelivery(projectId, taskId, actor);
+
+        verifyNoInteractions(worker);
+        assertEquals("COMMITTED", committed.getDeliveryStatus());
+        assertEquals("WORKER_PUSH_FAILED", committed.getDeliveryFailureCode());
+        assertEquals("DELIVERY_FAILED", task.getStatus());
+    }
+
+    @Test
     void transientPreflightFailureRestoresPendingBatchForRetry() {
         DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
         DiffMapper diffs = mock(DiffMapper.class);
@@ -259,7 +446,7 @@ class DiffReviewBatchServiceTest {
         batch.setReviewStatus("ACCEPTED"); batch.setDeliveryStatus("DELIVERING");
         batch.setDeliveryClaimToken("claim"); batch.setUpdatedAt(LocalDateTime.now());
         DiffEntity diff = new DiffEntity(); diff.setId(UUID.randomUUID());
-        diff.setReviewBatchId(batchId); diff.setDeliveryStatus("MR_CREATED");
+        diff.setReviewBatchId(batchId); diff.setDeliveryStatus("PUSHED");
         when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
         when(diffs.selectList(any())).thenReturn(List.of(diff));
         DiffReviewBatchService service = service(batches, diffs, tasks, mock(SandboxWorkerClient.class),
@@ -270,6 +457,86 @@ class DiffReviewBatchServiceTest {
         verify(notifications).notify(actor, projectId, null, "TASK_COMPLETED", "任务完成：登录接口",
                 "实现登录接口", taskId.toString());
         assertEquals("SUCCEEDED", task.getStatus());
+    }
+
+    @Test
+    void mrFirstPushCompletionWaitsForPreflightWithoutFailureNotification() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        TransactionTemplate transactions = immediateTransactions();
+        NotificationService notifications = mock(NotificationService.class);
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), batchId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        UUID groupId = UUID.randomUUID();
+        UUID orchestratorId = UUID.randomUUID();
+        task.setId(taskId); task.setProjectId(projectId); task.setCreatedBy(UUID.randomUUID());
+        task.setRequirementGroupId(groupId);
+        task.setDeliveryMode("MR_FIRST"); task.setStatus("DELIVERING"); task.setTitle("登录接口");
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId); batch.setProjectId(projectId); batch.setTaskId(taskId);
+        batch.setReviewStatus("ACCEPTED"); batch.setDeliveryStatus("DELIVERING");
+        batch.setDeliveryClaimToken("claim"); batch.setUpdatedAt(LocalDateTime.now());
+        DiffEntity diff = new DiffEntity(); diff.setId(UUID.randomUUID());
+        diff.setReviewBatchId(batchId); diff.setDeliveryStatus("PUSHED");
+        when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
+        when(diffs.selectList(any())).thenReturn(List.of(diff));
+        MessageService messages = mock(MessageService.class);
+        OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
+        when(orchestratorAgents.resolveIdForTask(task)).thenReturn(orchestratorId);
+        DiffReviewBatchService service = service(batches, diffs, tasks, mock(SandboxWorkerClient.class),
+                mock(ProjectAccessService.class), transactions, notifications);
+        service.setMessageService(messages);
+        service.setOrchestratorAgents(orchestratorAgents);
+
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "finish", task, batchId, "claim");
+
+        assertEquals("WAITING_PREFLIGHT", task.getStatus());
+        verify(notifications, never()).notify(any(), any(), any(), any(), any(), any(), any());
+        verify(messages).sendAsAgent(eq(groupId), eq(orchestratorId), argThat(body ->
+                "TASK_STATUS".equals(body.getType())
+                        && "agent-task-".concat(taskId.toString()).concat("-waiting-preflight")
+                        .equals(body.getClientMessageId())
+                        && "WAITING_PREFLIGHT".equals(body.getContent().get("status"))
+                        && "MR_FIRST".equals(body.getContent().get("deliveryMode"))));
+    }
+
+    @Test
+    void mrFirstPreflightCardFallsBackToSystemWithoutOrchestratorAgent() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        TransactionTemplate transactions = immediateTransactions();
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), batchId = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId); task.setProjectId(projectId); task.setRequirementGroupId(groupId);
+        task.setDeliveryMode("MR_FIRST"); task.setStatus("DELIVERING");
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(batchId); batch.setProjectId(projectId); batch.setTaskId(taskId);
+        batch.setReviewStatus("ACCEPTED"); batch.setDeliveryStatus("DELIVERING");
+        batch.setDeliveryClaimToken("claim"); batch.setUpdatedAt(LocalDateTime.now());
+        DiffEntity diff = new DiffEntity(); diff.setId(UUID.randomUUID());
+        diff.setReviewBatchId(batchId); diff.setDeliveryStatus("PUSHED");
+        when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);
+        when(diffs.selectList(any())).thenReturn(List.of(diff));
+        MessageService messages = mock(MessageService.class);
+        OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
+        when(orchestratorAgents.resolveIdForTask(task)).thenReturn(null);
+        doThrow(new RuntimeException("message store unavailable")).when(messages).sendAsSystem(eq(groupId), any());
+        DiffReviewBatchService service = service(batches, diffs, tasks, mock(SandboxWorkerClient.class),
+                mock(ProjectAccessService.class), transactions, mock(NotificationService.class));
+        service.setMessageService(messages);
+        service.setOrchestratorAgents(orchestratorAgents);
+
+        assertDoesNotThrow(() -> org.springframework.test.util.ReflectionTestUtils
+                .invokeMethod(service, "finish", task, batchId, "claim"));
+
+        assertEquals("WAITING_PREFLIGHT", task.getStatus());
+        verify(messages).sendAsSystem(eq(groupId), argThat(body ->
+                "TASK_STATUS".equals(body.getType())
+                        && "WAITING_PREFLIGHT".equals(body.getContent().get("status"))));
+        verify(messages, never()).sendAsAgent(any(), any(), any());
     }
 
     private DiffReviewBatchService service(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,

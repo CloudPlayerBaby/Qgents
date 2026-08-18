@@ -12,6 +12,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.transaction.event.TransactionalEventListener;
 
 import qg.qgent.service.TaskResumeRequestedEvent;
 
@@ -28,6 +29,15 @@ class TaskResumeListenerTest {
                 .getAnnotation(Async.class);
 
         assertEquals("taskOrchestratorExecutor", async.value());
+    }
+
+    @Test
+    void acceptsSchedulerEventsPublishedOutsideTransactions() throws NoSuchMethodException {
+        TransactionalEventListener listener = TaskResumeListener.class
+                .getMethod("onTaskResumeRequested", TaskResumeRequestedEvent.class)
+                .getAnnotation(TransactionalEventListener.class);
+
+        assertEquals(true, listener.fallbackExecution());
     }
 
     @Test

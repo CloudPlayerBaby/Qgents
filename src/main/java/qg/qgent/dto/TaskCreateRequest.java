@@ -42,7 +42,7 @@ public class TaskCreateRequest {
     private UUID continuationOfTaskId;
 
     @Size(max = 512)
-    @Schema(description = "Optional common base ref")
+    @Schema(description = "可选的公共基线分支名；不接受 commit SHA，缺省用项目仓库默认分支")
     private String baseRef;
 
     @Schema(description = "交付模式：DIFF_FIRST/MR_FIRST；不传则自动判定（Planner/规则），续作沿用源任务")

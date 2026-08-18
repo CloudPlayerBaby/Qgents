@@ -117,6 +117,22 @@ class WorkspaceManagerServiceTest {
         assertEquals("preserve me", Files.readString(workspace.resolve("backend").resolve("local-change.txt")));
     }
 
+    @Test
+    void rejectsTestSnapshotWhenTheSourceHeadChangedAfterTheTestWasRequested() throws Exception {
+        UUID repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        SandboxWorkerProperties properties = properties();
+        prepareBareRepository(Path.of(properties.getGitStoreRoot()).resolve(repositoryId + ".git"));
+        WorkspaceManagerService service = service(properties, new FakeContainerRuntime());
+        WorkspaceResponse workspace = service.provision(workspaceId, request(repositoryId));
+
+        WorkerException failure = assertThrows(WorkerException.class,
+                () -> service.snapshotForTest(workspaceId, repositoryId, UUID.randomUUID(), workspace.getProjectId(),
+                        "f".repeat(40)));
+
+        assertEquals("TEST_SNAPSHOT_HEAD_MISMATCH", failure.getCode());
+    }
+
     private WorkspaceManagerService service(SandboxWorkerProperties properties, FakeContainerRuntime runtime) {
         WorkspaceOperationLock lock = new WorkspaceOperationLock(properties);
         SandboxService sandboxes = new SandboxService(runtime, properties,

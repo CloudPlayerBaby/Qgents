@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
+import qg.qgent.api.ApiException;
 import qg.qgent.entity.DiffReviewBatchEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.mapper.DiffReviewBatchMapper;
@@ -18,6 +19,7 @@ import java.util.UUID;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -62,6 +64,24 @@ class MrFirstDeliveryServiceTest {
         verify(fixture.batches).updateById(fixture.batch);
         verify(fixture.delivery).deliverSystemAcceptedBatch(fixture.projectId, fixture.task.getId(),
                 fixture.batch.getId(), fixture.batch.getDeliveryClaimToken());
+    }
+
+    @Test
+    void transientDeliveryFailureRelinquishesCurrentClaimForPromptRecovery() {
+        Fixture fixture = new Fixture();
+        fixture.batch.setDeliveryClaimToken("claim-1");
+        when(fixture.tasks.selectById(fixture.task.getId())).thenReturn(fixture.task);
+        when(fixture.batches.selectById(fixture.batch.getId())).thenReturn(fixture.batch);
+        doThrow(new ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                "SANDBOX_WORKER_UNAVAILABLE", "worker unavailable"))
+                .when(fixture.delivery).deliverSystemAcceptedBatch(fixture.projectId, fixture.task.getId(),
+                        fixture.batch.getId(), "claim-1");
+
+        fixture.service.onDeliveryStarted(new DeliveryStartedDomainEvent(fixture.projectId, fixture.task.getId(),
+                fixture.batch.getId(), fixture.batch.getDeliveryOperationId()));
+
+        verify(fixture.delivery).relinquishSystemDeliveryClaim(fixture.projectId, fixture.task.getId(),
+                fixture.batch.getId(), "claim-1");
     }
 
     private static final class Fixture {

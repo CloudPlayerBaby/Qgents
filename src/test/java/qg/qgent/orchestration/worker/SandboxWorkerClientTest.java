@@ -108,14 +108,16 @@ class SandboxWorkerClientTest {
         UUID snapshot = UUID.fromString("00000000-0000-0000-0000-000000000008");
         UUID project = UUID.fromString("00000000-0000-0000-0000-000000000009");
         server.expect(once(), requestTo(BASE + "/internal/v1/workspaces/" + WORKSPACE
-                        + "/repositories/" + REPO + "/test-snapshots/" + snapshot + "?projectId=" + project))
+                        + "/repositories/" + REPO + "/test-snapshots/" + snapshot + "?projectId=" + project
+                        + "&expectedHeadCommit=0123456789012345678901234567890123456789"))
                 .andExpect(method(HttpMethod.POST))
                 .andRespond(withSuccess("""
                         {"id":"%s","projectId":"%s","storageKey":"workspaces/%s","status":"READY",
                          "repositories":[],"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-14T00:00:00Z"}
                         """.formatted(snapshot, project, snapshot), MediaType.APPLICATION_JSON));
 
-        WorkerWorkspace result = client.createTestSnapshot(WORKSPACE, REPO, snapshot, project);
+        WorkerWorkspace result = client.createTestSnapshot(WORKSPACE, REPO, snapshot, project,
+                "0123456789012345678901234567890123456789");
 
         assertEquals(snapshot, result.getId());
         server.verify();

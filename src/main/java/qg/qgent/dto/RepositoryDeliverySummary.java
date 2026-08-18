@@ -8,7 +8,7 @@ import lombok.NoArgsConstructor;
 /**
  * 单仓库交付摘要（契约 v1.8.0 §20，CODE 交付项）。
  * <p>
- * deliveryStatus 枚举：NOT_STARTED / COMMITTED / MR_CREATED / FAILED；
+ * deliveryStatus 枚举：NOT_STARTED / COMMITTED / PUSHED / MR_CREATED / FAILED；
  * failureCode / failureReason 仅失败时非 null；mergeRequest 仅 MR_CREATED 且存在真实 MR 时非 null。
  */
 @Data
@@ -29,7 +29,7 @@ public class RepositoryDeliverySummary {
     private String repositoryName;
 
     /**
-     * 交付状态：NOT_STARTED / COMMITTED / MR_CREATED / FAILED。
+     * 交付状态：NOT_STARTED / COMMITTED / PUSHED / MR_CREATED / FAILED。
      */
     @Schema(description = "交付状态")
     private String deliveryStatus;

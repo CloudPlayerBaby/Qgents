@@ -8,7 +8,8 @@ import lombok.NoArgsConstructor;
 /**
  * 任务中心待处理事项提示。
  * <p>
- * kind 枚举：INPUT_REQUIRED/APPROVAL_REQUIRED/BLOCKED/EXECUTION_FAILED/DIFF_CONFIRMATION_REQUIRED/DIFF_REJECTED/DELIVERY_FAILED。
+ * kind 枚举：INPUT_REQUIRED/APPROVAL_REQUIRED/BLOCKED/EXECUTION_FAILED/DIFF_CONFIRMATION_REQUIRED/
+ * PREFLIGHT_REQUIRED/DIFF_REJECTED/DELIVERY_FAILED。
  * 只返回脱敏用户可见摘要；taskRunId/inputRequestId/diffReviewBatchId/repositoryId 供前端跳转
  * 具体处理入口，无对应关联时为 null。没有待处理事项时该对象整体为 null。
  */
@@ -48,7 +49,8 @@ public class Attention {
     private String inputRequestId;
 
     /**
-     * 关联的总 Diff 批次 ID（DIFF_CONFIRMATION_REQUIRED/DIFF_REJECTED/DELIVERY_FAILED 时非 null）。
+     * 关联的总 Diff 批次 ID（DIFF_CONFIRMATION_REQUIRED/PREFLIGHT_REQUIRED/DIFF_REJECTED/
+     * DELIVERY_FAILED 时非 null）。
      */
     @Schema(description = "关联总 Diff 批次 ID")
     private String diffReviewBatchId;

@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Qgents Workspace 与 Sandbox Worker 内部接口
-  version: 0.5.0
-  description: 内部控制面接口。调用方不能提交宿主机路径、Git 远端、凭证或任意 Git 参数。
+  version: 0.6.0
+  description: 内部控制面接口。调用方不能提交宿主机路径、Git 远端、凭证或任意 Git 参数。Controller 层非 2xx 响应统一为 {code,message} 错误体；协议层错误返回 INVALID_REQUEST_BODY / INVALID_MEDIA_TYPE / INVALID_ARGUMENT / MISSING_ARGUMENT / METHOD_NOT_ALLOWED / NOT_FOUND。仅安全过滤层在 Controller 之前产生的 401/403 可能使用非统一体。
 paths:
   /internal/v1/git-resolutions:
     post:
@@ -60,12 +60,13 @@ paths:
       - {$ref: '#/components/parameters/RepositoryId'}
       - {name: snapshotWorkspaceId, in: path, required: true, schema: {type: string, format: uuid}}
       - {name: projectId, in: query, required: true, schema: {type: string, format: uuid}}
+      - {name: expectedHeadCommit, in: query, required: true, schema: {type: string, minLength: 40, maxLength: 64, pattern: '^[0-9a-fA-F]{40,64}$'}, description: 创建 TestRun 时固定的源 Workspace HEAD；不一致时拒绝快照，避免测试结果归因到后续修改}
     post:
       operationId: createWorkspaceTestSnapshot
-      description: 将当前未提交工作树以受控 patch 固化到独立临时 Workspace；相同快照编号可幂等重试。
+      description: 将指定 HEAD 的当前未提交工作树以受控 patch 固化到独立临时 Workspace；相同快照编号可幂等重试。源 HEAD 已变化时拒绝，不测试后续修改。
       responses:
         '200': {description: 已固化且哈希校验通过的隔离 Workspace, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
-        '409': {description: HEAD 或快照哈希不一致}
+        '409': {description: 快照编号非法、项目不匹配、HEAD 或快照哈希不一致}
   /internal/v1/workspaces/{workspaceId}/repositories/{repositoryId}/git/diff:
     parameters: [{$ref: '#/components/parameters/WorkspaceId'}, {$ref: '#/components/parameters/RepositoryId'}]
     post:
@@ -77,13 +78,13 @@ paths:
     post:
       operationId: commitWorkspaceGitDiff
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GitCommitRequest'}}}}
-      responses: {'200': {description: 真实 Commit, content: {application/json: {schema: {$ref: '#/components/schemas/GitCommit'}}}}, '409': {description: Workspace 在用或审查快照不匹配}}
+      responses: {'200': {description: '真实 Commit；同一 operationId 重试幂等返回原提交', content: {application/json: {schema: {$ref: '#/components/schemas/GitCommit'}}}}, '409': {description: Workspace 在用或审查快照不匹配}, '422': {description: 底层 Git 提交失败}}
   /internal/v1/workspaces/{workspaceId}/repositories/{repositoryId}/git/push:
     parameters: [{$ref: '#/components/parameters/WorkspaceId'}, {$ref: '#/components/parameters/RepositoryId'}]
     post:
       operationId: pushWorkspaceBranch
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GitPushRequest'}}}}
-      responses: {'200': {description: 推送并核验成功, content: {application/json: {schema: {$ref: '#/components/schemas/GitPush'}}}}, '422': {description: origin 未配置或推送失败}}
+      responses: {'200': {description: 推送并核验成功, content: {application/json: {schema: {$ref: '#/components/schemas/GitPush'}}}}, '409': {description: expectedHeadCommit 与本地 HEAD 不一致}, '422': {description: origin 未配置或推送失败}, '502': {description: 推送后远端 SHA 核验不一致}, '504': {description: 推送命令超时}}
   /internal/v1/git-stores/{repositoryId}/sync:
     parameters: [{$ref: '#/components/parameters/RepositoryId'}]
     post:
@@ -94,8 +95,11 @@ paths:
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GitStoreSyncRequest'}}}}
       responses:
         '200': {description: bare Git Store 已初始化并完成指定分支同步, content: {application/json: {schema: {$ref: '#/components/schemas/GitStoreSync'}}}}
+        '401': {description: 缺少内部服务 Bearer Token}
+        '403': {description: 内部服务 Token 不匹配}
         '409': {description: 远程 HEAD 与预期 SHA 不一致}
         '422': {description: GitHub URL、分支或本地 Git Store 不合法}
+        '504': {description: Git 命令超时}
   /internal/v1/sandboxes:
     post:
       operationId: createSandbox
@@ -103,9 +107,10 @@ paths:
       responses:
         '201': {description: Sandbox 已创建（相同 sandboxId 与相同任务/Workspace 规格的重复请求幂等返回已有 Sandbox）, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}
         '409': {description: 相同 sandboxId 但任务/Workspace 规格不一致（SANDBOX_ID_CONFLICT）}
+        '422': {description: 重复仓库、镜像不在白名单或 workspaceStorageKey 非法}
   /internal/v1/sandboxes/{sandboxId}:
     parameters: [{$ref: '#/components/parameters/SandboxId'}]
-    get: {operationId: getSandbox, responses: {'200': {description: Sandbox 状态, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}}}
+    get: {operationId: getSandbox, responses: {'200': {description: Sandbox 状态, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}, '404': {description: Sandbox 不存在}}}
     delete: {operationId: destroySandbox, responses: {'204': {description: Sandbox 已销毁，Workspace 保留}}}
   /internal/v1/sandboxes/{sandboxId}/lease/renew:
     parameters: [{$ref: '#/components/parameters/SandboxId'}]
@@ -229,6 +234,7 @@ components:
     GitDiff:
       type: object
       properties:
+        baseCommit: {type: string, description: 生成 Diff 时固定的基准提交 SHA}
         headCommit: {type: string}
         diffHash: {type: string}
         patch: {type: string}
@@ -241,7 +247,7 @@ components:
       properties:
         path: {type: string}
         previousPath: {type: [string, 'null']}
-        changeType: {type: string, enum: [ADDED, MODIFIED, DELETED, RENAMED]}
+        changeType: {type: string, enum: [ADDED, MODIFIED, DELETED, RENAMED, COPIED]}
         additions: {type: integer}
         deletions: {type: integer}
         binary: {type: boolean}
@@ -317,6 +323,8 @@ components:
         executionId: {type: string, format: uuid}
         repositoryId: {type: string, format: uuid}
         tool: {type: string, enum: [process.exec, file.read, file.list, file.search, file.write, file.patch]}
+        arguments: {type: object, maxProperties: 64, description: 各工具的结构化参数（如 FilePatchArguments）}
+        timeoutSeconds: {type: integer, minimum: 1, maximum: 3600}
     # file.patch 只对已有 UTF-8 文本文件做精确局部修改，严格按声明行号应用统一 Diff，
     # 禁止模糊匹配/自动偏移/冲突覆盖；失败保证原文件不变。参数与结果见 FilePatchArguments/FilePatchResult。
     FilePatchArguments:
@@ -333,8 +341,6 @@ components:
         sha256: {type: string}
         bytes: {type: integer}
         changed: {type: boolean}
-        arguments: {type: object, maxProperties: 64}
-        timeoutSeconds: {type: integer, minimum: 1, maximum: 3600}
     ToolExecution:
       type: object
       properties:

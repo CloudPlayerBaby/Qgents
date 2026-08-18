@@ -7,7 +7,7 @@ import qg.qgent.sandboxworker.persistence.ToolExecutionLogMapper;
 import qg.qgent.sandboxworker.persistence.ToolExecutionMapper;
 
 /** 验证独立工作节点可以创建 Spring 应用上下文。 */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = "sandbox.runtime=fake")
 class SandboxWorkerApplicationTest {
     @MockitoBean
     private ToolExecutionMapper toolExecutionMapper;

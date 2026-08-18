@@ -96,6 +96,24 @@ class TaskRunRecoverySchedulerTest {
     }
 
     @Test
+    void resumesPendingTaskAfterWorkspaceWriteLeaseIsReleased() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("PENDING");
+        when(tasks.selectPendingWithAvailableWorkspaceLease(10)).thenReturn(List.of(taskId));
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        scheduler.recover();
+
+        verify(events).publishEvent(org.mockito.ArgumentMatchers.argThat((TaskResumeRequestedEvent event) ->
+                event.taskId().equals(taskId) && event.projectId().equals(projectId)
+                        && event.startStepId() == null && event.retryOfTaskRunId() == null));
+    }
+
+    @Test
     void reclaimsStaleRunAndStepsAndPublishesResume() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();

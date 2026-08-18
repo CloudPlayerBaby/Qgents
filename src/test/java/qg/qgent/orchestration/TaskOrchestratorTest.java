@@ -41,6 +41,28 @@ import static org.mockito.Mockito.*;
 class TaskOrchestratorTest {
 
     @Test
+    void workspaceLeaseConflictDefersTaskWithoutReleasingCurrentWriterSession() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        doThrow(new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                "WORKSPACE_WRITE_LEASE_HELD", "another task is writing"))
+                .when(fixture.sessions).acquire(task.getId(), task.getProjectId(), task.getWorkspaceId());
+        when(fixture.tasks.deferForWorkspaceWriteLease(task.getProjectId(), task.getId())).thenAnswer(invocation -> {
+            task.setStatus("PENDING");
+            return 1;
+        });
+
+        fixture.orchestrator(fixture.sequenceAgent()).orchestrate(task.getProjectId(), task.getId());
+
+        verify(fixture.tasks).deferForWorkspaceWriteLease(task.getProjectId(), task.getId());
+        verify(fixture.events).publish(eq(task.getProjectId()), eq(task.getRequirementGroupId()),
+                eq("task.updated"), eq(task.getId().toString()), any());
+        verify(fixture.notifications, never()).notify(any(), any(), any(), any(), any(), any(), any());
+        verify(fixture.sessions).release(task.getWorkspaceId(), task.getId());
+        assertThat(fixture.updatedStatuses()).doesNotContain("FAILED");
+    }
+
+    @Test
     void plannerCreatesNoTaskRunAndFormalGraphStartsAtDeveloper() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
@@ -99,6 +121,36 @@ class TaskOrchestratorTest {
         assertThat(diffRequest.getContent().get("title")).isEqualTo(task.getTitle());
         assertThat(diffRequest.getContent().get("additions")).isEqualTo(5);
         assertThat(diffRequest.getContent().get("deletions")).isEqualTo(3);
+    }
+
+    @Test
+    void sendingDiffCardFallsBackToSystemWithoutLosingDiffType() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        when(fixture.orchestratorAgents.resolveIdForTask(task)).thenReturn(null);
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING));
+
+        UUID batchId = UUID.randomUUID();
+        DiffEntity diff = new DiffEntity();
+        diff.setId(UUID.randomUUID());
+        diff.setChangeStats(Map.of("additions", 2, "deletions", 1));
+        when(fixture.diffs.createPendingBatch(any(), any(), any())).thenReturn(batchId);
+        when(fixture.diffMapper.selectList(any())).thenReturn(List.of(diff));
+
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        ArgumentCaptor<MessageSendRequest> cards = ArgumentCaptor.forClass(MessageSendRequest.class);
+        verify(fixture.messages, atLeastOnce()).sendAsSystem(eq(task.getRequirementGroupId()), cards.capture());
+        MessageSendRequest diffCard = cards.getAllValues().stream()
+                .filter(card -> "DIFF".equals(card.getType()))
+                .findFirst().orElseThrow();
+        assertThat(diffCard.getContent()).containsEntry("diffId", diff.getId().toString());
     }
 
     @Test
@@ -164,14 +216,14 @@ class TaskOrchestratorTest {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         doThrow(new RuntimeException("sandbox worker down"))
-                .when(fixture.sandboxSessionManager).acquire(any(), any(), any());
+                .when(fixture.sessions).acquire(any(), any(), any());
 
         fixture.orchestrator(fixture.success(OrchestrationPhase.PLAN))
                 .orchestrate(task.getProjectId(), task.getId());
 
         assertThat(fixture.updatedStatuses()).contains("FAILED");
         verifyNoInteractions(fixture.taskRuns);
-        verify(fixture.sandboxSessionManager, times(1)).acquire(any(), any(), any());
+        verify(fixture.sessions, times(1)).acquire(any(), any(), any());
     }
 
     @Test
@@ -179,7 +231,7 @@ class TaskOrchestratorTest {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         doThrow(new RuntimeException("sandbox worker down"))
-                .when(fixture.sandboxSessionManager).acquire(any(), any(), any());
+                .when(fixture.sessions).acquire(any(), any(), any());
 
         fixture.orchestrator(fixture.success(OrchestrationPhase.PLAN))
                 .orchestrate(task.getProjectId(), task.getId());
@@ -396,7 +448,7 @@ class TaskOrchestratorTest {
         private final MessageService messages = mock(MessageService.class);
         private final NotificationService notifications = mock(NotificationService.class);
         private final OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
-        private final SandboxSessionManager sandboxSessionManager = mock(SandboxSessionManager.class);
+        private final SandboxSessionManager sessions = mock(SandboxSessionManager.class);
         private final java.util.concurrent.ExecutorService timeoutExecutor =
                 java.util.concurrent.Executors.newSingleThreadExecutor();
         private final ThreadLocal<Agent> currentAgent = new ThreadLocal<>();
@@ -454,7 +506,7 @@ class TaskOrchestratorTest {
             currentAgent.set(agent);
             return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry, context,
                     taskRuns, tasks, steps, events,
-                    notifications, sandboxSessionManager, artifacts, diffs,
+                    notifications, sessions, artifacts, diffs,
                     diffMapper, messages, orchestratorAgents,
                     materialization, timeoutExecutor, timeout);
         }

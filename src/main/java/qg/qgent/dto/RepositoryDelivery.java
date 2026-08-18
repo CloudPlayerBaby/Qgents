@@ -8,7 +8,7 @@ import lombok.NoArgsConstructor;
 /**
  * 总 Diff 批次中单个仓库的交付详情（repositoryDeliveries 元素）。
  * <p>
- * deliveryStatus 枚举：NOT_STARTED/COMMITTED/MR_CREATED/FAILED；
+ * deliveryStatus 枚举：NOT_STARTED/COMMITTED/PUSHED/MR_CREATED/FAILED；
  * failureCode/failureReason 仅在失败时返回脱敏原因，成功时为 null；
  * mergeRequest 在 MR_CREATED 时返回真实 MR 摘要，其余为 null。
  */

@@ -254,9 +254,11 @@ public class SandboxWorkerClient {
      * 在 Worker 内固化当前未提交工作树，不读取或传输宿主机路径。
      */
     public WorkerWorkspace createTestSnapshot(UUID workspaceId, UUID repositoryId,
-                                              UUID snapshotWorkspaceId, UUID projectId) {
+                                              UUID snapshotWorkspaceId, UUID projectId,
+                                              String expectedHeadCommit) {
         return execute(() -> client.post()
                 .uri(uri -> uri.path(TEST_SNAPSHOT).queryParam("projectId", projectId)
+                        .queryParam("expectedHeadCommit", expectedHeadCommit)
                         .build(workspaceId, repositoryId, snapshotWorkspaceId))
                 .retrieve().body(WorkerWorkspace.class));
     }

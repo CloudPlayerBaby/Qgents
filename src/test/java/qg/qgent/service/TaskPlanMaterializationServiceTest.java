@@ -239,6 +239,41 @@ class TaskPlanMaterializationServiceTest {
         assertThat(updated.getValue().getDeliveryReason()).contains("DIFF_FIRST");
     }
 
+    @Test
+    void requiredChecksMatchBaseRefAfterBaseCommitResolvedToSha() {
+        // provision 后 base_commit 已回填 SHA，不可变 base_ref 仍指向 develop；
+        // 门禁判定必须命中 develop 的 requiredChecks，不能因 SHA 化静默降级 DIFF_FIRST。
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        RepositoryBranchConfigMapper branchConfigs = mock(RepositoryBranchConfigMapper.class);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        WorkspaceRepositoryEntity provisioned = repository();
+        provisioned.setBaseRef("develop");
+        provisioned.setBaseCommit("a".repeat(40));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(provisioned));
+        qg.qgent.entity.RepositoryBranchConfigEntity config = new qg.qgent.entity.RepositoryBranchConfigEntity();
+        config.setProjectRepositoryId(provisioned.getProjectRepositoryId());
+        config.setBranchName("develop");
+        config.setRequiredChecks(List.of("TESTSET"));
+        when(branchConfigs.selectList(any())).thenReturn(List.of(config));
+        TaskPlanMaterializationService service = new TaskPlanMaterializationService(tasks, steps,
+                mock(TaskStepDependencyMapper.class), mock(TaskStepRepositoryMapper.class), worktrees,
+                mock(TaskExecutionArtifactService.class), mock(EventService.class), mock(AgentDispatcher.class),
+                new DeliveryModeDecider(), branchConfigs);
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.materialize(task, plan());
+
+        ArgumentCaptor<TaskEntity> updated = ArgumentCaptor.forClass(TaskEntity.class);
+        verify(tasks).updateById(updated.capture());
+        assertThat(updated.getValue().getDeliveryMode()).isEqualTo(DeliveryMode.MR_FIRST);
+        assertThat(updated.getValue().getDeliveryReason()).contains("质量门禁");
+    }
+
     private WorkspaceRepositoryEntity repository() {
         WorkspaceRepositoryEntity repository = new WorkspaceRepositoryEntity();
         repository.setProjectRepositoryId(UUID.randomUUID());

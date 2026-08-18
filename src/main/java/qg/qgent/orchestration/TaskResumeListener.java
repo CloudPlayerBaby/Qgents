@@ -29,7 +29,7 @@ public class TaskResumeListener {
      * 重试受理提交后，异步从指定步骤续跑；失败只记录日志，避免重复/并发执行与线程泄漏。
      */
     @Async("taskOrchestratorExecutor")
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void onTaskResumeRequested(TaskResumeRequestedEvent event) {
         log.info("task resume event received, taskId={} projectId={} startStepId={} retryOfTaskRunId={}",
                 event.taskId(), event.projectId(), event.startStepId(), event.retryOfTaskRunId());

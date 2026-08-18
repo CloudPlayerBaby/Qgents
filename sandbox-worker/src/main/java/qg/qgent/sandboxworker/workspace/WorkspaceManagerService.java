@@ -220,10 +220,10 @@ public class WorkspaceManagerService {
     }
 
     /**
-     * 创建当前未提交工作树的隔离快照；相同 snapshotWorkspaceId 可安全重试。
+     * 创建指定 HEAD 的当前未提交工作树隔离快照；相同 snapshotWorkspaceId 可安全重试。
      */
     public WorkspaceResponse snapshotForTest(UUID sourceWorkspaceId, UUID repositoryId,
-                                             UUID snapshotWorkspaceId, UUID projectId) {
+                                             UUID snapshotWorkspaceId, UUID projectId, String expectedHeadCommit) {
         if (sourceWorkspaceId.equals(snapshotWorkspaceId)) {
             throw conflict("TEST_SNAPSHOT_ID_INVALID", "测试快照不能覆盖源 Workspace");
         }
@@ -233,6 +233,9 @@ public class WorkspaceManagerService {
                 throw conflict("TEST_SNAPSHOT_PROJECT_MISMATCH", "源 Workspace 不属于当前项目");
             }
             WorkspaceRepositoryResponse sourceRepository = requireRepository(source, repositoryId);
+            if (!expectedHeadCommit.equalsIgnoreCase(sourceRepository.getHeadCommit())) {
+                throw conflict("TEST_SNAPSHOT_HEAD_MISMATCH", "源 Workspace HEAD 已变化，请重新发起测试");
+            }
             GitDiffResponse sourceDiff = repositories.diff(repositoryPath(sourceWorkspaceId, sourceRepository));
             String branch = "qgents-test-" + snapshotWorkspaceId;
             try {

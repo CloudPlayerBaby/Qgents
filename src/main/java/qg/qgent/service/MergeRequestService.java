@@ -36,9 +36,11 @@ import java.util.function.Function;
  * and head commit
  * of a Task Workspace. Client-supplied credentials, commit SHAs and gate
  * outcomes are not trusted.
- * qualityGate 汇总：从目标分支 branch config 的 required_checks + 必选测试集取必检项，
+ * qualityGate 汇总：从目标分支 branch config 的 MR 后 required_checks 取必检项，
  * 对照 quality_check_results 在 headCommit 的最新 attempt_no；全部 PASSED → PASSED，
  * 任一 FAILED → FAILED，缺失或运行中 → PENDING。
+ * 目标分支绑定 Testset 的真实结果由 MR 前 Dry Run 固定并由 {@link PreflightGateService} 校验，
+ * 不重复要求不存在的 MR 级 {@code TESTSET} quality_check_results。
  */
 @Service
 public class MergeRequestService {
@@ -79,19 +81,30 @@ public class MergeRequestService {
      * 也保持既有纯 Mockito 测试构造器兼容（未注入时钩子静默跳过）。
      */
     private MrQualityGateService qualityGates;
-    /**
-     * P1 MR 前预检门禁。生产环境必须注入；保留为空仅用于旧的纯 Mockito 构造器测试。
-     */
+    /** P1 MR 前预检门禁。缺失时必须拒绝创建 MR，不能降级为绕过门禁。 */
     private PreflightGateService preflightGates;
+    /** 已确认创建真实 MR 后的群聊回卡依赖；发送失败不得改变远端 MR 事实。 */
+    private MessageService messageService;
+    private OrchestratorAgentService orchestratorAgents;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setQualityGates(MrQualityGateService qualityGates) {
         this.qualityGates = qualityGates;
     }
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.beans.factory.annotation.Autowired
     void setPreflightGates(PreflightGateService preflightGates) {
         this.preflightGates = preflightGates;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setMessageService(MessageService messageService) {
+        this.messageService = messageService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setOrchestratorAgents(OrchestratorAgentService orchestratorAgents) {
+        this.orchestratorAgents = orchestratorAgents;
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -206,32 +219,47 @@ public class MergeRequestService {
      */
     public MergeRequestSummaryResponse create(UUID projectId, UUID userId, MergeRequestCreateRequest request) {
         projectAccess.requireProjectMember(projectId, userId);
+        // 先鉴权再访问 GitHub/Worker，避免无项目权限的请求借由目标分支刷新探测仓库状态，
+        // 或无谓消耗外部调用额度。
         // 目标分支的 SHA 必须在短数据库事务外解析；claimCreate 仅用该不可变值查询预检事实。
-        String targetCommit = preflightGates == null ? null
-                : preflightGates.resolveTargetCommit(projectId, request.getRepositoryId(), request.getTargetBranch());
+        PreflightGateService gates = requirePreflightGates();
+        request.setTargetBranch(gates.normalizeTargetBranch(request.getTargetBranch()));
+        String targetCommit = gates.resolveTargetCommit(projectId, request.getRepositoryId(), request.getTargetBranch());
         CreateClaim claim = claimCreateWithRetry(projectId, userId, request, targetCommit);
-        if (claim.existing() != null) {
-            if (claim.existing().getHeadCommit().equals(claim.worktree().getHeadCommit())) {
+        CreateClaim resolvedClaim = reconcileExistingOpenMr(projectId, userId, request, targetCommit, claim);
+        if (resolvedClaim.existing() != null) {
+            if (resolvedClaim.existing().getHeadCommit().equals(resolvedClaim.worktree().getHeadCommit())) {
+                // 远端 MR 已经精确对应当前已审核并推送的提交；这是安全的幂等重放。
+                TaskEntity completedTask = inTransaction(() -> markMrCreatedAndCompleteTask(resolvedClaim));
+                publishTaskCompleted(completedTask);
+                publishMergeRequestCard(resolvedClaim.task(), resolvedClaim.existing());
                 log.info("merge request push skipped projectId={} taskId={} repositoryId={} branch={} reason=existing_open_mr_same_head headCommit={} mrId={}",
-                        projectId, request.getTaskId(), request.getRepositoryId(), claim.worktree().getSourceBranch(),
-                        claim.worktree().getHeadCommit(), claim.existing().getId());
-                return summary(claim.existing());
+                        projectId, request.getTaskId(), request.getRepositoryId(), resolvedClaim.worktree().getSourceBranch(),
+                        resolvedClaim.worktree().getHeadCommit(), resolvedClaim.existing().getId());
+                return summary(resolvedClaim.existing());
             }
             log.info("merge request push required projectId={} taskId={} repositoryId={} branch={} reason=existing_open_mr_head_changed expectedHeadCommit={} mrId={}",
-                    projectId, request.getTaskId(), request.getRepositoryId(), claim.worktree().getSourceBranch(),
-                    claim.worktree().getHeadCommit(), claim.existing().getId());
-            return pushAndUpdateExisting(claim);
+                    projectId, request.getTaskId(), request.getRepositoryId(), resolvedClaim.worktree().getSourceBranch(),
+                    resolvedClaim.worktree().getHeadCommit(), resolvedClaim.existing().getId());
+            verifyRemoteCreationContext(gates, projectId, resolvedClaim, targetCommit);
+            return pushAndUpdateExisting(resolvedClaim);
         }
         try {
-            GitHubPullRequestDetails remote = createRemote(claim);
-            validateRemote(claim, remote);
-            recordRemoteCreated(claim, remote);
-            MergeRequestEntity mr = inTransaction(() -> finalizeCreate(claim, remote));
+            // GitHub 按分支名创建 PR。领取操作结束后，目标分支或同一 Workspace 的续作都可能
+            // 已推进 source branch；此处必须复核，不能将旧 Dry Run/CQ 的结论用于新代码。
+            verifyRemoteCreationContext(gates, projectId, resolvedClaim, targetCommit);
+            GitHubPullRequestDetails remote = createRemote(resolvedClaim);
+            validateRemote(resolvedClaim, remote);
+            recordRemoteCreated(resolvedClaim, remote);
+            CreateFinalization finalized = inTransaction(() -> finalizeCreate(resolvedClaim, remote));
+            MergeRequestEntity mr = finalized.mergeRequest();
+            publishTaskCompleted(finalized.completedTask());
             publishUpdated(mr);
+            publishMergeRequestCard(resolvedClaim.task(), mr);
             MergeRequestEntity refreshed;
             try {
                 // mergeability 轮询是 best-effort：MR 已创建成功，轮询失败不得影响交付结果。
-                refreshed = pollMergeability(projectId, claim.githubRepository(), claim.installation(), mr);
+                refreshed = pollMergeability(projectId, resolvedClaim.githubRepository(), resolvedClaim.installation(), mr);
             } catch (RuntimeException failure) {
                 log.warn("mergeability poll failed for MR {}, falling back to created state", mr.getId(), failure);
                 refreshed = mr;
@@ -247,9 +275,32 @@ public class MergeRequestService {
             }
             return summary(refreshed);
         } catch (RuntimeException failure) {
-            markCreateFailed(claim, failure);
+            markCreateFailed(resolvedClaim, failure);
             throw failure;
         }
+    }
+
+    /**
+     * 将已确认、已提交的 Task Diff 推送到其受控 feature branch。
+     * <p>
+     * Push 是独立事实，不能借由创建 MR 间接完成；调用方须在事务外执行本方法，并仅在 Worker
+     * 返回与当前 Workspace HEAD 一致的已核验 SHA 后将 Diff 标记为 {@code PUSHED}。
+     */
+    public void pushAcceptedBranch(UUID projectId, UUID taskId, UUID repositoryId) {
+        TaskEntity task = taskMapper.selectById(taskId);
+        if (task == null || !projectId.equals(task.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "Task does not exist or is not visible");
+        }
+        WorkspaceRepositoryEntity worktree = workspaceRepositoryMapper.selectByWorkspace(task.getWorkspaceId()).stream()
+                .filter(value -> repositoryId.equals(value.getProjectRepositoryId())).findFirst().orElse(null);
+        if (worktree == null || worktree.getHeadCommit() == null || worktree.getSourceBranch() == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "WORKSPACE_BRANCH_NOT_COMMITTED",
+                    "The repository branch must have a committed head before it can be pushed");
+        }
+        requireAcceptedDelivery(task, worktree, repositoryId);
+        GitHubRepositoryEntity github = requireGitHubRepository(projectId, repositoryId);
+        GitHubInstallationEntity installation = requireInstallation(github);
+        pushBranch(task, repositoryId, worktree, github, installation, "accepted_diff");
     }
 
     private CreateClaim claimCreateWithRetry(UUID projectId, UUID userId, MergeRequestCreateRequest request,
@@ -279,20 +330,29 @@ public class MergeRequestService {
                     "The repository branch must have a committed head before MR creation");
         }
         requireAcceptedDelivery(task, worktree, request.getRepositoryId());
-        if (preflightGates != null) {
-            preflightGates.requireReady(task, worktree, request.getRepositoryId(), request.getTargetBranch(), targetCommit);
-        }
         MergeRequestEntity existing = mergeRequestMapper.selectOne(Wrappers.<MergeRequestEntity>lambdaQuery()
                 .eq(MergeRequestEntity::getProjectRepositoryId, request.getRepositoryId())
                 .eq(MergeRequestEntity::getSourceBranch, worktree.getSourceBranch())
                 .eq(MergeRequestEntity::getTargetBranch, request.getTargetBranch())
                 .eq(MergeRequestEntity::getStatus, "OPEN").orderByDesc(MergeRequestEntity::getCreatedAt)
                 .last("LIMIT 1"));
-        if (existing != null && worktree.getHeadCommit().equals(existing.getHeadCommit())) {
-            return new CreateClaim(task, worktree, null, null, request, null, null, existing);
+        requireTaskReadyForMr(task, worktree);
+        // 已完成的 MR_FIRST Task 重放本地 OPEN 镜像时，后续仍会以 GitHub 真实开放 PR 和
+        // 相同 head 校验为准。不要因为目标分支后来推进而让已创建 MR 的幂等查询错误地要求
+        // 重跑 Dry Run；如果远端实际上已关闭，reconcile 会关闭镜像并重新领取，此时必须走当前门禁。
+        boolean completedReplayCandidate = "MR_FIRST".equals(task.getDeliveryMode())
+                && "SUCCEEDED".equals(task.getStatus()) && existing != null
+                && sameCommit(worktree.getHeadCommit(), existing.getHeadCommit());
+        if (!completedReplayCandidate) {
+            requirePreflightGates().requireReady(task, worktree, request.getRepositoryId(), request.getTargetBranch(), targetCommit);
         }
+        // 仅在本地、任务状态与预检均通过后才取得 GitHub 上下文；后续仍必须查询远端核验
+        // OPEN 镜像，不能把本地记录当作创建成功事实。
         GitHubRepositoryEntity githubRepository = requireGitHubRepository(projectId, request.getRepositoryId());
         GitHubInstallationEntity installation = requireInstallation(githubRepository);
+        if (existing != null && worktree.getHeadCommit().equals(existing.getHeadCommit())) {
+            return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, existing);
+        }
         if (existing != null) {
             // 已有 open MR 且 headCommit 不同：推送新 commit 后更新已有 MR，不新建 PR，也不走 delivery operation
             return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, existing);
@@ -359,39 +419,15 @@ public class MergeRequestService {
      * 并同步本地 MR 镜像的 headCommit，不新建 PR。
      */
     private MergeRequestSummaryResponse pushAndUpdateExisting(CreateClaim claim) {
-        GitHubRepositoryEntity github = claim.githubRepository();
-        GitHubInstallationEntity installation = claim.installation();
         WorkspaceRepositoryEntity worktree = claim.worktree();
-        String fullName = github.getOwnerLogin() + "/" + github.getName();
-        String grantId = credentialService.generateGrant(installation.getTeamId(), claim.task().getProjectId(),
-                installation.getProviderInstallationId(), fullName, worktree.getSourceBranch(),
-                worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
-        log.info("merge request push starting projectId={} taskId={} repositoryId={} branch={} mode=existing_mr expectedHeadCommit={}",
-                claim.task().getProjectId(), claim.task().getId(), claim.request().getRepositoryId(),
-                worktree.getSourceBranch(), worktree.getHeadCommit());
-        WorkerGitPushResponse pushed;
-        try {
-            pushed = workerClient.pushWorkspaceBranch(claim.task().getWorkspaceId(), claim.request().getRepositoryId(),
-                    new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
-                            .setCredentialGrantId(grantId));
-        } catch (ApiException failure) {
-            log.warn("merge request worker push request failed projectId={} taskId={} repositoryId={} branch={} status={} code={} message={}",
-                    claim.task().getProjectId(), claim.task().getId(), claim.request().getRepositoryId(),
-                    worktree.getSourceBranch(), failure.status(), failure.code(), failure.getMessage());
-            throw new ApiException(failure.status(), "WORKER_PUSH_FAILED",
-                    "Failed to push branch via Sandbox Worker: " + failure.getMessage());
-        }
-        if (pushed == null || !pushed.isVerified() || !worktree.getHeadCommit().equals(pushed.getHeadCommit())) {
-            throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
-                    "Sandbox Worker push verification failed or HEAD mismatch");
-        }
-        log.info("merge request push verified projectId={} taskId={} repositoryId={} branch={} headCommit={}",
-                claim.task().getProjectId(), claim.task().getId(), claim.request().getRepositoryId(),
-                worktree.getSourceBranch(), pushed.getHeadCommit());
+        // 当前 head 已由 requireAcceptedDelivery 证明为真实 PUSHED；不得在创建/更新 MR 时
+        // 重新发起 Worker push，否则 Worker 的短暂不可用会阻塞本已成功推送的 MR 操作。
         MergeRequestEntity existing = claim.existing();
         existing.setHeadCommit(worktree.getHeadCommit());
         existing.setSyncedAt(LocalDateTime.now(ZoneOffset.UTC));
         mergeRequestMapper.updateById(existing);
+        TaskEntity completedTask = inTransaction(() -> markMrCreatedAndCompleteTask(claim));
+        publishTaskCompleted(completedTask);
         publishUpdated(existing);
         return summary(existing);
     }
@@ -409,22 +445,123 @@ public class MergeRequestService {
                     worktree.getSourceBranch(), remote.number(), remote.headSha());
             return remote;
         }
+        // 创建 PR 前的 Push 已在 Diff 交付阶段完成并持久化为 PUSHED。这里仅调用 GitHub API，
+        // 不把 Push 与 MR 创建重新混为一个事实。
+        return githubClient.createPullRequest(installation.getProviderInstallationId(), github.getOwnerLogin(),
+                github.getName(), new GitHubPullRequestCreateRequest(request.getTitle(), null,
+                        worktree.getSourceBranch(), request.getTargetBranch()));
+    }
+
+    /**
+     * GitHub 创建 PR 只接收 source branch，而不是固定 SHA。若在领取创建操作后分支发生变化，
+     * 后续响应校验即使发现不一致也已经来不及阻止 PR 包含未审核代码，因此必须在外调前复核。
+     */
+    private void verifyRemoteCreationContext(PreflightGateService gates, UUID projectId, CreateClaim claim,
+                                             String expectedTargetCommit) {
+        String currentTargetCommit = gates.resolveTargetCommit(projectId, claim.request().getRepositoryId(),
+                claim.request().getTargetBranch());
+        if (!sameCommit(expectedTargetCommit, currentTargetCommit)) {
+            throw new ApiException(HttpStatus.CONFLICT, "PREFLIGHT_CONTEXT_STALE",
+                    "目标分支已推进，必须重新执行 Dry Run 并获得 CQ+1");
+        }
+        GitHubBranchDetails source = githubClient.getBranch(claim.installation().getProviderInstallationId(),
+                claim.githubRepository().getOwnerLogin(), claim.githubRepository().getName(),
+                claim.worktree().getSourceBranch());
+        if (source == null || !sameCommit(claim.worktree().getHeadCommit(), source.commitSha())) {
+            throw new ApiException(HttpStatus.CONFLICT, "MR_SOURCE_HEAD_CHANGED",
+                    "Feature 分支已变化，不能基于旧 Diff 创建或更新 MR");
+        }
+    }
+
+    /**
+     * 本地 {@code OPEN} 只是 GitHub PR 的镜像，不能单独作为幂等成功依据。外部关闭/删除 PR 后，
+     * 若仍直接返回本地记录，Task 会被错误收敛为已创建 MR。这里先在事务外查询 GitHub；远端记录
+     * 不存在或编号已变化时，短事务关闭旧镜像并重新领取创建操作。整个过程不持有数据库锁进行 HTTP 调用。
+     */
+    private CreateClaim reconcileExistingOpenMr(UUID projectId, UUID userId, MergeRequestCreateRequest request,
+                                                String targetCommit, CreateClaim claim) {
+        if (claim.existing() == null) {
+            return claim;
+        }
+        GitHubPullRequestDetails remote = githubClient.findOpenPullRequest(
+                claim.installation().getProviderInstallationId(), claim.githubRepository().getOwnerLogin(),
+                claim.githubRepository().getName(), claim.worktree().getSourceBranch(), request.getTargetBranch());
+        if (remote != null && sameProviderNumber(claim.existing(), remote)) {
+            // GitHub 的 source branch 是创建 PR 的真实输入；必须同时校验提交，避免把远端后来
+            // 推送的未审查代码误视为当前 Task 的幂等 MR。
+            validateRemote(claim, remote);
+            return refreshExistingOpenMr(projectId, userId, request, targetCommit, claim, remote);
+        }
+        return retireStaleExistingAndClaim(projectId, userId, request, targetCommit, claim);
+    }
+
+    private boolean sameProviderNumber(MergeRequestEntity existing, GitHubPullRequestDetails remote) {
+        return existing.getProviderNumber() != null && remote != null
+                && existing.getProviderNumber().longValue() == remote.number();
+    }
+
+    private CreateClaim refreshExistingOpenMr(UUID projectId, UUID userId, MergeRequestCreateRequest request,
+                                              String targetCommit, CreateClaim claim,
+                                              GitHubPullRequestDetails remote) {
+        MergeRequestEntity refreshed = inTransaction(() -> {
+            MergeRequestEntity current = mergeRequestMapper.selectByIdForUpdate(claim.existing().getId());
+            if (current == null || !"OPEN".equals(current.getStatus()) || !sameProviderNumber(current, remote)) {
+                return null;
+            }
+            current.setSourceBranch(remote.headBranch());
+            current.setTargetBranch(remote.baseBranch());
+            current.setHeadCommit(remote.headSha());
+            if (remote.title() != null) current.setTitle(remote.title());
+            current.setStatus(toLocalStatus(remote));
+            current.setMergeable(remote.mergeable());
+            current.setMergeableState(remote.mergeableState());
+            current.setBaseSha(remote.baseSha());
+            current.setSyncedAt(LocalDateTime.now(ZoneOffset.UTC));
+            mergeRequestMapper.updateById(current);
+            return current;
+        });
+        return refreshed == null ? retireStaleExistingAndClaim(projectId, userId, request, targetCommit, claim)
+                : new CreateClaim(claim.task(), claim.worktree(),
+                claim.githubRepository(), claim.installation(), claim.request(), claim.operation(), claim.token(), refreshed);
+    }
+
+    private CreateClaim retireStaleExistingAndClaim(UUID projectId, UUID userId, MergeRequestCreateRequest request,
+                                                    String targetCommit, CreateClaim claim) {
+        return inTransaction(() -> {
+            MergeRequestEntity current = mergeRequestMapper.selectByIdForUpdate(claim.existing().getId());
+            // 领取后本地镜像可能已被并发同步/清理删除。此时仍继续重新领取创建操作；使用领取时的
+            // 快照仅作 best-effort 关闭，不会把不存在的记录当作远端 PR 成功事实。
+            if (current == null) current = claim.existing();
+            if (current != null && "OPEN".equals(current.getStatus())) {
+                current.setStatus("CLOSED");
+                current.setSyncedAt(LocalDateTime.now(ZoneOffset.UTC));
+                mergeRequestMapper.updateById(current);
+            }
+            return claimCreate(projectId, userId, request, targetCommit);
+        });
+    }
+
+    private boolean sameCommit(String expected, String actual) {
+        return expected != null && actual != null && expected.equalsIgnoreCase(actual);
+    }
+
+    private void pushBranch(TaskEntity task, UUID repositoryId, WorkspaceRepositoryEntity worktree,
+                            GitHubRepositoryEntity github, GitHubInstallationEntity installation, String mode) {
         String fullName = github.getOwnerLogin() + "/" + github.getName();
-        String grantId = credentialService.generateGrant(installation.getTeamId(), claim.task().getProjectId(),
+        String grantId = credentialService.generateGrant(installation.getTeamId(), task.getProjectId(),
                 installation.getProviderInstallationId(), fullName, worktree.getSourceBranch(),
                 worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
-        log.info("merge request push starting projectId={} taskId={} repositoryId={} branch={} mode=new_pr expectedHeadCommit={}",
-                claim.task().getProjectId(), claim.task().getId(), request.getRepositoryId(),
-                worktree.getSourceBranch(), worktree.getHeadCommit());
+        log.info("branch push starting projectId={} taskId={} repositoryId={} branch={} mode={} expectedHeadCommit={}",
+                task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(), mode, worktree.getHeadCommit());
         WorkerGitPushResponse pushed;
         try {
-            pushed = workerClient.pushWorkspaceBranch(claim.task().getWorkspaceId(), request.getRepositoryId(),
+            pushed = workerClient.pushWorkspaceBranch(task.getWorkspaceId(), repositoryId,
                     new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
                             .setCredentialGrantId(grantId));
         } catch (ApiException failure) {
-            log.warn("merge request worker push request failed projectId={} taskId={} repositoryId={} branch={} status={} code={} message={}",
-                    claim.task().getProjectId(), claim.task().getId(), request.getRepositoryId(),
-                    worktree.getSourceBranch(), failure.status(), failure.code(), failure.getMessage());
+            log.warn("branch push failed projectId={} taskId={} repositoryId={} branch={} status={} code={} message={}",
+                    task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(),
+                    failure.status(), failure.code(), failure.getMessage());
             throw new ApiException(failure.status(), "WORKER_PUSH_FAILED",
                     "Failed to push branch via Sandbox Worker: " + failure.getMessage());
         }
@@ -432,12 +569,8 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
                     "Sandbox Worker push verification failed or HEAD mismatch");
         }
-        log.info("merge request push verified projectId={} taskId={} repositoryId={} branch={} headCommit={}",
-                claim.task().getProjectId(), claim.task().getId(), request.getRepositoryId(),
-                worktree.getSourceBranch(), pushed.getHeadCommit());
-        return githubClient.createPullRequest(installation.getProviderInstallationId(), github.getOwnerLogin(),
-                github.getName(), new GitHubPullRequestCreateRequest(request.getTitle(), null,
-                        worktree.getSourceBranch(), request.getTargetBranch()));
+        log.info("branch push verified projectId={} taskId={} repositoryId={} branch={} headCommit={}",
+                task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(), pushed.getHeadCommit());
     }
 
     private void validateRemote(CreateClaim claim, GitHubPullRequestDetails remote) {
@@ -464,7 +597,7 @@ public class MergeRequestService {
         });
     }
 
-    private MergeRequestEntity finalizeCreate(CreateClaim claim, GitHubPullRequestDetails remote) {
+    private CreateFinalization finalizeCreate(CreateClaim claim, GitHubPullRequestDetails remote) {
         MergeRequestDeliveryOperationEntity operation = claim.operation() == null ? null
                 : deliveryOperationMapper.selectByIdForUpdate(claim.operation().getId());
         if (operation != null) requireOperationClaim(operation, claim.token());
@@ -509,7 +642,95 @@ public class MergeRequestService {
             operation.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
             deliveryOperationMapper.updateById(operation);
         }
-        return mr;
+        return new CreateFinalization(mr, markMrCreatedAndCompleteTask(claim));
+    }
+
+    /**
+     * PR 已由 GitHub 确认存在后，才把本地 Diff 标记为 MR_CREATED。多仓库不作为分布式事务：
+     * 每次只推进当前仓库，最后一个仓库完成时才收敛 MR_FIRST Task。
+     */
+    private TaskEntity markMrCreatedAndCompleteTask(CreateClaim claim) {
+        if (diffMapper == null) return null;
+        DiffEntity diff = diffMapper.selectAcceptedCommittedForMr(claim.task().getId(), claim.task().getProjectId(),
+                claim.task().getWorkspaceId(), claim.request().getRepositoryId(), claim.worktree().getHeadCommit());
+        if (diff == null || diff.getId() == null) return null;
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        if (!"MR_CREATED".equals(diff.getDeliveryStatus())) {
+            diffMapper.markDelivered(diff.getId(), now);
+            eventService.publish(claim.task().getProjectId(), claim.task().getRequirementGroupId(),
+                    "delivery.repository.updated", diff.getId().toString(), Map.of(
+                            "projectId", claim.task().getProjectId(), "taskId", claim.task().getId(),
+                            "diffId", diff.getId(), "repositoryId", claim.request().getRepositoryId(),
+                            "deliveryStatus", "MR_CREATED"));
+        }
+        if (!"MR_FIRST".equals(claim.task().getDeliveryMode())) return null;
+
+        List<DiffEntity> deliveries = diffMapper.selectList(Wrappers.<DiffEntity>lambdaQuery()
+                .eq(DiffEntity::getTaskId, claim.task().getId())
+                .eq(DiffEntity::getProjectId, claim.task().getProjectId())
+                .eq(DiffEntity::getWorkspaceId, claim.task().getWorkspaceId())
+                .eq(DiffEntity::getStatus, "ACCEPTED"));
+        if (deliveries == null || deliveries.isEmpty()
+                || deliveries.stream().anyMatch(value -> !"MR_CREATED".equals(value.getDeliveryStatus()))) {
+            return null;
+        }
+        TaskEntity task = taskMapper.selectByIdForUpdate(claim.task().getId());
+        if (task == null || !claim.task().getProjectId().equals(task.getProjectId())
+                || !"MR_FIRST".equals(task.getDeliveryMode())
+                || !"WAITING_PREFLIGHT".equals(task.getStatus())) {
+            return null;
+        }
+        task.setStatus("SUCCEEDED");
+        task.setUpdatedAt(now);
+        taskMapper.updateById(task);
+        return task;
+    }
+
+    private void publishTaskCompleted(TaskEntity task) {
+        if (task == null) return;
+        eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated", task.getId().toString(),
+                TaskEventPayloads.taskUpdated(task));
+        notificationService.notify(task.getCreatedBy(), task.getProjectId(), task.getRequirementGroupId(),
+                "TASK_COMPLETED", "任务完成：" + task.getTitle(), task.getRequirement(), task.getId().toString());
+    }
+
+    /**
+     * 真实 PR 已在 GitHub 创建并落库后回一条任务状态卡。多仓库任务一仓一条；卡片的客户端幂等键
+     * 使用真实 MR ID，重试创建或已存在 MR 的本地修复不会重复刷群。发送消息属于通知，不参与
+     * MR 创建事务，失败只记录日志，不能把远端已存在的 MR 标成失败。
+     */
+    private void publishMergeRequestCard(TaskEntity task, MergeRequestEntity mr) {
+        if (messageService == null || task == null || mr == null || mr.getId() == null
+                || task.getRequirementGroupId() == null) {
+            return;
+        }
+        Map<String, Object> mergeRequest = new LinkedHashMap<>();
+        mergeRequest.put("id", mr.getId().toString());
+        if (mr.getProviderNumber() != null) mergeRequest.put("number", mr.getProviderNumber());
+        if (mr.getTitle() != null) mergeRequest.put("title", mr.getTitle());
+        String webUrl = mrWebUrl(mr);
+        if (webUrl != null) mergeRequest.put("webUrl", webUrl);
+
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("taskId", task.getId().toString());
+        content.put("status", "MR_CREATED");
+        if (mr.getProjectRepositoryId() != null) content.put("repositoryId", mr.getProjectRepositoryId().toString());
+        content.put("mergeRequest", mergeRequest);
+        MessageSendRequest body = new MessageSendRequest();
+        body.setType("TASK_STATUS");
+        body.setClientMessageId("agent-task-" + task.getId() + "-mr-" + mr.getId());
+        body.setContent(content);
+        try {
+            UUID senderId = orchestratorAgents == null ? null : orchestratorAgents.resolveIdForTask(task);
+            if (senderId != null) {
+                messageService.sendAsAgent(task.getRequirementGroupId(), senderId, body);
+            } else {
+                messageService.sendAsSystem(task.getRequirementGroupId(), body);
+            }
+        } catch (RuntimeException failure) {
+            log.warn("merge request card skipped taskId={} mergeRequestId={}: {}",
+                    task.getId(), mr.getId(), failure.getMessage());
+        }
     }
 
     private void markCreateFailed(CreateClaim claim, RuntimeException failure) {
@@ -551,7 +772,7 @@ public class MergeRequestService {
     }
 
     /**
-     * 创建 MR 的交付前置校验：head 必须来自本任务「已获准进入交付且已提交」的 Diff。
+     * 创建 MR 的交付前置校验：head 必须来自本任务「已获准进入交付且已推送」的 Diff。
      * DIFF_FIRST 为用户确认（confirmationSource=USER）；MR_FIRST 为系统自动授权（SYSTEM）——
      * 两种模式统一走同一校验（Diff ACCEPTED + 批次 ACCEPTED + headCommit 一致），
      * 未定型（null）交付模式仍拒绝。客户端无法通过本接口伪造 head 归属。
@@ -564,7 +785,28 @@ public class MergeRequestService {
         if (diffMapper == null || diffMapper.selectAcceptedCommittedForMr(task.getId(), task.getProjectId(),
                 task.getWorkspaceId(), repositoryId, worktree.getHeadCommit()) == null) {
             throw new ApiException(HttpStatus.CONFLICT, "MR_REVIEWED_DIFF_REQUIRED",
-                    "The current Workspace HEAD is not an accepted and committed Task Diff");
+                    "The current Workspace HEAD is not an accepted and pushed Task Diff");
+        }
+    }
+
+    /**
+     * MR_FIRST 只能在全部仓库已 commit/push 后的预检阶段创建 MR，不能让部分交付失败的
+     * Task 绕过 retry-delivery 直接生成不完整的 MR 集合。任务已完成后，既有开放 MR
+     * 可以安全幂等重放；若远端已关闭，则仍需通过当前预检后重建同一已审核 HEAD 的 MR。
+     * Diff-first 的手动建 MR 则要求此前的确认提交/推送已经收敛为 SUCCEEDED。
+     */
+    private void requireTaskReadyForMr(TaskEntity task, WorkspaceRepositoryEntity worktree) {
+        if ("MR_FIRST".equals(task.getDeliveryMode())) {
+            boolean completedTask = "SUCCEEDED".equals(task.getStatus()) && worktree.getHeadCommit() != null;
+            if (!"WAITING_PREFLIGHT".equals(task.getStatus()) && !completedTask) {
+                throw new ApiException(HttpStatus.CONFLICT, "MR_TASK_NOT_WAITING_PREFLIGHT",
+                        "MR_FIRST Task must finish commit/push delivery before creating a Pull Request");
+            }
+            return;
+        }
+        if ("DIFF_FIRST".equals(task.getDeliveryMode()) && !"SUCCEEDED".equals(task.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "MR_TASK_NOT_DELIVERED",
+                    "Diff-first Task must complete accepted Diff delivery before creating a Pull Request");
         }
     }
 
@@ -594,6 +836,17 @@ public class MergeRequestService {
                                GitHubRepositoryEntity githubRepository, GitHubInstallationEntity installation,
                                MergeRequestCreateRequest request, MergeRequestDeliveryOperationEntity operation,
                                String token, MergeRequestEntity existing) {
+    }
+
+    private PreflightGateService requirePreflightGates() {
+        if (preflightGates == null) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "MR_PREFLIGHT_GATE_UNAVAILABLE",
+                    "MR 前预检组件不可用，不能创建 MR");
+        }
+        return preflightGates;
+    }
+
+    private record CreateFinalization(MergeRequestEntity mergeRequest, TaskEntity completedTask) {
     }
 
     private record MergeClaim(MergeRequestEntity mergeRequest, GitHubRepositoryEntity githubRepository,
@@ -972,15 +1225,6 @@ public class MergeRequestService {
                     .ifPresent(c -> mrConfigMap.put(mr.getId(), c));
         }
 
-        List<UUID> configIds = mrConfigMap.values().stream().map(RepositoryBranchConfigEntity::getId).distinct().toList();
-        List<RepositoryBranchConfigTestsetEntity> allTestsets = configIds.isEmpty() ? List.of() :
-                branchConfigTestsetMapper.selectList(Wrappers.<RepositoryBranchConfigTestsetEntity>query()
-                        .in("branch_config_id", configIds));
-
-        Map<UUID, List<UUID>> configTestsetsMap = allTestsets.stream()
-                .collect(Collectors.groupingBy(RepositoryBranchConfigTestsetEntity::getBranchConfigId,
-                        Collectors.mapping(RepositoryBranchConfigTestsetEntity::getTestsetId, Collectors.toList())));
-
         List<UUID> mrIds = mrs.stream().map(MergeRequestEntity::getId).toList();
         List<QualityCheckResultEntity> allChecks = qualityCheckMapper.selectList(
                 Wrappers.<QualityCheckResultEntity>query()
@@ -994,19 +1238,14 @@ public class MergeRequestService {
             if (config != null && config.getRequiredChecks() != null) {
                 required.addAll(config.getRequiredChecks());
             }
-            List<UUID> requiredTestsets = config == null ? List.of() :
-                    configTestsetsMap.getOrDefault(config.getId(), List.of());
-
-            if (!requiredTestsets.isEmpty() && !required.contains("TESTSET")) {
-                required.add("TESTSET");
-            }
-            List<String> checks = required.stream().distinct().toList();
+            // Testset 由创建 MR 前的 Dry Run 真实执行；MR 后门禁不伪造一份没有写入者的 TESTSET 检查。
+            List<String> checks = required.stream().filter(check -> !"TESTSET".equals(check)).distinct().toList();
 
             List<QualityCheckResultEntity> mrChecks = allChecks.stream()
                     .filter(c -> java.util.Objects.equals(c.getMergeRequestId(), mr.getId()) && java.util.Objects.equals(c.getCommitSha(), mr.getHeadCommit()))
                     .toList();
 
-            String status = computeGateStatusFromList(mrChecks, checks, requiredTestsets);
+            String status = computeGateStatusFromList(mrChecks, checks, List.of());
             resultMap.put(mr.getId(), new QualityGateResponse(status, checks));
         }
         return resultMap;

@@ -23,9 +23,15 @@ public class WorkspaceRepositoryEntity {
      */
     private String workspacePath;
     /**
-     * Immutable commit used when the worktree was created.
+     * Immutable commit used when the worktree was created. Null until Worker
+     * provision resolves and reports the real SHA; never a branch name afterwards.
      */
     private String baseCommit;
+    /**
+     * 不可变基线分支名，创建 worktree 时固定；sync 与 provision 必须使用同一值。
+     * 兼容迁移前旧数据：为空时回退用 base_commit 中的分支名（非 SHA 形态）。
+     */
+    private String baseRef;
     /**
      * Feature branch shared by continuation Tasks using this Workspace.
      */

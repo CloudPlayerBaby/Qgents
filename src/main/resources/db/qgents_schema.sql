@@ -242,15 +242,15 @@ CREATE TABLE IF NOT EXISTS
         CONSTRAINT fk_msg_group FOREIGN KEY (requirement_group_id) REFERENCES requirement_groups (id),
         CONSTRAINT fk_msg_user FOREIGN KEY (author_user_id) REFERENCES users (id),
         CONSTRAINT fk_msg_reply FOREIGN KEY (reply_to_message_id) REFERENCES messages (id),
-        CHECK (
+        CONSTRAINT chk_message_sender CHECK (
+            -- 自动化兜底卡没有可用 Agent 身份，但必须保留 DIFF/TASK_STATUS 类型供客户端处理。
             (
-                message_type = 'SYSTEM'
+                message_type IN ('SYSTEM', 'DIFF', 'TASK_STATUS')
                 AND author_user_id IS NULL
                 AND agent_id IS NULL
             )
             OR (
-                message_type <> 'SYSTEM'
-                AND (author_user_id IS NOT NULL OR agent_id IS NOT NULL)
+                (author_user_id IS NOT NULL OR agent_id IS NOT NULL)
                 AND NOT (author_user_id IS NOT NULL AND agent_id IS NOT NULL)
             )
         )
@@ -543,7 +543,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     trigger_message_id BINARY(16) NULL, workspace_id BINARY(16) NOT NULL, continuation_of_task_id BINARY(16) NULL,
     title VARCHAR(255) NOT NULL, display_code VARCHAR(32) NOT NULL COMMENT '项目内唯一展示编号，如 T-1024，创建后不可变',
     requirement TEXT NOT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'PLANNING' COMMENT 'PLANNING/PENDING/RUNNING/WAITING_DIFF_CONFIRMATION/DIFF_REJECTED/DELIVERING/SUCCEEDED/DELIVERY_FAILED/FAILED/CANCELLING/CANCELLED', created_by BINARY(16) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PLANNING' COMMENT 'PLANNING/PENDING/RUNNING/WAITING_DIFF_CONFIRMATION/WAITING_PREFLIGHT/DIFF_REJECTED/DELIVERING/SUCCEEDED/DELIVERY_FAILED/FAILED/CANCELLING/CANCELLED', created_by BINARY(16) NOT NULL,
     delivery_mode VARCHAR(32) NULL COMMENT '交付模式：DIFF_FIRST/MR_FIRST；为空时由 Plan 物化自动判定',
     delivery_reason VARCHAR(512) NULL COMMENT '交付模式判定理由（Planner scaleReason 或规则依据）',
     plan_materialized_at DATETIME(6) NULL COMMENT 'Planner 计划已物化为冻结 TaskStep 的时间',
@@ -562,8 +562,12 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS workspaces (
     id BINARY(16) PRIMARY KEY, project_id BINARY(16) NOT NULL,
     storage_key VARCHAR(512) NOT NULL COMMENT 'Opaque storage key, not a host path', status VARCHAR(32) NOT NULL DEFAULT 'PROVISIONING',
+    write_lease_task_id BINARY(16) NULL COMMENT 'Current Workspace write lease owner Task',
+    write_lease_token VARCHAR(64) NULL COMMENT 'Opaque write lease fencing token',
+    write_lease_expires_at DATETIME(6) NULL COMMENT 'UTC write lease expiry',
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_workspace_storage(storage_key),
+    KEY idx_workspace_write_lease (write_lease_expires_at),
     CONSTRAINT fk_workspace_project FOREIGN KEY(project_id) REFERENCES projects(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Persistent project development workspace';
 
@@ -588,7 +592,7 @@ CREATE TABLE IF NOT EXISTS task_acceptance_criteria (
 
 CREATE TABLE IF NOT EXISTS workspace_repositories (
     workspace_id BINARY(16) NOT NULL, project_repository_id BINARY(16) NOT NULL, workspace_path VARCHAR(255) NOT NULL,
-    base_commit VARCHAR(128) NULL, source_branch VARCHAR(512) NOT NULL, head_commit VARCHAR(128) NULL,
+    base_commit VARCHAR(128) NULL, base_ref VARCHAR(512) NULL, source_branch VARCHAR(512) NOT NULL, head_commit VARCHAR(128) NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY(workspace_id,project_repository_id), UNIQUE KEY uk_workspace_repository_path(workspace_id,workspace_path),
