@@ -251,8 +251,8 @@ class MessageServiceTest {
         assertThat(stored.get().getSequenceNo()).isEqualTo(7L);
         assertThat(stored.get().getCreatedAt()).isEqualTo(createdAt);
         assertThat(changed.getContent()).containsEntry("status", "RUNNING");
-        assertThat((Map<?, ?>) changed.getContent().get("plan"))
-                .containsEntry("summary", "分析权限");
+        assertThat(((Map<?, ?>) changed.getContent().get("plan")).get("summary"))
+                .isEqualTo("分析权限");
         verify(messages).updateById(any(MessageEntity.class));
     }
 }
