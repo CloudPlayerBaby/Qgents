@@ -51,7 +51,7 @@ public class CodingPromptBuilder {
                 - 已有文件的修改优先使用 apply_patch 做精确局部修改；只有新建文件时才使用 write_file。
                 - 需要调用工具时使用原生函数调用，每次调用的参数必须完整、类型正确。
                 - 工具返回 ok=false 时根据 error 修正后重试，不要重复同样的失败调用；hash 冲突时重新 read_file 再 apply_patch。
-                - 修改完成并确认无误后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "changes": ["变更说明"]}}
+                - 只有至少一次 write_file/apply_patch 实际改变了文件后才能 success=true；修改完成并确认无误后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出 JSON：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
 
                 约束：
@@ -78,7 +78,7 @@ public class CodingPromptBuilder {
                 - 已有文件的修改优先使用 apply_patch 做精确局部修改；只有新建文件或需要整文件替换时才使用 write_file。
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
                 - 需要调用工具时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
-                - 修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "changes": ["变更说明"]}}
+                - 只有至少一次 write_file/apply_patch 实际改变了文件后才能 success=true；修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
 
                 约束：

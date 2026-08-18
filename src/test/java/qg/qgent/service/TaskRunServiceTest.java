@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.ApiPageResponse;
+import qg.qgent.dto.ExecutionContextResponse;
 import qg.qgent.dto.InputRequestResponse;
 import qg.qgent.dto.LogEntryResponse;
 import qg.qgent.dto.TaskRunDetailResponse;
@@ -61,10 +62,11 @@ class TaskRunServiceTest {
     private final ProjectRepositoryMapper projectRepositories = mock(ProjectRepositoryMapper.class);
     private final WorkspaceRepositoryMapper workspaceRepositories = mock(WorkspaceRepositoryMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
+    private final GroupService groupService = mock(GroupService.class);
     private final EventService events = mock(EventService.class);
     private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
     private final TaskRunService service = new TaskRunService(runs, logs, inputRequests, diffs, steps, agents,
-            artifacts, tasks, groups, projectRepositories, workspaceRepositories, access, events,
+            artifacts, tasks, groups, projectRepositories, workspaceRepositories, access, groupService, events,
             mock(NotificationService.class), eventPublisher);
 
     @BeforeAll
@@ -103,12 +105,16 @@ class TaskRunServiceTest {
         run.setStartedAt(start);
         run.setFinishedAt(start.plusSeconds(10));
         when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(any())).thenReturn(task(run));
 
         TaskRunDetailResponse response = service.detail(projectId, runId, UUID.randomUUID());
 
         assertEquals(10_000L, response.getDurationMs());
         assertEquals(projectId.toString(), response.getProjectId());
         assertNotNull(response.getArtifactSummary());
+        assertEquals("执行成功", response.getStatusSummary());
+        assertNotNull(response.getSteps());
+        assertTrue(response.getSteps().isEmpty());
     }
 
     @Test
@@ -118,6 +124,7 @@ class TaskRunServiceTest {
         run.setStartedAt(null);
         run.setFinishedAt(LocalDateTime.now(ZoneOffset.UTC));
         when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
 
         TaskRunDetailResponse response = service.detail(projectId, runId, UUID.randomUUID());
 
@@ -131,6 +138,7 @@ class TaskRunServiceTest {
         run.setStartedAt(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(5));
         run.setFinishedAt(LocalDateTime.now(ZoneOffset.UTC));
         when(runs.selectList(any())).thenReturn(List.of(run));
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
 
         ApiPageResponse<TaskRunListItemResponse> page = service.listByTask(projectId, run.getTaskId(),
                 UUID.randomUUID(), null, 20, "req");
@@ -159,6 +167,7 @@ class TaskRunServiceTest {
         request.setPrompt("请补充错误密码场景");
         request.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         when(inputRequests.selectList(any())).thenReturn(List.of(request));
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
 
         ApiPageResponse<TaskRunListItemResponse> page = service.listByTask(projectId, run.getTaskId(),
                 UUID.randomUUID(), null, 20, "req");
@@ -173,7 +182,9 @@ class TaskRunServiceTest {
     @Test
     void logsExposeNodeAndCursorPagination() {
         UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
-        when(runs.selectById(runId)).thenReturn(run(projectId, runId));
+        TaskRunEntity run = run(projectId, runId);
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
         ExecutionLogEntity first = log(runId, 1L, "sandbox", "provisioning");
         ExecutionLogEntity second = log(runId, 2L, "git", "checkout base");
         when(logs.selectList(any())).thenReturn(List.of(first, second));
@@ -187,6 +198,43 @@ class TaskRunServiceTest {
         assertEquals(2, page.data().size());
         assertFalse(page.page().getHasMore());
         assertNull(page.page().getNextCursor());
+    }
+
+    @Test
+    void executionContextKeepsStableFieldsWhenTaskHasNoRepository() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        TaskEntity task = task(run);
+        task.setWorkspaceId(UUID.randomUUID());
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task);
+        when(workspaceRepositories.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of());
+
+        ExecutionContextResponse context = service.executionContext(projectId, runId, UUID.randomUUID());
+
+        assertEquals(task.getWorkspaceId().toString(), context.getWorkspaceId());
+        assertNull(context.getRepositoryId());
+        assertNull(context.getSandboxStatus());
+        assertNull(context.getBaseRef());
+        assertNull(context.getHeadRef());
+    }
+
+    @Test
+    void inputRequestsUseStablePageEnvelopeForEmptyResult() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+        when(inputRequests.selectList(any())).thenReturn(List.of());
+
+        ApiPageResponse<InputRequestResponse> page = service.inputRequests(projectId, runId,
+                UUID.randomUUID(), "req-inputs");
+
+        assertNotNull(page.data());
+        assertTrue(page.data().isEmpty());
+        assertNull(page.page().getNextCursor());
+        assertFalse(page.page().getHasMore());
+        assertEquals("req-inputs", page.requestId());
     }
 
     @Test
@@ -297,6 +345,7 @@ class TaskRunServiceTest {
         TaskRunEntity succeeded = run(projectId, runId);
         succeeded.setStatus("SUCCEEDED");
         when(runs.selectById(runId)).thenReturn(succeeded);
+        when(tasks.selectById(succeeded.getTaskId())).thenReturn(task(succeeded));
 
         ApiException e = assertThrows(ApiException.class,
                 () -> service.retry(projectId, runId, UUID.randomUUID()));
@@ -326,5 +375,12 @@ class TaskRunServiceTest {
         run.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         run.setUpdatedAt(run.getCreatedAt());
         return run;
+    }
+
+    private TaskEntity task(TaskRunEntity run) {
+        TaskEntity task = new TaskEntity();
+        task.setId(run.getTaskId());
+        task.setProjectId(run.getProjectId());
+        return task;
     }
 }

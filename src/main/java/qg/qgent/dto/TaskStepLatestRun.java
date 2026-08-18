@@ -27,6 +27,9 @@ public class TaskStepLatestRun {
     @Schema(description = "运行状态")
     private String status;
 
+    /** 脱敏的用户可见状态摘要。 */
+    private String statusSummary;
+
     /**
      * 开始时间（UTC），可为 null。
      */

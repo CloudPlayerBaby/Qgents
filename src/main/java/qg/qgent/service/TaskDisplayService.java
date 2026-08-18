@@ -543,7 +543,8 @@ public class TaskDisplayService {
 
     private List<AcceptanceCriterion> acceptanceCriteria(List<TaskAcceptanceCriterionEntity> list) {
         return list.stream()
-                .map(c -> new AcceptanceCriterion(id(c.getId()), c.getTitle(), c.getDescription(), c.getStatus()))
+                .map(c -> new AcceptanceCriterion(id(c.getId()), c.getTitle(), c.getDescription(),
+                        c.getStatus() == null ? "PENDING" : c.getStatus()))
                 .toList();
     }
 
@@ -622,8 +623,8 @@ public class TaskDisplayService {
                                                 Map<UUID, WorkspaceRepositoryEntity> worktreeByRepo) {
         TaskRunEntity latest = latestRun(stepRuns);
         TaskStepLatestRun latestRun = latest == null ? null
-                : new TaskStepLatestRun(id(latest.getId()), latest.getStatus(), iso(latest.getStartedAt()),
-                iso(latest.getFinishedAt()), durationMs(latest));
+                : new TaskStepLatestRun(id(latest.getId()), latest.getStatus(), statusSummary(latest.getStatus()),
+                iso(latest.getStartedAt()), iso(latest.getFinishedAt()), durationMs(latest));
         RepositorySummary repository = stepRepository(step, scopedRepoIds, worktreeData, worktreeByRepo);
         LocalDateTime startedAt = stepRuns.stream().map(TaskRunEntity::getStartedAt).filter(Objects::nonNull)
                 .min(Comparator.naturalOrder()).orElse(null);
@@ -735,6 +736,25 @@ public class TaskDisplayService {
             return null;
         }
         return Duration.between(run.getStartedAt(), run.getFinishedAt()).toMillis();
+    }
+
+    /** 脱敏状态文案与 TaskRun 详情保持一致。 */
+    private String statusSummary(String status) {
+        if (status == null) {
+            return null;
+        }
+        return switch (status) {
+            case "QUEUED" -> "等待执行";
+            case "RUNNING" -> "执行中";
+            case "SUCCEEDED" -> "执行成功";
+            case "FAILED" -> "执行失败";
+            case "WAITING_INPUT" -> "等待用户补充输入";
+            case "WAITING_APPROVAL" -> "等待审批确认";
+            case "BLOCKED" -> "执行被阻塞";
+            case "CANCELLING" -> "正在取消";
+            case "CANCELLED" -> "已取消";
+            default -> null;
+        };
     }
 
     private int intValue(Object value) {
