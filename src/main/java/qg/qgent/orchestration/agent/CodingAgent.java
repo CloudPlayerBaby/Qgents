@@ -94,6 +94,11 @@ public class CodingAgent implements Agent {
     public AgentRunOutcome run(AgentInput input) {
         log.info("coding agent start phase={} workspaceId={} protocol={}",
                 input.getPhase(), input.getWorkspaceId(), protocol.isNative() ? "native" : "legacy");
+        log.info("coding agent input context {}", AgentContextLogFormatter.summary(input));
+        if (log.isDebugEnabled()) {
+            log.debug("coding agent input context samples taskId={} {}", input.getTaskId(),
+                    AgentContextLogFormatter.samples(input));
+        }
         List<LlmObservation> observations = new ArrayList<>();
         ChangedWriteFactLedger observedWrites = new ChangedWriteFactLedger();
         try {
