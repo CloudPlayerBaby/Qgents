@@ -21,6 +21,7 @@ import qg.qgent.entity.TeamInvitationEntity;
 import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.EventMapper;
+import qg.qgent.mapper.GroupMemberMapper;
 import qg.qgent.mapper.MergeRequestMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectMapper;
@@ -62,6 +63,7 @@ class TeamServiceTest {
     private final TeamMemberMapper memberMapper = mock(TeamMemberMapper.class);
     private final TeamInvitationMapper invitationMapper = mock(TeamInvitationMapper.class);
     private final ProjectMemberMapper projectMemberMapper = mock(ProjectMemberMapper.class);
+    private final GroupMemberMapper groupMemberMapper = mock(GroupMemberMapper.class);
     private final ProjectMapper projectMapper = mock(ProjectMapper.class);
     private final UserMapper userMapper = mock(UserMapper.class);
     private final TeamDisbandService teamDisbandService = mock(TeamDisbandService.class);
@@ -73,7 +75,7 @@ class TeamServiceTest {
     private final TeamService service = new TeamService(teamMapper, memberMapper, invitationMapper,
             projectMemberMapper, projectMapper, userMapper, mock(TokenService.class),
             mock(TeamInvitationMailer.class), teamDisbandService, notificationService,
-            mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper, defaultAgents);
+            mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper, defaultAgents, groupMemberMapper);
 
     @Test
     void createAddsCreatorAsOwner() {
@@ -216,6 +218,32 @@ class TeamServiceTest {
     }
 
     @Test
+    void removingTeamMemberClearsRequirementGroupMembershipsInEachProject() {
+        UUID teamId = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        UUID targetUser = UUID.randomUUID();
+        UUID firstProjectId = UUID.randomUUID();
+        UUID secondProjectId = UUID.randomUUID();
+        when(teamMapper.selectByIdForUpdate(teamId)).thenReturn(team(teamId, owner));
+        when(memberMapper.selectByTeamAndUser(teamId, owner)).thenReturn(member(teamId, owner, "TEAM_OWNER"));
+        when(memberMapper.selectByTeamAndUser(teamId, targetUser))
+                .thenReturn(member(teamId, targetUser, "TEAM_MEMBER"));
+        ProjectEntity first = new ProjectEntity();
+        first.setId(firstProjectId);
+        first.setTeamId(teamId);
+        ProjectEntity second = new ProjectEntity();
+        second.setId(secondProjectId);
+        second.setTeamId(teamId);
+        when(projectMapper.selectByTeamForUpdate(teamId)).thenReturn(java.util.List.of(first, second));
+
+        service.removeMember(owner, teamId, targetUser);
+
+        verify(groupMemberMapper).deleteByProjectAndUser(firstProjectId, targetUser);
+        verify(groupMemberMapper).deleteByProjectAndUser(secondProjectId, targetUser);
+        verify(projectMemberMapper).deleteByTeamAndUser(teamId, targetUser);
+    }
+
+    @Test
     void canonicalOwnerCanNormalizeExtraOwnerRole() {
         UUID teamId = UUID.randomUUID();
         UUID owner = UUID.randomUUID();
@@ -281,7 +309,7 @@ class TeamServiceTest {
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
                 projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class), mock(TeamDisbandService.class),
                 mock(NotificationService.class), mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper,
-                defaultAgents);
+                defaultAgents, groupMemberMapper);
         when(userMapper.selectById(actor)).thenReturn(user);
         when(tokens.hash("raw-token")).thenReturn(new byte[] { 1 });
         when(invitationMapper.selectOne(any())).thenReturn(invitation);
@@ -329,7 +357,7 @@ class TeamServiceTest {
         TeamService localService = new TeamService(teamMapper, memberMapper, invitationMapper, projectMemberMapper,
                 projectMapper, userMapper, tokens, mock(TeamInvitationMailer.class), mock(TeamDisbandService.class),
                 mock(NotificationService.class), mock(EventService.class), eventMapper, taskMapper, mergeRequestMapper,
-                defaultAgents);
+                defaultAgents, groupMemberMapper);
         InviteTeamMemberRequest request = new InviteTeamMemberRequest();
         request.setEmail("new@example.com");
         request.setRole("TEAM_MEMBER");
