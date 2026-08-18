@@ -45,7 +45,7 @@ public class NotificationEntity {
 
     /**
      * 通知类型枚举：TASK_COMPLETED/TASK_FAILED/AGENT_INPUT_REQUIRED/DELIVERABLE_PENDING/MR_PENDING/
-     * INVITED/TEAM_JOINED/PROJECT_ADDED。
+     * INVITED/TEAM_JOINED/PROJECT_ADDED/MESSAGE_MENTION（群聊 @ 提及）。
      */
     private String kind;
 

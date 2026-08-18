@@ -44,12 +44,13 @@ public class MessageService {
     private final TaskTriggerService taskTriggerService;
     private final ObjectMapper mapper;
     private final EventService eventService;
+    private final NotificationService notificationService;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                           GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
                           ProjectAccessService access, GroupService groupService,
                           TaskTriggerService taskTriggerService, ObjectMapper mapper,
-                          EventService eventService) {
+                          EventService eventService, NotificationService notificationService) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupAgentMapper = groupAgentMapper;
@@ -60,6 +61,7 @@ public class MessageService {
         this.taskTriggerService = taskTriggerService;
         this.mapper = mapper;
         this.eventService = eventService;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -83,9 +85,76 @@ public class MessageService {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
         }
         MessageResponse response = doSend(projectId, groupId, actor, null, body);
+        // @ 用户：对被提及的成员（排除发送者自己）生成通知；@Agent 走自动触发任务
+        notifyMentionedUsers(actor, projectId, groupId, body);
         triggerTaskOnAgentMention(actor, projectId, groupId, response.getId() == null ? null : UUID.fromString(response.getId()),
                 body.getMentions());
         return response;
+    }
+
+    /**
+     * 对被 @ 的用户生成站内通知（MESSAGE_MENTION）：发送者、群名与消息文本摘要进通知内容；
+     * 排除发送者本人；@Agent 不在此处理（走任务触发）。通知失败不影响消息发送（日志兜底）。
+     */
+    private void notifyMentionedUsers(UUID actor, UUID projectId, UUID groupId, MessageSendRequest body) {
+        if (body.getMentions() == null || body.getMentions().isEmpty()) {
+            return;
+        }
+        try {
+            List<UUID> users = body.getMentions().stream()
+                    .filter(m -> "USER".equals(m.getType()))
+                    .filter(m -> m.getId() != null && !m.getId().equals(actor))
+                    .map(Mention::getId)
+                    .distinct()
+                    .toList();
+            if (users.isEmpty()) {
+                return;
+            }
+            RequirementGroupEntity group = groupMapper.selectById(groupId);
+            String groupName = group == null ? "群聊" : group.getName();
+            String senderName = senderDisplayName(actor);
+            String preview = messageText(body.getContent());
+            String title = "有人在群聊中提到了你";
+            String description = senderName + " 在群「" + groupName + "」中提到了你"
+                    + (preview.isBlank() ? "" : "：" + preview);
+            for (UUID userId : users) {
+                notificationService.notify(userId, projectId, groupId, "MESSAGE_MENTION", title, description, null);
+            }
+        } catch (RuntimeException e) {
+            log.warn("mention notification skipped, projectId={}, groupId={}, actor={}: {}",
+                    projectId, groupId, actor, e.getMessage());
+        }
+    }
+
+    /** 发送者显示名（用户）；查询失败回退「成员」。 */
+    private String senderDisplayName(UUID actor) {
+        try {
+            UserEntity sender = userMapper.selectById(actor);
+            return sender == null || sender.getDisplayName() == null || sender.getDisplayName().isBlank()
+                    ? "成员" : sender.getDisplayName();
+        } catch (RuntimeException e) {
+            return "成员";
+        }
+    }
+
+    /** 从消息 content 提取展示文本（TEXT 取 text；QUOTE 取 quotedText；其余返回空）。 */
+    private String messageText(Map<String, Object> content) {
+        if (content == null || content.isEmpty()) {
+            return "";
+        }
+        Object text = content.get("text");
+        if (text instanceof String s && !s.isBlank()) {
+            return truncate(s);
+        }
+        Object quoted = content.get("quotedText");
+        if (quoted instanceof String s && !s.isBlank()) {
+            return truncate(s);
+        }
+        return "";
+    }
+
+    private String truncate(String value) {
+        return value.length() <= 60 ? value : value.substring(0, 60) + "…";
     }
 
     /**
