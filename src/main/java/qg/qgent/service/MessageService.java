@@ -89,7 +89,7 @@ public class MessageService {
         }
         MessageResponse response = doSend(projectId, groupId, actor, null, body);
         // @ 用户：对被提及的成员（排除发送者自己）生成通知；@Agent 走自动触发任务
-        notifyMentionedUsers(actor, projectId, groupId, body);
+        notifyMentionedUsers(actor, projectId, groupId, body, response.getId());
         triggerTaskOnAgentMention(actor, projectId, groupId, response.getId() == null ? null : UUID.fromString(response.getId()),
                 body.getMentions());
         return response;
@@ -98,8 +98,11 @@ public class MessageService {
     /**
      * 对被 @ 的用户生成站内通知（MESSAGE_MENTION）：发送者、群名与消息文本摘要进通知内容；
      * 排除发送者本人；@Agent 不在此处理（走任务触发）。通知失败不影响消息发送（日志兜底）。
+     *
+     * @param messageId 被 @ 的那条消息 ID，作为通知 resourceId 供前端跳转后精确定位（契约 §五）
      */
-    private void notifyMentionedUsers(UUID actor, UUID projectId, UUID groupId, MessageSendRequest body) {
+    private void notifyMentionedUsers(UUID actor, UUID projectId, UUID groupId, MessageSendRequest body,
+                                      String messageId) {
         if (body.getMentions() == null || body.getMentions().isEmpty()) {
             return;
         }
@@ -121,7 +124,7 @@ public class MessageService {
             String description = senderName + " 在群「" + groupName + "」中提到了你"
                     + (preview.isBlank() ? "" : "：" + preview);
             for (UUID userId : users) {
-                notificationService.notify(userId, projectId, groupId, "MESSAGE_MENTION", title, description, null);
+                notificationService.notify(userId, projectId, groupId, "MESSAGE_MENTION", title, description, messageId);
             }
         } catch (RuntimeException e) {
             log.warn("mention notification skipped, projectId={}, groupId={}, actor={}: {}",
