@@ -86,7 +86,8 @@ public class SecurityConfig {
                         // 不构成新的授权入口，因此放行；初始 REQUEST 仍走完整鉴权。
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/login",
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/register",
+                                "/api/v1/auth/register/verification-codes", "/api/v1/auth/login",
                                 "/api/v1/auth/refresh", "/api/v1/auth/password-reset-requests",
                                 "/api/v1/auth/password-resets")
                         .permitAll()
