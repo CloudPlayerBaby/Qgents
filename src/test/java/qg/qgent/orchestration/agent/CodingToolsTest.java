@@ -294,4 +294,23 @@ class CodingToolsTest {
         verify(observer).onWrite(eq(PROJECT_ID), eq(TASK_ID), eq(TASK_RUN_ID), eq(workspaceId),
                 any(WorkspaceWriteResult.class));
     }
+
+    @Test
+    void modifiedFilesTracksSuccessfulWritesOnly() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/Existing.java"));
+        when(codeAccess.readFile(workspaceId, "src/main/java/ReadOnly.java"))
+                .thenReturn(WorkspaceFileReadResult.ok("src/main/java/ReadOnly.java", "code", HASH));
+        when(writer.writeFile(workspaceId, "src/main/java/New.java", "code"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/New.java", NEW_HASH, true));
+        when(writer.patchFile(workspaceId, "src/main/java/Existing.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/Existing.java", NEWER_HASH, true));
+        CodingTools tools = tools();
+        tools.readFile("src/main/java/ReadOnly.java");
+        tools.writeFile("src/main/java/New.java", "code");
+        tools.applyPatch("src/main/java/Existing.java", HASH, "patch");
+
+        // 只有成功写入的文件被记录；read_file（只读）不记。
+        assertThat(tools.getModifiedFiles())
+                .containsExactlyInAnyOrder("src/main/java/New.java", "src/main/java/Existing.java");
+    }
 }

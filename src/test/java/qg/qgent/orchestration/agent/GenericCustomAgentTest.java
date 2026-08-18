@@ -264,6 +264,21 @@ class GenericCustomAgentTest {
                 .containsExactly("list_files", "read_file", "search_code");
     }
 
+    @Test
+    void writeRoleSuccessWithoutWritesProducesNoCodingResult() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"done\",\"message\":\"ok\"}", "stop"));
+
+        AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        // 本次 run 未写任何文件：不构造 CodingResult，避免下游误以为有修改。
+        // （"成功且确实写入文件 → 回填 CodingResult"分支依赖工具真实执行，工具层记录行为
+        //   由 CodingToolsTest.modifiedFilesTracksSuccessfulWritesOnly 覆盖。）
+        assertThat(outcome.getCodingResult()).isNull();
+    }
+
     private ToolTurnResult finalTurn(String json, String finishReason) {
         return ToolTurnResult.finalAnswer(json, finishReason, 20, 10, "aabb", null);
     }

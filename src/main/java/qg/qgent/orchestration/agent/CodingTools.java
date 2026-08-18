@@ -10,9 +10,11 @@ import qg.qgent.orchestration.tool.WorkspaceInfraException;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -44,6 +46,11 @@ public class CodingTools {
      */
     private final Map<String, String> latestSha256 = new HashMap<>();
     /**
+     * 本次 run 内成功写入的文件路径（write_file / apply_patch 成功时记录，read_file 不记），
+     * 供执行结束后回填 CodingResult.modifiedFiles（Verify/Review 上下文可见本次修改范围）。
+     */
+    private final Set<String> modifiedFiles = new HashSet<>();
+    /**
      * 成功写后的预览回调（阶段 D）；null 表示未启用预览记录。由 CodingAgent 按 run 注入。
      */
     private CodingWriteObserver writeObserver;
@@ -66,6 +73,13 @@ public class CodingTools {
         this.projectId = projectId;
         this.taskId = taskId;
         this.taskRunId = taskRunId;
+    }
+
+    /**
+     * 本次 run 内成功写入的文件路径（不可变快照）；仅 write_file / apply_patch 成功时记录。
+     */
+    public Set<String> getModifiedFiles() {
+        return java.util.Collections.unmodifiableSet(modifiedFiles);
     }
 
     @Tool(name = "list_files", description = "列出工作区所有代码文件的相对路径，无参数")
@@ -132,6 +146,7 @@ public class CodingTools {
         WorkspaceWriteResult result = writer.patchFile(workspaceId, path, expectedHash, patch);
         if (result.isOk()) {
             latestSha256.put(path, result.getNewSha256());
+            modifiedFiles.add(path);
             notifyWrite(result);
             Map<String, Object> ok = new LinkedHashMap<>();
             ok.put("ok", true);
@@ -166,6 +181,7 @@ public class CodingTools {
         WorkspaceWriteResult result = writer.writeFile(workspaceId, path, content);
         if (result.isOk()) {
             latestSha256.put(path, result.getNewSha256());
+            modifiedFiles.add(path);
             notifyWrite(result);
             Map<String, Object> ok = new LinkedHashMap<>();
             ok.put("ok", true);
