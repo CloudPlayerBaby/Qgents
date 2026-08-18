@@ -28,6 +28,10 @@ public class TestResult {
      */
     private String command;
     /**
+     * 验证方式：COMMAND（执行白名单测试命令）、FILE_ASSERTION（纯文件断言）或 NONE（无法验证）。
+     */
+    private String verificationMode;
+    /**
      * 已脱敏的 stdout。
      */
     private String stdout;
