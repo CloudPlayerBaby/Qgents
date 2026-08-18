@@ -245,9 +245,9 @@ class GenericCustomAgentTest {
 
         AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
-        assertThat(outcome.getMessage()).contains("actual changed write");
+        assertThat(outcome.getMessage()).contains("实际文件变更");
     }
 
     @Test
@@ -259,7 +259,7 @@ class GenericCustomAgentTest {
 
         AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
         verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
     }
@@ -305,9 +305,9 @@ class GenericCustomAgentTest {
 
         AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(customInput(OrchestrationPhase.CODING));
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
-        assertThat(outcome.getMessage()).contains("actual changed write");
+        assertThat(outcome.getMessage()).contains("实际文件变更");
     }
 
     private ToolTurnResult finalTurn(String json, String finishReason) {

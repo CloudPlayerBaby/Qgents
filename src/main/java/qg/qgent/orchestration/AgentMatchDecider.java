@@ -98,11 +98,15 @@ public class AgentMatchDecider {
      */
     private Optional<UUID> askDecisionAgent(String role, List<AgentEntity> candidates,
                                             List<String> stepRequirements) {
+        // 注意：complete() 强制 response_format=json_object（DeepSeek/OpenAI 要求 prompt 必须出现
+        // "json" 字样，否则 400），因此这里必须输出 JSON 对象并在提示词中显式声明 JSON 输出。
         String system = "你是 Qgents 的 Agent 分配决策器。给定一个步骤角色和一组候选 Agent（各含名称、"
                 + "角色与用途描述），请选出最合适完成该步骤角色的一个 Agent。判断依据：候选的 role 是否"
                 + "匹配步骤角色，以及 description 描述的职责与步骤角色期望是否一致；若步骤声明了能力要求，"
-                + "还需判断候选是否具备相应能力。只输出选中 Agent 的 id"
-                + "（UUID 字符串），不要任何解释、标点或代码围栏；若所有候选都无法胜任，只输出 NONE。";
+                + "还需判断候选是否具备相应能力。"
+                + "只输出一个 JSON 对象（不要任何解释、标点或代码围栏）："
+                + "选中时 {\"agentId\": \"<候选 id 的 UUID 字符串>\"}；"
+                + "若所有候选都无法胜任，输出 {\"agentId\": \"NONE\"}。";
         StringBuilder user = new StringBuilder("步骤角色：").append(role);
         if (stepRequirements != null && !stepRequirements.isEmpty()) {
             user.append("\n步骤能力要求：").append(String.join("、", stepRequirements));
@@ -114,7 +118,7 @@ public class AgentMatchDecider {
             user.append(", role: ").append(nullToBlank(candidate.getRole()));
             user.append(", description: ").append(nullToBlank(candidate.getDescription()));
         }
-        user.append("\n请输出最合适的 Agent id。");
+        user.append("\n请输出 JSON 对象（{\"agentId\": \"...\"}）。");
         try {
             String raw = llm.complete(system, user.toString());
             return parseAgentId(raw, candidates);
@@ -126,7 +130,8 @@ public class AgentMatchDecider {
     }
 
     /**
-     * 解析决策 Agent 输出为候选池内的 Agent id。NONE / 非法 UUID / 池外 id → 空（不采信）。
+     * 解析决策 Agent 输出为候选池内的 Agent id。期望 JSON {@code {"agentId": "..."}}；
+     * 兼容裸 UUID / NONE（历史输出）。NONE / 非法 UUID / 池外 id → 空（不采信）。
      */
     private Optional<UUID> parseAgentId(String raw, List<AgentEntity> candidates) {
         if (raw == null) {
@@ -138,6 +143,25 @@ public class AgentMatchDecider {
             int last = cleaned.lastIndexOf("```");
             if (first >= 0 && last > first) {
                 cleaned = cleaned.substring(first + 1, last).strip();
+            }
+        }
+        if (cleaned.isEmpty()) {
+            return Optional.empty();
+        }
+        // 优先解析 JSON 对象 {"agentId": "..."}
+        if (cleaned.startsWith("{")) {
+            try {
+                int key = cleaned.indexOf("\"agentId\"");
+                if (key >= 0) {
+                    int colon = cleaned.indexOf(':', key);
+                    int quoteStart = cleaned.indexOf('"', colon + 1);
+                    int quoteEnd = quoteStart < 0 ? -1 : cleaned.indexOf('"', quoteStart + 1);
+                    if (quoteStart >= 0 && quoteEnd > quoteStart) {
+                        cleaned = cleaned.substring(quoteStart + 1, quoteEnd).strip();
+                    }
+                }
+            } catch (RuntimeException e) {
+                return Optional.empty();
             }
         }
         if (cleaned.isEmpty() || "NONE".equalsIgnoreCase(cleaned)) {
