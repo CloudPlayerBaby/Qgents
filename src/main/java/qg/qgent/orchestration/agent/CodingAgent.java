@@ -165,15 +165,15 @@ public class CodingAgent implements Agent {
                         input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
                 throw new IllegalStateException(turn.infraFailure());
             }
+            if ("length".equalsIgnoreCase(finishReason)) {
+                throw new CodingParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
+                        "coding output truncated by max tokens");
+            }
             if (turn.continuesToolLoop()) {
                 history = turn.history();
                 continue;
             }
             if (turn.isFinalText()) {
-                if ("length".equalsIgnoreCase(finishReason)) {
-                    throw new CodingParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
-                            "coding output truncated by max tokens");
-                }
                 log.info("coding agent round {} finalResult phase={} workspaceId={}",
                         round, input.getPhase(), input.getWorkspaceId());
                 try {
@@ -181,7 +181,7 @@ public class CodingAgent implements Agent {
                 } catch (CodingParseException malformed) {
                     log.warn("coding agent final output not valid JSON, repairing phase={} workspaceId={} round={} code={}",
                             input.getPhase(), input.getWorkspaceId(), round, malformed.getCode());
-                    String repaired = repairJson(system, turn.text(), observations, round, input);
+                    String repaired = repairJson(system, turn.text(), malformed.getMessage(), observations, round, input);
                     if (repaired != null) {
                         return parser.parse(repaired);
                     }
@@ -200,30 +200,20 @@ public class CodingAgent implements Agent {
      * 解析失败时用一次无工具、强制 JSON_OBJECT 的补救调用重述原结果；不自行修补 JSON，避免
      * 改写模型语义。补救调用失败则保留原协议错误，交由状态机按基础设施失败重试。
      */
-    private String repairJson(String system, String raw, List<LlmObservation> observations, int round,
+    private String repairJson(String system, String raw, String errorMessage, List<LlmObservation> observations, int round,
                               AgentInput input) {
-        String original = raw == null ? "" : raw;
-        if (original.length() > 8_000) {
-            original = original.substring(0, 8_000);
-        }
-        String repairUser = "你的上一轮最终输出不是合法 JSON。请仅输出一个原始 JSON 对象（不要输出任何解释、"
-                + "代码围栏或多余内容），把上一轮结果整理为："
-                + "{\"finalResult\":{\"success\":true|false,\"summary\":\"结果摘要\","
-                + "\"modifiedFiles\":[\"相对路径\"],\"changes\":[\"变更说明\"],\"errors\":[\"错误说明\"]}}。\n\n"
-                + "上一轮输出：\n" + original;
-        try {
-            String repaired = llm.complete(system, List.of(LlmMessage.user(repairUser)));
-            String repairedSha = repaired == null ? null
-                    : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
-            observations.add(new LlmObservation(input.getPhase().name(), round + 1,
-                    system.length() + repairUser.length(), repaired == null ? 0 : repaired.length(),
-                    "stop", null, null, repairedSha));
-            return repaired;
-        } catch (RuntimeException e) {
-            log.warn("coding agent JSON repair call failed phase={} workspaceId={} category={}",
-                    input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());
-            return null;
-        }
+        String repairUser = JsonRepairSupport.buildPrompt(raw, errorMessage,
+                "{\"finalResult\":{\"success\":true|false,\"summary\":\"结果摘要\","
+                        + "\"modifiedFiles\":[\"相对路径\"],\"changes\":[\"变更说明\"],\"errors\":[\"错误说明\"]}}" );
+        String repaired = JsonRepairSupport.repairOnce(llm, system, raw, errorMessage,
+                "{\"finalResult\":{\"success\":true|false,\"summary\":\"结果摘要\","
+                        + "\"modifiedFiles\":[\"相对路径\"],\"changes\":[\"变更说明\"],\"errors\":[\"错误说明\"]}}");
+        String repairedSha = repaired == null ? null
+                : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
+        observations.add(new LlmObservation(input.getPhase().name(), round + 1,
+                system.length() + repairUser.length(), repaired == null ? 0 : repaired.length(),
+                "stop", null, null, repairedSha));
+        return repaired;
     }
 
     /**
@@ -266,7 +256,7 @@ public class CodingAgent implements Agent {
 
     private JsonNode toJson(String raw) {
         try {
-            return objectMapper.readTree(stripFences(raw));
+            return JsonTextExtractor.parseObject(objectMapper, raw);
         } catch (Exception e) {
             throw new CodingParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
                     "coding output is not valid JSON: " + e.getMessage());
@@ -322,20 +312,4 @@ public class CodingAgent implements Agent {
         };
     }
 
-    /**
-     * 去掉常见的 ```json / ``` 围栏包裹。
-     */
-    private String stripFences(String raw) {
-        String trimmed = raw.trim();
-        if (trimmed.startsWith("```")) {
-            int firstLineBreak = trimmed.indexOf('\n');
-            if (firstLineBreak > 0) {
-                trimmed = trimmed.substring(firstLineBreak + 1);
-            }
-            if (trimmed.endsWith("```")) {
-                trimmed = trimmed.substring(0, trimmed.length() - 3);
-            }
-        }
-        return trimmed.trim();
-    }
 }

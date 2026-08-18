@@ -47,7 +47,7 @@ public class CodingResultParser {
         }
         JsonNode node;
         try {
-            node = objectMapper.readTree(stripFences(raw));
+            node = JsonTextExtractor.parseObject(objectMapper, raw);
         } catch (Exception e) {
             throw new CodingParseException("coding result is not valid JSON: " + e.getMessage());
         }
@@ -104,20 +104,4 @@ public class CodingResultParser {
         return value != null && value.isTextual() ? value.asText().trim() : null;
     }
 
-    /**
-     * 去掉常见的 ```json / ``` 围栏包裹。
-     */
-    private String stripFences(String raw) {
-        String trimmed = raw.trim();
-        if (trimmed.startsWith("```")) {
-            int firstLineBreak = trimmed.indexOf('\n');
-            if (firstLineBreak > 0) {
-                trimmed = trimmed.substring(firstLineBreak + 1);
-            }
-            if (trimmed.endsWith("```")) {
-                trimmed = trimmed.substring(0, trimmed.length() - 3);
-            }
-        }
-        return trimmed.trim();
-    }
 }

@@ -12,6 +12,7 @@ import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.RunOutcome;
 import qg.qgent.orchestration.llm.LlmClient;
+import qg.qgent.orchestration.llm.LlmOutputTruncatedException;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
@@ -65,9 +66,25 @@ public class PlanAgent implements Agent {
             List<String> toRead = selectFilesToRead(input, files);
             Map<String, String> contents = readSelectedFiles(input, toRead);
             List<AgentEntity> pool = loadCandidatePool(input);
-            String planJson = llm.complete(promptBuilder.buildPlanSystem(),
+            String planSystem = promptBuilder.buildPlanSystem();
+            String planJson = llm.complete(planSystem,
                     promptBuilder.buildPlanUser(input, files, contents, pool));
-            PlanResult plan = parser.parse(planJson);
+            PlanResult plan;
+            try {
+                plan = parser.parse(planJson);
+            } catch (PlanParseException malformed) {
+                log.warn("plan agent final output not valid JSON, repairing code={}", malformed.getMessage());
+                String repaired = JsonRepairSupport.repairOnce(llm, planSystem, planJson, malformed.getMessage(),
+                        "{\"taskUnderstanding\":\"...\",\"implementationGoals\":[\"...\"],"
+                                + "\"steps\":[{\"title\":\"...\",\"files\":[\"relative/path\"],"
+                                + "\"description\":\"...\"}],\"testPlan\":\"...\","
+                                + "\"verificationMode\":\"AUTOMATED|MANUAL\",\"risks\":[\"...\"],"
+                                + "\"deliveryMode\":\"DIFF_FIRST|MR_FIRST\",\"scaleReason\":\"...\"}");
+                if (repaired == null) {
+                    throw malformed;
+                }
+                plan = parser.parse(repaired);
+            }
 
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
@@ -75,6 +92,20 @@ public class PlanAgent implements Agent {
             outcome.setPlanResult(plan);
             outcome.setMessage("plan ready");
             return outcome;
+        } catch (PlanParseException e) {
+            AgentRunOutcome failure = new AgentRunOutcome();
+            failure.setPhase(input.getPhase());
+            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setFailureCode(e.getCode().name());
+            failure.setMessage("plan agent failed: " + e.getMessage());
+            return failure;
+        } catch (LlmOutputTruncatedException e) {
+            AgentRunOutcome failure = new AgentRunOutcome();
+            failure.setPhase(input.getPhase());
+            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setFailureCode(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
+            failure.setMessage("plan agent failed: " + e.getMessage());
+            return failure;
         } catch (RuntimeException e) {
             AgentRunOutcome failure = new AgentRunOutcome();
             failure.setPhase(input.getPhase());
@@ -104,7 +135,7 @@ public class PlanAgent implements Agent {
         try {
             String raw = llm.complete(promptBuilder.buildSelectFilesSystem(),
                     promptBuilder.buildSelectFilesUser(input, files));
-            JsonNode node = objectMapper.readTree(raw);
+            JsonNode node = JsonTextExtractor.parseObject(objectMapper, raw);
             JsonNode requests = node.get("readRequests");
             List<String> selected = new ArrayList<>();
             if (requests != null && requests.isArray()) {

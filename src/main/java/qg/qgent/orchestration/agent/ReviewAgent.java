@@ -111,7 +111,9 @@ public class ReviewAgent implements Agent {
         } catch (RuntimeException e) {
             log.error("REVIEW_AGENT_FAILED phase={} workspaceId={} category={}",
                     input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());
-            return infraFailure(input, e.getMessage(), observations);
+            String failureCode = e instanceof ReviewParseException parse
+                    ? parse.getCode().name() : null;
+            return infraFailure(input, e.getMessage(), observations, failureCode);
         }
     }
 
@@ -140,15 +142,15 @@ public class ReviewAgent implements Agent {
                         input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
                 throw new IllegalStateException(turn.infraFailure());
             }
+            if ("length".equalsIgnoreCase(finishReason)) {
+                throw new ReviewParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
+                        "review output truncated by max tokens");
+            }
             if (turn.continuesToolLoop()) {
                 history = turn.history();
                 continue;
             }
             if (turn.isFinalText()) {
-                if ("length".equalsIgnoreCase(finishReason)) {
-                    throw new ReviewParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
-                            "review output truncated by max tokens");
-                }
                 log.info("review agent round {} finalResult phase={} workspaceId={}",
                         round, input.getPhase(), input.getWorkspaceId());
                 try {
@@ -156,7 +158,7 @@ public class ReviewAgent implements Agent {
                 } catch (ReviewParseException malformed) {
                     log.warn("review agent final output not valid JSON, repairing phase={} workspaceId={} round={} code={}",
                             input.getPhase(), input.getWorkspaceId(), round, malformed.getCode());
-                    String repaired = repairJson(system, turn.text(), observations, round, input);
+                    String repaired = repairJson(system, turn.text(), malformed.getMessage(), observations, round, input);
                     if (repaired != null) {
                         return parser.parse(repaired);
                     }
@@ -175,32 +177,24 @@ public class ReviewAgent implements Agent {
      * 解析失败时最多调用一次无工具 repair，只要求模型把原结果重述为 ReviewResult JSON，
      * 不在服务端自行猜测或修补审查语义。repair 失败时保留原协议错误，交由编排器重试。
      */
-    private String repairJson(String system, String raw, List<LlmObservation> observations, int round,
+    private String repairJson(String system, String raw, String errorMessage, List<LlmObservation> observations, int round,
                               AgentInput input) {
-        String original = raw == null ? "" : raw;
-        if (original.length() > 8_000) {
-            original = original.substring(0, 8_000);
-        }
-        String repairUser = "你的上一轮审查结果不是合法 JSON。请仅输出一个原始 JSON 对象（不要输出解释、"
-                + "代码围栏或多余内容），整理为："
-                + "{\"success\":true|false,\"summary\":\"审查摘要\","
-                + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
-                + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
-                + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false}。\n\n"
-                + "上一轮输出：\n" + original;
-        try {
-            String repaired = llm.complete(system, List.of(LlmMessage.user(repairUser)));
-            String repairedSha = repaired == null ? null
-                    : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
-            observations.add(new LlmObservation(input.getPhase().name(), round + 1,
-                    system.length() + repairUser.length(), repaired == null ? 0 : repaired.length(),
-                    "stop", null, null, repairedSha));
-            return repaired;
-        } catch (RuntimeException e) {
-            log.warn("review agent JSON repair call failed phase={} workspaceId={} category={}",
-                    input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());
-            return null;
-        }
+        String repairUser = JsonRepairSupport.buildPrompt(raw, errorMessage,
+                "{\"success\":true|false,\"summary\":\"审查摘要\","
+                        + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
+                        + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
+                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false}" );
+        String repaired = JsonRepairSupport.repairOnce(llm, system, raw, errorMessage,
+                "{\"success\":true|false,\"summary\":\"审查摘要\","
+                        + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
+                        + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
+                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false}");
+        String repairedSha = repaired == null ? null
+                : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
+        observations.add(new LlmObservation(input.getPhase().name(), round + 1,
+                system.length() + repairUser.length(), repaired == null ? 0 : repaired.length(),
+                "stop", null, null, repairedSha));
+        return repaired;
     }
 
     /**
@@ -261,34 +255,23 @@ public class ReviewAgent implements Agent {
 
     private JsonNode toJson(String raw) {
         try {
-            return objectMapper.readTree(stripFences(raw));
+            return JsonTextExtractor.parseObject(objectMapper, raw);
         } catch (Exception e) {
             throw new ReviewParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
                     "review output is not valid JSON: " + e.getMessage());
         }
     }
 
-    /**
-     * 去掉常见的 ```json / ``` 围栏包裹。
-     */
-    private String stripFences(String raw) {
-        String trimmed = raw.trim();
-        if (trimmed.startsWith("```")) {
-            int firstLineBreak = trimmed.indexOf('\n');
-            if (firstLineBreak > 0) {
-                trimmed = trimmed.substring(firstLineBreak + 1);
-            }
-            if (trimmed.endsWith("```")) {
-                trimmed = trimmed.substring(0, trimmed.length() - 3);
-            }
-        }
-        return trimmed.trim();
+    private AgentRunOutcome infraFailure(AgentInput input, String message, List<LlmObservation> observations) {
+        return infraFailure(input, message, observations, null);
     }
 
-    private AgentRunOutcome infraFailure(AgentInput input, String message, List<LlmObservation> observations) {
+    private AgentRunOutcome infraFailure(AgentInput input, String message, List<LlmObservation> observations,
+                                         String failureCode) {
         AgentRunOutcome failure = new AgentRunOutcome();
         failure.setPhase(input.getPhase());
         failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+        failure.setFailureCode(failureCode);
         failure.setMessage("review agent failed: " + message);
         failure.setObservations(observations);
         return failure;

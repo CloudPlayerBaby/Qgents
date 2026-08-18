@@ -94,6 +94,9 @@ public class GenericCustomAgent implements Agent {
             AgentRunOutcome failure = new AgentRunOutcome();
             failure.setPhase(input.getPhase());
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            if (e instanceof GenericParseException parse) {
+                failure.setFailureCode(parse.getCode().name());
+            }
             failure.setMessage("custom agent failed: " + e.getMessage());
             failure.setObservations(observations);
             return failure;
@@ -138,15 +141,15 @@ public class GenericCustomAgent implements Agent {
                         turn.infraFailure());
                 throw new IllegalStateException(turn.infraFailure());
             }
+            if ("length".equalsIgnoreCase(finishReason)) {
+                throw new GenericParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
+                        "custom agent output truncated by max tokens");
+            }
             if (turn.continuesToolLoop()) {
                 history = turn.history();
                 continue;
             }
             if (turn.isFinalText()) {
-                if ("length".equalsIgnoreCase(finishReason)) {
-                    throw new GenericParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
-                            "custom agent output truncated by max tokens");
-                }
                 String raw = turn.text();
                 log.info("custom agent finalResult agentId={} phase={} round={} raw={}",
                         entity.getId(), input.getPhase(), round,
@@ -156,7 +159,7 @@ public class GenericCustomAgent implements Agent {
                 } catch (GenericParseException malformed) {
                     log.warn("custom agent final output not valid JSON, repairing agentId={} phase={} round={}",
                             entity.getId(), input.getPhase(), round);
-                    String repaired = repairJson(system, raw, observations, round, input);
+                    String repaired = repairJson(system, raw, malformed.getMessage(), observations, round, input);
                     if (repaired != null) {
                         return parser.parse(repaired);
                     }
@@ -177,27 +180,20 @@ public class GenericCustomAgent implements Agent {
      * 不伪造结果：让模型基于自己的原始输出重述，语义由模型自己确认。length 截断不进入本方法（残缺
      * 数据无法格式化）；修复调用失败返回 null，由调用方抛出原 {@link GenericParseException}。
      */
-    private String repairJson(String system, String raw, List<LlmObservation> observations, int round,
+    private String repairJson(String system, String raw, String errorMessage, List<LlmObservation> observations, int round,
                               AgentInput input) {
-        String repairUser = "你的上一轮最终输出不是合法 JSON。请仅输出一个原始 JSON 对象（不要输出任何解释、"
-                + "代码围栏或多余内容），把上一轮的结果整理为："
-                + "{\"success\": true|false, \"summary\": \"结果摘要\", \"message\": \"给用户的具体反馈、发现的问题或建议\"}。\n\n"
-                + "你的上一轮输出：\n" + raw;
+        String repairUser = JsonRepairSupport.buildPrompt(raw, errorMessage,
+                "{\"success\":true|false,\"summary\":\"结果摘要\",\"message\":\"给用户的具体反馈、发现的问题或建议\"}");
         log.info("custom agent json repair agentId={} phase={} round={} promptChars={}",
                 entity.getId(), input.getPhase(), round, system.length() + repairUser.length());
-        try {
-            String repaired = llm.complete(system, List.of(LlmMessage.user(repairUser)));
-            String repairedSha = repaired == null ? null
-                    : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
-            observations.add(new LlmObservation(input.getPhase().name(), round + 1,
-                    system.length() + repairUser.length(),
-                    repaired == null ? 0 : repaired.length(), "stop", null, null, repairedSha));
-            return repaired;
-        } catch (RuntimeException e) {
-            log.warn("custom agent json repair call failed agentId={} phase={} category={}",
-                    entity.getId(), input.getPhase(), e.getClass().getSimpleName());
-            return null;
-        }
+        String repaired = JsonRepairSupport.repairOnce(llm, system, raw, errorMessage,
+                "{\"success\":true|false,\"summary\":\"结果摘要\",\"message\":\"给用户的具体反馈、发现的问题或建议\"}");
+        String repairedSha = repaired == null ? null
+                : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
+        observations.add(new LlmObservation(input.getPhase().name(), round + 1,
+                system.length() + repairUser.length(),
+                repaired == null ? 0 : repaired.length(), "stop", null, null, repairedSha));
+        return repaired;
     }
 
     /**

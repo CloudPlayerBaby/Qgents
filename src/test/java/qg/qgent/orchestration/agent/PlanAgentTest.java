@@ -9,6 +9,7 @@ import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.OrchestrationPhase;
 import qg.qgent.orchestration.RunOutcome;
 import qg.qgent.orchestration.llm.LlmClient;
+import qg.qgent.orchestration.llm.LlmOutputTruncatedException;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
@@ -19,6 +20,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -114,6 +116,20 @@ class PlanAgentTest {
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
     }
 
+    @Test void malformedPlanResponseIsRepairedOnce() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.complete(anyString(), anyString()))
+                .thenReturn("{\"readRequests\":[]}", "计划结果：不是严格 JSON");
+        when(llm.complete(anyString(), anyList())).thenReturn(PLAN_JSON);
+
+        AgentRunOutcome outcome = agent.run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getPlanResult().getTaskUnderstanding()).isEqualTo("understand");
+        verify(llm, times(2)).complete(anyString(), anyString());
+        verify(llm).complete(anyString(), anyList());
+    }
+
     @Test void llmCallFailureFailsInfrastructure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.complete(anyString(), anyString())).thenThrow(new RuntimeException("upstream down"));
@@ -121,6 +137,18 @@ class PlanAgentTest {
         AgentRunOutcome outcome = agent.run(input());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+    }
+
+    @Test void truncatedPlanOutputKeepsStableFailureCode() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.complete(anyString(), anyString()))
+                .thenReturn("{\"readRequests\":[]}")
+                .thenThrow(new LlmOutputTruncatedException(128));
+
+        AgentRunOutcome outcome = agent.run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
     }
 
     @Test void neverModifiesWorkspace() {
