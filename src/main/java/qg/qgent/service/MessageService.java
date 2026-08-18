@@ -461,6 +461,32 @@ public class MessageService {
         return new PageSlice<>(views, new PageInfo(nextCursor, hasMore));
     }
 
+    /**
+     * 按消息 ID 拉取单条群消息（通知跳转精确定位用，契约「群聊@提及-后端接口补充」§六）。
+     * <p>
+     * 场景：通知点击跳转后，目标消息较旧不在前端已加载的分页窗口内时，前端调用本接口拉取
+     * 该条消息合并进本地列表再滚动高亮。权限与群成员可见性校验同列表接口。
+     *
+     * @param actor     当前用户 ID
+     * @param projectId 项目 ID
+     * @param groupId   需求群 ID
+     * @param messageId 目标消息 ID
+     * @return 消息视图（含发送者名称）
+     */
+    public MessageResponse getMessage(UUID actor, UUID projectId, UUID groupId, UUID messageId) {
+        // 群成员可见性（契约 2026-08-17 严格收紧）：主群=项目成员，需求群=群成员
+        groupService.requireGroupMember(projectId, groupId, actor);
+        RequirementGroupEntity group = groupMapper.selectById(groupId);
+        if (group == null || !group.getProjectId().equals(projectId)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
+        }
+        MessageEntity message = messageMapper.selectById(messageId);
+        if (message == null || !groupId.equals(message.getRequirementGroupId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "MESSAGE_NOT_FOUND", "消息不存在或不属于该群");
+        }
+        return toResponse(message);
+    }
+
     private MessageEntity findByClientMessageId(UUID groupId, String clientMessageId) {
         return messageMapper.selectOne(Wrappers.<MessageEntity>lambdaQuery()
                 .eq(MessageEntity::getRequirementGroupId, groupId)

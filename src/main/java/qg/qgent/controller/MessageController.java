@@ -57,6 +57,17 @@ public class MessageController {
     }
 
     /**
+     * 契约「群聊@提及-后端接口补充」§六：按消息 ID 拉取单条群消息（通知跳转精确定位，
+     * 目标消息不在当前分页窗口时前端调用后合并进列表再滚动高亮）。
+     */
+    @GetMapping("/projects/{projectId}/groups/{groupId}/messages/{messageId}")
+    public ApiResponse<?> getMessage(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
+                                     @PathVariable UUID groupId, @PathVariable UUID messageId,
+                                     HttpServletRequest request) {
+        return ok(messageService.getMessage(userId, projectId, groupId, messageId), request);
+    }
+
+    /**
      * 契约 §7：从群消息显式触发 Task。
      */
     @PostMapping("/projects/{projectId}/groups/{groupId}/messages/{messageId}/trigger-task")
