@@ -388,7 +388,7 @@ public class MessageService {
         message.setAgentId(agentId);
         message.setClientMessageId(clientMessageId);
         message.setMessageType(type);
-        message.setContent(writeJson(body.getContent()));
+        message.setContent(writeJson(storedContent(body, type)));
         message.setMentions(writeJson(mentions));
         message.setReplyToMessageId(body.getReplyToId());
         // 显式使用 UTC：不依赖数据库 DEFAULT CURRENT_TIMESTAMP（其取 MySQL 服务器时区，可能为本地时间）
@@ -423,6 +423,18 @@ public class MessageService {
 
     private String id(UUID value) {
         return value == null ? null : value.toString();
+    }
+
+    /**
+     * 落库前构造 content：QUOTE 消息把请求顶层 replyText（契约 §1.4）并入 content，
+     * 使 replyText 随消息持久化并在 GET/发送响应中原样回显；其余类型原样存储。
+     */
+    private Map<String, Object> storedContent(MessageSendRequest body, String type) {
+        Map<String, Object> content = body.getContent() == null ? new java.util.LinkedHashMap<>() : new java.util.LinkedHashMap<>(body.getContent());
+        if ("QUOTE".equals(type) && body.getReplyText() != null && !body.getReplyText().isBlank()) {
+            content.put("replyText", body.getReplyText());
+        }
+        return content;
     }
 
     /**
@@ -583,9 +595,13 @@ public class MessageService {
             senderType = "SYSTEM";
             senderId = null;
         }
+        // QUOTE 消息：从 content 提取 replyText 顶层回显（契约 §1.4，与发送请求体同构）
+        String replyText = "QUOTE".equals(m.getMessageType())
+                && content.get("replyText") instanceof String text && !text.isBlank()
+                ? text : null;
         return new MessageResponse(m.getId().toString(), m.getRequirementGroupId().toString(), m.getSequenceNo(),
                 m.getMessageType(), content, senderId, senderType, senderName,
-                m.getReplyToMessageId() == null ? null : m.getReplyToMessageId().toString(), mentions,
+                m.getReplyToMessageId() == null ? null : m.getReplyToMessageId().toString(), replyText, mentions,
                 iso(m.getCreatedAt()));
     }
 

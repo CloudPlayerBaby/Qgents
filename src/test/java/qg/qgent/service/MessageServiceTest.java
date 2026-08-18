@@ -255,4 +255,110 @@ class MessageServiceTest {
                 .isEqualTo("分析权限");
         verify(messages).updateById(any(MessageEntity.class));
     }
+
+    @Test
+    void quoteMessageEchoesTopLevelReplyText() {
+        MessageMapper messages = mock(MessageMapper.class);
+        RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        UUID groupId = UUID.randomUUID();
+        UUID agentId = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        group.setId(groupId);
+        group.setProjectId(UUID.randomUUID());
+        AgentEntity agent = new AgentEntity();
+        agent.setId(agentId);
+        agent.setTeamId(teamId);
+        agent.setName("编排助手");
+        agent.setStatus("ACTIVE");
+        ProjectEntity project = new ProjectEntity();
+        project.setId(group.getProjectId());
+        project.setTeamId(teamId);
+        when(groups.selectOne(any())).thenReturn(group);
+        when(messages.nextSequence(groupId)).thenReturn(1L);
+        AtomicReference<MessageEntity> inserted = new AtomicReference<>();
+        when(messages.insert(any(MessageEntity.class))).thenAnswer(invocation -> {
+            inserted.set(invocation.getArgument(0));
+            return 1;
+        });
+        when(messages.selectById(any())).thenAnswer(invocation -> inserted.get());
+        AgentMapper agents = mock(AgentMapper.class);
+        when(agents.selectById(agentId)).thenReturn(agent);
+        ProjectMapper projects = mock(ProjectMapper.class);
+        when(projects.selectById(group.getProjectId())).thenReturn(project);
+        MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
+                mock(UserMapper.class), agents, projects,
+                mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+
+        MessageSendRequest request = new MessageSendRequest();
+        request.setType("QUOTE");
+        request.setContent(new java.util.LinkedHashMap<>(Map.of(
+                "quotedMessageId", UUID.randomUUID().toString(),
+                "quotedText", "密码存储怎么没加密",
+                "quotedSenderName", "张同学")));
+        request.setReplyText("这里回复正文");
+        request.setReplyToId(UUID.randomUUID());
+        MessageEntity quoted = new MessageEntity();
+        quoted.setRequirementGroupId(groupId);
+        when(messages.selectById(request.getReplyToId())).thenReturn(quoted);
+
+        MessageResponse response = service.sendAsAgent(groupId, agentId, request);
+
+        ArgumentCaptor<MessageEntity> captured = ArgumentCaptor.forClass(MessageEntity.class);
+        verify(messages).insert(captured.capture());
+        String storedContent = captured.getValue().getContent();
+        assertThat(storedContent).contains("replyText");
+        assertThat(response.getType()).isEqualTo("QUOTE");
+        assertThat(response.getReplyText()).isEqualTo("这里回复正文");
+        assertThat(response.getContent()).containsEntry("replyText", "这里回复正文");
+    }
+
+    @Test
+    void quoteMessageWithoutReplyTextKeepsEchoEmpty() {
+        MessageMapper messages = mock(MessageMapper.class);
+        RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        UUID groupId = UUID.randomUUID();
+        UUID agentId = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        group.setId(groupId);
+        group.setProjectId(UUID.randomUUID());
+        AgentEntity agent = new AgentEntity();
+        agent.setId(agentId);
+        agent.setTeamId(teamId);
+        agent.setName("编排助手");
+        agent.setStatus("ACTIVE");
+        ProjectEntity project = new ProjectEntity();
+        project.setId(group.getProjectId());
+        project.setTeamId(teamId);
+        when(groups.selectOne(any())).thenReturn(group);
+        when(messages.nextSequence(groupId)).thenReturn(1L);
+        AtomicReference<MessageEntity> inserted = new AtomicReference<>();
+        when(messages.insert(any(MessageEntity.class))).thenAnswer(invocation -> {
+            inserted.set(invocation.getArgument(0));
+            return 1;
+        });
+        when(messages.selectById(any())).thenAnswer(invocation -> inserted.get());
+        AgentMapper agents = mock(AgentMapper.class);
+        when(agents.selectById(agentId)).thenReturn(agent);
+        ProjectMapper projects = mock(ProjectMapper.class);
+        when(projects.selectById(group.getProjectId())).thenReturn(project);
+        MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
+                mock(UserMapper.class), agents, projects,
+                mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+
+        MessageSendRequest request = new MessageSendRequest();
+        request.setType("QUOTE");
+        request.setContent(new java.util.LinkedHashMap<>(Map.of(
+                "quotedMessageId", UUID.randomUUID().toString(),
+                "quotedText", "纯引用不带回复",
+                "quotedSenderName", "李同学")));
+
+        MessageResponse response = service.sendAsAgent(groupId, agentId, request);
+
+        assertThat(response.getReplyText()).isNull();
+        assertThat(response.getContent()).doesNotContainKey("replyText");
+    }
 }
