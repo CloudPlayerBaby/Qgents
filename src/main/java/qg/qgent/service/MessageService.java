@@ -130,14 +130,14 @@ public class MessageService {
     }
 
     /**
-     * 系统消息发送（内部方法，供编排系统在团队无可用编排助手 Agent 时兜底回群）。
+     * 自动化卡片发送（内部方法，供编排系统在团队无可用编排助手 Agent 时兜底回群）。
      * <p>
-     * 消息类型固定为 SYSTEM，无用户与 Agent 发送者（满足 messages 表 CHECK 约束的
-     * SYSTEM 分支）；不进入用户发送路径，PUBLIC_TYPES 不放开 SYSTEM，用户无法伪造。
-     * 当前仅承接 TASK_STATUS 形状的任务状态卡片内容（taskId/status 必填）。
+     * 自动化发送者没有用户或 Agent 身份，响应中的 {@code senderType=SYSTEM}；但消息类型必须保留
+     * {@code DIFF}/{@code TASK_STATUS} 的业务语义，前端才能渲染 Diff 卡、并把引用 Diff 识别为续作。
+     * 此方法不经过用户发送路径，客户端无法伪造无发送者的自动化消息。
      *
      * @param groupId 需求群 ID
-     * @param body    发送请求（type 字段被忽略，content 按 SYSTEM 规则校验）
+     * @param body    仅允许 DIFF 或 TASK_STATUS 的自动化卡片
      * @return 消息视图
      */
     @Transactional
@@ -146,7 +146,7 @@ public class MessageService {
         if (group == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在");
         }
-        return doSend(group.getProjectId(), groupId, null, null, body, "SYSTEM");
+        return doSend(group.getProjectId(), groupId, null, null, body, normalizeSystemCardType(body.getType()));
     }
 
     private RequirementGroupEntity lockGroup(UUID groupId) {
@@ -269,9 +269,25 @@ public class MessageService {
     }
 
     private String normalizeType(String type) {
+        if (type == null) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "MESSAGE_TYPE_INVALID", "不支持的消息类型");
+        }
         String normalized = type.trim().toUpperCase(Locale.ROOT);
         if (!PUBLIC_TYPES.contains(normalized)) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "MESSAGE_TYPE_INVALID", "不支持的消息类型");
+        }
+        return normalized;
+    }
+
+    /**
+     * 无发送者的内部消息只允许两类受控卡片。DIFF 必须保留类型，不能降级为 SYSTEM 文本，
+     * 否则引用续作无法从 replyToId 稳定地定位源 Workspace。
+     */
+    private String normalizeSystemCardType(String type) {
+        String normalized = normalizeType(type);
+        if (!"DIFF".equals(normalized) && !"TASK_STATUS".equals(normalized)) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SYSTEM_MESSAGE_TYPE_INVALID",
+                    "自动化消息仅支持 DIFF 或 TASK_STATUS 卡片");
         }
         return normalized;
     }
@@ -281,7 +297,12 @@ public class MessageService {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "MESSAGE_CONTENT_INVALID", "消息内容不能为空");
         }
         switch (type) {
-            case "TEXT", "QUOTE" -> requireField(content, "text", "文本消息缺少 text 字段");
+            case "TEXT" -> requireField(content, "text", "文本消息缺少 text 字段");
+            // QUOTE 引用消息：content 为引用摘要（quotedMessageId/quotedText/quotedSenderName），无 text 字段
+            case "QUOTE" -> {
+                requireField(content, "quotedMessageId", "引用消息缺少 quotedMessageId 字段");
+                requireField(content, "quotedText", "引用消息缺少 quotedText 字段");
+            }
             case "CODE" -> {
                 requireField(content, "language", "代码消息缺少 language 字段");
                 requireField(content, "code", "代码消息缺少 code 字段");
@@ -289,11 +310,6 @@ public class MessageService {
             case "IMAGE", "FILE" -> requireField(content, "url", type + " 消息缺少 url 字段");
             case "DIFF" -> requireField(content, "diffId", "Diff 卡片消息缺少 diffId 字段");
             case "TASK_STATUS" -> {
-                requireField(content, "taskId", "任务状态卡片缺少 taskId 字段");
-                requireField(content, "status", "任务状态卡片缺少 status 字段");
-            }
-            // 系统兜底通道仅承接任务状态卡片形状（见 sendAsSystem），不放开通用文本
-            case "SYSTEM" -> {
                 requireField(content, "taskId", "任务状态卡片缺少 taskId 字段");
                 requireField(content, "status", "任务状态卡片缺少 status 字段");
             }

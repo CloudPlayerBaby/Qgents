@@ -18,7 +18,7 @@ public class DiffRepositoryDeliveryResponse {
     private String repositoryName;
     @Schema(description = "Diff ID")
     private String diffId;
-    @Schema(description = "仓库交付状态", allowableValues = {"NOT_STARTED", "COMMITTED", "MR_CREATED", "FAILED"})
+    @Schema(description = "仓库交付状态", allowableValues = {"NOT_STARTED", "COMMITTED", "PUSHED", "MR_CREATED", "FAILED"})
     private String deliveryStatus;
     @Schema(description = "预留失败码；当前恒为 null")
     private String failureCode;

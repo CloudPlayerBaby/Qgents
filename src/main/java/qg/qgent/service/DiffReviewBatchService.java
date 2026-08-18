@@ -44,6 +44,14 @@ public class DiffReviewBatchService {
     private final MergeRequestMapper mergeRequestMapper;
     private final GitHubRepositoryMapper githubRepositories;
     private final NotificationService notificationService;
+    /**
+     * 预检等待卡片属于用户可见的群聊交互；发送失败不能改变已完成的 Commit/Push 事实。
+     * 使用可选注入保持既有纯单元测试的构造器稳定。
+     */
+    private MessageService messageService;
+    private OrchestratorAgentService orchestratorAgents;
+    /** 跨实例 Workspace 写租约；生产环境必须注入，纯 Mockito 构造器可不设置。 */
+    private WorkspaceWriteLeaseService workspaceWriteLeases;
 
     public DiffReviewBatchService(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
             ProjectRepositoryMapper repositories, SandboxWorkerClient worker,
@@ -65,6 +73,21 @@ public class DiffReviewBatchService {
         this.mergeRequestMapper = mergeRequestMapper;
         this.githubRepositories = githubRepositories;
         this.notificationService = notificationService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setMessageService(MessageService messageService) {
+        this.messageService = messageService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setOrchestratorAgents(OrchestratorAgentService orchestratorAgents) {
+        this.orchestratorAgents = orchestratorAgents;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setWorkspaceWriteLeases(WorkspaceWriteLeaseService workspaceWriteLeases) {
+        this.workspaceWriteLeases = workspaceWriteLeases;
     }
 
     public DiffReviewBatchResponse get(UUID projectId, UUID taskId, UUID actor) {
@@ -94,30 +117,35 @@ public class DiffReviewBatchService {
     public DiffReviewBatchResponse confirm(UUID projectId, UUID taskId, UUID actor) {
         TaskEntity task = requireTask(projectId, taskId);
         requireOwnerOrAdmin(task, actor);
-        DiffReviewBatchEntity batch = transactions.execute(status -> claim(task));
-        log.info("diff delivery started projectId={} taskId={} reviewBatchId={} operationId={} mode=confirm",
-                projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
-        List<DiffEntity> values = diffs(batch.getId());
+        WorkspaceWriteLease workspaceLease = acquireWorkspaceWriteLease(task);
         try {
-            preflight(task, values);
-        } catch (RuntimeException failure) {
-            if (isStaleSnapshot(failure)) {
-                failStaleReview(task, batch, values, failure);
-            } else {
-                restoreAfterPreflightFailure(batch.getId(), batch.getDeliveryClaimToken());
+            DiffReviewBatchEntity batch = transactions.execute(status -> claim(task));
+            log.info("diff delivery started projectId={} taskId={} reviewBatchId={} operationId={} mode=confirm",
+                    projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
+            List<DiffEntity> values = diffs(batch.getId());
+            try {
+                preflight(task, values);
+            } catch (RuntimeException failure) {
+                if (isStaleSnapshot(failure)) {
+                    failStaleReview(task, batch, values, failure);
+                } else {
+                    restoreAfterPreflightFailure(batch.getId(), batch.getDeliveryClaimToken());
+                }
+                throw failure;
             }
-            throw failure;
+            transactions.execute(status -> {
+                accept(task, batch.getId(), actor, batch.getDeliveryClaimToken());
+                return null;
+            });
+            for (DiffEntity diff : diffs(batch.getId())) {
+                deliver(task, diff, actor, batch.getDeliveryClaimToken(), workspaceLease);
+            }
+            finish(task, batch.getId(), batch.getDeliveryClaimToken());
+            DiffReviewBatchEntity result = requireBatch(batch.getId());
+            return response(result, diffs(result.getId()));
+        } finally {
+            releaseWorkspaceWriteLease(workspaceLease);
         }
-        transactions.execute(status -> {
-            accept(task, batch.getId(), actor, batch.getDeliveryClaimToken());
-            return null;
-        });
-        for (DiffEntity diff : diffs(batch.getId())) {
-            deliver(task, diff, actor, batch.getDeliveryClaimToken());
-        }
-        finish(task, batch.getId(), batch.getDeliveryClaimToken());
-        DiffReviewBatchEntity result = requireBatch(batch.getId());
-        return response(result, diffs(result.getId()));
     }
 
     public DiffReviewBatchResponse reject(UUID projectId, UUID taskId, UUID actor, String reason) {
@@ -166,22 +194,37 @@ public class DiffReviewBatchService {
     public DiffReviewBatchResponse retryDelivery(UUID projectId, UUID taskId, UUID actor) {
         TaskEntity task = requireTask(projectId, taskId);
         requireOwnerOrAdmin(task, actor);
-        DiffReviewBatchEntity batch = transactions.execute(status -> claimRetry(projectId, taskId));
-        log.info("diff delivery retry started projectId={} taskId={} reviewBatchId={} operationId={}",
-                projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
-        for (DiffEntity diff : diffs(batch.getId())) {
-            if (!"MR_CREATED".equals(diff.getDeliveryStatus())) {
-                deliver(task, diff, actor, batch.getDeliveryClaimToken());
+        WorkspaceWriteLease workspaceLease = acquireWorkspaceWriteLease(task);
+        try {
+            DiffReviewBatchEntity batch = transactions.execute(status -> claimRetry(projectId, taskId));
+            log.info("diff delivery retry started projectId={} taskId={} reviewBatchId={} operationId={}",
+                    projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
+            List<DiffEntity> values = diffs(batch.getId());
+            List<DiffEntity> uncommitted = values.stream().filter(this::requiresSnapshotPreflight).toList();
+            try {
+                preflight(task, uncommitted);
+            } catch (RuntimeException failure) {
+                if (isStaleSnapshot(failure)) {
+                    failStaleRetry(task, batch, values, uncommitted, failure);
+                }
+                throw failure;
             }
+            for (DiffEntity diff : values) {
+                if (!"PUSHED".equals(diff.getDeliveryStatus()) && !"MR_CREATED".equals(diff.getDeliveryStatus())) {
+                    deliver(task, diff, actor, batch.getDeliveryClaimToken(), workspaceLease);
+                }
+            }
+            finish(task, batch.getId(), batch.getDeliveryClaimToken());
+            DiffReviewBatchEntity result = requireBatch(batch.getId());
+            return response(result, diffs(result.getId()));
+        } finally {
+            releaseWorkspaceWriteLease(workspaceLease);
         }
-        finish(task, batch.getId(), batch.getDeliveryClaimToken());
-        DiffReviewBatchEntity result = requireBatch(batch.getId());
-        return response(result, diffs(result.getId()));
     }
 
     /**
      * MR_FIRST 系统授权批次的交付入口：校验批次归属与租约后，按既有单仓库交付链路
-     * （commit → push → 创建 PR → 状态回写）逐仓库执行并收尾。幂等由租约保证——
+     * （commit → push → 状态回写）逐仓库执行并收尾。幂等由租约保证——
      * 领域事件与兜底扫描双通道并发到达时，只有持有有效 claimToken 的一方能推进；
      * 已交付（DELIVERED/PARTIALLY_DELIVERED/FAILED 终态）或租约易主时静默跳过。
      * actor 使用任务发起人（系统代执行），交付失败回写 FAILED 状态与稳定失败码，
@@ -205,12 +248,54 @@ public class DiffReviewBatchService {
         }
         log.info("mr-first delivery started projectId={} taskId={} reviewBatchId={} operationId={}",
                 projectId, taskId, batch.getId(), batch.getDeliveryOperationId());
-        for (DiffEntity diff : diffs(batch.getId())) {
-            if (!"MR_CREATED".equals(diff.getDeliveryStatus())) {
-                deliver(task, diff, task.getCreatedBy(), claimToken);
+        WorkspaceWriteLease workspaceLease = acquireWorkspaceWriteLease(task);
+        try {
+        List<DiffEntity> values = diffs(batch.getId());
+        // MR_FIRST 由系统授权交付，但仍只能提交创建批次时固化的最终 Diff。这里不能省略：
+        // batch 入库到异步执行之间，任何 Workspace 漂移都必须阻断 commit/push，而不是把未审查
+        // 的后续修改带到远端分支。
+        try {
+            preflight(task, values.stream().filter(this::requiresSnapshotPreflight).toList());
+        } catch (RuntimeException failure) {
+            if (isStaleSnapshot(failure)) {
+                failStaleReview(task, batch, values, failure);
+                return;
+            }
+            // Worker 瞬时不可用等非快照错误保留租约，由恢复调度器重试，不能错误标记为交付失败。
+            throw failure;
+        }
+        for (DiffEntity diff : values) {
+            if (!"PUSHED".equals(diff.getDeliveryStatus()) && !"MR_CREATED".equals(diff.getDeliveryStatus())) {
+                deliver(task, diff, task.getCreatedBy(), claimToken, workspaceLease);
             }
         }
         finish(task, batch.getId(), claimToken);
+        } finally {
+            releaseWorkspaceWriteLease(workspaceLease);
+        }
+    }
+
+    /**
+     * MR_FIRST 的首次异步交付遇到 Worker 或写租约等可重试异常时，不能让旧租约把任务卡住
+     * 30 分钟。仅当前 claim 持有者可将到期时间收敛到现在；恢复扫描会在下一轮用新 token
+     * 重新领取。快照失效等业务终态由交付链路自行落库，不会走这里。
+     */
+    public void relinquishSystemDeliveryClaim(UUID projectId, UUID taskId, UUID reviewBatchId, String claimToken) {
+        if (claimToken == null || claimToken.isBlank()) return;
+        transactions.execute(status -> {
+            DiffReviewBatchEntity batch = batches.selectByIdForUpdate(reviewBatchId);
+            if (batch == null || !projectId.equals(batch.getProjectId()) || !taskId.equals(batch.getTaskId())
+                    || !"SYSTEM".equals(batch.getConfirmationSource())
+                    || !"DELIVERING".equals(batch.getDeliveryStatus())
+                    || !claimToken.equals(batch.getDeliveryClaimToken())) {
+                return null;
+            }
+            LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+            batch.setDeliveryLeaseExpiresAt(now);
+            batch.setUpdatedAt(now);
+            batches.updateById(batch);
+            return null;
+        });
     }
 
     private DiffReviewBatchEntity claim(TaskEntity task) {
@@ -284,51 +369,49 @@ public class DiffReviewBatchService {
         task.setStatus("DELIVERING");
         task.setUpdatedAt(now);
         tasks.updateById(task);
+        events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated", task.getId().toString(),
+                TaskEventPayloads.taskUpdated(task));
         events.publish(task.getProjectId(), task.getRequirementGroupId(), "diff-review.confirmed", batchId.toString(),
                 Map.of("projectId", task.getProjectId(), "taskId", task.getId(), "reviewBatchId", batchId));
     }
 
-    private void deliver(TaskEntity task, DiffEntity diff, UUID actor, String claimToken) {
+    private void deliver(TaskEntity task, DiffEntity diff, UUID actor, String claimToken,
+                         WorkspaceWriteLease workspaceLease) {
         UUID diffId = diff.getId();
         UUID batchId = diff.getReviewBatchId();
         log.info("repository delivery started projectId={} taskId={} reviewBatchId={} diffId={} repositoryId={} status={}",
                 task.getProjectId(), task.getId(), batchId, diffId, diff.getProjectRepositoryId(),
                 diff.getDeliveryStatus());
+        boolean committed = "COMMITTED".equals(diff.getDeliveryStatus());
         try {
+            renewWorkspaceWriteLease(workspaceLease);
             renewBatchLease(diff.getReviewBatchId(), claimToken);
-            if (!"COMMITTED".equals(diff.getDeliveryStatus()) && !"MR_CREATED".equals(diff.getDeliveryStatus())) {
+            if (!committed && !"PUSHED".equals(diff.getDeliveryStatus())
+                    && !"MR_CREATED".equals(diff.getDeliveryStatus())) {
                 String commitSha = deliveryService.commitVerified(task, diff);
                 deliveryService.recordCommitted(task, diffId, commitSha, diff.getReviewBatchId(), claimToken);
                 diff = diffs.selectById(diffId);
+                committed = true;
             }
-            if (!"MR_CREATED".equals(diff.getDeliveryStatus())) {
-                ProjectRepositoryEntity repository = repositories.selectById(diff.getProjectRepositoryId());
-                if (repository == null || !task.getProjectId().equals(repository.getProjectId())) {
-                    throw new ApiException(HttpStatus.CONFLICT, "REPOSITORY_NOT_IN_PROJECT", "Repository is no longer bound to the Task project");
-                }
-                MergeRequestCreateRequest request = new MergeRequestCreateRequest();
-                request.setTaskId(task.getId());
-                request.setRepositoryId(repository.getId());
-                request.setTargetBranch(repository.getDefaultBranch());
-                request.setTitle(task.getTitle());
-                mergeRequests.create(task.getProjectId(), actor, request);
+            if (!"PUSHED".equals(diff.getDeliveryStatus()) && !"MR_CREATED".equals(diff.getDeliveryStatus())) {
+                mergeRequests.pushAcceptedBranch(task.getProjectId(), task.getId(), diff.getProjectRepositoryId());
                 transactions.execute(status -> {
-                    markDelivered(task, diffId, batchId, claimToken);
+                    markPushed(task, diffId, batchId, claimToken);
                     return null;
                 });
-                log.info("repository delivery completed projectId={} taskId={} reviewBatchId={} diffId={} repositoryId={} status=MR_CREATED",
+                log.info("repository delivery completed projectId={} taskId={} reviewBatchId={} diffId={} repositoryId={} status=PUSHED",
                         task.getProjectId(), task.getId(), batchId, diffId, diff.getProjectRepositoryId());
             }
         } catch (RuntimeException failure) {
             log.error("repository delivery failed projectId={} taskId={} reviewBatchId={} diffId={} repositoryId={} code={} message={}",
                     task.getProjectId(), task.getId(), batchId, diffId, diff.getProjectRepositoryId(),
                     failureCode(failure), failure.getMessage(), failure);
-            markDiffFailure(task, diffId, batchId, claimToken, failure);
+            markDiffFailure(task, diffId, batchId, claimToken, committed, failure);
         }
     }
 
 
-    private void markDelivered(TaskEntity task, UUID diffId, UUID batchId, String claimToken) {
+    private void markPushed(TaskEntity task, UUID diffId, UUID batchId, String claimToken) {
         requireBatchClaim(batches.selectByIdForUpdate(batchId), claimToken);
         DiffEntity current = diffs.selectByIdForUpdate(diffId);
         if (current == null || !batchId.equals(current.getReviewBatchId())
@@ -336,19 +419,24 @@ public class DiffReviewBatchService {
             throw new ApiException(HttpStatus.CONFLICT, "DIFF_BATCH_CONTEXT_INVALID",
                     "Repository Diff no longer belongs to the claimed review batch");
         }
-        diffs.markDelivered(diffId, LocalDateTime.now(ZoneOffset.UTC));
+        diffs.markPushed(diffId, LocalDateTime.now(ZoneOffset.UTC));
         events.publish(task.getProjectId(), task.getRequirementGroupId(), "delivery.repository.updated", diffId.toString(),
                 Map.of("projectId", task.getProjectId(), "taskId", task.getId(), "diffId", diffId,
-                        "deliveryStatus", "MR_CREATED"));
+                        "repositoryId", current.getProjectRepositoryId(), "deliveryStatus", "PUSHED"));
     }
 
-    private void markDiffFailure(TaskEntity task, UUID diffId, UUID batchId, String claimToken,
+    private void markDiffFailure(TaskEntity task, UUID diffId, UUID batchId, String claimToken, boolean committed,
                                  RuntimeException failure) {
         transactions.execute(status -> {
             DiffReviewBatchEntity batch = batches.selectByIdForUpdate(batchId);
             if (!ownsBatchClaim(batch, claimToken)) return null;
             DiffEntity current = diffs.selectByIdForUpdate(diffId);
-            current.setDeliveryStatus("FAILED");
+            if (current == null || isPushed(current)) {
+                return null;
+            }
+            // Commit 与 Push 是独立事实。Push 失败后保留 COMMITTED，重试只能继续 push，
+            // 不能在已经前进的工作树上再次把旧快照 commit 一遍。
+            current.setDeliveryStatus(committed ? "COMMITTED" : "FAILED");
             current.setDeliveryFailureCode(failureCode(failure));
             current.setDeliveryFailureReason("Repository delivery failed (" + failureCode(failure) + ")");
             current.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
@@ -365,10 +453,12 @@ public class DiffReviewBatchService {
             DiffReviewBatchEntity batch = batches.selectByIdForUpdate(batchId);
             requireBatchClaim(batch, claimToken);
             List<DiffEntity> values = diffs(batchId);
-            boolean allDelivered = values.stream().allMatch(value -> "MR_CREATED".equals(value.getDeliveryStatus()));
-            boolean anyDelivered = values.stream().anyMatch(value -> "MR_CREATED".equals(value.getDeliveryStatus()));
+            boolean allDelivered = values.stream().allMatch(this::isPushed);
+            boolean anyDelivered = values.stream().anyMatch(this::isPushed);
             String previousTaskStatus = task.getStatus();
-            String nextTaskStatus = allDelivered ? "SUCCEEDED" : "DELIVERY_FAILED";
+            String nextTaskStatus = allDelivered
+                    ? ("MR_FIRST".equals(task.getDeliveryMode()) ? "WAITING_PREFLIGHT" : "SUCCEEDED")
+                    : "DELIVERY_FAILED";
             batch.setDeliveryStatus(allDelivered ? "DELIVERED" : anyDelivered ? "PARTIALLY_DELIVERED" : "FAILED");
             batch.setDeliveryClaimToken(null);
             batch.setDeliveryLeaseExpiresAt(null);
@@ -382,14 +472,83 @@ public class DiffReviewBatchService {
             events.publish(task.getProjectId(), task.getRequirementGroupId(), allDelivered ? "delivery.completed" : "delivery.failed",
                     batchId.toString(), Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
                             "reviewBatchId", batchId, "deliveryStatus", batch.getDeliveryStatus()));
-            return new FinishResult(allDelivered, !nextTaskStatus.equals(previousTaskStatus));
+            if (!nextTaskStatus.equals(previousTaskStatus)) {
+                events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated", task.getId().toString(),
+                        TaskEventPayloads.taskUpdated(task));
+            }
+            boolean statusChanged = !nextTaskStatus.equals(previousTaskStatus);
+            return new FinishResult(allDelivered, "SUCCEEDED".equals(nextTaskStatus), statusChanged,
+                    statusChanged && "WAITING_PREFLIGHT".equals(nextTaskStatus));
         });
-        if (result != null && result.statusChanged() && notificationService != null) {
-            String kind = result.allDelivered() ? "TASK_COMPLETED" : "TASK_FAILED";
+        if (result != null && result.enteredPreflight()) {
+            publishPreflightReadyCard(task);
+        }
+        if (result != null && result.statusChanged() && notificationService != null
+                && (result.taskCompleted() || !result.allDelivered())) {
+            String kind = result.taskCompleted() ? "TASK_COMPLETED" : "TASK_FAILED";
             notificationService.notify(task.getCreatedBy(), task.getProjectId(), task.getRequirementGroupId(), kind,
-                    (result.allDelivered() ? "任务完成：" : "任务交付失败：") + task.getTitle(),
-                    result.allDelivered() ? task.getRequirement() : "Diff 交付未全部完成，请查看交付失败详情",
+                    (result.taskCompleted() ? "任务完成：" : "任务交付失败：") + task.getTitle(),
+                    result.taskCompleted() ? task.getRequirement() : "Diff 交付未全部完成，请查看交付失败详情",
                     task.getId().toString());
+        }
+    }
+
+    /**
+     * 已有真实 Commit 的仓库不能再按旧工作树 Diff 预检：Commit 后工作树通常已干净，旧
+     * {@code workingTreeHash} 自然不会相等。它们在重试时仅允许继续 Push，后续由
+     * {@link MergeRequestService#pushAcceptedBranch(UUID, UUID, UUID)} 校验当前 Workspace HEAD 与
+     * 已接受 Diff 的 Commit 一致。
+     */
+    private boolean requiresSnapshotPreflight(DiffEntity diff) {
+        return !"COMMITTED".equals(diff.getDeliveryStatus())
+                && !"PUSHED".equals(diff.getDeliveryStatus())
+                && !"MR_CREATED".equals(diff.getDeliveryStatus());
+    }
+
+    private WorkspaceWriteLease acquireWorkspaceWriteLease(TaskEntity task) {
+        return workspaceWriteLeases == null ? null
+                : workspaceWriteLeases.acquire(task.getProjectId(), task.getWorkspaceId(), task.getId());
+    }
+
+    private void renewWorkspaceWriteLease(WorkspaceWriteLease lease) {
+        if (lease != null) {
+            workspaceWriteLeases.renew(lease);
+        }
+    }
+
+    private void releaseWorkspaceWriteLease(WorkspaceWriteLease lease) {
+        if (lease != null) {
+            workspaceWriteLeases.release(lease);
+        }
+    }
+
+    /**
+     * MR_FIRST 的代码已经真实推送，但尚未创建 MR。该卡只在状态首次进入
+     * WAITING_PREFLIGHT 后发送，避免重试/恢复流程反复刷群；Dry Run、CQ+1 和创建 MR
+     * 仍必须由各自真实接口推进，不能由卡片或 SSE 伪造完成。
+     */
+    private void publishPreflightReadyCard(TaskEntity task) {
+        if (messageService == null || task == null || task.getId() == null || task.getRequirementGroupId() == null) {
+            return;
+        }
+        Map<String, Object> content = new HashMap<>();
+        content.put("taskId", task.getId().toString());
+        content.put("status", "WAITING_PREFLIGHT");
+        content.put("deliveryMode", "MR_FIRST");
+        content.put("message", "代码已推送，请完成 Dry Run 和独立成员 CQ+1 后创建 MR");
+        MessageSendRequest body = new MessageSendRequest();
+        body.setType("TASK_STATUS");
+        body.setClientMessageId("agent-task-" + task.getId() + "-waiting-preflight");
+        body.setContent(content);
+        try {
+            UUID senderId = orchestratorAgents == null ? null : orchestratorAgents.resolveIdForTask(task);
+            if (senderId != null) {
+                messageService.sendAsAgent(task.getRequirementGroupId(), senderId, body);
+            } else {
+                messageService.sendAsSystem(task.getRequirementGroupId(), body);
+            }
+        } catch (RuntimeException failure) {
+            log.warn("preflight ready card skipped taskId={}: {}", task.getId(), failure.getMessage());
         }
     }
 
@@ -421,6 +580,50 @@ public class DiffReviewBatchService {
             task.setStatus("DELIVERY_FAILED");
             task.setUpdatedAt(now);
             tasks.updateById(task);
+            events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated", task.getId().toString(),
+                    TaskEventPayloads.taskUpdated(task));
+            events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.diff-review.failed",
+                    currentBatch.getId().toString(),
+                    Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
+                            "reviewBatchId", currentBatch.getId(), "reason", "DIFF_SNAPSHOT_STALE"));
+            return null;
+        });
+    }
+
+    /**
+     * 交付重试只会让尚未 Commit 的快照失效。已 Push 的仓库必须保持其真实事实，不能因为
+     * 另一仓库的 Diff 漂移被回写成 FAILED；否则会制造错误的重复 Push/MR 重试入口。
+     */
+    private void failStaleRetry(TaskEntity task, DiffReviewBatchEntity batch, List<DiffEntity> values,
+                                List<DiffEntity> staleValues, RuntimeException failure) {
+        transactions.execute(status -> {
+            DiffReviewBatchEntity currentBatch = batches.selectByIdForUpdate(batch.getId());
+            if (!ownsBatchClaim(currentBatch, batch.getDeliveryClaimToken())) {
+                return null;
+            }
+            LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+            boolean anyPushed = values.stream().anyMatch(this::isPushed);
+            currentBatch.setDeliveryStatus(anyPushed ? "PARTIALLY_DELIVERED" : "FAILED");
+            currentBatch.setDeliveryClaimToken(null);
+            currentBatch.setDeliveryLeaseExpiresAt(null);
+            currentBatch.setUpdatedAt(now);
+            batches.updateById(currentBatch);
+            for (DiffEntity staleValue : staleValues) {
+                DiffEntity current = diffs.selectByIdForUpdate(staleValue.getId());
+                if (current == null || isPushed(current)) {
+                    continue;
+                }
+                current.setDeliveryStatus("FAILED");
+                current.setDeliveryFailureCode("DIFF_SNAPSHOT_STALE");
+                current.setDeliveryFailureReason(failure.getMessage());
+                current.setUpdatedAt(now);
+                diffs.updateById(current);
+            }
+            task.setStatus("DELIVERY_FAILED");
+            task.setUpdatedAt(now);
+            tasks.updateById(task);
+            events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated", task.getId().toString(),
+                    TaskEventPayloads.taskUpdated(task));
             events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.diff-review.failed",
                     currentBatch.getId().toString(),
                     Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
@@ -431,20 +634,37 @@ public class DiffReviewBatchService {
 
     private static final class FinishResult {
         private final boolean allDelivered;
+        private final boolean taskCompleted;
         private final boolean statusChanged;
+        private final boolean enteredPreflight;
 
-        private FinishResult(boolean allDelivered, boolean statusChanged) {
+        private FinishResult(boolean allDelivered, boolean taskCompleted, boolean statusChanged,
+                             boolean enteredPreflight) {
             this.allDelivered = allDelivered;
+            this.taskCompleted = taskCompleted;
             this.statusChanged = statusChanged;
+            this.enteredPreflight = enteredPreflight;
         }
 
         private boolean allDelivered() {
             return allDelivered;
         }
 
+        private boolean taskCompleted() {
+            return taskCompleted;
+        }
+
         private boolean statusChanged() {
             return statusChanged;
         }
+
+        private boolean enteredPreflight() {
+            return enteredPreflight;
+        }
+    }
+
+    private boolean isPushed(DiffEntity diff) {
+        return "PUSHED".equals(diff.getDeliveryStatus()) || "MR_CREATED".equals(diff.getDeliveryStatus());
     }
 
     private void restoreAfterPreflightFailure(UUID batchId, String claimToken) {

@@ -16,15 +16,11 @@ import qg.qgent.mapper.PreflightCqReviewMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
-import qg.qgent.orchestration.worker.SandboxWorkerClient;
-import qg.qgent.orchestration.worker.WorkerGitResolveRequest;
-import qg.qgent.orchestration.worker.WorkerGitResolveResponse;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -41,19 +37,19 @@ public class PreflightGateService {
     private final WorkspaceRepositoryMapper worktrees;
     private final ProjectRepositoryMapper repositories;
     private final ProjectAccessService access;
-    private final SandboxWorkerClient worker;
+    private final GitStoreSyncService gitStores;
     private final EventService events;
 
     public PreflightGateService(DryRunMapper dryRuns, PreflightCqReviewMapper cqReviews, TaskMapper tasks,
                                 WorkspaceRepositoryMapper worktrees, ProjectRepositoryMapper repositories,
-                                ProjectAccessService access, SandboxWorkerClient worker, EventService events) {
+                                ProjectAccessService access, GitStoreSyncService gitStores, EventService events) {
         this.dryRuns = dryRuns;
         this.cqReviews = cqReviews;
         this.tasks = tasks;
         this.worktrees = worktrees;
         this.repositories = repositories;
         this.access = access;
-        this.worker = worker;
+        this.gitStores = gitStores;
         this.events = events;
     }
 
@@ -61,8 +57,9 @@ public class PreflightGateService {
         access.requireProjectMember(projectId, actor);
         TaskEntity task = requireTask(projectId, taskId);
         WorkspaceRepositoryEntity worktree = requireWorktree(task, repositoryId);
-        String targetCommit = resolveTargetCommit(projectId, repositoryId, targetBranch);
-        return evaluate(task, worktree, repositoryId, targetBranch, targetCommit);
+        String branch = normalizeTargetBranch(targetBranch);
+        String targetCommit = resolveTargetCommit(projectId, repositoryId, branch);
+        return evaluate(task, worktree, repositoryId, branch, targetCommit);
     }
 
     /**
@@ -98,18 +95,14 @@ public class PreflightGateService {
         if (repository == null || !projectId.equals(repository.getProjectId())) {
             throw new ApiException(HttpStatus.NOT_FOUND, "REPOSITORY_NOT_FOUND", "仓库不存在或不可见");
         }
-        if (targetBranch == null || targetBranch.isBlank()) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TARGET_BRANCH", "目标分支不能为空");
-        }
-        WorkerGitResolveRequest request = new WorkerGitResolveRequest();
-        request.setRepositoryId(repositoryId);
-        request.setRef(targetBranch.trim());
-        WorkerGitResolveResponse response = worker.resolveGitRef(request);
-        String commit = response == null ? null : response.getCommitSha();
-        if (commit == null || !commit.matches("[0-9a-fA-F]{40,64}")) {
-            throw new ApiException(HttpStatus.BAD_GATEWAY, "GIT_RESOLUTION_INVALID", "Sandbox Worker 未返回有效的目标提交 SHA");
-        }
-        return commit.toLowerCase(Locale.ROOT);
+        return gitStores.refreshTargetBranch(projectId, repository, normalizeTargetBranch(targetBranch));
+    }
+
+    /**
+     * 对外暴露给所有 MR 前预检调用方，避免创建、查询和 Dry Run 使用不同的分支规范化规则。
+     */
+    public String normalizeTargetBranch(String targetBranch) {
+        return gitStores.normalizeTargetBranch(targetBranch);
     }
 
     private PreflightGateResponse decide(UUID projectId, UUID dryRunId, UUID actor, String decision, String reason) {
@@ -124,6 +117,10 @@ public class PreflightGateService {
         TaskEntity task = requireTask(projectId, dryRun.getTaskId());
         if (actor.equals(task.getCreatedBy())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "PREFLIGHT_CQ_AUTHOR_FORBIDDEN", "Task 发起人不能为自己的提交给出 CQ+1");
+        }
+        if (!isPreflightActionable(task)) {
+            throw new ApiException(HttpStatus.CONFLICT, "PREFLIGHT_TASK_NOT_READY",
+                    "Task 尚未处于可进行 MR 前预检的稳定状态");
         }
         WorkspaceRepositoryEntity worktree = requireWorktree(task, dryRun.getProjectRepositoryId());
         String currentTarget = resolveTargetCommit(projectId, dryRun.getProjectRepositoryId(), dryRun.getTargetBranch());
@@ -155,12 +152,19 @@ public class PreflightGateService {
                                            String targetBranch, String targetCommit) {
         String sourceCommit = worktree.getHeadCommit();
         List<String> blockers = new ArrayList<>();
+        if (!isPreflightActionable(task)) blockers.add("TASK_NOT_READY");
         DryRunEntity dryRun = sourceCommit == null ? null : latestDryRun(task.getProjectId(), task.getId(), repositoryId,
                 sourceCommit, targetBranch, targetCommit);
         if (dryRun == null) blockers.add("DRY_RUN_MISSING");
         else if (!"PASSED".equals(dryRun.getStatus())) blockers.add("DRY_RUN_" + dryRun.getStatus());
 
-        PreflightCqReviewEntity cq = dryRun == null ? null : latestCq(dryRun.getId(), sourceCommit, targetCommit);
+        PreflightCqReviewEntity cq = dryRun == null ? null : latestCq(dryRun.getId(), sourceCommit, targetCommit,
+                task.getCreatedBy());
+        // 查询条件已排除发起人；再次在应用层防御，避免历史异常数据或非标准 Mapper 实现
+        // 将自审记录误当成独立 CQ+1。
+        if (cq != null && task.getCreatedBy() != null && task.getCreatedBy().equals(cq.getReviewerUserId())) {
+            cq = null;
+        }
         if (cq == null) blockers.add("CQ_PLUS_ONE_MISSING");
         else if (!"APPROVED".equals(cq.getDecision())) blockers.add("CQ_PLUS_ONE_" + cq.getDecision());
 
@@ -176,15 +180,31 @@ public class PreflightGateService {
                 .eq(DryRunEntity::getProjectId, projectId).eq(DryRunEntity::getTaskId, taskId)
                 .eq(DryRunEntity::getProjectRepositoryId, repositoryId).eq(DryRunEntity::getHeadCommit, sourceCommit)
                 .eq(DryRunEntity::getTargetBranch, targetBranch).eq(DryRunEntity::getResolvedTargetCommit, targetCommit)
-                .orderByDesc(DryRunEntity::getCreatedAt).last("LIMIT 1"));
+                .orderByDesc(DryRunEntity::getCreatedAt).orderByDesc(DryRunEntity::getId).last("LIMIT 1"));
     }
 
-    private PreflightCqReviewEntity latestCq(UUID dryRunId, String sourceCommit, String targetCommit) {
+    private PreflightCqReviewEntity latestCq(UUID dryRunId, String sourceCommit, String targetCommit,
+                                             UUID taskCreatorId) {
         return cqReviews.selectOne(Wrappers.<PreflightCqReviewEntity>lambdaQuery()
                 .eq(PreflightCqReviewEntity::getDryRunId, dryRunId)
                 .eq(PreflightCqReviewEntity::getSourceCommit, sourceCommit)
                 .eq(PreflightCqReviewEntity::getTargetCommit, targetCommit)
-                .orderByDesc(PreflightCqReviewEntity::getReviewedAt).last("LIMIT 1"));
+                // 新写入已在 decide 中拦截；这里仍显式排除历史脏数据，不能让任务发起人给自己的
+                // 旧审批成为创建 MR 的 CQ+1 事实。
+                .ne(taskCreatorId != null, PreflightCqReviewEntity::getReviewerUserId, taskCreatorId)
+                .orderByDesc(PreflightCqReviewEntity::getReviewedAt)
+                .orderByDesc(PreflightCqReviewEntity::getId).last("LIMIT 1"));
+    }
+
+    /**
+     * 预检只服务于仍可创建 MR 的代码快照。MR_FIRST 必须已完成全部仓库的 Push；
+     * DIFF_FIRST 则必须已完成用户确认后的交付。这样不会让执行中的旧 Dry Run/CQ
+     * 在任务后来进入稳定态后被误复用。
+     */
+    private boolean isPreflightActionable(TaskEntity task) {
+        return ("MR_FIRST".equals(task.getDeliveryMode())
+                && ("WAITING_PREFLIGHT".equals(task.getStatus()) || "SUCCEEDED".equals(task.getStatus())))
+                || ("DIFF_FIRST".equals(task.getDeliveryMode()) && "SUCCEEDED".equals(task.getStatus()));
     }
 
     private TaskEntity requireTask(UUID projectId, UUID taskId) {

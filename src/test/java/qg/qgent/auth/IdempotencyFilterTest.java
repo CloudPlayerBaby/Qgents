@@ -70,6 +70,16 @@ class IdempotencyFilterTest {
     }
 
     @Test
+    void filtersAllProjectWriteEndpointsIncludingPreflightAndMergeRequestCreation() {
+        IdempotencyFilter filter = new IdempotencyFilter(null, null);
+
+        assertFalse(filter.shouldNotFilter(new MockHttpServletRequest("POST", "/api/v1/projects/proj-1/dry-runs")));
+        assertFalse(filter.shouldNotFilter(new MockHttpServletRequest("POST", "/api/v1/projects/proj-1/dry-runs/run-1/cq-approvals")));
+        assertFalse(filter.shouldNotFilter(new MockHttpServletRequest("POST", "/api/v1/projects/proj-1/merge-requests")));
+        assertFalse(filter.shouldNotFilter(new MockHttpServletRequest("PATCH", "/api/v1/projects/proj-1/tasks/task-1")));
+    }
+
+    @Test
     void cachesEmptyBodyFor204Response() throws ServletException, IOException {
         qg.qgent.service.IdempotencyService mockService = mock(qg.qgent.service.IdempotencyService.class);
         ObjectMapper mapper = new ObjectMapper();

@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.constraints.Pattern;
 
 import java.util.UUID;
 
@@ -61,8 +62,11 @@ public class InternalWorkspaceController {
     @PostMapping("/{workspaceId}/repositories/{repositoryId}/test-snapshots/{snapshotWorkspaceId}")
     public WorkspaceResponse snapshotForTest(@PathVariable UUID workspaceId,
                                              @PathVariable UUID repositoryId, @PathVariable UUID snapshotWorkspaceId,
-                                             @RequestParam UUID projectId) {
-        return workspaceManagerService.snapshotForTest(workspaceId, repositoryId, snapshotWorkspaceId, projectId);
+                                             @RequestParam UUID projectId,
+                                             @RequestParam @Pattern(regexp = "^[0-9a-fA-F]{40,64}$")
+                                             String expectedHeadCommit) {
+        return workspaceManagerService.snapshotForTest(workspaceId, repositoryId, snapshotWorkspaceId, projectId,
+                expectedHeadCommit);
     }
 
     /**

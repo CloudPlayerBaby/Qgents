@@ -32,6 +32,18 @@ public class WorkspaceEntity {
      */
     private String status;
     /**
+     * 当前持有 Workspace 写入租约的 Task。仅用于跨后端实例互斥，不代表 Workspace 的归属关系。
+     */
+    private UUID writeLeaseTaskId;
+    /**
+     * 租约随机令牌；释放与续租必须同时匹配 Task 和令牌，避免过期执行器释放后来者的租约。
+     */
+    private String writeLeaseToken;
+    /**
+     * 写入租约过期时间（UTC）。进程崩溃后允许新的执行器接管，但正常执行会在每次 Worker 工具调用前续租。
+     */
+    private LocalDateTime writeLeaseExpiresAt;
+    /**
      * UTC creation time.
      */
     private LocalDateTime createdAt;

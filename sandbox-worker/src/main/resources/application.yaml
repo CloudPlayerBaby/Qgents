@@ -14,7 +14,7 @@ server:
 
 sandbox:
   # 运行时环境
-  runtime: ${SANDBOX_RUNTIME:fake}
+  runtime: ${SANDBOX_RUNTIME:docker}
   # 默认空闲存活时间
   default-idle-ttl: ${SANDBOX_DEFAULT_IDLE_TTL:30m}
   # 最大空闲存活时间

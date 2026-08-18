@@ -29,7 +29,7 @@ import java.util.UUID;
 
 /**
  * 写接口幂等过滤器。
- * 对 /api/v1/projects/** 的 POST 请求强制要求 Idempotency-Key：
+ * 对项目范围的所有写请求强制要求 Idempotency-Key：
  * 首次 2xx 响应缓存到 idempotency_records；同键同请求体回放首次响应，
  * 同键不同请求体返回 409 IDEMPOTENCY_KEY_REUSED；缺键返回 400。
  * 事件流（GET）不受影响。
@@ -64,14 +64,11 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         // GitHub Installations: POST, DELETE, POST /sync
         boolean isGitHubInstallApi = path.matches("^/api/v1/teams/[^/]+/integrations/github/installations(?:/[^/]+(?:/sync)?)?$");
 
-        // GitHub Project Repositories: POST, PATCH, DELETE
-        boolean isGitHubRepoApi = path.matches("^/api/v1/projects/[^/]+/repositories(?:/[^/]+)?$");
+        // 项目下的所有写接口都可能被移动端、SSE 刷新后的前端重试或网络层重放。
+        // 不只保护仓库绑定和 Diff 审核，否则 Dry Run、CQ 决策、创建 MR 等高副作用操作会重复执行。
+        boolean isProjectWriteApi = path.matches("^/api/v1/projects/[^/]+(?:/.*)?$");
 
-        // Task final Diff review: confirmation, rejection and delivery retry are state-changing operations.
-        boolean isTaskDiffReviewApi = path.matches(
-                "^/api/v1/projects/[^/]+/tasks/[^/]+/diff-review/(?:confirm|reject|retry-delivery)$");
-
-        return !isGitHubInstallApi && !isGitHubRepoApi && !isTaskDiffReviewApi;
+        return !isGitHubInstallApi && !isProjectWriteApi;
     }
 
     @Override

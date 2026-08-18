@@ -36,7 +36,7 @@ public class TestRunEntity {
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<Map<String, Object>> executionSnapshot;
     /**
-     * Worker 使用的不可变 Git 引用；Task 运行也通过临时 checkout 执行。
+     * Task 测试为受理时固定的提交；普通 ref 测试为待异步解析的用户引用。
      */
     private String executionSourceRef;
     /**

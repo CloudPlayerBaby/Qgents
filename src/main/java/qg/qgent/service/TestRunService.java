@@ -18,17 +18,20 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * 受控 Test Run 与 Dry Run 服务。
  * 仅管理配置与状态，真实执行由执行服务承担（202 接缝）；testsetIds 必须属于该仓库且为 ENABLED，
- * 受保护分支的必选测试集由分支门禁决定，客户端不能传入较少测试集跳过。
+ * MR 前 Dry Run 的目标分支必选测试集由分支门禁决定。普通 TestRun 仅执行用户显式选择的
+ * Testset，不能因仓库默认分支的门禁而改变其测试目标。
  * 创建时先持久化 QUEUED，事务提交后由执行服务推进状态并写入真实结果；
- * 受保护分支必选测试集暂以仓库默认分支的 branch config 为准；执行时由 WorkspaceRepository 的源分支与头提交精确校验。
+ * 受保护分支必选测试集以请求 targetBranch 的 branch config 为准；执行时由 WorkspaceRepository 的源分支与头提交精确校验。
  */
 @Service
 public class TestRunService {
+    private static final Set<String> TESTABLE_TASK_STATUSES = Set.of(
+            "WAITING_DIFF_CONFIRMATION", "WAITING_PREFLIGHT", "SUCCEEDED", "DELIVERY_FAILED",
+            "FAILED", "CANCELLED", "DIFF_REJECTED");
     private final TestRunMapper testRunMapper;
     private final DryRunMapper dryRunMapper;
     private final ProjectRepositoryMapper repositoryMapper;
@@ -41,13 +44,15 @@ public class TestRunService {
     private final WorkspaceRepositoryMapper workspaceRepositoryMapper;
     private final TestRunExecutionDispatcher executionDispatcher;
     private final SandboxWorkerClient worker;
+    private final GitStoreSyncService gitStores;
 
     public TestRunService(TestRunMapper testRunMapper, DryRunMapper dryRunMapper,
                           ProjectRepositoryMapper repositoryMapper, TestsetMapper testsetMapper,
                           RepositoryBranchConfigMapper branchConfigMapper,
                           RepositoryBranchConfigTestsetMapper branchConfigTestsetMapper, ProjectAccessService projectAccess,
                           EventService eventService, TaskMapper taskMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
-                          TestRunExecutionDispatcher executionDispatcher, SandboxWorkerClient worker) {
+                          TestRunExecutionDispatcher executionDispatcher, SandboxWorkerClient worker,
+                          GitStoreSyncService gitStores) {
         this.testRunMapper = testRunMapper;
         this.dryRunMapper = dryRunMapper;
         this.repositoryMapper = repositoryMapper;
@@ -60,12 +65,13 @@ public class TestRunService {
         this.workspaceRepositoryMapper = workspaceRepositoryMapper;
         this.executionDispatcher = executionDispatcher;
         this.worker = worker;
+        this.gitStores = gitStores;
     }
 
     /**
      * 发起受控测试运行。
      * 校验 repositoryId 归属项目、taskId 与 ref 二选一、testsetIds 属于仓库且 ENABLED，
-     * 并确保覆盖受保护分支必选测试集；受理后持久化 QUEUED 并发布 test-run.updated。
+     * 普通 TestRun 只执行用户选定的 Testset；受理后持久化 QUEUED 并发布 test-run.updated。
      *
      * @return 新测试运行摘要（受理态，真实执行后续由执行服务推进）
      */
@@ -79,11 +85,11 @@ public class TestRunService {
                     "taskId 与 ref 必须二选一");
         }
         List<TestsetEntity> selectedTestsets = validateTestsets(projectId, request);
-        enforceRequiredTestsets(repo, request);
         WorkspaceRepositoryEntity taskWorktree = hasTask
                 ? requireTaskWorktree(projectId, request.getTaskId(), request.getRepositoryId()) : null;
-        String executionRef = hasTask ? executionRef(taskWorktree)
-                : resolveCommit(request.getRepositoryId(), request.getRef().trim());
+        // 所有 Test Run 先受理再异步执行。非 Task 测试传入的分支名只能在执行器中解析，
+        // 否则 Worker 短暂不可用会让本应返回 QUEUED 的请求同步失败。
+        String executionRef = hasTask ? executionRef(taskWorktree) : request.getRef().trim();
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         TestRunEntity run = new TestRunEntity();
         run.setId(UuidV7.next());
@@ -95,7 +101,6 @@ public class TestRunService {
         run.setExecutionSnapshot(selectedTestsets.stream().map(this::snapshot).toList());
         run.setExecutionSourceRef(executionRef);
         if (hasTask) {
-            TaskEntity task = taskMapper.selectById(request.getTaskId());
             UUID snapshotWorkspaceId = UUID.nameUUIDFromBytes(
                     ("qgents-test-snapshot:" + run.getId()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
             run.setExecutionWorkspaceId(snapshotWorkspaceId);
@@ -106,21 +111,6 @@ public class TestRunService {
         run.setCreatedAt(now);
         run.setUpdatedAt(now);
         testRunMapper.insert(run);
-        if (hasTask) {
-            TaskEntity task = taskMapper.selectById(request.getTaskId());
-            try {
-                worker.createTestSnapshot(task.getWorkspaceId(), request.getRepositoryId(),
-                        run.getExecutionWorkspaceId(), projectId);
-            } catch (RuntimeException failure) {
-                run.setStatus("FAILED");
-                run.setSummary(Map.of("failureCode", "TEST_SNAPSHOT_PREPARATION_FAILED"));
-                run.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
-                testRunMapper.updateById(run);
-                cleanupSnapshot(run);
-                publishTestRunUpdated(run);
-                return toTestRun(run);
-            }
-        }
         publishTestRunUpdated(run);
         afterCommit(() -> executionDispatcher.dispatchTestRun(run.getId()));
         return toTestRun(run);
@@ -145,29 +135,38 @@ public class TestRunService {
     public DryRunResponse createDryRun(UUID projectId, UUID userId, DryRunCreateRequest request) {
         projectAccess.requireProjectMember(projectId, userId);
         ProjectRepositoryEntity repository = requireRepository(projectId, request.getRepositoryId());
+        String sourceRef = request.getSourceRef().trim();
+        String targetBranch = request.getTargetBranch().trim();
         WorkspaceRepositoryEntity taskWorktree = null;
         if (request.getTaskId() != null) {
             taskWorktree = requireTaskWorktree(projectId, request.getTaskId(), request.getRepositoryId());
-            String sourceRef = request.getSourceRef().trim();
             if (!sourceRef.equals(taskWorktree.getSourceBranch())
                     && (taskWorktree.getHeadCommit() == null || !sourceRef.equals(taskWorktree.getHeadCommit()))) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "DRY_RUN_TASK_SOURCE_REF_MISMATCH",
                         "带 taskId 的 sourceRef 必须是该 Task Workspace 的 sourceBranch 或 headCommit");
             }
         }
-        List<TestsetEntity> requiredTestsets = requiredTestsets(repository, request.getTargetBranch());
-        String resolvedHead = resolveCommit(request.getRepositoryId(), request.getSourceRef().trim());
-        String resolvedTarget = resolveCommit(request.getRepositoryId(), request.getTargetBranch().trim());
+        List<TestsetEntity> requiredTestsets = requiredTestsets(repository, targetBranch);
+        // 先同步 GitHub 当前目标分支再固定 SHA，避免 Dry Run 在 Worker 的旧 Git Store 上误通过。
+        String resolvedTarget = gitStores.refreshTargetBranch(projectId, repository, targetBranch);
+        String resolvedHead = resolveCommit(request.getRepositoryId(), sourceRef);
+        // Task 预检只能验证该 Task 已推送的当前 HEAD。否则 sourceBranch 可能解析到远端旧提交，
+        // 产生“Dry Run 通过但当前待创建 MR 的代码没有被测试”的假阳性。
+        if (taskWorktree != null && (taskWorktree.getHeadCommit() == null
+                || !resolvedHead.equalsIgnoreCase(taskWorktree.getHeadCommit()))) {
+            throw new ApiException(HttpStatus.CONFLICT, "DRY_RUN_TASK_HEAD_NOT_PUSHED",
+                    "Task 当前提交尚未推送或与 Dry Run 源提交不一致");
+        }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         DryRunEntity run = new DryRunEntity();
         run.setId(UuidV7.next());
         run.setProjectId(projectId);
         run.setProjectRepositoryId(request.getRepositoryId());
         run.setTaskId(request.getTaskId());
-        run.setSourceRef(request.getSourceRef().trim());
+        run.setSourceRef(sourceRef);
         run.setHeadCommit(resolvedHead);
         run.setResolvedTargetCommit(resolvedTarget);
-        run.setTargetBranch(request.getTargetBranch());
+        run.setTargetBranch(targetBranch);
         run.setStatus("QUEUED");
         run.setTestsetSnapshot(requiredTestsets.stream().map(this::snapshot).toList());
         run.setAttemptCount(0);
@@ -207,6 +206,10 @@ public class TestRunService {
         if (task == null || !projectId.equals(task.getProjectId()) || task.getWorkspaceId() == null) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "TEST_RUN_TASK_INVALID",
                     "Task 不属于当前项目或尚未准备 Workspace");
+        }
+        if (!TESTABLE_TASK_STATUSES.contains(task.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TEST_RUN_TASK_WORKSPACE_UNSTABLE",
+                    "Task 正在规划、执行或交付，工作树尚未稳定，不能发起测试");
         }
         WorkspaceRepositoryEntity worktree = workspaceRepositoryMapper.selectByWorkspace(task.getWorkspaceId()).stream()
                 .filter(repository -> repositoryId.equals(repository.getProjectRepositoryId())).findFirst().orElse(null);
@@ -324,27 +327,6 @@ public class TestRunService {
             }
         } catch (RuntimeException ignored) {
             // 保留 execution_workspace_id，定时 janitor 会再次执行幂等删除。
-        }
-    }
-
-    /**
-     * 校验受保护分支必选测试集未被跳过；暂以仓库默认分支的 branch config 为准。
-     */
-    private void enforceRequiredTestsets(ProjectRepositoryEntity repo, TestRunCreateRequest request) {
-        RepositoryBranchConfigEntity config = branchConfigMapper.selectOne(
-                Wrappers.<RepositoryBranchConfigEntity>lambdaQuery()
-                        .eq(RepositoryBranchConfigEntity::getProjectRepositoryId, repo.getId())
-                        .eq(RepositoryBranchConfigEntity::getBranchName, repo.getDefaultBranch()));
-        if (config == null) {
-            return;
-        }
-        Set<UUID> requested = request.getTestsetIds().stream().collect(Collectors.toSet());
-        for (RepositoryBranchConfigTestsetEntity relation : branchConfigTestsetMapper
-                .selectByBranchConfigId(config.getId())) {
-            if (!requested.contains(relation.getTestsetId())) {
-                throw new ApiException(HttpStatus.BAD_REQUEST, "TESTSET_REQUIRED",
-                        "受保护分支必选测试集不可跳过：" + relation.getTestsetId());
-            }
         }
     }
 

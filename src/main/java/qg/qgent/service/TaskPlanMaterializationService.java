@@ -253,8 +253,18 @@ public class TaskPlanMaterializationService {
                         .in("project_repository_id", repositoryIds));
         return configs.stream().anyMatch(config -> config.getRequiredChecks() != null
                 && !config.getRequiredChecks().isEmpty()
-                && worktreeList.stream().anyMatch(w -> isBranchName(w.getBaseCommit())
-                        && w.getBaseCommit().equals(config.getBranchName())));
+                && worktreeList.stream().anyMatch(w -> config.getBranchName().equals(baselineBranch(w))));
+    }
+
+    /**
+     * worktree 的基线分支名：优先不可变 base_ref；兼容迁移前旧数据，回退 base_commit 中的
+     * 分支名形态值。base_commit 被 provision 回填为 SHA 后该回退自然失效，属预期。
+     */
+    private String baselineBranch(WorkspaceRepositoryEntity worktree) {
+        if (worktree.getBaseRef() != null && !worktree.getBaseRef().isBlank()) {
+            return worktree.getBaseRef();
+        }
+        return isBranchName(worktree.getBaseCommit()) ? worktree.getBaseCommit() : null;
     }
 
     private boolean isBranchName(String value) {

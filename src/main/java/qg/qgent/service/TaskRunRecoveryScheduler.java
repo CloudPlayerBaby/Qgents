@@ -70,6 +70,7 @@ public class TaskRunRecoveryScheduler {
     public void recover() {
         reclaimStaleRuns();
         recoverTasklessOrphans();
+        recoverPendingWorkspaceLeaseWaiters();
     }
 
     /**
@@ -173,6 +174,22 @@ public class TaskRunRecoveryScheduler {
                     startStepId);
             // 崩溃恢复没有源运行：retryOfTaskRunId 为 null（续跑首个 run 不指向任何失败运行）
             eventPublisher.publishEvent(new TaskResumeRequestedEvent(task.getProjectId(), taskId, startStepId, null));
+        }
+    }
+
+    /**
+     * 处理因其他 Task 持有 Workspace 写租约而暂缓的任务。只在租约不存在或已到期且任务没有
+     * 活跃 Run 时发布续跑事件；真正的启动仍由编排器再次 CAS 领取租约，因而多实例重复扫描安全。
+     */
+    private void recoverPendingWorkspaceLeaseWaiters() {
+        for (UUID taskId : tasks.selectPendingWithAvailableWorkspaceLease(10)) {
+            TaskEntity task = tasks.selectById(taskId);
+            if (task == null || !"PENDING".equals(task.getStatus())) {
+                continue;
+            }
+            log.info("workspace lease available, resuming pending task taskId={} projectId={}",
+                    task.getId(), task.getProjectId());
+            eventPublisher.publishEvent(new TaskResumeRequestedEvent(task.getProjectId(), task.getId(), null, null));
         }
     }
 

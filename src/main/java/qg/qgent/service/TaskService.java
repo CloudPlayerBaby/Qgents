@@ -81,6 +81,15 @@ public class TaskService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DELIVERY_MODE",
                     "交付模式仅支持 DIFF_FIRST 或 MR_FIRST");
         }
+        // baseRef 只接受分支名：Git Store 同步按 refs/heads/<name> fetch，commit SHA 形态
+        // 必然找不到远端分支，提前拒绝而不是在 Worker 侧报晦涩错误。
+        if (body.getBaseRef() != null && (!body.getBaseRef().trim().matches("[A-Za-z0-9][A-Za-z0-9._/-]{0,254}")
+                || body.getBaseRef().trim().startsWith("/") || body.getBaseRef().trim().contains("//")
+                || body.getBaseRef().trim().contains("..") || body.getBaseRef().trim().endsWith(".lock")
+                || body.getBaseRef().trim().matches("[0-9a-fA-F]{40,64}"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BASE_REF",
+                    "baseRef 必须是合法分支名，且不能是 commit SHA 或 Git 引用路径");
+        }
         // 锁定项目行串行化同项目内的 Task 创建，保证 display_code 序号在项目内单调且不重复（沿用消息序号的持行锁模式）。
         ProjectEntity project = projects.selectByIdForUpdate(projectId);
         // 任务发起惰性兜底：确保团队默认 Agent 一定在位（存量团队 / 部署间隙 / 建团队失败重试等场景），

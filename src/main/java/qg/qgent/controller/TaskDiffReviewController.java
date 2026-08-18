@@ -13,7 +13,7 @@ import java.util.UUID;
 
 /**
  * Task 级最终 Diff 审核接口
- * 多仓库最终审核：确认后每个仓库独立提交、推送并创建自己的 MR。
+ * 多仓库最终审核：确认后每个仓库独立提交、推送；MR 由后续显式操作创建。
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/tasks/{taskId}/diff-review")
@@ -43,7 +43,8 @@ public class TaskDiffReviewController {
     }
 
     /**
-     * 契约 §15.3.2：确认最终 Diff 审核并执行各仓库独立交付（commit、push、创建 MR）。
+     * 契约 §15.3.2：确认最终 Diff 审核并执行各仓库独立交付（commit、push）。
+     * 创建 MR 是后续显式操作，不能由 Diff 确认隐式触发。
      */
     @PostMapping("/confirm")
     public ApiResponse<?> confirm(@PathVariable UUID projectId, @PathVariable UUID taskId,

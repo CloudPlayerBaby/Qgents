@@ -215,14 +215,43 @@ public class TaskOrchestrator {
             graph.invoke(Map.of("projectId", projectId.toString(), "taskId", taskId.toString()));
             log.info("orchestrate graph completed taskId={}", taskId);
         } catch (RuntimeException e) {
+            if (isWorkspaceWriteLeaseHeld(e)) {
+                deferForWorkspaceWriteLease(task);
+                return;
+            }
             // 启动/图执行阶段的意外失败（Sandbox Worker 不可达、建图失败等）必须落 FAILED 终态并
             // 通知用户，不允许任务无声卡死在初始状态；requireTask/requireStartable 的幂等护栏
             // 异常在 try 之外，继续外抛由监听器吞掉。
             failStartup(task, e);
         } finally {
-            sandboxSessionManager.release(task.getWorkspaceId());
+            // 只允许本次 Task 清理自己领取的会话。若 acquire 因另一个 Task 正持有同一
+            // Workspace 而失败，不能在 finally 中误销毁对方的 Sandbox 或释放对方租约。
+            sandboxSessionManager.release(task.getWorkspaceId(), task.getId());
             executions.remove(taskId);
         }
+    }
+
+    /**
+     * 另一个 Task 正在修改同一 Workspace 时，当前 Task 不能启动第二个 Writer。保留为 PENDING
+     * 交给恢复器在租约释放后续跑，而不是伪装成环境故障或失败；任务状态写入与回群卡片都不在
+     * Worker/GitHub 外调事务中。
+     */
+    private void deferForWorkspaceWriteLease(TaskEntity task) {
+        if (taskMapper.deferForWorkspaceWriteLease(task.getProjectId(), task.getId()) != 1) {
+            return;
+        }
+        TaskEntity deferred = taskMapper.selectById(task.getId());
+        if (deferred == null || !"PENDING".equals(deferred.getStatus())) {
+            return;
+        }
+        eventService.publish(deferred.getProjectId(), deferred.getRequirementGroupId(), "task.updated",
+                deferred.getId().toString(), TaskEventPayloads.taskUpdated(deferred));
+        sendAgentCard(deferred, "task-" + deferred.getId(), "PENDING", null,
+                "当前开发现场正被另一项任务使用，将在其完成后自动继续");
+    }
+
+    private boolean isWorkspaceWriteLeaseHeld(RuntimeException failure) {
+        return failure instanceof ApiException api && "WORKSPACE_WRITE_LEASE_HELD".equals(api.code());
     }
 
     /**
@@ -617,7 +646,7 @@ public class TaskOrchestrator {
     /**
      * 任务到达终态：成功路径按交付模式分叉——DIFF_FIRST 先创建待确认 Diff 批次再置
      * WAITING_DIFF_CONFIRMATION（失败降级 SUCCEEDED），MR_FIRST 创建 SYSTEM 授权的内部批次后进入
-     * DELIVERING（交付模块监听 delivery.started 执行 commit→push→建 PR）；其余按取消/失败
+     * DELIVERING（交付模块监听 delivery.started 执行 commit→push，随后等待 MR 前预检）；其余按取消/失败
      * 落终态；随后以编码 Agent 身份把任务结果卡片回群（失败不阻断编排）。
      */
     private void finishTask(TaskEntity task, TaskExecutionContext ctx, StateMachineDecision.Action action) {
@@ -634,7 +663,7 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 成功终态按交付模式路由：MR_FIRST 直达 DELIVERING，DIFF_FIRST 走待确认 Diff 批次。
+     * 成功终态按交付模式路由：MR_FIRST 直达系统交付（仅 commit/push），DIFF_FIRST 走待确认 Diff 批次。
      */
     private FinishingStatus completeSuccess(TaskEntity task, TaskExecutionContext ctx) {
         if (DeliveryMode.MR_FIRST.equals(task.getDeliveryMode())) {
@@ -648,9 +677,9 @@ public class TaskOrchestrator {
      * confirmationSource=SYSTEM，见 {@link FinalDiffBundleService#createSystemAcceptedBatch}），
      * Task 直达 DELIVERING 并发布 delivery.started（SSE + 领域事件双通道）。事务提交后由
      * MR_FIRST 交付执行器（MrFirstDeliveryService，AFTER_COMMIT 监听）或兜底扫描领取租约，
-     * 执行逐仓库 commit→push→建 PR。判定理由随事件一并下发供前端展示；
-     * DELIVERING 不是编排终态，不触发 TASK_COMPLETED 通知（由交付侧在
-     * PR 创建后发 MR_PENDING、全部交付完成后发 TASK_COMPLETED）。
+     * 执行逐仓库 commit→push，全部推送后进入 WAITING_PREFLIGHT。Dry Run、独立 CQ+1 与显式
+     * 创建 MR 属于后续阶段；预检未完成不能记为代码交付失败。DELIVERING 不是编排终态，
+     * 不触发 TASK_COMPLETED 通知。
      */
     private FinishingStatus completeWithMrFirst(TaskEntity task, TaskExecutionContext ctx) {
         log.info("mr-first task enters delivery taskId={} mode={} reason={}", task.getId(), task.getDeliveryMode(),
@@ -773,8 +802,8 @@ public class TaskOrchestrator {
      * 正式 Diff 批次生成后以编排助手身份回一条 DIFF 卡（content.diffId 指向批次内首个 Diff）：
      * 用户引用该卡即可被 TaskTriggerService 识别为续作，复用源 Workspace 发起增量修改。
      * DIFF 卡的 content 形状满足消息契约（diffId 必填，title/additions/deletions 可选）。
-     * 与 TASK_STATUS 卡不同，缺编排助手时直接跳过并记日志——SYSTEM 通道只承接 TASK_STATUS
-     * 形状，无法携带 diffId；回卡失败不影响任务结果。
+     * 缺编排助手时降级为 senderType=SYSTEM 的 DIFF 卡，仍保留 type=DIFF 与 content.diffId，
+     * 以保证前端渲染和引用续作不因团队 Agent 配置缺失而失效；回卡失败不影响任务结果。
      */
     private void sendDiffCard(TaskEntity task, UUID reviewBatchId) {
         List<DiffEntity> values = diffMapper.selectList(Wrappers.<DiffEntity>lambdaQuery()
@@ -799,7 +828,8 @@ public class TaskOrchestrator {
             if (cardSenderId != null) {
                 messageService.sendAsAgent(task.getRequirementGroupId(), cardSenderId, body);
             } else {
-                log.warn("orchestrator agent missing, diff card skipped, taskId={}", task.getId());
+                log.warn("orchestrator agent missing, diff card degrades to SYSTEM, taskId={}", task.getId());
+                messageService.sendAsSystem(task.getRequirementGroupId(), body);
             }
         } catch (RuntimeException e) {
             log.warn("diff card skipped, taskId={}, reviewBatchId={}: {}", task.getId(), reviewBatchId, e.getMessage());
@@ -836,7 +866,8 @@ public class TaskOrchestrator {
         }
         return switch (finishing.status()) {
             case WAITING_DIFF_CONFIRMATION -> "任务开发完成，等待你对 Diff 的确认";
-            case "DELIVERING" -> "任务开发完成，已提交 PR 进入代码审查流程";
+            case "DELIVERING" -> "任务开发完成，正在提交并推送代码";
+            case "WAITING_PREFLIGHT" -> "代码已推送，等待 MR 前预检";
             case "SUCCEEDED" -> "任务已完成";
             case "FAILED" -> "任务执行失败";
             case "CANCELLED" -> "任务已取消";

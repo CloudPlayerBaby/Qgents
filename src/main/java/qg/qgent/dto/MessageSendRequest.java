@@ -20,11 +20,11 @@ import java.util.UUID;
 public class MessageSendRequest {
 
     /**
-     * 消息类型：TEXT/CODE/IMAGE/FILE/QUOTE（SYSTEM 由服务端维护）。
+     * 消息类型：TEXT/CODE/IMAGE/FILE/DIFF/TASK_STATUS/QUOTE（无发送者的自动化卡片由服务端维护）。
      */
     @NotBlank
     @Size(max = 32)
-    @Schema(description = "消息类型：TEXT/CODE/IMAGE/FILE/QUOTE（SYSTEM 由服务端维护）", maxLength = 32,
+    @Schema(description = "消息类型：TEXT/CODE/IMAGE/FILE/DIFF/TASK_STATUS/QUOTE（无发送者的自动化卡片由服务端维护）", maxLength = 32,
             requiredMode = Schema.RequiredMode.REQUIRED)
     private String type;
 

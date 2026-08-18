@@ -393,6 +393,11 @@ public class TaskDisplayService {
             return new Attention("DIFF_CONFIRMATION_REQUIRED", "等待确认最终 Diff", "已生成多仓库总 Diff，等待确认",
                     null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
         }
+        if ("WAITING_PREFLIGHT".equals(status)) {
+            return new Attention("PREFLIGHT_REQUIRED", "等待 MR 前预检",
+                    "代码已推送；请完成 Dry Run 和独立成员 CQ+1 后创建 MR",
+                    null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
+        }
         if ("DIFF_REJECTED".equals(status)) {
             return new Attention("DIFF_REJECTED", "Diff 已拒绝", "Workspace 修改已保留，可回复 Diff 创建续作任务",
                     null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
@@ -490,7 +495,7 @@ public class TaskDisplayService {
         String defaultBranch = binding == null ? null : binding.getDefaultBranch();
         return new RepositorySummary(
                 worktree == null ? (binding == null ? null : id(binding.getId())) : id(worktree.getProjectRepositoryId()),
-                name, fullName, "GITHUB", defaultBranch, defaultBranch,
+                name, fullName, "GITHUB", defaultBranch, worktree == null ? defaultBranch : worktree.getBaseRef(),
                 worktree == null ? null : worktree.getBaseCommit(),
                 worktree == null ? null : worktree.getSourceBranch(),
                 worktree == null ? null : worktree.getHeadCommit());

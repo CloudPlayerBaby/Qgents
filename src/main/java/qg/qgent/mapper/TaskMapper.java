@@ -51,6 +51,25 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
     int touchUpdatedAt(@Param("taskId") UUID taskId);
 
     /**
+     * Workspace 被其他 Task 持有写租约时，将尚未产生运行的任务放回 PENDING 等待恢复器重试。
+     * 该 CAS 不覆盖取消、交付或终态，避免租约冲突被误报为任务失败。
+     */
+    @Update("update tasks set status='PENDING', updated_at=UTC_TIMESTAMP(6) where id=#{taskId} "
+            + "and project_id=#{projectId} and status in ('PLANNING','RUNNING','PENDING')")
+    int deferForWorkspaceWriteLease(@Param("projectId") UUID projectId, @Param("taskId") UUID taskId);
+
+    /**
+     * 找出尚未创建活跃 Run、且关联 Workspace 当前没有有效写租约的 PENDING 任务。
+     * 恢复器只发布续跑事件，实际认领仍由 claimForResume 的 CAS 完成。
+     */
+    @Select("select t.id from tasks t join workspaces w on w.id=t.workspace_id where t.status='PENDING' "
+            + "and (w.write_lease_expires_at is null or w.write_lease_expires_at <= UTC_TIMESTAMP(6)) "
+            + "and not exists (select 1 from task_runs r where r.task_id=t.id "
+            + "and r.status in ('QUEUED','RUNNING','WAITING_INPUT','WAITING_APPROVAL')) "
+            + "order by t.updated_at limit #{limit}")
+    java.util.List<UUID> selectPendingWithAvailableWorkspaceLease(@Param("limit") int limit);
+
+    /**
      * 返回项目内当前最大的 display_code 数字序号（如 T-1024 返回 1024）；无任务时返回 null。
      * 调用方须在持有项目级锁的事务内使用，保证序号单调递增且不重复。
      */
@@ -60,10 +79,10 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
 
     /**
      * 统计某项目仓库绑定上仍在活动状态（PLANNING/PENDING/RUNNING/CANCELLING/WAITING_DIFF_CONFIRMATION/
-     * DELIVERING）的任务数，供软解绑前的占用校验使用。任务与仓库通过 Workspace worktree 关联。
+     * WAITING_PREFLIGHT/DELIVERING）的任务数，供软解绑前的占用校验使用。任务与仓库通过 Workspace worktree 关联。
      */
     @Select("SELECT COUNT(*) FROM tasks t WHERE t.status IN "
-            + "('PLANNING','PENDING','RUNNING','CANCELLING','WAITING_DIFF_CONFIRMATION','DELIVERING') "
+            + "('PLANNING','PENDING','RUNNING','CANCELLING','WAITING_DIFF_CONFIRMATION','WAITING_PREFLIGHT','DELIVERING') "
             + "AND EXISTS (SELECT 1 FROM workspace_repositories wr "
             + "WHERE wr.workspace_id = t.workspace_id AND wr.project_repository_id = #{projectRepositoryId})")
     int countActiveTasksUsingRepository(@Param("projectRepositoryId") UUID projectRepositoryId);

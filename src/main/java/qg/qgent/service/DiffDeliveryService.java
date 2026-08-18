@@ -34,6 +34,7 @@ public class DiffDeliveryService {
     private final SandboxWorkerClient worker;
     private final TransactionTemplate transactions;
     private final DiffReviewBatchMapper batches;
+    private WorkspaceWriteLeaseService workspaceWriteLeases;
 
     public DiffDeliveryService(DiffMapper diffs, WorkspaceMapper workspaces,
                                WorkspaceRepositoryMapper worktrees, SandboxWorkerClient worker, TransactionTemplate transactions,
@@ -44,6 +45,11 @@ public class DiffDeliveryService {
         this.worker = worker;
         this.transactions = transactions;
         this.batches = batches;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setWorkspaceWriteLeases(WorkspaceWriteLeaseService workspaceWriteLeases) {
+        this.workspaceWriteLeases = workspaceWriteLeases;
     }
 
     /**
@@ -85,19 +91,25 @@ public class DiffDeliveryService {
      * 非批次 Diff 仅在真实 Commit 成功后同时记录审核决定和 Commit 事实。
      */
     public DiffEntity acceptNonBatch(TaskEntity task, DiffEntity snapshot, UUID actor) {
-        DiffEntity claimed = transactions.execute(status -> claimNonBatch(task, snapshot.getId()));
-        String commitSha;
+        WorkspaceWriteLease workspaceLease = acquireWorkspaceWriteLease(task);
         try {
-            commitSha = commitVerified(task, claimed);
-        } catch (RuntimeException failure) {
-            log.error("non-batch repository commit failed projectId={} taskId={} diffId={} repositoryId={} code={} message={}",
-                    task.getProjectId(), task.getId(), claimed.getId(), claimed.getProjectRepositoryId(),
-                    failure instanceof ApiException api ? api.code() : "WORKER_COMMIT_FAILED", failure.getMessage(), failure);
-            recordFailure(claimed.getId(), claimed.getDeliveryClaimToken(), failure);
-            throw failure;
+            DiffEntity claimed = transactions.execute(status -> claimNonBatch(task, snapshot.getId()));
+            String commitSha;
+            try {
+                renewWorkspaceWriteLease(workspaceLease);
+                commitSha = commitVerified(task, claimed);
+            } catch (RuntimeException failure) {
+                log.error("non-batch repository commit failed projectId={} taskId={} diffId={} repositoryId={} code={} message={}",
+                        task.getProjectId(), task.getId(), claimed.getId(), claimed.getProjectRepositoryId(),
+                        failure instanceof ApiException api ? api.code() : "WORKER_COMMIT_FAILED", failure.getMessage(), failure);
+                recordFailure(claimed.getId(), claimed.getDeliveryClaimToken(), failure);
+                throw failure;
+            }
+            return transactions.execute(status -> recordCommit(task, claimed.getId(), commitSha, actor,
+                    claimed.getDeliveryClaimToken(), null));
+        } finally {
+            releaseWorkspaceWriteLease(workspaceLease);
         }
-        return transactions.execute(status -> recordCommit(task, claimed.getId(), commitSha, actor,
-                claimed.getDeliveryClaimToken(), null));
     }
 
     /**
@@ -159,6 +171,23 @@ public class DiffDeliveryService {
         current.setUpdatedAt(now);
         diffs.updateById(current);
         return current;
+    }
+
+    private WorkspaceWriteLease acquireWorkspaceWriteLease(TaskEntity task) {
+        return workspaceWriteLeases == null ? null
+                : workspaceWriteLeases.acquire(task.getProjectId(), task.getWorkspaceId(), task.getId());
+    }
+
+    private void renewWorkspaceWriteLease(WorkspaceWriteLease lease) {
+        if (lease != null) {
+            workspaceWriteLeases.renew(lease);
+        }
+    }
+
+    private void releaseWorkspaceWriteLease(WorkspaceWriteLease lease) {
+        if (lease != null) {
+            workspaceWriteLeases.release(lease);
+        }
     }
 
     private DiffEntity requirePendingNonBatch(TaskEntity task, UUID diffId) {

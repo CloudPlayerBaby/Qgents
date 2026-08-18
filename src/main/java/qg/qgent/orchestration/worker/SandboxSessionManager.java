@@ -9,6 +9,8 @@ import qg.qgent.github.GitHubAppClient;
 import qg.qgent.github.GitHubBranchDetails;
 import qg.qgent.mapper.*;
 import qg.qgent.service.GitCredentialService;
+import qg.qgent.service.WorkspaceWriteLease;
+import qg.qgent.service.WorkspaceWriteLeaseService;
 
 import java.time.Duration;
 import java.util.*;
@@ -29,8 +31,9 @@ import java.util.regex.Pattern;
  *   <li>{@code app.worker.enabled=false} 时本管理器为 no-op（返回 null），编排链路仍走本地端口；</li>
  *   <li>销毁只销毁 Sandbox，Workspace 持久保留。</li>
  * </ul>
- * 会话用进程内 Map 按 workspaceId 记录，并使用 Workspace 级锁串行化初始化与释放；
- * 跨进程或多实例部署时，Workspace 写入租约仍必须升级为持久状态/锁（见 AGENTS.md）。
+ * 会话缓存仅用于定位本进程 Sandbox；真正的跨实例单写者约束由
+ * {@link WorkspaceWriteLeaseService} 的持久化 CAS 租约保证；进程内同时使用
+ * Workspace 级锁串行化初始化与释放。
  */
 @Service
 public class SandboxSessionManager {
@@ -46,14 +49,16 @@ public class SandboxSessionManager {
     private final GitHubInstallationMapper installationMapper;
     private final GitCredentialService credentialService;
     private final GitHubAppClient githubAppClient;
+    private final WorkspaceWriteLeaseService writeLeases;
     private final Map<UUID, SandboxSession> sessions = new ConcurrentHashMap<>();
     private final Map<UUID, ReentrantLock> acquireLocks = new ConcurrentHashMap<>();
+    private final Map<UUID, WorkspaceWriteLease> workspaceLeases = new ConcurrentHashMap<>();
 
     public SandboxSessionManager(SandboxWorkerClient client, SandboxWorkerProperties properties,
                                  WorkspaceMapper workspaceMapper, WorkspaceRepositoryMapper repositoryMapper,
                                  ProjectRepositoryMapper projectRepositoryMapper, GitHubRepositoryMapper gitHubRepositoryMapper,
                                  GitHubInstallationMapper installationMapper, GitCredentialService credentialService,
-                                 GitHubAppClient githubAppClient) {
+                                 GitHubAppClient githubAppClient, WorkspaceWriteLeaseService writeLeases) {
         this.client = client;
         this.properties = properties;
         this.workspaceMapper = workspaceMapper;
@@ -63,6 +68,7 @@ public class SandboxSessionManager {
         this.installationMapper = installationMapper;
         this.credentialService = credentialService;
         this.githubAppClient = githubAppClient;
+        this.writeLeases = writeLeases;
     }
 
     /**
@@ -78,11 +84,22 @@ public class SandboxSessionManager {
         try {
             SandboxSession existing = sessions.get(workspaceId);
             if (existing != null) {
+                if (!existing.taskId().equals(taskId)) {
+                    throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                            "WORKSPACE_WRITE_LEASE_HELD", "Workspace is currently being modified by another Task");
+                }
                 return existing;
             }
-            SandboxSession created = doAcquire(taskId, projectId, workspaceId);
-            sessions.put(workspaceId, created);
-            return created;
+            WorkspaceWriteLease lease = writeLeases.acquire(projectId, workspaceId, taskId);
+            try {
+                SandboxSession created = doAcquire(taskId, projectId, workspaceId);
+                sessions.put(workspaceId, created);
+                workspaceLeases.put(workspaceId, lease);
+                return created;
+            } catch (RuntimeException failure) {
+                writeLeases.release(lease);
+                throw failure;
+            }
         } finally {
             acquireLock.unlock();
         }
@@ -102,22 +119,53 @@ public class SandboxSessionManager {
     /**
      * 销毁会话对应的 Sandbox 并移除记录；Workspace 保留。销毁失败不吞结果，仅不阻断任务收尾。
      */
-    public void release(UUID workspaceId) {
+    public void release(UUID workspaceId, UUID taskId) {
+        if (workspaceId == null || taskId == null) {
+            return;
+        }
         ReentrantLock acquireLock = acquireLocks.computeIfAbsent(workspaceId, ignored -> new ReentrantLock());
         acquireLock.lock();
         try {
-            SandboxSession session = sessions.remove(workspaceId);
-            if (session == null) {
+            SandboxSession session = sessions.get(workspaceId);
+            if (session == null || !taskId.equals(session.taskId())) {
+                // acquire 可能因其他 Task 已持有会话而失败；只能清理自己的会话。
                 return;
+            }
+            WorkspaceWriteLease lease = workspaceLeases.get(workspaceId);
+            if (lease != null && !taskId.equals(lease.getTaskId())) {
+                // 缓存不一致时宁可保留可能有效的租约，也不能释放其他 Task 的租约。
+                return;
+            }
+            if (!sessions.remove(workspaceId, session)) {
+                return;
+            }
+            if (lease != null) {
+                workspaceLeases.remove(workspaceId, lease);
             }
             try {
                 client.destroySandbox(session.sandboxId());
             } catch (RuntimeException ignored) {
                 // 销毁失败由 Worker 的清理任务兜底，不阻断任务结果返回。
+            } finally {
+                writeLeases.release(lease);
             }
         } finally {
             acquireLock.unlock();
         }
+    }
+
+    /**
+     * 每次 Worker 工具提交前验证并续租持久化写入权。租约已丢失时不能再向同一 Workspace
+     * 发起命令、文件写入或测试，避免过期 Task 与后来者并发修改文件。
+     */
+    void renewWriteLease(UUID workspaceId) {
+        WorkspaceWriteLease lease = workspaceLeases.get(workspaceId);
+        SandboxSession session = sessions.get(workspaceId);
+        if (lease == null || session == null || !session.taskId().equals(lease.getTaskId())) {
+            throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                    "WORKSPACE_WRITE_LEASE_LOST", "Workspace write lease is no longer active");
+        }
+        writeLeases.renew(lease);
     }
 
     /**
@@ -134,6 +182,7 @@ public class SandboxSessionManager {
                 return;
             }
             try {
+                renewWriteLease(workspaceId);
                 client.renewSandbox(session.sandboxId());
             } catch (RuntimeException ignored) {
                 // 当前工具调用会传播 Worker 错误；心跳不应阻塞其他活跃 Sandbox 的续租。
@@ -206,20 +255,46 @@ public class SandboxSessionManager {
      */
     private String prepareWorkspaceOnce(UUID projectId, UUID workspaceId, WorkspaceEntity workspace,
                                         List<WorkspaceRepositoryEntity> repositories) {
+        // 一次 acquire 对每个仓库只解析一次基线分支。同步 Git Store 与后续创建 worktree
+        // 必须使用同一个值，避免任务指定基线与项目默认分支不同时出现“已同步 main、却从 develop 建树”。
+        Map<UUID, String> baseRefByRepository = new HashMap<>();
+        // 迁移前旧数据（base_commit 已是 SHA、base_ref 为空）的原基线分支名从 Worker 持久化
+        // Workspace 元数据恢复；懒加载，仅存在无法本地解析的仓库时查询一次。
+        Map<UUID, String> workerBaseRefs = null;
+
+        // Fetch Grants and Sync bare Git Stores for each repository
         for (WorkspaceRepositoryEntity repository : repositories) {
             ProjectRepositoryEntity projectRepo = projectRepositoryMapper.selectById(repository.getProjectRepositoryId());
             if (projectRepo == null || !"ACTIVE".equals(projectRepo.getStatus())) {
                 throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "PROJECT_REPOSITORY_NOT_BOUND",
                         "Repository binding is not active for workspace repository");
             }
-            String configuredBaseRef = repository.getBaseCommit();
+            // 基线分支以不可变 base_ref 为准；兼容迁移前旧数据：base_ref 为空时回退 base_commit
+            // 中的分支名（非 SHA 形态）。base_commit 已回填 SHA 后不得静默换用项目默认分支，
+            // 否则会以旧 SHA 校验新分支必然失败；必须恢复原基线，恢复不了就明确报错。
+            String legacyBranchRef = isCommitSha(repository.getBaseCommit()) ? null : repository.getBaseCommit();
+            String configuredBaseRef = firstNonBlank(repository.getBaseRef(), legacyBranchRef);
+            if ((configuredBaseRef == null || configuredBaseRef.isBlank()) && isCommitSha(repository.getBaseCommit())) {
+                // 仅确已 provision 过（base_commit 为 SHA）的迁移前旧数据走恢复；
+                // 从未 provision（base_commit 为空）的行直接用项目默认分支。
+                if (workerBaseRefs == null) {
+                    workerBaseRefs = loadWorkerBaseRefs(workspaceId);
+                }
+                String recovered = workerBaseRefs.get(repository.getProjectRepositoryId());
+                if (recovered == null || recovered.isBlank()) {
+                    throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                            "WORKSPACE_BASE_REF_UNKNOWN",
+                            "Workspace 已 provision 但原基线分支不可追溯，请重建 Workspace 后重试");
+                }
+                configuredBaseRef = recovered;
+                persistRecoveredBaseRef(repository, recovered);
+            }
             String defaultBranch = projectRepo.getDefaultBranch();
-            String remoteBranch = isCommitSha(configuredBaseRef)
-                    ? defaultBranch
-                    : firstNonBlank(configuredBaseRef, defaultBranch);
+            String remoteBranch = firstNonBlank(configuredBaseRef, defaultBranch);
             if (remoteBranch == null || remoteBranch.isBlank()) {
                 throw new IllegalStateException("project repository has no default branch: " + repository.getProjectRepositoryId());
             }
+            baseRefByRepository.put(repository.getProjectRepositoryId(), remoteBranch);
 
             GitHubRepositoryEntity ghRepo = gitHubRepositoryMapper.selectById(projectRepo.getRepositoryId());
             if (ghRepo == null) {
@@ -240,7 +315,9 @@ public class SandboxSessionManager {
                         "GitHub repository authorization has been revoked");
             }
 
-            String expectedHeadCommit = configuredBaseRef;
+            // 已 provision 的行（base_commit 为 SHA）沿用钉扎的基线提交，重试不因分支推进漂移；
+            // 否则按基线分支实时解析远端 HEAD。
+            String expectedHeadCommit = isCommitSha(repository.getBaseCommit()) ? repository.getBaseCommit() : null;
             if (!isCommitSha(expectedHeadCommit)) {
                 GitHubBranchDetails branchDetails = githubAppClient.getBranch(
                         installation.getProviderInstallationId(), ghRepo.getOwnerLogin(), ghRepo.getName(), remoteBranch);
@@ -268,7 +345,10 @@ public class SandboxSessionManager {
 
         WorkerWorkspaceProvisionRequest provision = new WorkerWorkspaceProvisionRequest();
         provision.setProjectId(projectId);
-        provision.setRepositories(repositories.stream().map(this::toRepositoryRequest).toList());
+        provision.setRepositories(repositories.stream()
+                .map(repository -> toRepositoryRequest(repository,
+                        baseRefByRepository.get(repository.getProjectRepositoryId())))
+                .toList());
         WorkerWorkspace provisioned = client.provisionWorkspace(workspaceId, provision);
         persistProvisionedCommits(repositories, provisioned);
         return provisioned != null && provisioned.getStorageKey() != null
@@ -368,8 +448,8 @@ public class SandboxSessionManager {
 
     /**
      * 用 Worker provision 返回的真实基线/HEAD 提交回填 Workspace repository 持久字段。
-     * 主后端创建 Task 时 baseCommit 记录的是基线引用（如分支名 develop），而最终 Diff 校验
-     * 需要与 Worker 返回的真实 commit SHA 比对，必须在此处固化真实提交。
+     * base_commit 专存真实 commit SHA 供最终 Diff 校验比对；不可变基线分支名存 base_ref
+     * （迁移前旧数据在回填时补写）。
      */
     private void persistProvisionedCommits(List<WorkspaceRepositoryEntity> repositories, WorkerWorkspace provisioned) {
         if (provisioned == null || provisioned.getRepositories() == null) {
@@ -381,39 +461,55 @@ public class SandboxSessionManager {
                         && provisionedRepo.getBaseCommit() != null && !provisionedRepo.getBaseCommit().isBlank()) {
                     repository.setBaseCommit(provisionedRepo.getBaseCommit());
                     repository.setHeadCommit(provisionedRepo.getHeadCommit());
+                    if ((repository.getBaseRef() == null || repository.getBaseRef().isBlank())
+                            && provisionedRepo.getBaseRef() != null && !provisionedRepo.getBaseRef().isBlank()) {
+                        repository.setBaseRef(provisionedRepo.getBaseRef());
+                    }
                     repositoryMapper.updateCommits(repository.getWorkspaceId(), repository.getProjectRepositoryId(),
-                            provisionedRepo.getBaseCommit(), provisionedRepo.getHeadCommit());
+                            provisionedRepo.getBaseCommit(), provisionedRepo.getHeadCommit(), repository.getBaseRef());
                     break;
                 }
             }
         }
     }
 
-    private WorkerWorkspaceRepositoryRequest toRepositoryRequest(WorkspaceRepositoryEntity repository) {
+    private WorkerWorkspaceRepositoryRequest toRepositoryRequest(WorkspaceRepositoryEntity repository, String baseRef) {
+        if (baseRef == null || baseRef.isBlank()) {
+            throw new IllegalStateException("workspace repository has no resolved base ref: "
+                    + repository.getProjectRepositoryId());
+        }
         WorkerWorkspaceRepositoryRequest request = new WorkerWorkspaceRepositoryRequest();
         request.setRepositoryId(repository.getProjectRepositoryId());
-        request.setBaseRef(resolveBaseRef(repository));
+        request.setBaseRef(baseRef);
         request.setSourceBranch(repository.getSourceBranch());
         request.setWorkspacePath(repository.getWorkspacePath());
         return request;
     }
 
     /**
-     * 解析仓库基线引用：优先使用项目仓库绑定的 defaultBranch（稳定受控引用），
-     * 否则回退到 worktree 记录的 baseCommit。baseCommit 在 provision 后会被回填为真实 SHA，
-     * 若用它作为 baseRef，复用 Workspace 时会与 Worker 端记录的原始分支名不一致，导致规格冲突。
+     * 从 Worker 持久化的 Workspace 元数据读取各仓库的原基线分支名。
+     * 仅用于迁移前旧数据（base_commit 已 SHA 化且 base_ref 为空）的恢复；
+     * Worker 不可达时传输错误按 {@code SANDBOX_WORKER_UNAVAILABLE} 上抛，不静默降级。
      */
-    private String resolveBaseRef(WorkspaceRepositoryEntity repository) {
-        ProjectRepositoryEntity projectRepository = projectRepositoryMapper.selectById(repository.getProjectRepositoryId());
-        if (projectRepository != null && projectRepository.getDefaultBranch() != null
-                && !projectRepository.getDefaultBranch().isBlank()) {
-            return projectRepository.getDefaultBranch();
+    private Map<UUID, String> loadWorkerBaseRefs(UUID workspaceId) {
+        WorkerWorkspace persisted = client.getWorkspace(workspaceId);
+        Map<UUID, String> refs = new HashMap<>();
+        if (persisted != null && persisted.getRepositories() != null) {
+            for (WorkerWorkspaceRepository repo : persisted.getRepositories()) {
+                refs.put(repo.getRepositoryId(), repo.getBaseRef());
+            }
         }
-        if (repository.getBaseCommit() != null && !repository.getBaseCommit().isBlank()) {
-            return repository.getBaseCommit();
-        }
-        throw new IllegalStateException("workspace repository has no base ref: "
-                + repository.getProjectRepositoryId());
+        return refs;
+    }
+
+    /**
+     * 把恢复出的原基线分支名固化回 base_ref，后续 acquire 不再依赖 Worker 元数据。
+     * base_commit/head_commit 原值写回，幂等无害。
+     */
+    private void persistRecoveredBaseRef(WorkspaceRepositoryEntity repository, String recovered) {
+        repository.setBaseRef(recovered);
+        repositoryMapper.updateCommits(repository.getWorkspaceId(), repository.getProjectRepositoryId(),
+                repository.getBaseCommit(), repository.getHeadCommit(), recovered);
     }
 
     private boolean isCommitSha(String value) {

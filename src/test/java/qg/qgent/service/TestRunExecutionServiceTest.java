@@ -1,10 +1,14 @@
 package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
+import qg.qgent.api.ApiException;
 import qg.qgent.entity.DryRunEntity;
 import qg.qgent.entity.TestRunEntity;
+import qg.qgent.entity.TaskEntity;
 import qg.qgent.mapper.DryRunMapper;
 import qg.qgent.mapper.TestRunMapper;
+import qg.qgent.mapper.TaskMapper;
 import qg.qgent.orchestration.worker.*;
 
 import java.util.List;
@@ -18,8 +22,9 @@ class TestRunExecutionServiceTest {
     private final TestRunMapper testRuns = mock(TestRunMapper.class);
     private final DryRunMapper dryRuns = mock(DryRunMapper.class);
     private final SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
+    private final TaskMapper tasks = mock(TaskMapper.class);
     private final TestRunExecutionService service = new TestRunExecutionService(testRuns, dryRuns, worker,
-            mock(EventService.class));
+            mock(EventService.class), tasks);
 
     @Test
     void onlyAtomicClaimWinnerCallsWorkerAndUsesPersistedSnapshot() {
@@ -32,7 +37,7 @@ class TestRunExecutionServiceTest {
         when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
         when(testRuns.selectById(runId)).thenReturn(run);
         WorkerTestExecutionResponse response = new WorkerTestExecutionResponse();
-        response.setStatus("PASSED"); response.setResults(List.of());
+        response.setStatus("PASSED"); response.setResolvedHeadCommit(run.getExecutionSourceRef()); response.setResults(List.of());
         when(worker.executeTests(any())).thenReturn(response);
         when(testRuns.complete(eq(runId), anyString(), eq("PASSED"), any())).thenReturn(1);
 
@@ -48,13 +53,18 @@ class TestRunExecutionServiceTest {
         UUID runId = UUID.randomUUID(), snapshotWorkspaceId = UUID.randomUUID(), testsetId = UUID.randomUUID();
         TestRunEntity run = new TestRunEntity();
         run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
-        run.setExecutionWorkspaceId(snapshotWorkspaceId); run.setExecutionSourceRef("original-head");
+        run.setTaskId(UUID.randomUUID());
+        run.setExecutionWorkspaceId(snapshotWorkspaceId);
+        run.setExecutionSourceRef("0123456789012345678901234567890123456789");
         run.setExecutionSnapshot(List.of(Map.of("testsetId", testsetId.toString(), "command", "mvn test",
                 "timeoutSeconds", 60, "passRuleType", "EXIT_CODE", "expectedExitCode", 0)));
         when(testRuns.selectById(runId)).thenReturn(run);
         when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        TaskEntity task = new TaskEntity(); task.setId(run.getTaskId()); task.setProjectId(run.getProjectId());
+        task.setWorkspaceId(UUID.randomUUID());
+        when(tasks.selectById(run.getTaskId())).thenReturn(task);
         WorkerTestExecutionResponse response = new WorkerTestExecutionResponse();
-        response.setStatus("PASSED"); response.setResults(List.of());
+        response.setStatus("PASSED"); response.setResolvedHeadCommit(run.getExecutionSourceRef()); response.setResults(List.of());
         when(worker.executeTests(any())).thenReturn(response);
         when(testRuns.complete(eq(runId), anyString(), eq("PASSED"), any())).thenReturn(1);
 
@@ -62,7 +72,76 @@ class TestRunExecutionServiceTest {
 
         verify(worker).executeTests(argThat(request -> snapshotWorkspaceId.equals(request.getWorkspaceId())
                 && request.getRef() == null));
+        verify(worker).createTestSnapshot(eq(task.getWorkspaceId()), eq(run.getProjectRepositoryId()),
+                eq(snapshotWorkspaceId), eq(run.getProjectId()), eq(run.getExecutionSourceRef()));
         verify(worker).deleteWorkspace(snapshotWorkspaceId);
+    }
+
+    @Test
+    void branchRefIsResolvedInsideTheExecutorBeforeTestsRun() {
+        UUID runId = UUID.randomUUID();
+        TestRunEntity run = new TestRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setExecutionSourceRef("feature/login"); run.setExecutionSnapshot(List.of());
+        when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(testRuns.selectById(runId)).thenReturn(run);
+        WorkerGitResolveResponse resolved = new WorkerGitResolveResponse();
+        resolved.setCommitSha("0123456789012345678901234567890123456789");
+        when(worker.resolveGitRef(any())).thenReturn(resolved);
+        WorkerTestExecutionResponse response = new WorkerTestExecutionResponse();
+        response.setStatus("PASSED"); response.setResolvedHeadCommit("0123456789012345678901234567890123456789"); response.setResults(List.of());
+        when(worker.executeTests(any())).thenReturn(response);
+        when(testRuns.complete(eq(runId), anyString(), eq("PASSED"), any())).thenReturn(1);
+
+        service.executeTestRun(runId);
+
+        verify(worker).resolveGitRef(argThat(request -> run.getProjectRepositoryId().equals(request.getRepositoryId())
+                && "feature/login".equals(request.getRef())));
+        verify(worker).executeTests(argThat(request ->
+                "0123456789012345678901234567890123456789".equals(request.getRef())));
+    }
+
+    @Test
+    void passedTestForAnotherCommitIsNotRecordedAsPassed() {
+        UUID runId = UUID.randomUUID();
+        TestRunEntity run = new TestRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setExecutionSourceRef("0123456789012345678901234567890123456789"); run.setExecutionSnapshot(List.of());
+        when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(testRuns.selectById(runId)).thenReturn(run);
+        WorkerTestExecutionResponse response = new WorkerTestExecutionResponse();
+        response.setStatus("PASSED"); response.setResolvedHeadCommit("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+        response.setResults(List.of());
+        when(worker.executeTests(any())).thenReturn(response);
+        when(testRuns.complete(eq(runId), anyString(), eq("FAILED"), any())).thenReturn(1);
+
+        service.executeTestRun(runId);
+
+        verify(testRuns).complete(eq(runId), anyString(), eq("FAILED"),
+                argThat(summary -> "TEST_RUN_CONTEXT_MISMATCH".equals(summary.get("failureCode"))));
+    }
+
+    @Test
+    void snapshotFailurePersistsTheWorkerFailureCodeAfterAsyncClaim() {
+        UUID runId = UUID.randomUUID(), snapshotWorkspaceId = UUID.randomUUID();
+        TestRunEntity run = new TestRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setTaskId(UUID.randomUUID()); run.setExecutionWorkspaceId(snapshotWorkspaceId);
+        run.setExecutionSnapshot(List.of());
+        when(testRuns.selectById(runId)).thenReturn(run);
+        when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        TaskEntity task = new TaskEntity(); task.setId(run.getTaskId()); task.setProjectId(run.getProjectId());
+        task.setWorkspaceId(UUID.randomUUID());
+        when(tasks.selectById(run.getTaskId())).thenReturn(task);
+        doThrow(new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "worker down"))
+                .when(worker).createTestSnapshot(any(), any(), any(), any(), any());
+        when(testRuns.complete(eq(runId), anyString(), eq("FAILED"), any())).thenReturn(1);
+
+        service.executeTestRun(runId);
+
+        verify(testRuns).complete(eq(runId), anyString(), eq("FAILED"),
+                argThat(summary -> "SANDBOX_WORKER_UNAVAILABLE".equals(summary.get("failureCode"))));
+        verify(worker, never()).executeTests(any());
     }
 
     @Test
@@ -88,7 +167,7 @@ class TestRunExecutionServiceTest {
         preview.setMergeable(true); preview.setResolvedHeadCommit("head"); preview.setResolvedTargetCommit("target");
         when(worker.mergePreview(any())).thenReturn(preview);
         WorkerTestExecutionResponse tests = new WorkerTestExecutionResponse();
-        tests.setStatus("PASSED"); tests.setResults(List.of());
+        tests.setStatus("PASSED"); tests.setResolvedHeadCommit("target"); tests.setResults(List.of());
         when(worker.executeTests(any())).thenReturn(tests);
         when(dryRuns.complete(eq(runId), anyString(), eq("PASSED"), any(), eq("head"))).thenReturn(1);
 
@@ -98,5 +177,51 @@ class TestRunExecutionServiceTest {
                 && "target".equals(request.getTargetBranch())));
         verify(worker).executeTests(argThat(request -> "target".equals(request.getRef())
                 && "head".equals(request.getMergeSourceRef())));
+    }
+
+    @Test
+    void dryRunRejectsWorkerPreviewForAnotherFrozenGitContext() {
+        UUID runId = UUID.randomUUID();
+        DryRunEntity run = new DryRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setHeadCommit("expected-head"); run.setResolvedTargetCommit("expected-target");
+        run.setTestsetSnapshot(List.of());
+        when(dryRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(dryRuns.selectById(runId)).thenReturn(run);
+        WorkerMergePreviewResponse preview = new WorkerMergePreviewResponse();
+        preview.setMergeable(true); preview.setResolvedHeadCommit("expected-head");
+        preview.setResolvedTargetCommit("different-target");
+        when(worker.mergePreview(any())).thenReturn(preview);
+        when(dryRuns.complete(eq(runId), anyString(), eq("FAILED"), any(), isNull())).thenReturn(1);
+
+        service.executeDryRun(runId);
+
+        verify(dryRuns).complete(eq(runId), anyString(), eq("FAILED"),
+                argThat(report -> "DRY_RUN_CONTEXT_MISMATCH".equals(report.get("failureCode"))), isNull());
+        verify(worker, never()).executeTests(any());
+    }
+
+    @Test
+    void dryRunDoesNotAcceptPassedTestsReportedForAnotherTargetCommit() {
+        UUID runId = UUID.randomUUID(), testsetId = UUID.randomUUID();
+        DryRunEntity run = new DryRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setHeadCommit("head"); run.setResolvedTargetCommit("target");
+        run.setTestsetSnapshot(List.of(Map.of("testsetId", testsetId.toString(), "command", "mvn test",
+                "timeoutSeconds", 60, "passRuleType", "EXIT_CODE", "expectedExitCode", 0)));
+        when(dryRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(dryRuns.selectById(runId)).thenReturn(run);
+        WorkerMergePreviewResponse preview = new WorkerMergePreviewResponse();
+        preview.setMergeable(true); preview.setResolvedHeadCommit("head"); preview.setResolvedTargetCommit("target");
+        when(worker.mergePreview(any())).thenReturn(preview);
+        WorkerTestExecutionResponse tests = new WorkerTestExecutionResponse();
+        tests.setStatus("PASSED"); tests.setResolvedHeadCommit("wrong-target"); tests.setResults(List.of());
+        when(worker.executeTests(any())).thenReturn(tests);
+        when(dryRuns.complete(eq(runId), anyString(), eq("FAILED"), any(), isNull())).thenReturn(1);
+
+        service.executeDryRun(runId);
+
+        verify(dryRuns).complete(eq(runId), anyString(), eq("FAILED"),
+                argThat(report -> "DRY_RUN_TEST_CONTEXT_MISMATCH".equals(report.get("failureCode"))), isNull());
     }
 }

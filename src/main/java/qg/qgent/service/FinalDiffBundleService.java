@@ -79,7 +79,7 @@ public class FinalDiffBundleService {
      * 持久化状态——批次创建即 reviewStatus=ACCEPTED + confirmationSource=SYSTEM（表示按 MR_FIRST
      * 规则自动获准进入交付，不是用户确认），并直接分配交付操作 ID、claimToken 与租约，
      * Task 同事务置 DELIVERING 并发布 delivery.started 事件；事务提交后由交付模块（监听
-     * DeliveryStartedDomainEvent）或兜底扫描消费该租约执行逐仓库交付。
+     * DeliveryStartedDomainEvent）或兜底扫描消费该租约执行逐仓库 commit/push 交付。
      * Worker 快照调用发生在短事务之前，不持有数据库锁跨网络 I/O。
      */
     public UUID createSystemAcceptedBatch(UUID projectId, UUID taskId, UUID finalCodingRunId) {

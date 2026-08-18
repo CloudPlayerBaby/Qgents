@@ -46,6 +46,9 @@ abstract class AbstractWorkerToolPort {
     protected WorkerToolExecution executeTool(UUID workspaceId, UUID repositoryId, String tool,
                                               Map<String, Object> arguments, Duration timeout) {
         SandboxSession session = session(workspaceId);
+        // 先续持久 Workspace 写租约，再续 Sandbox；二者都成功后才允许提交可能改动文件的工具。
+        // 即便调用方声称执行只读命令，也保守地走同一护栏，因为 process.exec 可写入工作树。
+        sessions.renewWriteLease(workspaceId);
         UUID sandboxId = session.sandboxId();
         client.renewSandbox(sandboxId);
 
