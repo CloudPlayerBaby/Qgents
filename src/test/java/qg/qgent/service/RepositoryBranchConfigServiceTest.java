@@ -60,6 +60,7 @@ class RepositoryBranchConfigServiceTest {
     @Mock private ProjectMemberMapper projectMemberMapper;
     @Mock private TeamMemberMapper teamMemberMapper;
     @Mock private TestsetMapper testsetMapper;
+    @Mock private GitStoreSyncService gitStores;
 
     private RepositoryBranchConfigService service;
 
@@ -77,7 +78,8 @@ class RepositoryBranchConfigServiceTest {
     @BeforeEach
     void setUp() {
         service = new RepositoryBranchConfigService(branchConfigMapper, branchConfigTestsetMapper,
-                projectRepositoryMapper, projectMapper, projectMemberMapper, teamMemberMapper, testsetMapper);
+                projectRepositoryMapper, projectMapper, projectMemberMapper, teamMemberMapper, testsetMapper, gitStores);
+        when(gitStores.normalizeTargetBranch(anyString())).thenAnswer(invocation -> invocation.getArgument(0, String.class).trim());
     }
 
     @Test

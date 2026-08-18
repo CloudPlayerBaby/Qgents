@@ -18,10 +18,12 @@ import qg.qgent.orchestration.llm.LlmMessage;
 import qg.qgent.orchestration.llm.LlmObservation;
 import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.CodingResult;
+import qg.qgent.orchestration.tool.Sha256;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.service.ContextService;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -105,6 +107,17 @@ public class CodingAgent implements Agent {
             log.info("coding agent done phase={} workspaceId={} outcome={} observations={}",
                     input.getPhase(), input.getWorkspaceId(), outcome.getOutcome(), observations.size());
             return outcome;
+        } catch (CodingParseException e) {
+            log.error("CODING_AGENT_FAILED phase={} workspaceId={} category={} code={} message={}",
+                    input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName(), e.getCode(),
+                    e.getMessage());
+            AgentRunOutcome failure = new AgentRunOutcome();
+            failure.setPhase(input.getPhase());
+            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setFailureCode(e.getCode().name());
+            failure.setMessage("coding agent failed: " + e.getMessage());
+            failure.setObservations(observations);
+            return failure;
         } catch (RuntimeException e) {
             log.error("CODING_AGENT_FAILED phase={} workspaceId={} category={}",
                     input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());
@@ -157,13 +170,54 @@ public class CodingAgent implements Agent {
                 }
                 log.info("coding agent round {} finalResult phase={} workspaceId={}",
                         round, input.getPhase(), input.getWorkspaceId());
-                return parser.parse(turn.text());
+                try {
+                    return parser.parse(turn.text());
+                } catch (CodingParseException malformed) {
+                    log.warn("coding agent final output not valid JSON, repairing phase={} workspaceId={} round={} code={}",
+                            input.getPhase(), input.getWorkspaceId(), round, malformed.getCode());
+                    String repaired = repairJson(system, turn.text(), observations, round, input);
+                    if (repaired != null) {
+                        return parser.parse(repaired);
+                    }
+                    throw malformed;
+                }
             }
             throw new CodingParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
                     "coding tool turn returned no text, history or infra failure");
         }
         throw new CodingParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+    }
+
+    /**
+     * 原生 Tool Calling 不能同时启用 response_format，因此最终文本仍可能出现未转义引号或围栏。
+     * 解析失败时用一次无工具、强制 JSON_OBJECT 的补救调用重述原结果；不自行修补 JSON，避免
+     * 改写模型语义。补救调用失败则保留原协议错误，交由状态机按基础设施失败重试。
+     */
+    private String repairJson(String system, String raw, List<LlmObservation> observations, int round,
+                              AgentInput input) {
+        String original = raw == null ? "" : raw;
+        if (original.length() > 8_000) {
+            original = original.substring(0, 8_000);
+        }
+        String repairUser = "你的上一轮最终输出不是合法 JSON。请仅输出一个原始 JSON 对象（不要输出任何解释、"
+                + "代码围栏或多余内容），把上一轮结果整理为："
+                + "{\"finalResult\":{\"success\":true|false,\"summary\":\"结果摘要\","
+                + "\"modifiedFiles\":[\"相对路径\"],\"changes\":[\"变更说明\"],\"errors\":[\"错误说明\"]}}。\n\n"
+                + "上一轮输出：\n" + original;
+        try {
+            String repaired = llm.complete(system, List.of(LlmMessage.user(repairUser)));
+            String repairedSha = repaired == null ? null
+                    : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
+            observations.add(new LlmObservation(input.getPhase().name(), round + 1,
+                    system.length() + repairUser.length(), repaired == null ? 0 : repaired.length(),
+                    "stop", null, null, repairedSha));
+            return repaired;
+        } catch (RuntimeException e) {
+            log.warn("coding agent JSON repair call failed phase={} workspaceId={} category={}",
+                    input.getPhase(), input.getWorkspaceId(), e.getClass().getSimpleName());
+            return null;
+        }
     }
 
     /**

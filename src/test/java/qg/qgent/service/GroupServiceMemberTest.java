@@ -9,6 +9,7 @@ import qg.qgent.dto.GroupMemberResponse;
 import qg.qgent.dto.GroupReadResponse;
 import qg.qgent.dto.GroupResponse;
 import qg.qgent.entity.AgentEntity;
+import qg.qgent.entity.ProjectEntity;
 import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.mapper.AgentMapper;
@@ -106,6 +107,23 @@ class GroupServiceMemberTest {
     }
 
     @Test
+    void createSkipsCreatorProjectMembershipValidation() {
+        // 创建者由服务端自动入群；本测试仅验证创建者不参与显式项目成员校验。
+        when(projectMemberMapper.selectByProjectAndUser(projectId, memberA)).thenReturn(projectMember());
+        when(groupMapper.selectById(any())).thenReturn(requirementGroup());
+
+        GroupCreateRequest body = new GroupCreateRequest();
+        body.setTitle("登录功能");
+        body.setMemberIds(List.of(creator, memberA));
+
+        service.create(creator, projectId, body);
+
+        verify(projectMemberMapper, never()).selectByProjectAndUser(projectId, creator);
+        verify(groupMemberMapper).insertMember(any(), eq(creator));
+        verify(groupMemberMapper).insertMember(any(), eq(memberA));
+    }
+
+    @Test
     void createRejectsNonProjectMemberInMemberIds() {
         when(projectMemberMapper.selectByProjectAndUser(projectId, memberA)).thenReturn(null);
 
@@ -119,7 +137,34 @@ class GroupServiceMemberTest {
     }
 
     @Test
+    void leaveRejectsCanonicalTeamOwnerBecauseAccessWouldRemain() {
+        UUID teamId = UUID.randomUUID();
+        ProjectEntity project = new ProjectEntity();
+        project.setId(projectId);
+        project.setTeamId(teamId);
+        when(projectMapper.selectById(projectId)).thenReturn(project);
+        when(access.isCanonicalTeamOwner(teamId, creator)).thenReturn(true);
+
+        ApiException error = assertThrows(ApiException.class, () -> service.leave(creator, projectId, groupId));
+
+        assertEquals(HttpStatus.CONFLICT, error.status());
+        assertEquals("TEAM_OWNER_CANNOT_LEAVE_PROJECT", error.code());
+        verify(projectMemberMapper, never()).deleteByProjectAndUser(projectId, creator);
+    }
+
+    @Test
+    void leaveClearsRequirementGroupMembershipsBeforeRemovingProjectMembership() {
+        when(projectMemberMapper.selectByProjectAndUser(projectId, creator)).thenReturn(projectMember());
+
+        service.leave(creator, projectId, groupId);
+
+        verify(groupMemberMapper).deleteByProjectAndUser(projectId, creator);
+        verify(projectMemberMapper).deleteByProjectAndUser(projectId, creator);
+    }
+
+    @Test
     void membersForRequirementGroupReturnsExplicitMembersPlusAgents() {
+        when(groupMemberMapper.countMember(groupId, memberA)).thenReturn(1);
         when(groupMemberMapper.selectMembersWithUsers(groupId)).thenReturn(List.of(
                 memberRow(memberA, "张三", "zhang@example.com")));
         when(groupAgentMapper.selectAgentIds(groupId)).thenReturn(List.of(UUID.randomUUID()));

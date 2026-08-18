@@ -136,7 +136,8 @@ public class TestRunService {
         projectAccess.requireProjectMember(projectId, userId);
         ProjectRepositoryEntity repository = requireRepository(projectId, request.getRepositoryId());
         String sourceRef = request.getSourceRef().trim();
-        String targetBranch = request.getTargetBranch().trim();
+        // 门禁查询、Worker 同步和预检匹配必须使用同一个规范化后的分支名。
+        String targetBranch = gitStores.normalizeTargetBranch(request.getTargetBranch());
         WorkspaceRepositoryEntity taskWorktree = null;
         if (request.getTaskId() != null) {
             taskWorktree = requireTaskWorktree(projectId, request.getTaskId(), request.getRepositoryId());

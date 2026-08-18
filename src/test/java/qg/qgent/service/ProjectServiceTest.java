@@ -17,6 +17,7 @@ import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.TeamEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.github.GitHubRepositoryDetails;
+import qg.qgent.mapper.GroupMemberMapper;
 import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
@@ -40,6 +41,7 @@ import static org.mockito.Mockito.when;
 class ProjectServiceTest {
     private final ProjectMapper projects = mock(ProjectMapper.class);
     private final ProjectMemberMapper members = mock(ProjectMemberMapper.class);
+    private final GroupMemberMapper groupMembers = mock(GroupMemberMapper.class);
     private final TeamMapper teams = mock(TeamMapper.class);
     private final TeamMemberMapper teamMembers = mock(TeamMemberMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
@@ -49,7 +51,7 @@ class ProjectServiceTest {
     private final GitHubRepositoryService githubRepositoryService = mock(GitHubRepositoryService.class);
     private final ProjectRepositoryMapper projectRepositories = mock(ProjectRepositoryMapper.class);
     private final ProjectService service = new ProjectService(projects, members, teams, teamMembers, access,
-            eventPublisher, notificationService, eventService, githubRepositoryService, projectRepositories);
+            eventPublisher, notificationService, eventService, githubRepositoryService, projectRepositories, groupMembers);
 
     @Test
     void createAddsCreatorAdminAndUniqueInitialMembers() {
@@ -173,6 +175,25 @@ class ProjectServiceTest {
                 () -> service.removeMember(admin, projectId, admin));
 
         assertEquals("LAST_PROJECT_ADMIN_REQUIRED", error.code());
+    }
+
+    @Test
+    void removingProjectMemberClearsRequirementGroupMemberships() {
+        UUID projectId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        ProjectEntity project = project(projectId, teamId, "ACTIVE");
+        when(projects.selectById(projectId)).thenReturn(project);
+        when(teams.selectByIdForUpdate(teamId)).thenReturn(team(teamId, UUID.randomUUID()));
+        when(projects.selectByIdForUpdate(projectId)).thenReturn(project);
+        when(members.selectByProjectAndUser(projectId, userId))
+                .thenReturn(projectMember(projectId, userId, "PROJECT_MEMBER"));
+
+        service.removeMember(actor, projectId, userId);
+
+        verify(groupMembers).deleteByProjectAndUser(projectId, userId);
+        verify(members).deleteByProjectAndUser(projectId, userId);
     }
 
     @Test

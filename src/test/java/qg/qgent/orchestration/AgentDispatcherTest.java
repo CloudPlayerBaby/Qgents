@@ -11,10 +11,12 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -43,13 +45,67 @@ class AgentDispatcherTest {
         when(projects.selectById(task.getProjectId())).thenReturn(project);
         when(agents.selectList(any())).thenReturn(List.of(developer));
         when(decider.decide(eq("DEVELOPER"), any(), eq(task.getCreatedBy()),
-                eq(List.of("java")))).thenReturn(Optional.of(chosen));
+                eq(List.of("java")), isNull())).thenReturn(Optional.of(chosen));
 
         Optional<AgentEntity> result = dispatcher.dispatch(task, "DEVELOPER", List.of("java"));
 
         assertEquals(chosen.getId(), result.get().getId());
         verify(decider).decide(eq("DEVELOPER"), eq(List.of(developer)), eq(task.getCreatedBy()),
-                eq(List.of("java")));
+                eq(List.of("java")), isNull());
+    }
+
+    @Test
+    void dispatchPassesPlanSuggestedAgentIdAsPrior() {
+        TaskEntity task = task();
+        ProjectEntity project = new ProjectEntity();
+        project.setId(task.getProjectId());
+        project.setTeamId(UUID.randomUUID());
+        AgentEntity developer = agent("DEVELOPER");
+        UUID suggested = developer.getId();
+        when(projects.selectById(task.getProjectId())).thenReturn(project);
+        when(agents.selectList(any())).thenReturn(List.of(developer));
+        when(decider.decide(eq("DEVELOPER"), any(), eq(task.getCreatedBy()),
+                eq(List.of("java")), eq(suggested))).thenReturn(Optional.of(developer));
+
+        Optional<AgentEntity> result = dispatcher.dispatch(task, "DEVELOPER", List.of("java"), suggested);
+
+        assertEquals(suggested, result.get().getId());
+        verify(decider).decide(eq("DEVELOPER"), eq(List.of(developer)), eq(task.getCreatedBy()),
+                eq(List.of("java")), eq(suggested));
+    }
+
+    @Test
+    void listTeamCandidatesReturnsAllVisibleAgentsForTeam() {
+        TaskEntity task = task();
+        ProjectEntity project = new ProjectEntity();
+        project.setId(task.getProjectId());
+        project.setTeamId(UUID.randomUUID());
+        AgentEntity developer = agent("DEVELOPER");
+        AgentEntity reviewer = agent("REVIEWER");
+        when(projects.selectById(task.getProjectId())).thenReturn(project);
+        when(agents.selectList(any())).thenReturn(List.of(developer, reviewer));
+
+        List<AgentEntity> pool = dispatcher.listTeamCandidates(task.getProjectId(), task.getCreatedBy());
+
+        assertThat(pool).containsExactlyInAnyOrder(developer, reviewer);
+        verify(decider, never()).decide(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void listTeamCandidatesReturnsEmptyWhenProjectHasNoTeam() {
+        TaskEntity task = task();
+        ProjectEntity project = new ProjectEntity();
+        project.setId(task.getProjectId());
+        when(projects.selectById(task.getProjectId())).thenReturn(project);
+
+        assertThat(dispatcher.listTeamCandidates(task.getProjectId(), task.getCreatedBy())).isEmpty();
+        verify(agents, never()).selectList(any());
+    }
+
+    @Test
+    void listTeamCandidatesReturnsEmptyForMissingFields() {
+        assertThat(dispatcher.listTeamCandidates(null, UUID.randomUUID())).isEmpty();
+        assertThat(dispatcher.listTeamCandidates(UUID.randomUUID(), null)).isEmpty();
     }
 
     @Test
@@ -61,7 +117,7 @@ class AgentDispatcherTest {
 
         assertTrue(dispatcher.dispatch(task, "DEVELOPER", List.of()).isEmpty());
         verify(agents, never()).selectList(any());
-        verify(decider, never()).decide(any(), any(), any(), any());
+        verify(decider, never()).decide(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -72,7 +128,7 @@ class AgentDispatcherTest {
         project.setTeamId(UUID.randomUUID());
         when(projects.selectById(task.getProjectId())).thenReturn(project);
         when(agents.selectList(any())).thenReturn(List.of());
-        when(decider.decide(any(), any(), any(), any())).thenReturn(Optional.empty());
+        when(decider.decide(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
 
         assertTrue(dispatcher.dispatch(task, "DEVELOPER", List.of()).isEmpty());
     }
@@ -85,7 +141,7 @@ class AgentDispatcherTest {
         assertTrue(dispatcher.dispatch(task, "DEVELOPER", List.of()).isEmpty());
         verify(projects, never()).selectById(any());
         verify(agents, never()).selectList(any());
-        verify(decider, never()).decide(any(), any(), any(), any());
+        verify(decider, never()).decide(any(), any(), any(), any(), any());
     }
 
     private TaskEntity task() {

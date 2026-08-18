@@ -58,14 +58,15 @@ public class TeamService {
     private final TaskMapper taskMapper;
     private final MergeRequestMapper mergeRequestMapper;
     private final DefaultAgentProvisioner defaultAgents;
+    private final GroupMemberMapper groupMemberMapper;
 
     public TeamService(TeamMapper teamMapper, TeamMemberMapper memberMapper,
                        TeamInvitationMapper invitationMapper, ProjectMemberMapper projectMemberMapper, ProjectMapper projectMapper,
                        UserMapper userMapper, TokenService tokens, TeamInvitationMailer invitationMailer,
                        TeamDisbandService teamDisbandService, NotificationService notificationService,
-                       EventService eventService,
-                       EventMapper eventMapper, TaskMapper taskMapper, MergeRequestMapper mergeRequestMapper,
-                       DefaultAgentProvisioner defaultAgents) {
+                        EventService eventService,
+                        EventMapper eventMapper, TaskMapper taskMapper, MergeRequestMapper mergeRequestMapper,
+                        DefaultAgentProvisioner defaultAgents, GroupMemberMapper groupMemberMapper) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
         this.invitationMapper = invitationMapper;
@@ -81,6 +82,7 @@ public class TeamService {
         this.taskMapper = taskMapper;
         this.mergeRequestMapper = mergeRequestMapper;
         this.defaultAgents = defaultAgents;
+        this.groupMemberMapper = groupMemberMapper;
     }
 
     /**
@@ -499,6 +501,7 @@ public class TeamService {
                     && projectMemberMapper.countAdmins(project.getId()) <= 1) {
                 throw conflict("LAST_PROJECT_ADMIN_REQUIRED", "该成员是项目最后一名 Project Admin");
             }
+            groupMemberMapper.deleteByProjectAndUser(project.getId(), userId);
         }
         // 移除团队成员在项目中
         projectMemberMapper.deleteByTeamAndUser(teamId, userId);

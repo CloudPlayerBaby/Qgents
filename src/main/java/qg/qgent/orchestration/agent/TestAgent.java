@@ -11,9 +11,14 @@ import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.orchestration.tool.ExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.time.Duration;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 真实 Test Agent：依据工作区构建工具解析安全测试命令，通过 {@link ExecutionPort} 在
@@ -23,7 +28,7 @@ import java.util.List;
  * <ul>
  *   <li>success 以 ExecutionPort 返回的真实 exit code 为准（exitCode==0 才通过），LLM 不得推翻；</li>
  *   <li>LLM 不参与命令选择，命令由 {@link TestCommandResolver} 白名单模板解析；</li>
- *   <li>检测不到受支持构建工具时不执行任何命令，判 Task FAILED（不可自动修复）；</li>
+ *   <li>检测不到受支持构建工具时，纯文件任务走只读文件断言；无法确定断言目标时才判 Task FAILED；</li>
  *   <li>ExecutionPort 返回 ok=false（Sandbox 未就绪等）→ FAILED_INFRASTRUCTURE 同相位重试；</li>
  *   <li>LLM 分析失败仅退回基于真实执行的结果，不影响 PASS/FAIL 真实性。</li>
  * </ul>
@@ -33,6 +38,8 @@ import java.util.List;
 public class TestAgent implements Agent {
 
     private static final Duration TEST_TIMEOUT = Duration.ofMinutes(10);
+    private static final String EMPTY_FILE_SHA256 =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     private final LlmClient llm;
     private final WorkspaceCodeAccess codeAccess;
@@ -53,7 +60,7 @@ public class TestAgent implements Agent {
             List<String> files = codeAccess.listFiles(input.getWorkspaceId());
             List<String> command = commandResolver.resolve(files);
             if (command == null) {
-                return noTestCommand(input);
+                return verifyFileTask(input, files);
             }
             ExecutionResult exec = executionPort.execute(input.getWorkspaceId(), command, TEST_TIMEOUT);
             if (!exec.ok()) {
@@ -62,6 +69,7 @@ public class TestAgent implements Agent {
             TestResult test = analyze(input, command, exec);
             boolean passed = exec.exitCode() == 0;
             test.setSuccess(passed);
+            test.setVerificationMode("COMMAND");
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
             outcome.setTestResult(test);
@@ -114,6 +122,7 @@ public class TestAgent implements Agent {
         TestResult test = new TestResult();
         test.setSuccess(false);
         test.setExitCode(-1);
+        test.setVerificationMode("NONE");
         test.setSummary("未检测到受支持的项目/测试命令，未执行测试");
         TestResult.Failure failure = new TestResult.Failure();
         failure.setName("no testable build tool");
@@ -127,6 +136,138 @@ public class TestAgent implements Agent {
         outcome.setTestResult(test);
         outcome.setMessage(test.getSummary());
         return outcome;
+    }
+
+    /**
+     * 没有 Maven/Gradle/npm 等构建入口时，对 Coding 明确涉及的文件执行确定性的基础断言。
+     * 这条路径不调用 LLM，也不执行任意命令，适用于“清空文件”“创建/修改配置文件”等纯文件任务。
+     */
+    private AgentRunOutcome verifyFileTask(AgentInput input, List<String> files) {
+        List<String> targets = fileTargets(input);
+        if (targets.isEmpty()) {
+            if (isManualVerification(input)) {
+                return manualVerification(input);
+            }
+            return noTestCommand(input);
+        }
+
+        Set<String> available = new LinkedHashSet<>(files == null ? List.of() : files);
+        boolean requireEmpty = requiresEmptyFile(input);
+        List<TestResult.Failure> failures = new ArrayList<>();
+        List<String> checks = new ArrayList<>();
+        for (String target : targets) {
+            if (!available.contains(target)) {
+                failures.add(failure(target, "目标文件不存在", "ERROR"));
+                continue;
+            }
+            WorkspaceFileReadResult read = codeAccess.readFile(input.getWorkspaceId(), target);
+            if (read == null || !read.isOk()) {
+                failures.add(failure(target, read == null || read.getError() == null
+                        ? "目标文件不可读取" : read.getError(), "ERROR"));
+                continue;
+            }
+            String content = read.getContent() == null ? "" : read.getContent();
+            if (requireEmpty && !isEmptyFile(read, content)) {
+                failures.add(failure(target, "任务要求文件为空，但当前仍有内容", "ERROR"));
+                continue;
+            }
+            checks.add(requireEmpty ? target + "(0 bytes)" : target + "(exists/readable)");
+        }
+
+        TestResult test = new TestResult();
+        test.setVerificationMode("FILE_ASSERTION");
+        test.setCommand("file assertions");
+        test.setExitCode(failures.isEmpty() ? 0 : 1);
+        test.setFailures(failures);
+        test.setNeedsCodingFix(!failures.isEmpty());
+        test.setSuccess(failures.isEmpty());
+        test.setSummary(failures.isEmpty()
+                ? "未检测到项目测试命令，已完成文件断言：" + String.join(", ", checks)
+                : "文件断言未通过：" + failures.get(0).getReason());
+
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setPhase(input.getPhase());
+        outcome.setTestResult(test);
+        outcome.setOutcome(failures.isEmpty() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED_QUALITY);
+        outcome.setMessage(test.getSummary());
+        return outcome;
+    }
+
+    private boolean isManualVerification(AgentInput input) {
+        return input.getPlanResult() != null
+                && "MANUAL".equalsIgnoreCase(input.getPlanResult().getVerificationMode());
+    }
+
+    /**
+     * Pure review tasks have no build command by design. Their evidence is the
+     * structured Developer report, not a fabricated shell test.
+     */
+    private AgentRunOutcome manualVerification(AgentInput input) {
+        TestResult test = new TestResult();
+        boolean hasReport = input.getCodingResult() != null
+                && input.getCodingResult().getSummary() != null
+                && !input.getCodingResult().getSummary().isBlank();
+        test.setVerificationMode("MANUAL");
+        test.setSuccess(hasReport);
+        test.setExitCode(hasReport ? 0 : -1);
+        test.setSummary(hasReport
+                ? "纯审查任务已按测试计划完成人工验收"
+                : "纯审查任务缺少 Developer 检查报告，无法完成人工验收");
+        if (!hasReport) {
+            test.setFailures(List.of(failure("missing inspection report",
+                    "Developer 未产出可供验收的检查报告", "ERROR")));
+        }
+
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setPhase(input.getPhase());
+        outcome.setTestResult(test);
+        outcome.setOutcome(hasReport ? RunOutcome.SUCCEEDED : RunOutcome.FAILED_QUALITY);
+        outcome.setMessage(test.getSummary());
+        return outcome;
+    }
+
+    /** Coding 结果是纯文件验证的可信目标来源；不从聊天历史猜测文件路径。 */
+    private List<String> fileTargets(AgentInput input) {
+        if (input.getCodingResult() == null || input.getCodingResult().getModifiedFiles() == null) {
+            return List.of();
+        }
+        return input.getCodingResult().getModifiedFiles().stream()
+                .filter(path -> path != null && !path.isBlank())
+                .map(path -> path.replace('\\', '/').trim())
+                .distinct()
+                .toList();
+    }
+
+    /** 只对明确表达“清空/置空/零字节”的需求执行内容为空断言。 */
+    private boolean requiresEmptyFile(AgentInput input) {
+        String text = String.join(" ",
+                safe(input.getRequirement()), safe(input.getInstruction()),
+                input.getPlanResult() == null ? "" : safe(input.getPlanResult().getTestPlan()));
+        String lower = text.toLowerCase(java.util.Locale.ROOT);
+        return text.contains("清空") || text.contains("置空") || text.contains("清除内容")
+                || text.contains("内容为空") || lower.contains("empty file")
+                || lower.contains("zero-byte") || lower.contains("truncate");
+    }
+
+    private TestResult.Failure failure(String name, String reason, String severity) {
+        TestResult.Failure failure = new TestResult.Failure();
+        failure.setName(name);
+        failure.setReason(reason);
+        failure.setSeverity(severity);
+        return failure;
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    /** 优先使用 Worker 返回的原始字节哈希，避免按行读取丢失末尾换行导致误判 0 字节。 */
+    private boolean isEmptyFile(WorkspaceFileReadResult read, String content) {
+        String sha = read.getSha256();
+        if (sha != null && !sha.isBlank()) {
+            return EMPTY_FILE_SHA256.equalsIgnoreCase(sha.replaceFirst("^sha256:", ""));
+        }
+        return content.getBytes(StandardCharsets.UTF_8).length == 0;
     }
 
     private AgentRunOutcome infraFailure(AgentInput input, String message) {

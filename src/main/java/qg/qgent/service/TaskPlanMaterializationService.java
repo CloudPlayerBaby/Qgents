@@ -140,7 +140,8 @@ public class TaskPlanMaterializationService {
         int sequence = planner.getSequenceNo() + 1;
         for (PlanResult.ImplementationStep item : plan.getImplementationSteps()) {
             TaskStepEntity step = step(task, sequence++, item.getTitle(), developerInstruction(plan, item), "DEVELOPER",
-                    item.getRequiredCapabilities(), "完成 " + item.getTitle() + " 并通过相关自检");
+                    item.getRequiredCapabilities(), "完成 " + item.getTitle() + " 并通过相关自检",
+                    item.getSuggestedAgentId());
             steps.insert(step);
             dependencies.insertLink(step.getId(), previous);
             insertScopes(step.getId(), repositoriesForStep(item, worktreeList), "WRITE");
@@ -148,13 +149,13 @@ public class TaskPlanMaterializationService {
             previous = step.getId();
         }
         TaskStepEntity tester = step(task, sequence++, "Verify", plan.getTestPlan(), "TESTER", List.of(),
-                "执行计划测试并记录真实结果");
+                "执行计划测试并记录真实结果", null);
         steps.insert(tester);
         dependencies.insertLink(tester.getId(), previous);
         insertScopes(tester.getId(), repositories, "READ");
         created.add(tester);
         TaskStepEntity reviewer = step(task, sequence, "Review", "审查本次改动是否符合需求、质量与安全要求", "REVIEWER",
-                List.of(), "完成独立代码审查");
+                List.of(), "完成独立代码审查", null);
         steps.insert(reviewer);
         dependencies.insertLink(reviewer.getId(), tester.getId());
         insertScopes(reviewer.getId(), repositories, "READ");
@@ -195,7 +196,7 @@ public class TaskPlanMaterializationService {
     }
 
     private TaskStepEntity step(TaskEntity task, int sequence, String title, String instruction, String role,
-                                List<String> requiredCapabilities, String acceptance) {
+                                List<String> requiredCapabilities, String acceptance, UUID suggestedAgentId) {
         TaskStepEntity step = new TaskStepEntity();
         step.setId(UuidV7.next());
         step.setTaskId(task.getId());
@@ -204,7 +205,7 @@ public class TaskPlanMaterializationService {
         step.setInstruction(instruction);
         step.setRole(role);
         step.setRequiredCapabilities(requiredCapabilities == null ? List.of() : List.copyOf(requiredCapabilities));
-        step.setAssignedAgentId(resolveAgent(task, role, step.getRequiredCapabilities()));
+        step.setAssignedAgentId(resolveAgent(task, role, step.getRequiredCapabilities(), suggestedAgentId));
         step.setAcceptanceCriteria(acceptance);
         step.setStatus("PENDING");
         step.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
@@ -212,8 +213,13 @@ public class TaskPlanMaterializationService {
         return step;
     }
 
-    private UUID resolveAgent(TaskEntity task, String role, List<String> requiredCapabilities) {
-        return agentDispatcher.dispatch(task, role, requiredCapabilities)
+    /**
+     * 选人：Plan 建议的 {@code suggestedAgentId} 作为先验交给调度 Agent，仍经候选池校验与
+     * 确定性兜底（池外/非法建议不采信，退回自动选择），绝不绕过安全网。
+     */
+    private UUID resolveAgent(TaskEntity task, String role, List<String> requiredCapabilities,
+                              UUID suggestedAgentId) {
+        return agentDispatcher.dispatch(task, role, requiredCapabilities, suggestedAgentId)
                 .map(agent -> agent.getId())
                 .orElse(null);
     }
@@ -238,9 +244,11 @@ public class TaskPlanMaterializationService {
             step.put("files", item.getFiles());
             step.put("description", item.getDescription());
             step.put("requiredCapabilities", item.getRequiredCapabilities());
+            step.put("suggestedAgentId", item.getSuggestedAgentId() == null ? null : item.getSuggestedAgentId().toString());
             return step;
         }).toList());
         result.put("testPlan", plan.getTestPlan());
+        result.put("verificationMode", plan.getVerificationMode());
         result.put("risks", plan.getRisks());
         result.put("deliveryMode", decision.mode());
         result.put("scaleReason", plan.getScaleReason());

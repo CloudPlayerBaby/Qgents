@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -160,6 +161,7 @@ class CodingAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
         assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_FINISH_LENGTH.name());
+        verify(llm, never()).complete(anyString(), anyList());
     }
 
     @Test
@@ -213,6 +215,37 @@ class CodingAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
         assertThat(outcome.getMessage()).contains(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+    }
+
+    @Test
+    void nativeMalformedJsonIsRepairedWithJsonModeCompletion() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"将\"和\"字居中\"}", "stop"));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"finalResult\":{\"success\":true,\"summary\":\"done\"}}");
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getSummary()).isEqualTo("done");
+        assertThat(outcome.getObservations()).hasSize(2);
+        verify(llm).complete(anyString(), anyList());
+    }
+
+    @Test
+    void nativeMalformedJsonRepairFailureKeepsStableFailureCode() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("not json", "stop"));
+        when(llm.complete(anyString(), anyList())).thenReturn("still not json");
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getObservations()).hasSize(2);
     }
 
     // ---------- legacy 手写 JSON 协议（灰度期回归） ----------

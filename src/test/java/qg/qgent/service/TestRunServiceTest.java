@@ -1,5 +1,6 @@
 package qg.qgent.service;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import qg.qgent.api.ApiException;
@@ -42,6 +43,12 @@ class TestRunServiceTest {
     private final GitStoreSyncService gitStores = mock(GitStoreSyncService.class);
     private final TestRunService service = new TestRunService(testRuns, dryRuns, repositories, testsets, branches,
             required, access, events, tasks, workspaces, executions, worker, gitStores);
+
+    @BeforeEach
+    void normalizeTargetBranchesInTests() {
+        when(gitStores.normalizeTargetBranch(anyString()))
+                .thenAnswer(invocation -> invocation.getArgument(0, String.class).trim());
+    }
 
     @Test
     void taskRunIsQueuedThenDispatchedWithValidatedWorkspace() {
@@ -123,6 +130,44 @@ class TestRunServiceTest {
                         && targetCommit.equals(run.getResolvedTargetCommit())
                         && "QUEUED".equals(run.getStatus())));
         verify(gitStores).refreshTargetBranch(eq(projectId), any(ProjectRepositoryEntity.class), eq("main"));
+    }
+
+    @Test
+    void dryRunNormalizesTargetBranchBeforeLoadingMandatoryTestsets() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        UUID testsetId = UUID.randomUUID();
+        repository(projectId, repositoryId);
+        TestsetEntity testset = new TestsetEntity();
+        testset.setId(testsetId);
+        testset.setProjectId(projectId);
+        testset.setProjectRepositoryId(repositoryId);
+        testset.setStatus("ENABLED");
+        testset.setDefinition(Map.of("command", "mvn test", "timeoutSeconds", 60,
+                "passRule", Map.of("type", "EXIT_CODE", "expected", 0)));
+        RepositoryBranchConfigEntity config = new RepositoryBranchConfigEntity();
+        config.setId(UUID.randomUUID());
+        RepositoryBranchConfigTestsetEntity relation = new RepositoryBranchConfigTestsetEntity();
+        relation.setTestsetId(testsetId);
+        when(branches.selectOne(any())).thenReturn(config);
+        when(required.selectByBranchConfigId(config.getId())).thenReturn(List.of(relation));
+        when(testsets.selectById(testsetId)).thenReturn(testset);
+        when(gitStores.normalizeTargetBranch(" main ")).thenReturn("main");
+        when(gitStores.refreshTargetBranch(eq(projectId), any(ProjectRepositoryEntity.class), eq("main")))
+                .thenReturn("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+        WorkerGitResolveResponse source = new WorkerGitResolveResponse();
+        source.setCommitSha("0123456789012345678901234567890123456789");
+        when(worker.resolveGitRef(any())).thenReturn(source);
+
+        DryRunCreateRequest request = new DryRunCreateRequest();
+        request.setRepositoryId(repositoryId);
+        request.setSourceRef("feat/login");
+        request.setTargetBranch(" main ");
+
+        service.createDryRun(projectId, actor, request);
+
+        verify(required).selectByBranchConfigId(config.getId());
+        verify(dryRuns).insert(argThat((DryRunEntity run) -> "main".equals(run.getTargetBranch())
+                && run.getTestsetSnapshot().size() == 1));
     }
 
     @Test
