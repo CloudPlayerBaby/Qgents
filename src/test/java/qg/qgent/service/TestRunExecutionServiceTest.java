@@ -31,6 +31,63 @@ class TestRunExecutionServiceTest {
             mock(EventService.class), tasks, projectRepositories, gitStores);
 
     @Test
+    void testRunSuccessPersistsStructuredResultsWithTestsetFacts() {
+        UUID runId = UUID.randomUUID(), testsetId = UUID.randomUUID();
+        TestRunEntity run = new TestRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setStatus("RUNNING"); run.setExecutionSourceRef("0123456789012345678901234567890123456789");
+        run.setExecutionSnapshot(List.of(Map.of("testsetId", testsetId.toString(), "command", "mvn test",
+                "timeoutSeconds", 60, "passRuleType", "EXIT_CODE", "expectedExitCode", 0)));
+        when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(testRuns.selectById(runId)).thenReturn(run);
+        WorkerTestExecutionItemResponse item = new WorkerTestExecutionItemResponse();
+        item.setTestsetId(testsetId);
+        item.setStatus("PASSED");
+        item.setExitCode(0);
+        item.setDurationMs(69);
+        item.setFailureCode(null);
+        WorkerTestExecutionResponse response = new WorkerTestExecutionResponse();
+        response.setStatus("PASSED");
+        response.setResolvedHeadCommit(run.getExecutionSourceRef());
+        response.setResults(List.of(item));
+        when(worker.executeTests(any())).thenReturn(response);
+        when(testRuns.complete(eq(runId), anyString(), eq("PASSED"), any())).thenReturn(1);
+
+        service.executeTestRun(runId);
+
+        verify(testRuns).complete(eq(runId), anyString(), eq("PASSED"),
+                argThat(summary -> "PASSED".equals(summary.get("status"))
+                        && run.getExecutionSourceRef().equals(summary.get("resolvedHeadCommit"))
+                        && summary.get("results") instanceof List<?> results
+                        && results.size() == 1
+                        && results.getFirst() instanceof Map<?, ?> row
+                        && testsetId.equals(row.get("testsetId"))
+                        && "PASSED".equals(row.get("status"))
+                        && Integer.valueOf(0).equals(row.get("exitCode"))
+                        && Long.valueOf(69L).equals(row.get("durationMs"))
+                        && row.get("failureCode") == null));
+    }
+
+    @Test
+    void testRunFailureKeepsAStableSanitizedFailureCode() {
+        UUID runId = UUID.randomUUID();
+        TestRunEntity run = new TestRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setExecutionSourceRef("0123456789012345678901234567890123456789"); run.setExecutionSnapshot(List.of());
+        when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(testRuns.selectById(runId)).thenReturn(run);
+        when(worker.executeTests(any())).thenThrow(
+                new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "worker down"));
+        when(testRuns.complete(eq(runId), anyString(), eq("FAILED"), any())).thenReturn(1);
+
+        service.executeTestRun(runId);
+
+        verify(testRuns).complete(eq(runId), anyString(), eq("FAILED"),
+                argThat(summary -> "SANDBOX_WORKER_UNAVAILABLE".equals(summary.get("failureCode"))
+                        && summary.get("message") != null));
+    }
+
+    @Test
     void onlyAtomicClaimWinnerCallsWorkerAndUsesPersistedSnapshot() {
         UUID runId = UUID.randomUUID(), testsetId = UUID.randomUUID();
         TestRunEntity run = new TestRunEntity();
@@ -232,5 +289,94 @@ class TestRunExecutionServiceTest {
 
         verify(dryRuns).complete(eq(runId), anyString(), eq("FAILED"),
                 argThat(report -> "DRY_RUN_TEST_CONTEXT_MISMATCH".equals(report.get("failureCode"))), isNull());
+    }
+
+    @Test
+    void dryRunWithoutMandatoryTestsetsReportsNotRequiredInsteadOfFakingPass() {
+        UUID runId = UUID.randomUUID();
+        DryRunEntity run = new DryRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setStatus("RUNNING"); run.setSourceRef("feat/login"); run.setHeadCommit("head");
+        run.setTargetBranch("main"); run.setResolvedTargetCommit("target");
+        run.setTestsetSnapshot(List.of());
+        when(dryRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(dryRuns.selectById(runId)).thenReturn(run);
+        WorkerMergePreviewResponse preview = new WorkerMergePreviewResponse();
+        preview.setMergeable(true); preview.setResolvedHeadCommit("head"); preview.setResolvedTargetCommit("target");
+        when(worker.mergePreview(any())).thenReturn(preview);
+        when(dryRuns.complete(eq(runId), anyString(), eq("PASSED"), any(), eq("head"))).thenReturn(1);
+
+        service.executeDryRun(runId);
+
+        verify(dryRuns).complete(eq(runId), anyString(), eq("PASSED"),
+                argThat(report -> "NOT_REQUIRED".equals(((Map<?, ?>) report.get("tests")).get("status"))
+                        && ((List<?>) ((Map<?, ?>) report.get("tests")).get("results")).isEmpty()), eq("head"));
+        verify(worker, never()).executeTests(any());
+    }
+
+    @Test
+    void dryRunMergeConflictSkipsTestsAndDoesNotFakeAPass() {
+        UUID runId = UUID.randomUUID(), testsetId = UUID.randomUUID();
+        DryRunEntity run = new DryRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setStatus("RUNNING"); run.setSourceRef("feat/login"); run.setHeadCommit("head");
+        run.setTargetBranch("main"); run.setResolvedTargetCommit("target");
+        run.setTestsetSnapshot(List.of(Map.of("testsetId", testsetId.toString(), "command", "mvn test",
+                "timeoutSeconds", 60, "passRuleType", "EXIT_CODE", "expectedExitCode", 0)));
+        when(dryRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(dryRuns.selectById(runId)).thenReturn(run);
+        WorkerMergePreviewResponse preview = new WorkerMergePreviewResponse();
+        preview.setMergeable(false); preview.setResolvedHeadCommit("head"); preview.setResolvedTargetCommit("target");
+        preview.setConflicts(List.of("a.ts: conflict"));
+        when(worker.mergePreview(any())).thenReturn(preview);
+        when(dryRuns.complete(eq(runId), anyString(), eq("FAILED"), any(), eq("head"))).thenReturn(1);
+
+        service.executeDryRun(runId);
+
+        verify(dryRuns).complete(eq(runId), anyString(), eq("FAILED"),
+                argThat(report -> Boolean.FALSE.equals(report.get("mergeable"))
+                        && "SKIPPED".equals(((Map<?, ?>) report.get("tests")).get("status"))
+                        && "MERGE_CONFLICT".equals(((Map<?, ?>) report.get("tests")).get("reason"))), eq("head"));
+        verify(worker, never()).executeTests(any());
+    }
+
+    @Test
+    void dryRunPersistsTestResultsInsideReportTests() {
+        UUID runId = UUID.randomUUID(), testsetId = UUID.randomUUID();
+        DryRunEntity run = new DryRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setStatus("RUNNING"); run.setSourceRef("feat/login"); run.setHeadCommit("head");
+        run.setTargetBranch("main"); run.setResolvedTargetCommit("target");
+        run.setTestsetSnapshot(List.of(Map.of("testsetId", testsetId.toString(), "command", "mvn test",
+                "timeoutSeconds", 60, "passRuleType", "EXIT_CODE", "expectedExitCode", 0)));
+        when(dryRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(dryRuns.selectById(runId)).thenReturn(run);
+        WorkerMergePreviewResponse preview = new WorkerMergePreviewResponse();
+        preview.setMergeable(true); preview.setResolvedHeadCommit("head"); preview.setResolvedTargetCommit("target");
+        when(worker.mergePreview(any())).thenReturn(preview);
+        WorkerTestExecutionItemResponse item = new WorkerTestExecutionItemResponse();
+        item.setTestsetId(testsetId); item.setStatus("PASSED"); item.setExitCode(0);
+        item.setDurationMs(69); item.setFailureCode(null);
+        WorkerTestExecutionResponse tests = new WorkerTestExecutionResponse();
+        tests.setStatus("PASSED"); tests.setResolvedHeadCommit("target"); tests.setResults(List.of(item));
+        when(worker.executeTests(any())).thenReturn(tests);
+        when(dryRuns.complete(eq(runId), anyString(), eq("PASSED"), any(), eq("head"))).thenReturn(1);
+
+        service.executeDryRun(runId);
+
+        verify(dryRuns).complete(eq(runId), anyString(), eq("PASSED"),
+                argThat(report -> {
+                    Map<?, ?> testsBlock = (Map<?, ?>) report.get("tests");
+                    if (!"PASSED".equals(testsBlock.get("status"))
+                            || !"target".equals(testsBlock.get("resolvedHeadCommit"))) return false;
+                    List<?> results = (List<?>) testsBlock.get("results");
+                    if (results.size() != 1) return false;
+                    Map<?, ?> row = (Map<?, ?>) results.getFirst();
+                    return testsetId.equals(row.get("testsetId"))
+                            && "PASSED".equals(row.get("status"))
+                            && Integer.valueOf(0).equals(row.get("exitCode"))
+                            && Long.valueOf(69L).equals(row.get("durationMs"))
+                            && row.get("failureCode") == null;
+                }), eq("head"));
     }
 }

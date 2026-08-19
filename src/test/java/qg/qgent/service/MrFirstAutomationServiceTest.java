@@ -80,6 +80,52 @@ class MrFirstAutomationServiceTest {
         verify(mrService).create(eq(projectId), eq(creator), any(MergeRequestCreateRequest.class));
     }
 
+    @Test
+    void failedDryRunDoesNotCreateMergeRequest() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID dryRunId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId, workspaceId);
+        task.setCreatedBy(UUID.randomUUID());
+        when(tasks.selectById(taskId)).thenReturn(task);
+        DryRunEntity dryRun = new DryRunEntity();
+        dryRun.setId(dryRunId);
+        dryRun.setProjectId(projectId);
+        dryRun.setTaskId(taskId);
+        dryRun.setStatus("FAILED");
+        when(dryRuns.selectById(dryRunId)).thenReturn(dryRun);
+
+        service.onCqApproved(new PreflightCqApprovedDomainEvent(projectId, dryRunId));
+
+        verify(mrService, never()).create(any(), any(), any());
+    }
+
+    @Test
+    void recoverRetriesWaitingPreflightTasksWithoutCreatingMrForUnpassedDryRuns() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        TaskEntity waiting = task(projectId, taskId, workspaceId);
+        WorkspaceRepositoryEntity worktree = worktree(workspaceId, repositoryId, "main");
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setDefaultBranch("develop");
+        when(tasks.selectList(any())).thenReturn(List.of(waiting));
+        when(tasks.selectById(taskId)).thenReturn(waiting);
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree));
+        when(repositories.selectById(repositoryId)).thenReturn(repository);
+        // 恢复调度只领取 PASSED 的 Dry Run 创建 MR；未通过的不进入 MR 创建分支。
+        when(dryRuns.selectList(any())).thenReturn(List.of());
+
+        service.recover();
+
+        verify(testRuns).createAutomaticDryRun(projectId, taskId, repositoryId, "main");
+        verify(mrService, never()).create(any(), any(), any());
+    }
+
     private TaskEntity task(UUID projectId, UUID taskId, UUID workspaceId) {
         TaskEntity task = new TaskEntity();
         task.setId(taskId);
