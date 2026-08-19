@@ -5193,7 +5193,8 @@ MR_FIRST 页面只能依赖重新查询的 Task、每仓库 Preflight、Dry Run 
 ```
 
 - `patch` 从受控快照读取；快照已清理或读取失败时为 `null`，前端不得把 `null` 当作正式 Diff 缺失。
-- Task 不属于当前项目、指定修订不存在、或当前用户不属于任务需求群时返回 `404 WORKSPACE_DIFF_PREVIEW_NOT_FOUND`（群成员校验失败按既有 `FORBIDDEN` 语义）。
+- 非需求群成员（项目成员但未加入该群）→ `403 FORBIDDEN GROUP_MEMBER_REQUIRED`。
+- 任务不存在 / 不属于当前项目 / 指定修订不存在 → `404 WORKSPACE_DIFF_PREVIEW_NOT_FOUND`。
 
 ### 36.4 查询 Preview 文件列表
 

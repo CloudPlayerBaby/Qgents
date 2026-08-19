@@ -183,7 +183,8 @@ public class WorkspaceDiffPreviewService {
         payload.put("filesChanged", diff.filesChanged());
         payload.put("additions", diff.additions());
         payload.put("deletions", diff.deletions());
-        payload.put("updatedAt", now.toString());
+        // 与其他事件（Instant）保持一致：带 Z 的 UTC 时间戳，避免前端按本地时区误解析。
+        payload.put("updatedAt", now.atOffset(ZoneOffset.UTC).toInstant().toString());
         eventService.publish(projectId, groupId, EVENT_TYPE, workspaceId.toString(), payload);
     }
 
