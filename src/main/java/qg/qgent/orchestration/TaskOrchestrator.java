@@ -419,10 +419,18 @@ public class TaskOrchestrator {
         } else if (phase == OrchestrationPhase.TESTING && outcome.getTestResult() != null) {
             ctx.testResult = outcome.getTestResult();
         }
+        // TestAgent 的 Worker stdout/stderr 已经过执行端长度限制；再次经统一日志入口脱敏、分行
+        // 持久化，再写入 Run 产物和终态事件，保证前端既能实时看日志，也能按 cursor 补拉。
+        if (outcome.getTestResult() != null) {
+            taskRunService.appendWorkerOutput(run, "STDOUT", outcome.getTestResult().getStdout());
+            taskRunService.appendWorkerOutput(run, "STDERR", outcome.getTestResult().getStderr());
+        }
+        taskRunService.appendAgentObservations(run, outcome.getObservations());
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
         // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
         artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
-        taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()));
+        taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
+                outcome.getMessage());
         markStepSettled(task, step, outcome.getOutcome());
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
         // 只读任务可能没有任何可修复的 MUTATE 步骤。此时质量失败不能沿用

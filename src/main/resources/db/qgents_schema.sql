@@ -678,6 +678,7 @@ CREATE TABLE IF NOT EXISTS
         id BINARY(16) PRIMARY KEY COMMENT '日志UUIDv7',
         task_run_id BINARY(16) NOT NULL COMMENT '所属任务运行ID',
         sequence_no BIGINT UNSIGNED NOT NULL COMMENT '运行内单调递增日志序号',
+        entry_type VARCHAR(16) NOT NULL DEFAULT 'EXECUTION' COMMENT '日志来源：EXECUTION/SYSTEM/TERMINAL',
         node VARCHAR(64) NULL COMMENT '产生日志的节点名；单节点运行为空',
         content TEXT NOT NULL COMMENT '已脱敏的日志内容，禁止包含Token/密码/密钥',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '写入时间（UTC）',

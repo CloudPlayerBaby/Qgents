@@ -25,6 +25,7 @@ import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.service.ContextService;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -176,8 +177,10 @@ public class CodingAgent implements Agent {
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round,
                     observedWrites.changedPaths(), observedWrites.changedDirectories());
+            Instant turnStartedAt = Instant.now();
             ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
-            observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
+            observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
+                    turnStartedAt, Instant.now()));
             if (turn.isInfraAbort()) {
                 log.error("CODING_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
                         input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
@@ -241,6 +244,7 @@ public class CodingAgent implements Agent {
                                         List<LlmObservation> observations, int round,
                                         String phase, ProtocolFailureCode triggerCode,
                                         ChangedWriteFactLedger observedWrites) {
+        Instant finalizationStartedAt = Instant.now();
         ToolTurnResult finalization = llm.finalizeToolTurn(system,
                 NativeToolLoopSupport.prepareFinalization(requestHistory, trigger),
                 NativeToolLoopSupport.finalizationInstruction(
@@ -248,7 +252,8 @@ public class CodingAgent implements Agent {
                                 + "\"modifiedFiles\":[\"相对路径\"],\"modifiedDirectories\":[\"相对目录\"],\"changes\":[\"变更说明\"],"
                                 + "\"errors\":[\"错误说明\"]}}", observedWrites.changedPaths(),
                         observedWrites.changedDirectories()));
-        observations.add(LlmObservation.of(phase, round + 1, finalization));
+        observations.add(LlmObservation.of(phase, round + 1, finalization,
+                finalizationStartedAt, Instant.now()));
         if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
             throw new CodingParseException(triggerCode, "bounded coding finalization did not produce complete JSON");
         }

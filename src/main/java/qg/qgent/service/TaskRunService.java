@@ -9,6 +9,7 @@ import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
 import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
+import qg.qgent.orchestration.llm.LlmObservation;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -55,6 +56,7 @@ public class TaskRunService {
     private final EventService eventService;
     private final NotificationService notificationService;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private final TaskRunLogService taskRunLogService;
 
     public TaskRunService(TaskRunMapper taskRunMapper,
                           ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
@@ -64,6 +66,22 @@ public class TaskRunService {
                           ProjectAccessService projectAccess, GroupService groupService, EventService eventService,
                           NotificationService notificationService,
                           org.springframework.context.ApplicationEventPublisher eventPublisher) {
+        this(taskRunMapper, logMapper, inputRequestMapper, diffMapper, taskStepMapper, agentMapper, artifactMapper,
+                taskMapper, requirementGroupMapper, projectRepositoryMapper, workspaceRepositoryMapper, projectAccess,
+                groupService, eventService, notificationService, eventPublisher,
+                new TaskRunLogService(logMapper, taskMapper, taskRunMapper, eventService));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TaskRunService(TaskRunMapper taskRunMapper,
+                          ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
+                          TaskStepMapper taskStepMapper, AgentMapper agentMapper, TaskExecutionArtifactMapper artifactMapper,
+                          TaskMapper taskMapper, RequirementGroupMapper requirementGroupMapper,
+                          ProjectRepositoryMapper projectRepositoryMapper, WorkspaceRepositoryMapper workspaceRepositoryMapper,
+                          ProjectAccessService projectAccess, GroupService groupService, EventService eventService,
+                          NotificationService notificationService,
+                          org.springframework.context.ApplicationEventPublisher eventPublisher,
+                          TaskRunLogService taskRunLogService) {
         this.taskRunMapper = taskRunMapper;
         this.logMapper = logMapper;
         this.inputRequestMapper = inputRequestMapper;
@@ -80,6 +98,7 @@ public class TaskRunService {
         this.eventService = eventService;
         this.notificationService = notificationService;
         this.eventPublisher = eventPublisher;
+        this.taskRunLogService = taskRunLogService;
     }
 
     /**
@@ -180,11 +199,13 @@ public class TaskRunService {
             run.setFinishedAt(now);
             run.setUpdatedAt(now);
             taskRunMapper.updateById(run);
+            taskRunLogService.append(run, "TERMINAL", run.getRole(), "运行已取消");
         } else if (CANCELLABLE_RUNNING.contains(run.getStatus())) {
             // 真实终止由执行器接缝在安全检查点完成，此处仅受理并标记
             run.setStatus("CANCELLING");
             run.setUpdatedAt(now);
             taskRunMapper.updateById(run);
+            taskRunLogService.append(run, "SYSTEM", run.getRole(), "已请求取消，等待安全检查点");
         } else {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_CANCELLABLE", "当前状态不可取消");
         }
@@ -213,9 +234,11 @@ public class TaskRunService {
                 .gt(ExecutionLogEntity::getSequenceNo, after)
                 .orderByAsc(ExecutionLogEntity::getSequenceNo)
                 .last("LIMIT " + (size + 1)));
-        // 受控执行器尚未接通内部日志持久化时，失败运行仍必须向前端提供可解释的终态信息。
-        // 该兜底只使用已落库的 TaskRun/执行产物摘要，不读取或暴露宿主机日志、Prompt、命令和凭据，
-        // 也不把这条摘要伪装成内部节点轨迹。
+        if (rows == null) {
+            rows = List.of();
+        }
+        // 新运行的终态摘要由 TaskRunLogService 持久化；这里仅兼容历史运行或迁移前数据，
+        // 只使用已落库的 TaskRun/执行产物摘要，不读取或暴露宿主机日志、Prompt、命令和凭据。
         if (rows.isEmpty() && after == 0) {
             LogEntryResponse terminal = terminalSummaryLog(run);
             if (terminal != null) {
@@ -294,6 +317,7 @@ public class TaskRunService {
         run.setStatus("RUNNING");
         run.setUpdatedAt(now);
         taskRunMapper.updateById(run);
+        taskRunLogService.append(run, "SYSTEM", run.getRole(), "收到输入，恢复执行");
         eventService.publish(projectId, null, "task-run.updated", run.getId().toString(),
                 eventPayload(run, 0));
         return toInput(req);
@@ -346,6 +370,7 @@ public class TaskRunService {
         run.setCreatedAt(now);
         run.setUpdatedAt(now);
         taskRunMapper.insert(run);
+        taskRunLogService.append(run, "SYSTEM", run.getRole(), "运行已排队");
         eventService.publish(projectId, null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
         return run;
     }
@@ -379,6 +404,8 @@ public class TaskRunService {
         run.setStatus("INPUT".equals(kind) ? "WAITING_INPUT" : "WAITING_APPROVAL");
         run.setUpdatedAt(now);
         taskRunMapper.updateById(run);
+        taskRunLogService.append(run, "SYSTEM", run.getRole(),
+                "等待" + ("INPUT".equals(kind) ? "用户输入" : "审批"));
         String eventType = "INPUT".equals(kind) ? "input-required" : "approval-required";
         eventService.publish(projectId, null, eventType, req.getId().toString(),
                 TaskEventPayloads.inputRequest(projectId, taskId, taskStepId, taskRunId, req));
@@ -404,6 +431,7 @@ public class TaskRunService {
         run.setStartedAt(now);
         run.setUpdatedAt(now);
         taskRunMapper.updateById(run);
+        taskRunLogService.append(run, "SYSTEM", run.getRole(), "开始执行");
         eventService.publish(run.getProjectId(), null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
     }
 
@@ -413,6 +441,12 @@ public class TaskRunService {
      */
     @Transactional
     public void complete(UUID taskRunId, String terminalStatus) {
+        complete(taskRunId, terminalStatus, null, null);
+    }
+
+    /** 完成运行并把稳定失败码/脱敏摘要写入终态日志。 */
+    @Transactional
+    public void complete(UUID taskRunId, String terminalStatus, String failureCode, String detail) {
         if (!Set.of("SUCCEEDED", "FAILED", "CANCELLED").contains(terminalStatus)) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RUN_TERMINAL_STATUS", "非法运行终态");
         }
@@ -425,6 +459,15 @@ public class TaskRunService {
         run.setFinishedAt(now);
         run.setUpdatedAt(now);
         taskRunMapper.updateById(run);
+        String message = switch (terminalStatus) {
+            case "SUCCEEDED" -> "执行成功";
+            case "CANCELLED" -> "执行已取消";
+            default -> "执行失败";
+        };
+        if (failureCode != null && !failureCode.isBlank()) {
+            message = failureCode.strip() + (detail == null || detail.isBlank() ? "" : "：" + detail);
+        }
+        taskRunLogService.append(run, "TERMINAL", run.getRole(), message);
         eventService.publish(run.getProjectId(), null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
     }
 
@@ -445,6 +488,8 @@ public class TaskRunService {
         run.setStatus("APPROVED".equals(decision) ? "RUNNING" : "BLOCKED");
         run.setUpdatedAt(now);
         taskRunMapper.updateById(run);
+        taskRunLogService.append(run, "SYSTEM", run.getRole(),
+                "APPROVED".equals(decision) ? "审批通过，恢复执行" : "审批拒绝，运行阻塞");
         eventService.publish(run.getProjectId(), null, "task-run.updated",
                 run.getId().toString(), eventPayload(run, 0));
         return toInput(req);
@@ -513,30 +558,34 @@ public class TaskRunService {
     }
 
     /**
-     * 没有执行器日志时，为终态运行生成一条脱敏结果摘要，避免前端无法解释失败。
-     * 该记录只用于日志查询响应，不写入 execution_logs，也不表示存在内部节点轨迹。
+     * 没有执行器日志时，为迁移前的终态运行生成一条脱敏结果摘要，避免历史数据无法解释。
+     * 新运行的摘要已写入 execution_logs；该兼容兜底不表示存在内部节点轨迹。
      */
     private LogEntryResponse terminalSummaryLog(TaskRunEntity run) {
-        if (run == null || !("FAILED".equals(run.getStatus()) || "BLOCKED".equals(run.getStatus())
-                || "CANCELLED".equals(run.getStatus()))) {
+        if (run == null || !("SUCCEEDED".equals(run.getStatus()) || "FAILED".equals(run.getStatus())
+                || "BLOCKED".equals(run.getStatus()) || "CANCELLED".equals(run.getStatus()))) {
             return null;
         }
         TaskExecutionArtifactEntity artifact = latestRunArtifact(run.getId());
         TaskStatusReason reason = statusReason(run, List.of(), artifact == null ? null : artifact.getSummary());
+        if (reason == null && "SUCCEEDED".equals(run.getStatus())) {
+            reason = new TaskStatusReason("SUCCEEDED", "执行成功", "运行已完成", false,
+                    iso(run.getFinishedAt() == null ? run.getUpdatedAt() : run.getFinishedAt()));
+        }
         if (reason == null) {
             return null;
         }
         String content = reason.getTitle() + "：" + reason.getSummary();
         String timestamp = iso(run.getFinishedAt() == null ? run.getUpdatedAt() : run.getFinishedAt());
-        return new LogEntryResponse("terminal-" + id(run.getId()), 1L,
-                run.getRole() == null || run.getRole().isBlank() ? "EXECUTION" : run.getRole(), content, timestamp);
+        return new LogEntryResponse("terminal-" + id(run.getId()), 1L, "TERMINAL",
+                run.getRole() == null || run.getRole().isBlank() ? "SYSTEM" : run.getRole(), content, timestamp);
     }
 
     /**
      * 将执行器写入 Run 产物的脱敏 LLM 观测转换为详情中的内部节点轨迹。
      *
      * <p>这里不重新引入 TaskRunStep 持久化模型：TaskRun 产物就是执行器的事实来源。
-     * 观测只投影 phase/round/协议失败码，promptChars、responseChars、工具响应摘要和
+     * 仅投影 phase/round、服务端时序、状态和错误码；promptChars、responseChars、工具响应摘要和
      * responseSha256 等内部度量不会进入 TaskRunStepResponse。</p>
      */
     private List<TaskRunStepResponse> stepsFromArtifact(TaskExecutionArtifactEntity artifact) {
@@ -559,13 +608,18 @@ public class TaskRunService {
                 continue;
             }
             String protocolFailureCode = safeText(fields.get("protocolFailureCode"));
+            String errorCode = safeText(fields.get("errorCode"));
+            if (errorCode == null) {
+                errorCode = protocolFailureCode;
+            }
+            String status = safeText(fields.get("status"));
+            if (status == null) {
+                status = protocolFailureCode == null ? "PASSED" : "FAILED";
+            }
             result.add(new TaskRunStepResponse(
-                    phase + "#round-" + round,
-                    protocolFailureCode == null ? "PASSED" : "FAILED",
-                    null,
-                    null,
-                    null,
-                    protocolFailureCode));
+                    phase + "#round-" + round, status,
+                    safeText(fields.get("startedAt")), safeText(fields.get("finishedAt")),
+                    positiveLong(fields.get("durationMs")), errorCode));
         }
         return result;
     }
@@ -587,6 +641,22 @@ public class TaskRunService {
             try {
                 int result = Integer.parseInt(text.strip());
                 return result > 0 ? result : null;
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private Long positiveLong(Object value) {
+        if (value instanceof Number number) {
+            long result = number.longValue();
+            return result >= 0 ? result : null;
+        }
+        if (value instanceof String text) {
+            try {
+                long result = Long.parseLong(text.strip());
+                return result >= 0 ? result : null;
             } catch (NumberFormatException ignored) {
                 return null;
             }
@@ -869,8 +939,41 @@ public class TaskRunService {
     }
 
     private LogEntryResponse toLog(ExecutionLogEntity l) {
-        return new LogEntryResponse(id(l.getId()), l.getSequenceNo(), l.getNode(), l.getContent(),
+        return new LogEntryResponse(id(l.getId()), l.getSequenceNo(),
+                l.getEntryType() == null ? "EXECUTION" : l.getEntryType(), l.getNode(), l.getContent(),
                 iso(l.getCreatedAt()));
+    }
+
+    /** 将 TestAgent 收集的 Worker stdout/stderr 接入统一日志入口。 */
+    public void appendWorkerOutput(TaskRunEntity run, String stream, String output) {
+        taskRunLogService.appendWorkerOutput(run, stream, output);
+    }
+
+    /** 将 Agent 每轮脱敏观测投影为可游标读取的执行日志；完整原文仍只留在结构化摘要中。 */
+    public void appendAgentObservations(TaskRunEntity run, List<LlmObservation> observations) {
+        if (observations == null) {
+            return;
+        }
+        for (LlmObservation observation : observations) {
+            if (observation == null) {
+                continue;
+            }
+            StringBuilder content = new StringBuilder("Agent 轮次完成");
+            if (observation.status() != null) {
+                content.append("，状态=").append(observation.status());
+            }
+            if (observation.finishReason() != null) {
+                content.append("，结束原因=").append(observation.finishReason());
+            }
+            if (observation.durationMs() != null) {
+                content.append("，耗时=").append(observation.durationMs()).append("ms");
+            }
+            if (observation.errorCode() != null) {
+                content.append("，错误码=").append(observation.errorCode());
+            }
+            taskRunLogService.append(run, "EXECUTION",
+                    observation.phase() + "#round-" + observation.round(), content.toString());
+        }
     }
 
     private InputRequestResponse toInput(InputRequestEntity r) {

@@ -302,7 +302,8 @@ class TestRunServiceTest {
         DryRunResponse response = service.createAutomaticDryRun(projectId, taskId, repositoryId, "main");
 
         assertEquals("QUEUED", response.getStatus());
-        verify(dryRuns).insert(argThat((DryRunEntity run) -> newHead.equalsIgnoreCase(run.getHeadCommit())));
+        verify(dryRuns).insert(org.mockito.ArgumentMatchers.<DryRunEntity>argThat(
+                run -> newHead.equalsIgnoreCase(run.getHeadCommit())));
     }
 
     @Test

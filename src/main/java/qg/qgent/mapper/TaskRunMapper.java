@@ -13,6 +13,10 @@ import java.util.UUID;
 @Mapper
 public interface TaskRunMapper extends BaseMapper<TaskRunEntity> {
 
+    /** 按 TaskRun 串行化日志序号分配，避免并发 Worker/Agent 输出撞唯一键。 */
+    @Select("select * from task_runs where id = #{runId} for update")
+    TaskRunEntity selectByIdForUpdate(@Param("runId") UUID runId);
+
     /**
      * 恢复器：找出长期处于 QUEUED/RUNNING 的陈旧运行（其线程可能因 Worker 挂起而永远不返回）。
      * updated_at 早于阈值的才算陈旧；返回运行 ID，供 {@link #reclaimStaleRun} 原子回收。

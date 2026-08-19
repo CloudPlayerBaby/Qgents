@@ -23,6 +23,7 @@ import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.service.ContextService;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -182,8 +183,10 @@ public class GenericCustomAgent implements Agent {
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round,
                     observedWrites.changedPaths(), observedWrites.changedDirectories());
+            Instant turnStartedAt = Instant.now();
             ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
-            observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
+            observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
+                    turnStartedAt, Instant.now()));
             if (turn.isInfraAbort()) {
                 log.error("CUSTOM_INFRA_ABORT agentId={} phase={} workspaceId={} round={} tool={} reason={}",
                         entity.getId(), input.getPhase(), input.getWorkspaceId(), round, turn.toolName(),
@@ -229,13 +232,15 @@ public class GenericCustomAgent implements Agent {
                                         List<LlmObservation> observations, int round,
                                         ProtocolFailureCode triggerCode, AgentInput input,
                                         ChangedWriteFactLedger observedWrites) {
+        Instant finalizationStartedAt = Instant.now();
         ToolTurnResult finalization = llm.finalizeToolTurn(system,
                 NativeToolLoopSupport.prepareFinalization(requestHistory, trigger),
                 NativeToolLoopSupport.finalizationInstruction(
                         "{\"success\":true|false,\"summary\":\"结果摘要\","
                                 + "\"message\":\"给用户的具体反馈、发现的问题或建议\"}",
                         observedWrites.changedPaths(), observedWrites.changedDirectories()));
-        observations.add(LlmObservation.of(input.getPhase().name(), round + 1, finalization));
+        observations.add(LlmObservation.of(input.getPhase().name(), round + 1, finalization,
+                finalizationStartedAt, Instant.now()));
         if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
             throw new GenericParseException(triggerCode,
                     "bounded custom agent finalization did not produce complete JSON");

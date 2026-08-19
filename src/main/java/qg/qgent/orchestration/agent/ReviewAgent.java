@@ -25,6 +25,7 @@ import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 import qg.qgent.service.ContextService;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -137,8 +138,10 @@ public class ReviewAgent implements Agent {
         List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round);
+            Instant turnStartedAt = Instant.now();
             ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
-            observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
+            observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
+                    turnStartedAt, Instant.now()));
             if (turn.isInfraAbort()) {
                 log.error("REVIEW_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
                         input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
@@ -181,6 +184,7 @@ public class ReviewAgent implements Agent {
     private ReviewResult finalizeReview(String system, List<Message> requestHistory, ToolTurnResult trigger,
                                         List<LlmObservation> observations, int round,
                                         String phase, ProtocolFailureCode triggerCode) {
+        Instant finalizationStartedAt = Instant.now();
         ToolTurnResult finalization = llm.finalizeToolTurn(system,
                 NativeToolLoopSupport.prepareFinalization(requestHistory, trigger),
                 NativeToolLoopSupport.finalizationInstruction(
@@ -189,7 +193,8 @@ public class ReviewAgent implements Agent {
                                 + "\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\",\"issue\":\"问题\","
                                 + "\"suggestion\":\"建议\"}],\"suggestions\":[\"建议\"],"
                                 + "\"needsCodingFix\":true|false}"));
-        observations.add(LlmObservation.of(phase, round + 1, finalization));
+        observations.add(LlmObservation.of(phase, round + 1, finalization,
+                finalizationStartedAt, Instant.now()));
         if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
             throw new ReviewParseException(triggerCode, "bounded review finalization did not produce complete JSON");
         }
