@@ -3,6 +3,7 @@ package qg.qgent.orchestration.agent;
 import org.junit.jupiter.api.Test;
 import qg.qgent.dto.ContextMemory;
 import qg.qgent.dto.ContextMessage;
+import qg.qgent.dto.ContextRepository;
 import qg.qgent.dto.ContextSkill;
 import qg.qgent.orchestration.AgentInput;
 
@@ -62,6 +63,22 @@ class ContextPromptRendererTest {
         assertThat(rendered).contains("编码规范").doesNotContain("禁止提交 .env");
         assertThat(rendered).contains("项目约定：");
         assertThat(rendered).contains("- 缓存约定: Redis key 以 projectId 前缀");
+    }
+
+    @Test void rendersRepositoryNamesAndWorkspaceMappings() {
+        AgentInput input = new AgentInput();
+        input.setRepositories(List.of(new ContextRepository("repo-id", "前端仓库", "example/frontend",
+                "main", "repo-2", "develop", "feat/task-123")));
+
+        String rendered = ContextPromptRenderer.render(input);
+
+        assertThat(rendered).contains("当前项目仓库清单：")
+                .contains("name: 前端仓库")
+                .contains("fullName: example/frontend")
+                .contains("defaultBranch: main")
+                .contains("workspacePath: repo-2")
+                .contains("baseRef: develop")
+                .contains("sourceBranch: feat/task-123");
     }
 
     @Test void rendersImageAndFileAttachmentsAsReferences() {

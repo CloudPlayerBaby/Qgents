@@ -2,6 +2,7 @@ package qg.qgent.orchestration.agent;
 
 import qg.qgent.dto.ContextMemory;
 import qg.qgent.dto.ContextMessage;
+import qg.qgent.dto.ContextRepository;
 import qg.qgent.dto.ContextSkill;
 import qg.qgent.orchestration.AgentInput;
 
@@ -31,10 +32,38 @@ final class ContextPromptRenderer {
     static String render(AgentInput input) {
         StringBuilder sb = new StringBuilder();
         appendRequirementBackground(sb, input);
+        appendRepositories(sb, input.getRepositories());
         appendConversation(sb, input.getConversation());
         appendSkills(sb, input.getSkills());
         appendMemories(sb, input.getMemories());
         return sb.toString();
+    }
+
+    private static void appendRepositories(StringBuilder sb, List<ContextRepository> repositories) {
+        if (repositories == null || repositories.isEmpty()) {
+            return;
+        }
+        sb.append("\n\n当前项目仓库清单：\n"
+                + "以下是当前需求群可见的项目仓库；只有带 workspacePath 的仓库已挂载到本次 Task，工具路径首段必须使用该值，不能把仓库名混用：");
+        for (ContextRepository repository : repositories) {
+            sb.append("\n- repositoryId: ").append(nullToBlank(repository.getRepositoryId()))
+                    .append(", name: ").append(nullToBlank(repository.getName()));
+            if (!isBlank(repository.getFullName())) {
+                sb.append(", fullName: ").append(repository.getFullName());
+            }
+            if (!isBlank(repository.getDefaultBranch())) {
+                sb.append(", defaultBranch: ").append(repository.getDefaultBranch());
+            }
+            if (!isBlank(repository.getWorkspacePath())) {
+                sb.append(", workspacePath: ").append(repository.getWorkspacePath());
+            }
+            if (!isBlank(repository.getBaseRef())) {
+                sb.append(", baseRef: ").append(repository.getBaseRef());
+            }
+            if (!isBlank(repository.getSourceBranch())) {
+                sb.append(", sourceBranch: ").append(repository.getSourceBranch());
+            }
+        }
     }
 
     private static void appendRequirementBackground(StringBuilder sb, AgentInput input) {

@@ -5,6 +5,7 @@ import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.ContextMemory;
 import qg.qgent.dto.ContextMessage;
+import qg.qgent.dto.ContextRepository;
 import qg.qgent.dto.ContextSkill;
 import qg.qgent.dto.GroupContext;
 import qg.qgent.entity.DiffEntity;
@@ -13,6 +14,8 @@ import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.DiffReviewBatchMapper;
+import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.service.ContextService;
 import qg.qgent.orchestration.TaskContextSnapshotCodec;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,8 +41,10 @@ class AgentContextAssemblerTest {
     private final TaskContextSnapshotCodec contextSnapshotCodec = new TaskContextSnapshotCodec(new ObjectMapper());
     private final DiffReviewBatchMapper diffBatches = mock(DiffReviewBatchMapper.class);
     private final DiffMapper diffMapper = mock(DiffMapper.class);
+    private final WorkspaceRepositoryMapper workspaceRepositories = mock(WorkspaceRepositoryMapper.class);
     private final AgentContextAssembler assembler =
-            new AgentContextAssembler(contextService, contextSnapshotCodec, diffBatches, diffMapper);
+            new AgentContextAssembler(contextService, contextSnapshotCodec, diffBatches, diffMapper,
+                    workspaceRepositories);
 
     private TaskEntity task() {
         TaskEntity t = new TaskEntity();
@@ -59,6 +64,34 @@ class AgentContextAssemblerTest {
                 List.of(new ContextMessage(1L, "TEXT", "USER", "u-1", "补充需求")),
                 List.of(new ContextSkill(UUID.randomUUID(), "编码规范")),
                 List.of(new ContextMemory("缓存约定", "Redis 前缀 projectId", "architecture")));
+    }
+
+    @Test
+    void assembleEnrichesRepositoryManifestWithWorkspaceMapping() {
+        TaskEntity task = task();
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setInstruction("实现");
+        UUID repositoryId = UUID.randomUUID();
+        GroupContext context = groupContext(task);
+        context.setRepositories(List.of(new ContextRepository(repositoryId.toString(), "前端仓库",
+                "example/frontend", "main", null, null, null)));
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setProjectRepositoryId(repositoryId);
+        worktree.setWorkspacePath("repo-2");
+        worktree.setBaseRef("develop");
+        worktree.setSourceBranch("feat/task-123");
+        when(workspaceRepositories.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(worktree));
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, null,
+                UUID.randomUUID(), null, null, null, context);
+
+        assertThat(input.getRepositories()).singleElement().satisfies(repository -> {
+            assertThat(repository.getName()).isEqualTo("前端仓库");
+            assertThat(repository.getWorkspacePath()).isEqualTo("repo-2");
+            assertThat(repository.getBaseRef()).isEqualTo("develop");
+            assertThat(repository.getSourceBranch()).isEqualTo("feat/task-123");
+        });
     }
 
     @Test void assembleFillsConversationSkillsMemoriesFromSnapshot() {

@@ -49,6 +49,12 @@ public class GroupContext {
     private List<String> repositoryIds;
 
     /**
+     * 需求群允许使用的仓库清单；任务运行时会补充 Workspace 别名和实际分支。
+     */
+    @Schema(description = "需求群关联仓库的可读清单")
+    private List<ContextRepository> repositories;
+
+    /**
      * 近期群聊消息（新→旧或旧→新，供 Agent 理解对话历史）。
      */
     @Schema(description = "近期群聊消息")
@@ -65,4 +71,12 @@ public class GroupContext {
      */
     @Schema(description = "项目已批准的 Memory")
     private List<ContextMemory> memories;
+
+    /** 兼容旧快照和测试构造：旧数据没有仓库 manifest 时视为空列表。 */
+    public GroupContext(String groupId, String projectId, String requirementTitle, String requirementDescription,
+                        List<String> repositoryIds, List<ContextMessage> conversation,
+                        List<ContextSkill> skills, List<ContextMemory> memories) {
+        this(groupId, projectId, requirementTitle, requirementDescription, repositoryIds, List.of(),
+                conversation, skills, memories);
+    }
 }
