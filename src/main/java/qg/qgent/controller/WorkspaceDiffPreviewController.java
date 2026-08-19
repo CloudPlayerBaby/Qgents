@@ -20,8 +20,8 @@ import java.util.UUID;
  * Workspace 实时 Diff Preview 只读查询接口（阶段 E）。
  * <p>
  * 与正式 Diff 严格分离：这里只反映 Coding 写过程中的累积工作树变更预览，永不作为已
- * commit/push/MR。鉴权由 {@link WorkspaceDiffPreviewService} 内的
- * {@code ProjectAccessService.requireProjectMember} 强制，跨项目/非成员一律 404。
+ * commit/push/MR。鉴权由 {@link WorkspaceDiffPreviewService} 强制：项目成员 + Task 所属
+ * 需求群成员（PROJECT_MAIN 项目总群任务按项目成员可见），跨项目/非需求群成员不可见。
  */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/tasks/{taskId}/workspace-diff-preview")
