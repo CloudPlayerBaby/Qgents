@@ -37,8 +37,8 @@ public class SecurityConfig {
 
     @Bean
     @ConditionalOnMissingBean(ObjectMapper.class)
-    ObjectMapper objectMapper() {
-        return new ObjectMapper().findAndRegisterModules();
+    ObjectMapper objectMapper(com.fasterxml.jackson.databind.Module utcLocalDateTimeModule) {
+        return new ObjectMapper().findAndRegisterModules().registerModule(utcLocalDateTimeModule);
     }
 
     /**
