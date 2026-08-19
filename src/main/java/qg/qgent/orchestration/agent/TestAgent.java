@@ -59,7 +59,10 @@ public class TestAgent implements Agent {
     public AgentRunOutcome run(AgentInput input) {
         try {
             List<String> files = codeAccess.listFiles(input.getWorkspaceId());
-            TestCommandResolver.ResolvedCommand resolved = commandResolver.resolveCommand(files);
+            if (isManualVerification(input)) {
+                return manualVerification(input);
+            }
+            TestCommandResolver.ResolvedCommand resolved = commandResolver.resolveCommand(files, fileTargets(input));
             if (resolved == null) {
                 return verifyFileTask(input, files);
             }

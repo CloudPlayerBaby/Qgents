@@ -75,6 +75,75 @@ public class TestCommandResolver {
         return null;
     }
 
+    /** 按本次 Coding 实际修改目标筛选命令，避免无关构建文件触发错误的 Gradle/Maven 测试。 */
+    public ResolvedCommand resolveCommand(List<String> files, List<String> targets) {
+        ResolvedCommand resolved = resolveCommand(files);
+        if (targets == null || targets.isEmpty()) return resolved;
+        if (targets.stream().map(TestCommandResolver::fileName).anyMatch(TestCommandResolver::isNodeTarget)) {
+            ResolvedCommand node = resolveNodeCommand(files, targets);
+            return node;
+        }
+        if (resolved == null) return null;
+        return targetsMatchCommand(resolved.command(), resolved.repositoryPath(), targets) ? resolved : null;
+    }
+
+    private ResolvedCommand resolveNodeCommand(List<String> files, List<String> targets) {
+        for (String target : targets) {
+            String root = root(target.replace('\\', '/'));
+            Set<String> names = files.stream().filter(file -> belongsToRoot(root, file))
+                    .map(file -> relative(root, file)).collect(java.util.stream.Collectors.toSet());
+            if (hasFile(names, "package.json")) {
+                return new ResolvedCommand(List.of("npm", "test"), root.isEmpty() ? null : root);
+            }
+        }
+        return null;
+    }
+
+    private boolean targetsMatchCommand(List<String> command, String repositoryPath, List<String> targets) {
+        if (repositoryPath != null && targets.stream().anyMatch(target -> !belongsToRoot(repositoryPath,
+                target.replace('\\', '/')))) return false;
+        String tool = command.isEmpty() ? "" : command.get(0);
+        boolean jvm = targets.stream().map(TestCommandResolver::fileName).anyMatch(TestCommandResolver::isJvmTarget);
+        boolean node = targets.stream().map(TestCommandResolver::fileName).anyMatch(TestCommandResolver::isNodeTarget);
+        boolean gradle = targets.stream().map(TestCommandResolver::fileName).anyMatch(TestCommandResolver::isGradleTarget);
+        boolean maven = targets.stream().map(TestCommandResolver::fileName).anyMatch(TestCommandResolver::isMavenTarget);
+        if (tool.equals("gradle") || command.equals(List.of("sh", "./gradlew", "test"))) return jvm || gradle;
+        if (tool.equals("mvn") || command.equals(List.of("sh", "./mvnw", "test"))) return jvm || maven;
+        if (tool.equals("npm")) return node;
+        return true;
+    }
+
+    private static String fileName(String path) {
+        String normalized = path == null ? "" : path.replace('\\', '/');
+        int slash = normalized.lastIndexOf('/');
+        return slash < 0 ? normalized : normalized.substring(slash + 1);
+    }
+
+    private static boolean isJvmTarget(String name) {
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".java") || lower.endsWith(".kt") || lower.endsWith(".kts")
+                || lower.endsWith(".groovy") || lower.endsWith(".scala");
+    }
+
+    private static boolean isNodeTarget(String name) {
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".js") || lower.endsWith(".jsx") || lower.endsWith(".ts")
+                || lower.endsWith(".tsx") || lower.equals("package.json")
+                || lower.equals("package-lock.json") || lower.equals("pnpm-lock.yaml") || lower.equals("yarn.lock");
+    }
+
+    private static boolean isGradleTarget(String name) {
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        return lower.equals("build.gradle") || lower.equals("build.gradle.kts")
+                || lower.equals("settings.gradle") || lower.equals("settings.gradle.kts")
+                || lower.equals("gradlew") || lower.equals("gradlew.bat");
+    }
+
+    private static boolean isMavenTarget(String name) {
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        return lower.equals("pom.xml") || lower.equals("mvnw") || lower.equals("mvnw.cmd");
+    }
+
     /** 判断仓库内相对文件列表是否包含指定入口文件。 */
     private boolean hasFile(Set<String> files, String name) {
         return files.contains(name);

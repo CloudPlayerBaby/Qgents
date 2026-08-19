@@ -56,4 +56,22 @@ class TestCommandResolverTest {
         assertThat(command.repositoryPath()).isEqualTo("services/backend");
         assertThat(command.command()).containsExactly("sh", "./mvnw", "test");
     }
+
+    @Test
+    void ignoresUnrelatedGradleWorkspaceForNodeTarget() {
+        assertThat(resolver.resolveCommand(List.of("gradlew", "build.gradle", "hello.js"), List.of("hello.js")))
+                .isNull();
+    }
+
+    @Test
+    void ignoresUnrelatedGradleWorkspaceForDocumentationTarget() {
+        assertThat(resolver.resolveCommand(List.of("gradlew", "build.gradle", "README.md"), List.of("README.md")))
+                .isNull();
+    }
+
+    @Test
+    void keepsGradleForJvmTarget() {
+        assertThat(resolver.resolveCommand(List.of("gradlew", "build.gradle", "src/Main.java"), List.of("src/Main.java")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("sh", "./gradlew", "test"), null));
+    }
 }
