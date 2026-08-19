@@ -71,8 +71,10 @@ public class TaskTriggerService {
     /**
      * 显式触发：从一条群消息创建 Task。
      * <p>
-     * 消息必须属于该需求群，否则 404；请求缺省字段（requirement/repositoryIds/baseRef）
-     * 由服务端从消息文本或群信息提取。
+     * 消息必须属于该需求群，否则 404；请求缺省字段（title/requirement/repositoryIds/baseRef）
+     * 由服务端从消息文本或群信息提取。新建 Workspace 且仓库范围解析为空（请求未传
+     * repositoryIds、需求群也未绑定仓库）时返回 422 {@code REQUIREMENT_GROUP_NO_REPOSITORIES}，
+     * 不静默回退到项目全部仓库。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -95,6 +97,12 @@ public class TaskTriggerService {
         ContinuationRef continuation = resolveQuotedDiffContinuation(projectId, groupId, message);
         TaskCreateRequest request = assembleRequest(group, message, body.getTitle(),
                 body.getRequirement(), continuation, body.getRepositoryIds(), body.getBaseRef());
+        // 新建 Workspace 且仓库范围解析为空（请求未传 repositoryIds、需求群也未绑定仓库）时，
+        // 用独立错误码明确指引前端引导用户先绑定仓库，而不是落到模糊的 TASK_REPOSITORY_REQUIRED。
+        if (continuation == null && (request.getRepositoryIds() == null || request.getRepositoryIds().isEmpty())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REQUIREMENT_GROUP_NO_REPOSITORIES",
+                    "需求群未绑定仓库，请先为需求群绑定仓库后再触发任务");
+        }
         request.setDeliveryMode(body.getDeliveryMode());
         return createIdempotent(projectId, actor, message, request);
     }

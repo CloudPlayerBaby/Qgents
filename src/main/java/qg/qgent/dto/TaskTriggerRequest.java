@@ -1,7 +1,6 @@
 package qg.qgent.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -23,12 +22,10 @@ import java.util.UUID;
 public class TaskTriggerRequest {
 
     /**
-     * Task 标题；缺省时服务端从消息文本或群标题提取（截断 255）。
+     * Task 标题；可空，缺省时服务端从触发消息文本或群标题提取（截断 255）。
      */
-    @NotBlank
     @Size(max = 255)
-    @Schema(description = "Task 标题；缺省用消息文本或群标题", maxLength = 255,
-            requiredMode = Schema.RequiredMode.REQUIRED)
+    @Schema(description = "Task 标题；可空，缺省用触发消息文本或群标题", maxLength = 255)
     private String title;
 
     /**
@@ -46,10 +43,11 @@ public class TaskTriggerRequest {
     private List<@jakarta.validation.constraints.NotNull UUID> repositoryIds;
 
     /**
-     * 可选公共基线分支。
+     * 可选公共基线分支名。可空：缺省时各仓库按项目仓库绑定记录的 defaultBranch 独立解析
+     * （Git Store 同步与建树均使用同一解析值）；不接受 commit SHA、Git 引用路径或非法分支名。
      */
     @Size(max = 512)
-    @Schema(description = "可选公共基线分支")
+    @Schema(description = "可选公共基线分支；缺省按各仓库的 defaultBranch 独立解析")
     private String baseRef;
 
     /**
