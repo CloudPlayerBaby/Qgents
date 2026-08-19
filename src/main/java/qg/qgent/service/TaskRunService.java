@@ -122,7 +122,7 @@ public class TaskRunService {
                 step == null ? null : step.getTitle(), id(run.getAgentId()), agentSummary(agent),
                 run.getRole(), run.getStatus(), statusSummary(run.getStatus()), id(run.getRetryOfTaskRunId()),
                 statusReason(run, requests, latestArtifact == null ? null : latestArtifact.getSummary()),
-                artifactSummary(run.getId()), List.of(), iso(run.getStartedAt()), iso(run.getFinishedAt()),
+                artifactSummary(run.getId()), stepsFromArtifact(latestArtifact), iso(run.getStartedAt()), iso(run.getFinishedAt()),
                 durationMs(run.getStartedAt(), run.getFinishedAt()), iso(run.getCreatedAt()),
                 iso(run.getUpdatedAt()));
     }
@@ -213,6 +213,15 @@ public class TaskRunService {
                 .gt(ExecutionLogEntity::getSequenceNo, after)
                 .orderByAsc(ExecutionLogEntity::getSequenceNo)
                 .last("LIMIT " + (size + 1)));
+        // 受控执行器尚未接通内部日志持久化时，失败运行仍必须向前端提供可解释的终态信息。
+        // 该兜底只使用已落库的 TaskRun/执行产物摘要，不读取或暴露宿主机日志、Prompt、命令和凭据，
+        // 也不把这条摘要伪装成内部节点轨迹。
+        if (rows.isEmpty() && after == 0) {
+            LogEntryResponse terminal = terminalSummaryLog(run);
+            if (terminal != null) {
+                return new ApiPageResponse<>(List.of(terminal), new PageMeta(null, false), requestId);
+            }
+        }
         boolean hasMore = rows.size() > size;
         List<LogEntryResponse> items = (hasMore ? rows.subList(0, size) : rows).stream().map(this::toLog).toList();
         PageMeta page = new PageMeta(hasMore ? String.valueOf(items.get(items.size() - 1).getSequence()) : null,
@@ -501,6 +510,88 @@ public class TaskRunService {
         result.put("total", total);
         result.put("diffCount", diffCount);
         return result;
+    }
+
+    /**
+     * 没有执行器日志时，为终态运行生成一条脱敏结果摘要，避免前端无法解释失败。
+     * 该记录只用于日志查询响应，不写入 execution_logs，也不表示存在内部节点轨迹。
+     */
+    private LogEntryResponse terminalSummaryLog(TaskRunEntity run) {
+        if (run == null || !("FAILED".equals(run.getStatus()) || "BLOCKED".equals(run.getStatus())
+                || "CANCELLED".equals(run.getStatus()))) {
+            return null;
+        }
+        TaskExecutionArtifactEntity artifact = latestRunArtifact(run.getId());
+        TaskStatusReason reason = statusReason(run, List.of(), artifact == null ? null : artifact.getSummary());
+        if (reason == null) {
+            return null;
+        }
+        String content = reason.getTitle() + "：" + reason.getSummary();
+        String timestamp = iso(run.getFinishedAt() == null ? run.getUpdatedAt() : run.getFinishedAt());
+        return new LogEntryResponse("terminal-" + id(run.getId()), 1L,
+                run.getRole() == null || run.getRole().isBlank() ? "EXECUTION" : run.getRole(), content, timestamp);
+    }
+
+    /**
+     * 将执行器写入 Run 产物的脱敏 LLM 观测转换为详情中的内部节点轨迹。
+     *
+     * <p>这里不重新引入 TaskRunStep 持久化模型：TaskRun 产物就是执行器的事实来源。
+     * 观测只投影 phase/round/协议失败码，promptChars、responseChars、工具响应摘要和
+     * responseSha256 等内部度量不会进入 TaskRunStepResponse。</p>
+     */
+    private List<TaskRunStepResponse> stepsFromArtifact(TaskExecutionArtifactEntity artifact) {
+        if (artifact == null || artifact.getSummary() == null) {
+            return List.of();
+        }
+        Object value = artifact.getSummary().get("observations");
+        if (!(value instanceof Collection<?> observations) || observations.isEmpty()) {
+            return List.of();
+        }
+
+        List<TaskRunStepResponse> result = new ArrayList<>();
+        for (Object observation : observations) {
+            if (!(observation instanceof Map<?, ?> fields)) {
+                continue;
+            }
+            String phase = safeText(fields.get("phase"));
+            Integer round = positiveInteger(fields.get("round"));
+            if (phase == null || round == null) {
+                continue;
+            }
+            String protocolFailureCode = safeText(fields.get("protocolFailureCode"));
+            result.add(new TaskRunStepResponse(
+                    phase + "#round-" + round,
+                    protocolFailureCode == null ? "PASSED" : "FAILED",
+                    null,
+                    null,
+                    null,
+                    protocolFailureCode));
+        }
+        return result;
+    }
+
+    private String safeText(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).strip();
+        return text.isBlank() ? null : text;
+    }
+
+    private Integer positiveInteger(Object value) {
+        if (value instanceof Number number) {
+            int result = number.intValue();
+            return result > 0 ? result : null;
+        }
+        if (value instanceof String text) {
+            try {
+                int result = Integer.parseInt(text.strip());
+                return result > 0 ? result : null;
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     /**
