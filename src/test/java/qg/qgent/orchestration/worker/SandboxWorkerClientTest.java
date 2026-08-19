@@ -163,7 +163,7 @@ class SandboxWorkerClientTest {
                 .andExpect(method(HttpMethod.POST))
                 .andRespond(withStatus(HttpStatus.ACCEPTED).contentType(MediaType.APPLICATION_JSON).body("""
                         {"id":"%s","ownerWorkerId":"local","sandboxId":"%s","repositoryId":"%s","tool":"file.read",
-                         "status":"QUEUED","exitCode":null,"result":{},"failureReason":null,
+                         "status":"QUEUED","exitCode":null,"result":{},"failureCode":null,"failureReason":null,
                          "createdAt":"2026-08-13T00:00:00Z"}
                         """.formatted(EXECUTION, SANDBOX, REPO)));
 
@@ -190,15 +190,34 @@ class SandboxWorkerClientTest {
                          "status":"SUCCEEDED","exitCode":0,
                          "result":{"path":"src/App.java","sha256":"abc","startLine":1,"totalLines":3,
                          "lines":["a","b","c"],"truncated":false},
-                         "failureReason":null,"createdAt":"2026-08-13T00:00:00Z"}
+                         "failureCode":null,"failureReason":null,"createdAt":"2026-08-13T00:00:00Z"}
                         """.formatted(EXECUTION, SANDBOX, REPO), MediaType.APPLICATION_JSON));
 
         WorkerToolExecution execution = client.getToolExecution(EXECUTION);
 
         assertEquals("SUCCEEDED", execution.getStatus());
         assertEquals(0, execution.getExitCode());
+        assertNull(execution.getFailureCode());
         assertEquals(3, execution.getResult().get("totalLines"));
         assertEquals(List.of("a", "b", "c"), execution.getResult().get("lines"));
+        server.verify();
+    }
+
+    @Test
+    void readsTerminalToolExecutionWithStructuredFailureCode() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/tool-executions/" + EXECUTION))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        {"id":"%s","ownerWorkerId":"local","sandboxId":"%s","repositoryId":"%s","tool":"file.patch",
+                         "status":"FAILED","exitCode":null,"result":{},"failureCode":"FILE_PATCH_FAILED",
+                         "failureReason":"hunk 声明行数与正文不一致","createdAt":"2026-08-13T00:00:00Z"}
+                        """.formatted(EXECUTION, SANDBOX, REPO), MediaType.APPLICATION_JSON));
+
+        WorkerToolExecution execution = client.getToolExecution(EXECUTION);
+
+        assertEquals("FAILED", execution.getStatus());
+        assertEquals("FILE_PATCH_FAILED", execution.getFailureCode());
+        assertEquals("hunk 声明行数与正文不一致", execution.getFailureReason());
         server.verify();
     }
 

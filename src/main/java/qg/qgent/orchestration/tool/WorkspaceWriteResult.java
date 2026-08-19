@@ -28,6 +28,10 @@ public class WorkspaceWriteResult implements WorkspaceChangeResult {
      */
     private String error;
     /**
+     * 写入端返回的稳定失败码。本地实现通常为 null；Worker 实现用于避免依赖错误文本分类。
+     */
+    private String failureCode;
+    /**
      * 是否为基础设施级失败（workspace 不可用 / 文件系统错误）；仅 ok=false 时有意义。
      */
     private boolean infrastructureFailure;
@@ -63,9 +67,17 @@ public class WorkspaceWriteResult implements WorkspaceChangeResult {
      * 工具级失败：模型可依据错误信息自行纠正，不判基础设施失败。
      */
     public static WorkspaceWriteResult fail(String path, String error) {
+        return fail(path, null, error);
+    }
+
+    /**
+     * 带稳定失败码的工具级失败。
+     */
+    public static WorkspaceWriteResult fail(String path, String failureCode, String error) {
         WorkspaceWriteResult result = new WorkspaceWriteResult();
         result.setOk(false);
         result.setPath(path);
+        result.setFailureCode(failureCode);
         result.setError(error);
         return result;
     }
@@ -74,7 +86,14 @@ public class WorkspaceWriteResult implements WorkspaceChangeResult {
      * 基础设施级失败：workspace 不可用、文件系统错误等，应映射 FAILED_INFRASTRUCTURE。
      */
     public static WorkspaceWriteResult infraFail(String path, String error) {
-        WorkspaceWriteResult result = fail(path, error);
+        return infraFail(path, null, error);
+    }
+
+    /**
+     * 带稳定失败码的基础设施失败。
+     */
+    public static WorkspaceWriteResult infraFail(String path, String failureCode, String error) {
+        WorkspaceWriteResult result = fail(path, failureCode, error);
         result.setInfrastructureFailure(true);
         return result;
     }

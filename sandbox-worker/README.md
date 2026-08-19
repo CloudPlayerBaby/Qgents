@@ -14,6 +14,12 @@
 
 完整设计和使用说明见 [Workspace 与 Sandbox Manager](../docs/workspace-sandbox-manager.md)，精确契约见 [OpenAPI](../contracts/sandbox-worker-openapi.yaml)。
 
+## 数据库升级
+
+全新 Worker 数据库执行 `src/main/resources/db/sandbox_worker_schema.sql`。现有数据库不自动执行迁移；
+部署包含 `failureCode` 的 Worker 前，运维必须先执行
+`src/main/resources/db/migration/V20260819_01__add_tool_execution_failure_code.sql`，确认成功后再启动新版本。
+
 ## 验证
 
 ```bash

@@ -22,6 +22,7 @@ public class ToolExecutionEntity {
     private String status;
     private Integer exitCode;
     private String resultJson;
+    private String failureCode;
     private String failureReason;
     private LocalDateTime createdAt;
     private LocalDateTime startedAt;

@@ -161,7 +161,8 @@ class WorkerWorkspaceCodeWriterTest {
                 execution.setResult(Map.of("path", request.getArguments().get("path"), "sha256", "hash"));
             } else {
                 execution.setStatus("FAILED");
-                execution.setFailureReason("FILE_HASH_MISMATCH: 文件已经发生变化，请重新读取后再写入");
+                execution.setFailureCode("FILE_HASH_MISMATCH");
+                execution.setFailureReason("文件已经发生变化，请重新读取后再写入");
             }
             return execution;
         });
@@ -206,7 +207,8 @@ class WorkerWorkspaceCodeWriterTest {
         stubToolExecution(request -> {
             WorkerToolExecution execution = new WorkerToolExecution();
             execution.setStatus("FAILED");
-            execution.setFailureReason("FILE_HASH_MISMATCH: 文件已经发生变化");
+            execution.setFailureCode("FILE_HASH_MISMATCH");
+            execution.setFailureReason("文件已经发生变化");
             return execution;
         });
 
@@ -221,7 +223,7 @@ class WorkerWorkspaceCodeWriterTest {
     @Test
     void patchFileMapsPatchFormatFailureToToolFailure() {
         when(sessions.require(WORKSPACE)).thenReturn(session());
-        stubToolExecution(request -> failed("FILE_PATCH_FAILED: hunk 声明行数与正文不一致"));
+        stubToolExecution(request -> failed("FILE_PATCH_FAILED", "hunk 声明行数与正文不一致"));
 
         WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
                 "@@ -1,1 +1,1 @@\n-a\n+b\n");
@@ -229,6 +231,31 @@ class WorkerWorkspaceCodeWriterTest {
         assertThat(result.isOk()).isFalse();
         assertThat(result.isInfrastructureFailure()).isFalse();
         assertThat(result.getError()).contains("hunk 声明行数");
+    }
+
+    @Test
+    void patchFileDoesNotClassifyFailureReasonPrefixWithoutMatchingFailureCode() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> failed("PROCESS_EXIT_NONZERO", "FILE_PATCH_FAILED: hunk 声明行数与正文不一致"));
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isTrue();
+        assertThat(result.getError()).contains("FILE_PATCH_FAILED");
+    }
+
+    @Test
+    void patchFileTreatsGenericToolExecutionFailureAsInfrastructureFailure() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> failed("TOOL_EXECUTION_FAILED", "工具执行失败"));
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isTrue();
     }
 
     @Test
@@ -258,31 +285,32 @@ class WorkerWorkspaceCodeWriterTest {
     @Test
     void createDirectoryMapsPathFailureToToolFailure() {
         when(sessions.require(WORKSPACE)).thenReturn(session());
-        stubToolExecution(request -> failed("TOOL_PATH_INVALID: 目录路径不能包含符号链接"));
+        stubToolExecution(request -> failed("TOOL_PATH_INVALID", "目录路径不能包含符号链接"));
 
         WorkspaceDirectoryResult result = writer.createDirectory(WORKSPACE, "repo-1/linked/child");
 
         assertThat(result.isOk()).isFalse();
         assertThat(result.isInfrastructureFailure()).isFalse();
-        assertThat(result.getError()).contains("TOOL_PATH_INVALID");
+        assertThat(result.getError()).contains("目录路径不能包含符号链接");
     }
 
     @Test
     void createDirectoryMapsUnclassifiedWorkerFailureToInfrastructure() {
         when(sessions.require(WORKSPACE)).thenReturn(session());
-        stubToolExecution(request -> failed("DIRECTORY_CREATE_FAILED: 创建目录失败"));
+        stubToolExecution(request -> failed("DIRECTORY_CREATE_FAILED", "创建目录失败"));
 
         WorkspaceDirectoryResult result = writer.createDirectory(WORKSPACE, "repo-1/src/main");
 
         assertThat(result.isOk()).isFalse();
         assertThat(result.isInfrastructureFailure()).isTrue();
-        assertThat(result.getError()).contains("DIRECTORY_CREATE_FAILED");
+        assertThat(result.getError()).contains("创建目录失败");
     }
 
-    private static WorkerToolExecution failed(String reason) {
+    private static WorkerToolExecution failed(String failureCode, String failureReason) {
         WorkerToolExecution execution = new WorkerToolExecution();
         execution.setStatus("FAILED");
-        execution.setFailureReason(reason);
+        execution.setFailureCode(failureCode);
+        execution.setFailureReason(failureReason);
         return execution;
     }
 }

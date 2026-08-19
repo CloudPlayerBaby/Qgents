@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS tool_executions (
     status VARCHAR(24) NOT NULL COMMENT '执行状态',
     exit_code INT NULL COMMENT '进程类工具退出码',
     result_json JSON NULL COMMENT '结构化工具结果',
+    failure_code VARCHAR(64) NULL COMMENT '稳定失败码',
     failure_reason VARCHAR(1024) NULL COMMENT '失败原因',
     created_at DATETIME(6) NOT NULL COMMENT '创建时间（UTC）',
     started_at DATETIME(6) NULL COMMENT '开始时间（UTC）',

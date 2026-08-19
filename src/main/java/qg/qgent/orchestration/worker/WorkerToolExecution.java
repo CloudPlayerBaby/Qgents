@@ -57,6 +57,11 @@ public class WorkerToolExecution {
     private Map<String, Object> result;
 
     /**
+     * Worker 返回的稳定失败码，正常结束为 null。
+     */
+    private String failureCode;
+
+    /**
      * 失败原因，正常结束为 null。
      */
     private String failureReason;

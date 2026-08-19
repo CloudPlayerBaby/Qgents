@@ -35,6 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.regex.Pattern;
 
 /**
  * 统一管理结构化工具的异步执行、取消、日志和 MySQL 持久化。
@@ -44,6 +45,18 @@ import java.util.concurrent.RejectedExecutionException;
 @Service
 @RequiredArgsConstructor
 public class ToolExecutionService {
+    private static final String PROCESS_EXIT_NONZERO = "PROCESS_EXIT_NONZERO";
+    private static final String TOOL_EXECUTION_TIMED_OUT = "TOOL_EXECUTION_TIMED_OUT";
+    private static final String TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED";
+    private static final String EXECUTION_QUEUE_UNAVAILABLE = "EXECUTION_QUEUE_UNAVAILABLE";
+    private static final int MAX_FAILURE_REASON_LENGTH = 1024;
+    private static final Pattern BEARER = Pattern.compile("(?i)\\bBearer\\s+[^\\s,;]+");
+    private static final Pattern SENSITIVE_VALUE = Pattern.compile(
+            "(?i)\\b(token|password|secret|api[-_]?key|authorization)\\b\\s*[:=]\\s*([^\\s,;}]*)");
+    private static final Pattern WINDOWS_HOST_PATH = Pattern.compile(
+            "(?i)(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\\\/])[^\\s,;\\\"']+");
+    private static final Pattern UNIX_HOST_PATH = Pattern.compile(
+            "(?<![A-Za-z0-9_])/(?:home|Users|root|tmp|var|etc|opt|srv)(?:/[^\\s,;\\\"']*)?");
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
     private final SandboxService sandboxes;
@@ -100,7 +113,7 @@ public class ToolExecutionService {
             sandboxExecutionPool.execute(() -> run(entity.getId(), sandbox, request));
         } catch (RejectedExecutionException exception) {
             executionMapper.rejectQueued(entity.getId(), properties.getWorkerId(),
-                    "Worker 执行队列不可用", utc(clock.instant()));
+                    EXECUTION_QUEUE_UNAVAILABLE, "Worker 执行队列不可用", utc(clock.instant()));
             throw new WorkerException(HttpStatus.SERVICE_UNAVAILABLE,
                     "EXECUTION_QUEUE_UNAVAILABLE", "Worker 执行队列暂时不可用");
         }
@@ -188,6 +201,7 @@ public class ToolExecutionService {
         String status;
         Integer exitCode = null;
         String resultJson = null;
+        String failureCode = null;
         String failureReason = null;
         try {
             Duration timeout = timeout(request.getTimeoutSeconds(), sandbox.getExecutionTimeout());
@@ -198,31 +212,37 @@ public class ToolExecutionService {
             exitCode = result.getExitCode();
             resultJson = json(result.getResult());
             status = exitCode == null || exitCode == 0 ? "SUCCEEDED" : "FAILED";
+            if ("FAILED".equals(status)) {
+                failureCode = PROCESS_EXIT_NONZERO;
+                failureReason = "工具进程以非零退出码结束";
+            }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             status = "TIMED_OUT";
+            failureCode = TOOL_EXECUTION_TIMED_OUT;
             failureReason = "工具执行超时或被中断";
             log.warn("tool interrupted executionId={} tool={}", executionId, request.getTool());
         } catch (RuntimeException exception) {
             status = "FAILED";
-            failureReason = safeMessage(exception);
-            log.error("tool failed executionId={} sandboxId={} tool={} failureReason={}",
-                    executionId, sandbox.getId(), request.getTool(), failureReason);
+            failureCode = failureCode(exception);
+            failureReason = failureReason(exception);
+            log.error("tool failed executionId={} sandboxId={} tool={} failureCode={} failureReason={}",
+                    executionId, sandbox.getId(), request.getTool(), failureCode, failureReason);
         } finally {
             activeThreads.remove(id, Thread.currentThread());
         }
 
         executionMapper.finishIfRunning(executionId, properties.getWorkerId(), status,
-                exitCode, resultJson, failureReason,
+                exitCode, resultJson, failureCode, failureReason,
                 utc(clock.instant()));
         ToolExecutionEntity completed = executionMapper.selectById(executionId);
         if (completed != null) {
             append(executionId, "SYSTEM", "工具执行结束，状态：" + completed.getStatus());
         }
         logLocks.remove(executionId);
-        log.debug("tool done executionId={} sandboxId={} tool={} status={} exitCode={} durationMs={} failureReason={}",
+        log.debug("tool done executionId={} sandboxId={} tool={} status={} exitCode={} durationMs={} failureCode={} failureReason={}",
                 executionId, sandbox.getId(), request.getTool(), status, exitCode,
-                Duration.between(started, clock.instant()).toMillis(), failureReason);
+                Duration.between(started, clock.instant()).toMillis(), failureCode, failureReason);
     }
 
     private void validateRepository(ToolExecutionRequest request) {
@@ -303,12 +323,36 @@ public class ToolExecutionService {
         }
     }
 
-    private String safeMessage(RuntimeException exception) {
+    private String failureCode(RuntimeException exception) {
         if (exception instanceof WorkerException workerException) {
-            String message = workerException.getMessage();
-            return workerException.getCode() + (message == null || message.isBlank() ? "" : ": " + message);
+            return workerException.getCode();
+        }
+        return TOOL_EXECUTION_FAILED;
+    }
+
+    private String failureReason(RuntimeException exception) {
+        if (exception instanceof WorkerException workerException
+                && workerException.getMessage() != null && !workerException.getMessage().isBlank()) {
+            return sanitizeFailureReason(workerException.getMessage());
         }
         return "工具执行失败";
+    }
+
+    /**
+     * WorkerException 的说明可能来自底层文件或运行时组件，只保留有限、可展示的摘要。
+     * 不允许将凭据、宿主机路径或多行内部细节写入执行记录。
+     */
+    private String sanitizeFailureReason(String value) {
+        String sanitized = BEARER.matcher(value).replaceAll("Bearer [redacted]");
+        sanitized = SENSITIVE_VALUE.matcher(sanitized).replaceAll("$1=[redacted]");
+        sanitized = WINDOWS_HOST_PATH.matcher(sanitized).replaceAll("[host path omitted]");
+        sanitized = UNIX_HOST_PATH.matcher(sanitized).replaceAll("[host path omitted]");
+        sanitized = sanitized.replaceAll("[\\r\\n]+", " ").strip();
+        if (sanitized.isBlank()) {
+            return "工具执行失败";
+        }
+        return sanitized.length() <= MAX_FAILURE_REASON_LENGTH
+                ? sanitized : sanitized.substring(0, MAX_FAILURE_REASON_LENGTH - 3) + "...";
     }
 
     private ToolExecutionResponse response(ToolExecutionEntity entity) {
@@ -316,7 +360,7 @@ public class ToolExecutionService {
                 UUID.fromString(entity.getSandboxId()),
                 entity.getRepositoryId() == null ? null : UUID.fromString(entity.getRepositoryId()),
                 entity.getToolName(), entity.getStatus(), entity.getExitCode(), map(entity.getResultJson()),
-                entity.getFailureReason(), instant(entity.getCreatedAt()), instant(entity.getStartedAt()),
+                entity.getFailureCode(), entity.getFailureReason(), instant(entity.getCreatedAt()), instant(entity.getStartedAt()),
                 instant(entity.getFinishedAt()));
     }
 

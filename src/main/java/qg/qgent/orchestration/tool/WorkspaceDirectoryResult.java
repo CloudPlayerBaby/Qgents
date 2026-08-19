@@ -11,6 +11,10 @@ public class WorkspaceDirectoryResult implements WorkspaceChangeResult {
     private String path;
     private boolean created;
     private String error;
+    /**
+     * 写入端返回的稳定失败码。本地实现通常为 null；Worker 实现用于避免依赖错误文本分类。
+     */
+    private String failureCode;
     private boolean infrastructureFailure;
 
     @Override
@@ -27,14 +31,23 @@ public class WorkspaceDirectoryResult implements WorkspaceChangeResult {
     }
 
     public static WorkspaceDirectoryResult fail(String path, String error) {
+        return fail(path, null, error);
+    }
+
+    public static WorkspaceDirectoryResult fail(String path, String failureCode, String error) {
         WorkspaceDirectoryResult result = new WorkspaceDirectoryResult();
         result.path = path;
+        result.failureCode = failureCode;
         result.error = error;
         return result;
     }
 
     public static WorkspaceDirectoryResult infraFail(String path, String error) {
-        WorkspaceDirectoryResult result = fail(path, error);
+        return infraFail(path, null, error);
+    }
+
+    public static WorkspaceDirectoryResult infraFail(String path, String failureCode, String error) {
+        WorkspaceDirectoryResult result = fail(path, failureCode, error);
         result.infrastructureFailure = true;
         return result;
     }

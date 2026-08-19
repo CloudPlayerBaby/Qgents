@@ -161,7 +161,7 @@ public class CodingToolExecutor {
             throw new IllegalStateException("write_file infrastructure failure: "
                     + (result.getError() == null ? "workspace unavailable" : result.getError()));
         }
-        return error(name, result.getError() == null ? "write failed" : result.getError());
+        return error(name, result.getFailureCode(), result.getError() == null ? "write failed" : result.getError());
     }
 
     private String createDirectory(UUID workspaceId, String name, JsonNode args) {
@@ -187,7 +187,7 @@ public class CodingToolExecutor {
             throw new IllegalStateException("create_directory infrastructure failure: "
                     + (result.getError() == null ? "workspace unavailable" : result.getError()));
         }
-        return error(name, result.getError() == null ? "directory creation failed" : result.getError());
+        return error(name, result.getFailureCode(), result.getError() == null ? "directory creation failed" : result.getError());
     }
 
     private String applyPatch(UUID workspaceId, String name, JsonNode args) {
@@ -221,7 +221,7 @@ public class CodingToolExecutor {
             throw new IllegalStateException("apply_patch infrastructure failure: "
                     + (result.getError() == null ? "workspace unavailable" : result.getError()));
         }
-        return error(name, result.getError() == null ? "patch failed" : result.getError());
+        return error(name, result.getFailureCode(), result.getError() == null ? "patch failed" : result.getError());
     }
 
     private String ok(String tool, ObjectNode result) {
@@ -233,18 +233,35 @@ public class CodingToolExecutor {
     }
 
     private String error(String tool, String message) {
+        return error(tool, null, message);
+    }
+
+    private String error(String tool, String failureCode, String message) {
         lastToolError = message;
         ObjectNode node = objectMapper.createObjectNode();
         node.put("tool", tool);
         node.put("ok", false);
-        node.put("errorCode", classifyError(message));
-        node.put("retryable", isRetryable(message));
+        node.put("errorCode", classifyError(failureCode, message));
+        node.put("retryable", isRetryable(failureCode, message));
         node.put("error", message);
-        node.put("nextAction", nextAction(message));
+        node.put("nextAction", nextAction(failureCode, message));
         return node.toString();
     }
 
     private String classifyError(String message) {
+        return classifyError(null, message);
+    }
+
+    private String classifyError(String failureCode, String message) {
+        if (failureCode != null) {
+            return switch (failureCode) {
+                case "FILE_PATCH_FAILED" -> "TOOL_PATCH_FORMAT_INVALID";
+                case "FILE_HASH_MISMATCH" -> "TOOL_CONFLICT";
+                case "TOOL_PATH_INVALID" -> "TOOL_PATH_INVALID";
+                case "TOOL_ARGUMENT_INVALID", "COMMAND_NOT_ALLOWED" -> "TOOL_ARGUMENT_INVALID";
+                default -> "TOOL_EXECUTION_FAILED";
+            };
+        }
         if (message == null) {
             return "TOOL_EXECUTION_FAILED";
         }
@@ -265,6 +282,13 @@ public class CodingToolExecutor {
     }
 
     private boolean isRetryable(String message) {
+        return isRetryable(null, message);
+    }
+
+    private boolean isRetryable(String failureCode, String message) {
+        if (failureCode != null) {
+            return "FILE_PATCH_FAILED".equals(failureCode) || "FILE_HASH_MISMATCH".equals(failureCode);
+        }
         if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_"))) {
             return true;
         }
@@ -273,6 +297,16 @@ public class CodingToolExecutor {
     }
 
     private String nextAction(String message) {
+        return nextAction(null, message);
+    }
+
+    private String nextAction(String failureCode, String message) {
+        if ("FILE_PATCH_FAILED".equals(failureCode)) {
+            return "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file";
+        }
+        if ("FILE_HASH_MISMATCH".equals(failureCode)) {
+            return "先重新 read_file 获取当前 sha256，再用 apply_patch";
+        }
         if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_"))) {
             return "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file";
         }

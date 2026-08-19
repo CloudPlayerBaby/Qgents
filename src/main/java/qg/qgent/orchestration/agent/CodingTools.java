@@ -171,7 +171,7 @@ public class CodingTools {
                     "create_directory infrastructure failure: " + (result.getError() == null
                             ? "workspace unavailable" : result.getError()));
         }
-        return error(result.getError() == null ? "directory creation failed" : result.getError());
+        return error(result.getFailureCode(), result.getError() == null ? "directory creation failed" : result.getError());
     }
 
     @Tool(name = "apply_patch", description = "对已有文本文件精确应用统一 Diff（不能用于创建新文件）；"
@@ -220,7 +220,7 @@ public class CodingTools {
                     "apply_patch infrastructure failure: " + (result.getError() == null
                             ? "workspace unavailable" : result.getError()));
         }
-        return error(result.getError() == null ? "patch failed" : result.getError());
+        return error(result.getFailureCode(), result.getError() == null ? "patch failed" : result.getError());
     }
 
     @Tool(name = "write_file", description = "创建新文件（目标文件已存在时拒绝，改用 apply_patch；内容不得超过 256KB）")
@@ -261,7 +261,7 @@ public class CodingTools {
                     "write_file infrastructure failure: " + (result.getError() == null
                             ? "workspace unavailable" : result.getError()));
         }
-        return error(result.getError() == null ? "write failed" : result.getError());
+        return error(result.getFailureCode(), result.getError() == null ? "write failed" : result.getError());
     }
 
     /**
@@ -309,17 +309,34 @@ public class CodingTools {
     }
 
     private Map<String, Object> error(String message) {
+        return error(null, message);
+    }
+
+    private Map<String, Object> error(String failureCode, String message) {
         lastToolError = message;
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("ok", false);
-        result.put("errorCode", classifyError(message));
-        result.put("retryable", isRetryable(message));
+        result.put("errorCode", classifyError(failureCode, message));
+        result.put("retryable", isRetryable(failureCode, message));
         result.put("error", message);
-        result.put("nextAction", nextAction(message));
+        result.put("nextAction", nextAction(failureCode, message));
         return result;
     }
 
     private String classifyError(String message) {
+        return classifyError(null, message);
+    }
+
+    private String classifyError(String failureCode, String message) {
+        if (failureCode != null) {
+            return switch (failureCode) {
+                case "FILE_PATCH_FAILED" -> "TOOL_PATCH_FORMAT_INVALID";
+                case "FILE_HASH_MISMATCH" -> "TOOL_CONFLICT";
+                case "TOOL_PATH_INVALID" -> "TOOL_PATH_INVALID";
+                case "TOOL_ARGUMENT_INVALID", "COMMAND_NOT_ALLOWED" -> "TOOL_ARGUMENT_INVALID";
+                default -> "TOOL_EXECUTION_FAILED";
+            };
+        }
         if (message == null) {
             return "TOOL_EXECUTION_FAILED";
         }
@@ -342,6 +359,13 @@ public class CodingTools {
     }
 
     private boolean isRetryable(String message) {
+        return isRetryable(null, message);
+    }
+
+    private boolean isRetryable(String failureCode, String message) {
+        if (failureCode != null) {
+            return "FILE_PATCH_FAILED".equals(failureCode) || "FILE_HASH_MISMATCH".equals(failureCode);
+        }
         if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_"))) {
             return true;
         }
@@ -351,6 +375,16 @@ public class CodingTools {
     }
 
     private String nextAction(String message) {
+        return nextAction(null, message);
+    }
+
+    private String nextAction(String failureCode, String message) {
+        if ("FILE_PATCH_FAILED".equals(failureCode)) {
+            return "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file";
+        }
+        if ("FILE_HASH_MISMATCH".equals(failureCode)) {
+            return "先重新 read_file 获取当前 sha256，再用 apply_patch";
+        }
         if (message == null) {
             return "检查工具参数和工作区状态后再试一次";
         }

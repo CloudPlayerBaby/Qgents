@@ -23,6 +23,10 @@ public class ToolExecutionResponse {
     private String status;
     private Integer exitCode;
     private Map<String, Object> result;
+    /**
+     * 稳定失败码，正常结束为 null。
+     */
+    private String failureCode;
     private String failureReason;
     private Instant createdAt;
     private Instant startedAt;

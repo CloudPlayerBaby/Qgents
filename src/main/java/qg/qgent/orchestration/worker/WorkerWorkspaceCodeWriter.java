@@ -9,6 +9,7 @@ import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -39,6 +40,9 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
      */
     private static final String EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     private static final Duration TOOL_TIMEOUT = Duration.ofSeconds(30);
+    private static final Set<String> RECOVERABLE_TOOL_FAILURE_CODES = Set.of(
+            "FILE_HASH_MISMATCH", "FILE_PATCH_FAILED", "TOOL_ARGUMENT_INVALID", "TOOL_PATH_INVALID",
+            "TOOL_NOT_SUPPORTED", "COMMAND_NOT_ALLOWED");
 
     public WorkerWorkspaceCodeWriter(SandboxWorkerClient client, SandboxSessionManager sessions,
                                      SandboxWorkerProperties properties) {
@@ -86,8 +90,8 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             WorkspaceDirectoryResult parent = ensureParentDirectory(workspaceId, target);
             if (!parent.isOk()) {
                 return parent.isInfrastructureFailure()
-                        ? WorkspaceWriteResult.infraFail(path, parent.getError())
-                        : WorkspaceWriteResult.fail(path, parent.getError());
+                        ? WorkspaceWriteResult.infraFail(path, parent.getFailureCode(), parent.getError())
+                        : WorkspaceWriteResult.fail(path, parent.getFailureCode(), parent.getError());
             }
             String expectedHash = currentHash(workspaceId, target);
             WorkerToolExecution execution = executeTool(workspaceId, target.repositoryId(), "file.write",
@@ -189,19 +193,19 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
 
     /**
      * Worker 受控工具返回的参数、路径与内容冲突可回灌模型修正；执行超时、取消和未分类的
-     * Worker 失败则属于基础设施错误。Worker 在 failureReason 前保留错误码，因此无需
-     * 依赖易变的自然语言错误文本分类。
+     * Worker 失败则属于基础设施错误。受控工具的可修复失败由稳定 failureCode 分类，
+     * 不得依赖易变的自然语言错误文本。
      */
     private static WorkspaceDirectoryResult directoryFailure(String path, WorkerToolExecution execution) {
         String reason = failureReason(execution, "directory creation failed");
-        return isToolFailure(execution) ? WorkspaceDirectoryResult.fail(path, reason)
-                : WorkspaceDirectoryResult.infraFail(path, reason);
+        return isToolFailure(execution) ? WorkspaceDirectoryResult.fail(path, execution.getFailureCode(), reason)
+                : WorkspaceDirectoryResult.infraFail(path, execution.getFailureCode(), reason);
     }
 
     private static WorkspaceWriteResult writeFailure(String path, WorkerToolExecution execution, String fallback) {
         String reason = failureReason(execution, fallback);
-        return isToolFailure(execution) ? WorkspaceWriteResult.fail(path, reason)
-                : WorkspaceWriteResult.infraFail(path, reason);
+        return isToolFailure(execution) ? WorkspaceWriteResult.fail(path, execution.getFailureCode(), reason)
+                : WorkspaceWriteResult.infraFail(path, execution.getFailureCode(), reason);
     }
 
     private static String failureReason(WorkerToolExecution execution, String fallback) {
@@ -213,10 +217,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
         if (!"FAILED".equals(execution.getStatus())) {
             return false;
         }
-        String reason = execution.getFailureReason();
-        return reason != null && (reason.startsWith("TOOL_")
-                || reason.startsWith("FILE_HASH_MISMATCH")
-                || reason.startsWith("FILE_PATCH_FAILED")
-                || reason.startsWith("PATCH_"));
+        String failureCode = execution.getFailureCode();
+        return RECOVERABLE_TOOL_FAILURE_CODES.contains(failureCode);
     }
 }

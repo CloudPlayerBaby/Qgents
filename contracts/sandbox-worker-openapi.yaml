@@ -384,6 +384,7 @@ components:
         status: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, TIMED_OUT, CANCELLED, INTERRUPTED]}
         exitCode: {type: [integer, 'null']}
         result: {type: object}
+        failureCode: {type: [string, 'null'], maxLength: 64, description: 稳定失败码；正常结束为 null}
         failureReason: {type: [string, 'null']}
         createdAt: {type: string, format: date-time}
         startedAt: {type: [string, 'null'], format: date-time}

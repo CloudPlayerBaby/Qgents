@@ -52,7 +52,6 @@ src/main/resources/rsa/private_key.pem
 
 # 数据库迁移脚本仍在开发中，当前不纳入版本控制
 /src/main/resources/db/migrations/
-/sandbox-worker/src/main/resources/db/migration/
 
 # Private keys
 *.pem
