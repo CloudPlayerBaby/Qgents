@@ -98,7 +98,7 @@ public class GenericCustomAgent implements Agent {
                 failure.setPhase(input.getPhase());
                 failure.setOutcome(RunOutcome.FAILED);
                 failure.setFailureCode(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
-                failure.setMessage("自定义 Agent 声明成功但未产生任何实际文件变更：请对已有文件使用 "
+                failure.setMessage("自定义 Agent 声明成功但未产生任何实际文件或目录变更：请对已有文件使用 "
                         + "apply_patch（write_file 仅用于新建文件），且写入必须实际改变内容（changed=true）；"
                         + "若确实无法修改，success 必须为 false 并说明原因");
                 failure.setObservations(observations);
@@ -109,14 +109,15 @@ public class GenericCustomAgent implements Agent {
             outcome.setOutcome(result.success() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED_QUALITY);
             outcome.setMessage(pickMessage(result));
             outcome.setObservations(observations);
-            // 写角色成功且本次确实写入过文件时，回填最小 CodingResult（summary + modifiedFiles），
-            // 否则下游 Verify/Review 拿不到"本次修改了哪些文件"（TestPromptBuilder 靠它渲染修改摘要）。
+            // 写角色成功且本次确实产生变更时，回填最小 CodingResult；目录与文件分开记录。
             if (result.success() && writeCapable && lastCodingTools != null
-                    && !lastCodingTools.getModifiedFiles().isEmpty()) {
+                    && (!lastCodingTools.getModifiedFiles().isEmpty()
+                    || !lastCodingTools.getModifiedDirectories().isEmpty())) {
                 CodingResult coding = new CodingResult();
                 coding.setSuccess(true);
                 coding.setSummary(result.summary());
                 coding.setModifiedFiles(new ArrayList<>(lastCodingTools.getModifiedFiles()));
+                coding.setModifiedDirectories(new ArrayList<>(lastCodingTools.getModifiedDirectories()));
                 outcome.setCodingResult(coding);
             }
             log.info("custom agent done agentId={} phase={} outcome={} observations={}",
@@ -177,7 +178,7 @@ public class GenericCustomAgent implements Agent {
         }
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round,
-                    observedWrites.changedPaths());
+                    observedWrites.changedPaths(), observedWrites.changedDirectories());
             ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
             observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
             if (turn.isInfraAbort()) {
@@ -230,7 +231,7 @@ public class GenericCustomAgent implements Agent {
                 NativeToolLoopSupport.finalizationInstruction(
                         "{\"success\":true|false,\"summary\":\"结果摘要\","
                                 + "\"message\":\"给用户的具体反馈、发现的问题或建议\"}",
-                        observedWrites.changedPaths()));
+                        observedWrites.changedPaths(), observedWrites.changedDirectories()));
         observations.add(LlmObservation.of(input.getPhase().name(), round + 1, finalization));
         if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
             throw new GenericParseException(triggerCode,
@@ -354,6 +355,7 @@ public class GenericCustomAgent implements Agent {
 
     private static final String WRITE_TOOLS_CONTRACT = READ_ONLY_TOOLS_CONTRACT + """
             - apply_patch：对已有文本文件精确应用统一 Diff，参数 {"path": "相对路径", "expectedHash": "read_file 返回的 64 位十六进制 sha256", "patch": "统一 Diff 文本"}；expectedHash 必须来自同一次 read_file。修改已有文件必须用本工具。
+            - create_directory：递归创建目录，参数 {"path": "相对目录路径"}；已存在目录幂等成功，不创建 .gitkeep。
             - write_file：仅用于创建新文件，参数 {"path": "相对路径", "content": "文件内容"}；目标文件已存在时会被拒绝（返回 ok=false），已存在文件一律改用 apply_patch。
             """;
 }

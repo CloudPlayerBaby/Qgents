@@ -30,7 +30,7 @@ import java.util.List;
 
 /**
  * 真实 Coding Agent：理解任务与计划，通过只读工具按需读取工作区代码，用 apply_patch
- * 精确修改已有文件、用 write_file 新建文件，真正修改工作区文件，并输出结构化
+ * 精确修改已有文件、用 write_file 新建文件、用 create_directory 创建目录，真正修改工作区，并输出结构化
  * finalResult 生成 {@link CodingResult}。
  * <p>
  * 阶段 B 起默认走原生 Tool Calling（{@code app.agent.protocol=native}）：模型直接返回结构化
@@ -169,7 +169,7 @@ public class CodingAgent implements Agent {
         List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round,
-                    observedWrites.changedPaths());
+                    observedWrites.changedPaths(), observedWrites.changedDirectories());
             ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
             observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
             if (turn.isInfraAbort()) {
@@ -219,8 +219,9 @@ public class CodingAgent implements Agent {
                 NativeToolLoopSupport.prepareFinalization(requestHistory, trigger),
                 NativeToolLoopSupport.finalizationInstruction(
                         "{\"finalResult\":{\"success\":true|false,\"summary\":\"结果摘要\","
-                                + "\"modifiedFiles\":[\"相对路径\"],\"changes\":[\"变更说明\"],"
-                                + "\"errors\":[\"错误说明\"]}}", observedWrites.changedPaths()));
+                                + "\"modifiedFiles\":[\"相对路径\"],\"modifiedDirectories\":[\"相对目录\"],\"changes\":[\"变更说明\"],"
+                                + "\"errors\":[\"错误说明\"]}}", observedWrites.changedPaths(),
+                        observedWrites.changedDirectories()));
         observations.add(LlmObservation.of(phase, round + 1, finalization));
         if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
             throw new CodingParseException(triggerCode, "bounded coding finalization did not produce complete JSON");
@@ -237,10 +238,10 @@ public class CodingAgent implements Agent {
                               AgentInput input) {
         String repairUser = JsonRepairSupport.buildPrompt(raw, errorMessage,
                 "{\"finalResult\":{\"success\":true|false,\"summary\":\"结果摘要\","
-                        + "\"modifiedFiles\":[\"相对路径\"],\"changes\":[\"变更说明\"],\"errors\":[\"错误说明\"]}}" );
+                        + "\"modifiedFiles\":[\"相对路径\"],\"modifiedDirectories\":[\"相对目录\"],\"changes\":[\"变更说明\"],\"errors\":[\"错误说明\"]}}" );
         String repaired = JsonRepairSupport.repairOnce(llm, system, raw, errorMessage,
                 "{\"finalResult\":{\"success\":true|false,\"summary\":\"结果摘要\","
-                        + "\"modifiedFiles\":[\"相对路径\"],\"changes\":[\"变更说明\"],\"errors\":[\"错误说明\"]}}");
+                        + "\"modifiedFiles\":[\"相对路径\"],\"modifiedDirectories\":[\"相对目录\"],\"changes\":[\"变更说明\"],\"errors\":[\"错误说明\"]}}");
         String repairedSha = repaired == null ? null
                 : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
         observations.add(new LlmObservation(input.getPhase().name(), round + 1,
@@ -305,25 +306,20 @@ public class CodingAgent implements Agent {
 
     /**
      * Coding 的 success 不能只由模型自报决定：必须至少有一个成功且实际改变内容的写操作，
-     * 或者由模型明确列出修改文件（兼容旧 Worker 未回传 changed 的历史实现）。实际写入路径
-     * 会补入结果，避免模型遗漏 modifiedFiles；没有任何证据时把结果降为协议失败，防止
+     * 实际写入路径会补入结果，避免模型遗漏 modifiedFiles/modifiedDirectories；没有任何证据时把结果降为协议失败，防止
      * JSON repair 把“未执行任何文件修改”包装成 Developer 成功。
      */
     private void validateAndCompleteChanges(CodingResult coding, ChangedWriteFactLedger observedWrites) {
         if (coding == null || !coding.isSuccess()) {
             return;
         }
-        List<String> declared = coding.getModifiedFiles();
-        if (declared == null) {
-            declared = List.of();
-        }
-        if (declared.isEmpty() && !observedWrites.hasChangedWrite()) {
+        if (!observedWrites.hasChangedWrite()) {
             throw new CodingParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
-                    "coding success requires at least one actual file modification");
+                    "coding success requires at least one actual file or directory modification");
         }
-        if (declared.isEmpty() && observedWrites.hasChangedWrite()) {
-            coding.setModifiedFiles(new ArrayList<>(observedWrites.changedPaths()));
-        }
+        // 结果范围只使用服务端观察到的真实 changed=true 事实，避免模型伪造路径污染 Review/Test 上下文。
+        coding.setModifiedFiles(new ArrayList<>(observedWrites.changedPaths()));
+        coding.setModifiedDirectories(new ArrayList<>(observedWrites.changedDirectories()));
     }
 
     /**

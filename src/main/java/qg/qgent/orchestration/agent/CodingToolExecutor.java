@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
+import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
+import qg.qgent.orchestration.tool.WorkspaceChangeResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 
 import java.util.UUID;
@@ -72,6 +74,7 @@ public class CodingToolExecutor {
             case "list_files" -> listFiles(workspaceId, name);
             case "read_file" -> readFile(workspaceId, name, args);
             case "search_code" -> searchCode(workspaceId, name, args);
+            case "create_directory" -> createDirectory(workspaceId, name, args);
             case "write_file" -> writeFile(workspaceId, name, args);
             case "apply_patch" -> applyPatch(workspaceId, name, args);
             default -> error(name, "unknown tool '" + name + "'");
@@ -127,9 +130,12 @@ public class CodingToolExecutor {
         }
         WorkspaceWriteResult result = writer.writeFile(workspaceId, path, content);
         if (result.isOk()) {
-            notifyWrite(result);
+            if (result.isChanged()) {
+                notifyChange(result);
+            }
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("path", result.getPath());
+            resultNode.put("changed", result.isChanged());
             return ok(name, resultNode);
         }
         if (result.isInfrastructureFailure()) {
@@ -137,6 +143,28 @@ public class CodingToolExecutor {
                     + (result.getError() == null ? "workspace unavailable" : result.getError()));
         }
         return error(name, result.getError() == null ? "write failed" : result.getError());
+    }
+
+    private String createDirectory(UUID workspaceId, String name, JsonNode args) {
+        String path = args.path("path").asText("").trim();
+        if (path.isBlank()) {
+            return error(name, "create_directory requires non-empty 'path'");
+        }
+        WorkspaceDirectoryResult result = writer.createDirectory(workspaceId, path);
+        if (result.isOk()) {
+            if (result.isChanged()) {
+                notifyChange(result);
+            }
+            ObjectNode resultNode = objectMapper.createObjectNode();
+            resultNode.put("path", result.getPath());
+            resultNode.put("created", result.isCreated());
+            return ok(name, resultNode);
+        }
+        if (result.isInfrastructureFailure()) {
+            throw new IllegalStateException("create_directory infrastructure failure: "
+                    + (result.getError() == null ? "workspace unavailable" : result.getError()));
+        }
+        return error(name, result.getError() == null ? "directory creation failed" : result.getError());
     }
 
     private String applyPatch(UUID workspaceId, String name, JsonNode args) {
@@ -154,9 +182,12 @@ public class CodingToolExecutor {
         }
         WorkspaceWriteResult result = writer.patchFile(workspaceId, path, expectedHash, patch);
         if (result.isOk()) {
-            notifyWrite(result);
+            if (result.isChanged()) {
+                notifyChange(result);
+            }
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("path", result.getPath());
+            resultNode.put("changed", result.isChanged());
             return ok(name, resultNode);
         }
         if (result.isInfrastructureFailure()) {
@@ -185,7 +216,7 @@ public class CodingToolExecutor {
     /**
      * 成功写后通知预览回调；回调失败只记日志，绝不破坏 Coding 主循环。
      */
-    private void notifyWrite(WorkspaceWriteResult result) {
+    private void notifyChange(WorkspaceChangeResult result) {
         if (writeObserver == null || projectId == null) {
             return;
         }

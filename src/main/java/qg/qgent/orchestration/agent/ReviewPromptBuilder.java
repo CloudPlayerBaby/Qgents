@@ -164,6 +164,9 @@ public class ReviewPromptBuilder {
         if (coding.getModifiedFiles() != null && !coding.getModifiedFiles().isEmpty()) {
             sb.append("\n修改文件：").append(String.join(",", coding.getModifiedFiles()));
         }
+        if (coding.getModifiedDirectories() != null && !coding.getModifiedDirectories().isEmpty()) {
+            sb.append("\n新建目录：").append(String.join(",", coding.getModifiedDirectories()));
+        }
         if (coding.getChanges() != null && !coding.getChanges().isEmpty()) {
             sb.append("\n变更说明：").append(String.join("；", coding.getChanges()));
         }
@@ -195,6 +198,10 @@ public class ReviewPromptBuilder {
         if (coding != null && coding.getModifiedFiles() != null && !coding.getModifiedFiles().isEmpty()) {
             sb.append("\n\n服务端可信修改文件范围（CodingResult.modifiedFiles）：\n- ")
                     .append(String.join("\n- ", coding.getModifiedFiles()));
+        }
+        if (coding != null && coding.getModifiedDirectories() != null && !coding.getModifiedDirectories().isEmpty()) {
+            sb.append("\n\n服务端可信新建目录范围（CodingResult.modifiedDirectories）：\n- ")
+                    .append(String.join("\n- ", coding.getModifiedDirectories()));
         }
     }
 

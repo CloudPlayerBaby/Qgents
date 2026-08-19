@@ -231,8 +231,8 @@ class GenericCustomAgentTest {
         verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("activate_skill", "apply_patch", "list_files", "read_file",
-                "search_chat_history", "search_code", "write_file");
+        assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory", "list_files",
+                "read_file", "search_chat_history", "search_code", "write_file");
     }
 
     @Test
@@ -247,7 +247,7 @@ class GenericCustomAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
-        assertThat(outcome.getMessage()).contains("实际文件变更");
+        assertThat(outcome.getMessage()).contains("实际文件或目录变更");
     }
 
     @Test
@@ -307,7 +307,7 @@ class GenericCustomAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
-        assertThat(outcome.getMessage()).contains("实际文件变更");
+        assertThat(outcome.getMessage()).contains("实际文件或目录变更");
     }
 
     private ToolTurnResult finalTurn(String json, String finishReason) {

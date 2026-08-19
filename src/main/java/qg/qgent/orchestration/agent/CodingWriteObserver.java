@@ -1,6 +1,6 @@
 package qg.qgent.orchestration.agent;
 
-import qg.qgent.orchestration.tool.WorkspaceWriteResult;
+import qg.qgent.orchestration.tool.WorkspaceChangeResult;
 
 import java.util.UUID;
 
@@ -9,7 +9,7 @@ import java.util.UUID;
  * <p>
  * 约定：
  * <ul>
- *   <li>仅成功写入（apply_patch / write_file 返回 ok=true）时触发，工具级失败不触发；</li>
+ *   <li>仅实际成功变更（apply_patch / write_file / create_directory 返回 changed=true）时触发，工具级失败不触发；</li>
  *   <li>实现必须快速失败并自行吞异常：预览记录失败不得阻塞或破坏 Coding 主循环；</li>
  *   <li>同一次 run 内按 workspaceId 共享，跨轮次回调累积（每次成功写各触发一次）。</li>
  * </ul>
@@ -23,7 +23,7 @@ public interface CodingWriteObserver {
      * @param taskId     当前任务 ID。
      * @param taskRunId  当前 TaskRun ID（Coding 相位必非空）。
      * @param workspaceId 被写入的工作区 ID。
-     * @param result     成功写入结果（含 path/newSha256/changed）。
+     * @param result     成功变更结果（含 path/changed；文件结果还包含 newSha256）。
      */
-    void onWrite(UUID projectId, UUID taskId, UUID taskRunId, UUID workspaceId, WorkspaceWriteResult result);
+    void onWrite(UUID projectId, UUID taskId, UUID taskRunId, UUID workspaceId, WorkspaceChangeResult result);
 }

@@ -16,10 +16,10 @@ docker build -t qgents/sandbox-dev-tools:0.2.0 sandbox-images/dev-tools
 docker run --rm --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=512m \
   --tmpfs /run:rw,noexec,nosuid,size=64m \
-  --tmpfs /home/developer/.m2:rw,nosuid,nodev,size=2g \
-  --tmpfs /home/developer/.gradle:rw,nosuid,nodev,size=3g \
-  --tmpfs /home/developer/.npm:rw,nosuid,nodev,size=1g \
-  --tmpfs /home/developer/.cache:rw,nosuid,nodev,size=512m \
+  --tmpfs /home/developer/.m2:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=2g \
+  --tmpfs /home/developer/.gradle:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=3g \
+  --tmpfs /home/developer/.npm:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=1g \
+  --tmpfs /home/developer/.cache:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=512m \
   qgents/sandbox-dev-tools:0.2.0 \
   sh -lc 'set -eu; java -version; mvn -version; gradle --version; node --version; npm --version; test -w /home/developer/.m2; test -w /home/developer/.gradle; test -w /home/developer/.npm'
 ```

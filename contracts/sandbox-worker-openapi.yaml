@@ -333,7 +333,7 @@ components:
       properties:
         executionId: {type: string, format: uuid}
         repositoryId: {type: string, format: uuid}
-        tool: {type: string, enum: [process.exec, file.read, file.list, file.search, file.write, file.patch]}
+        tool: {type: string, enum: [process.exec, file.read, file.list, file.search, file.write, file.patch, directory.create]}
         arguments: {type: object, maxProperties: 64, description: 各工具的结构化参数（如 FilePatchArguments）}
         timeoutSeconds: {type: integer, minimum: 1, maximum: 3600}
     # file.patch 只对已有 UTF-8 文本文件做精确局部修改，严格按声明行号应用统一 Diff，
@@ -352,6 +352,17 @@ components:
         sha256: {type: string}
         bytes: {type: integer}
         changed: {type: boolean}
+    DirectoryCreateArguments:
+      type: object
+      required: [path]
+      properties:
+        path: {type: string, minLength: 1, maxLength: 1024, description: Repository 内相对目录路径，禁止绝对路径与 .. 越界}
+    DirectoryCreateResult:
+      type: object
+      required: [path, created]
+      properties:
+        path: {type: string}
+        created: {type: boolean, description: 目录是否由本次调用实际创建}
     ToolExecution:
       type: object
       properties:

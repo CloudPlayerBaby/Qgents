@@ -1,6 +1,6 @@
 package qg.qgent.orchestration.agent;
 
-import qg.qgent.orchestration.tool.WorkspaceWriteResult;
+import qg.qgent.orchestration.tool.WorkspaceChangeResult;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -17,7 +17,8 @@ final class ChangedWriteFactLedger {
 
     static final int MAX_CHANGED_PATHS = 64;
 
-    private final Set<String> changedPaths = new LinkedHashSet<>();
+    private final Set<String> changedFiles = new LinkedHashSet<>();
+    private final Set<String> changedDirectories = new LinkedHashSet<>();
 
     CodingWriteObserver observing(CodingWriteObserver delegate) {
         return (projectId, taskId, taskRunId, workspaceId, result) -> {
@@ -28,29 +29,35 @@ final class ChangedWriteFactLedger {
         };
     }
 
-    void record(WorkspaceWriteResult result) {
+    void record(WorkspaceChangeResult result) {
         if (result == null || !result.isOk() || !result.isChanged()
                 || result.getPath() == null || result.getPath().isBlank()) {
             return;
         }
-        if (changedPaths.size() < MAX_CHANGED_PATHS || changedPaths.contains(result.getPath())) {
-            changedPaths.add(result.getPath());
+        Set<String> paths = result instanceof qg.qgent.orchestration.tool.WorkspaceDirectoryResult
+                ? changedDirectories : changedFiles;
+        if (paths.size() < MAX_CHANGED_PATHS || paths.contains(result.getPath())) {
+            paths.add(result.getPath());
         }
     }
 
     boolean hasChangedWrite() {
-        return !changedPaths.isEmpty();
+        return !changedFiles.isEmpty() || !changedDirectories.isEmpty();
     }
 
     List<String> changedPaths() {
-        return List.copyOf(changedPaths);
+        return List.copyOf(changedFiles);
+    }
+
+    List<String> changedDirectories() {
+        return List.copyOf(changedDirectories);
     }
 
     void addTo(List<String> target) {
         if (target == null) {
             return;
         }
-        List<String> missing = new ArrayList<>(changedPaths);
+        List<String> missing = new ArrayList<>(changedFiles);
         missing.removeAll(target);
         target.addAll(missing);
     }

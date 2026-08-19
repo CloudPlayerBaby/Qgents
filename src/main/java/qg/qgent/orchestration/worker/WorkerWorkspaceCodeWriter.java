@@ -3,6 +3,7 @@ package qg.qgent.orchestration.worker;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 
 import java.nio.charset.StandardCharsets;
@@ -45,6 +46,28 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
     }
 
     @Override
+    public WorkspaceDirectoryResult createDirectory(UUID workspaceId, String path) {
+        if (path == null || path.isBlank()) {
+            return WorkspaceDirectoryResult.fail(path, "path must not be blank");
+        }
+        WorkerPathResolver.Target target = WorkerPathResolver.resolve(session(workspaceId), path);
+        if (target == null) {
+            return WorkspaceDirectoryResult.fail(path, "path does not map to a workspace repository");
+        }
+        try {
+            WorkerToolExecution execution = executeTool(workspaceId, target.repositoryId(), "directory.create",
+                    Map.of("path", target.relativePath()), TOOL_TIMEOUT);
+            if ("SUCCEEDED".equals(execution.getStatus())) {
+                Object created = resultOf(execution).get("created");
+                return WorkspaceDirectoryResult.ok(path, Boolean.TRUE.equals(created));
+            }
+            return directoryFailure(path, execution);
+        } catch (RuntimeException e) {
+            return WorkspaceDirectoryResult.infraFail(path, "directory creation failed: " + e.getMessage());
+        }
+    }
+
+    @Override
     public WorkspaceWriteResult writeFile(UUID workspaceId, String path, String content) {
         if (path == null || path.isBlank()) {
             return WorkspaceWriteResult.fail(null, "path must not be blank");
@@ -60,6 +83,12 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             return WorkspaceWriteResult.fail(path, "path does not map to a workspace repository");
         }
         try {
+            WorkspaceDirectoryResult parent = ensureParentDirectory(workspaceId, target);
+            if (!parent.isOk()) {
+                return parent.isInfrastructureFailure()
+                        ? WorkspaceWriteResult.infraFail(path, parent.getError())
+                        : WorkspaceWriteResult.fail(path, parent.getError());
+            }
             String expectedHash = currentHash(workspaceId, target);
             WorkerToolExecution execution = executeTool(workspaceId, target.repositoryId(), "file.write",
                     Map.of("path", target.relativePath(), "expectedHash", expectedHash, "content", content),
@@ -67,8 +96,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             if ("SUCCEEDED".equals(execution.getStatus())) {
                 return okResult(path, execution, expectedHash);
             }
-            return WorkspaceWriteResult.fail(path,
-                    execution.getFailureReason() == null ? "write failed" : execution.getFailureReason());
+            return writeFailure(path, execution, "write failed");
         } catch (RuntimeException e) {
             return WorkspaceWriteResult.infraFail(path, "write failed: " + e.getMessage());
         }
@@ -99,8 +127,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             if ("SUCCEEDED".equals(execution.getStatus())) {
                 return okResult(path, execution, expectedHash);
             }
-            return WorkspaceWriteResult.fail(path,
-                    execution.getFailureReason() == null ? "patch failed" : execution.getFailureReason());
+            return writeFailure(path, execution, "patch failed");
         } catch (RuntimeException e) {
             return WorkspaceWriteResult.infraFail(path, "patch failed: " + e.getMessage());
         }
@@ -139,5 +166,56 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             }
         }
         return EMPTY_SHA256;
+    }
+
+    private WorkspaceDirectoryResult ensureParentDirectory(UUID workspaceId, WorkerPathResolver.Target target) {
+        java.nio.file.Path parent = java.nio.file.Path.of(target.relativePath()).getParent();
+        if (parent == null || parent.toString().isBlank()) {
+            return WorkspaceDirectoryResult.ok(target.relativePath(), false);
+        }
+        String relativeParent = parent.toString().replace('\\', '/');
+        try {
+            WorkerToolExecution execution = executeTool(workspaceId, target.repositoryId(), "directory.create",
+                    Map.of("path", relativeParent), TOOL_TIMEOUT);
+            if ("SUCCEEDED".equals(execution.getStatus())) {
+                return WorkspaceDirectoryResult.ok(relativeParent,
+                        Boolean.TRUE.equals(resultOf(execution).get("created")));
+            }
+            return directoryFailure(relativeParent, execution);
+        } catch (RuntimeException e) {
+            return WorkspaceDirectoryResult.infraFail(relativeParent, "directory creation failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Worker 受控工具返回的参数、路径与内容冲突可回灌模型修正；执行超时、取消和未分类的
+     * Worker 失败则属于基础设施错误。Worker 在 failureReason 前保留错误码，因此无需
+     * 依赖易变的自然语言错误文本分类。
+     */
+    private static WorkspaceDirectoryResult directoryFailure(String path, WorkerToolExecution execution) {
+        String reason = failureReason(execution, "directory creation failed");
+        return isToolFailure(execution) ? WorkspaceDirectoryResult.fail(path, reason)
+                : WorkspaceDirectoryResult.infraFail(path, reason);
+    }
+
+    private static WorkspaceWriteResult writeFailure(String path, WorkerToolExecution execution, String fallback) {
+        String reason = failureReason(execution, fallback);
+        return isToolFailure(execution) ? WorkspaceWriteResult.fail(path, reason)
+                : WorkspaceWriteResult.infraFail(path, reason);
+    }
+
+    private static String failureReason(WorkerToolExecution execution, String fallback) {
+        return execution.getFailureReason() == null || execution.getFailureReason().isBlank()
+                ? fallback : execution.getFailureReason();
+    }
+
+    private static boolean isToolFailure(WorkerToolExecution execution) {
+        if (!"FAILED".equals(execution.getStatus())) {
+            return false;
+        }
+        String reason = execution.getFailureReason();
+        return reason != null && (reason.startsWith("TOOL_")
+                || reason.startsWith("FILE_HASH_MISMATCH")
+                || reason.startsWith("PATCH_"));
     }
 }

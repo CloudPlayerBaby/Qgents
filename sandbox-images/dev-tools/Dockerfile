@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     GRADLE_USER_HOME=/home/developer/.gradle \
     NPM_CONFIG_CACHE=/home/developer/.npm \
     PNPM_HOME=/opt/pnpm \
+    JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/home/developer/.cache -Djansi.tmpdir=/home/developer/.cache" \
     PATH=/opt/pnpm:$PATH
 
 RUN apt-get update \

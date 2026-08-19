@@ -15,11 +15,13 @@ import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 import qg.qgent.service.ContextService;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -60,39 +62,54 @@ class CodingAgentTest {
     // ---------- 原生 Tool Calling（默认协议） ----------
 
     @Test
-    void nativeBareFinalResultSucceeds() {
+    void nativeBareFinalResultWithoutActualWriteIsRejected() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        assertThat(outcome.getCodingResult().isSuccess()).isTrue();
-        assertThat(outcome.getCodingResult().getSummary()).isEqualTo("done");
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
         assertThat(outcome.getObservations()).hasSize(1);
         assertThat(outcome.getObservations().get(0).phase()).isEqualTo("CODING");
     }
 
     @Test
-    void nativeWrappedFinalResultSucceeds() {
+    void nativeWrappedFinalResultWithoutActualWriteIsRejected() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"finalResult\":" + bareResult(true, "ok", "src/main/java/X.java") + "}", "stop"));
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        assertThat(outcome.getCodingResult().getModifiedFiles()).containsExactly("src/main/java/X.java");
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
     }
 
     @Test
     void nativeMultiRoundToolLoopExecutesToolsInOrder() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
-        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
-                .thenReturn(toolTurn("read_file"),
-                        toolTurn("apply_patch"),
-                        finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", "0".repeat(64), "patch"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", "new-hash", true));
+        AtomicInteger round = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            int current = round.getAndIncrement();
+            if (current == 0) {
+                return toolTurn("read_file");
+            }
+            if (current == 1) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream()
+                        .filter(callback -> "apply_patch".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow()
+                        .call("{\"path\":\"src/main/java/X.java\",\"expectedHash\":\""
+                                + "0".repeat(64) + "\",\"patch\":\"patch\"}");
+                return toolTurn("apply_patch");
+            }
+            return finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop");
+        });
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
@@ -117,8 +134,8 @@ class CodingAgentTest {
         verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("activate_skill", "apply_patch", "list_files", "read_file", "search_chat_history",
-                "search_code", "write_file");
+        assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory", "list_files", "read_file",
+                "search_chat_history", "search_code", "write_file");
     }
 
     @Test
@@ -152,7 +169,7 @@ class CodingAgentTest {
     }
 
     @Test
-    void nativeFinishLengthFinalizesOnceAndSucceeds() {
+    void nativeFinishLengthFinalizationWithoutActualWriteIsRejected() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"finalResult\":{\"success\":true,\"summary\":\"tr", "LENGTH"));
@@ -161,13 +178,13 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        assertThat(outcome.getCodingResult().getSummary()).isEqualTo("recovered");
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
         verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
     }
 
     @Test
-    void nativeMaxRoundsFinalizesOnceAndSucceeds() {
+    void nativeMaxRoundsFinalizationWithoutActualWriteIsRejected() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenReturn(toolTurn("list_files"));
         when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
@@ -175,7 +192,8 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
         verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
         verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
         assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS + 1);
@@ -201,11 +219,11 @@ class CodingAgentTest {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(toolTurnWithCode("apply_patch", ProtocolFailureCode.LLM_TOOL_ARGUMENT_INVALID),
-                        finalTurn(bareResult(true, "corrected", "src/main/java/X.java"), "stop"));
+                        finalTurn(bareResult(false, "corrected", "src/main/java/X.java"), "stop"));
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getObservations()).hasSize(2);
         assertThat(outcome.getObservations().get(0).protocolFailureCode())
                 .isEqualTo(ProtocolFailureCode.LLM_TOOL_ARGUMENT_INVALID);
@@ -238,7 +256,7 @@ class CodingAgentTest {
     }
 
     @Test
-    void nativeMalformedJsonIsRepairedWithJsonModeCompletion() {
+    void nativeMalformedJsonRepairWithoutActualWriteIsRejected() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"success\":true,\"summary\":\"将\"和\"字居中\"}", "stop"));
@@ -248,10 +266,62 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
-        assertThat(outcome.getCodingResult().getSummary()).isEqualTo("done");
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
         assertThat(outcome.getObservations()).hasSize(2);
         verify(llm).complete(anyString(), anyList());
+    }
+
+    @Test
+    void nativeDirectoryCreateCanBeTheOnlyObservedChange() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(writer.createDirectory(workspaceId, "src/generated"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/generated", true));
+        AtomicInteger round = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            if (round.getAndIncrement() == 0) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream()
+                        .filter(callback -> "create_directory".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow()
+                        .call("{\"path\":\"src/generated\"}");
+                return toolTurn("create_directory");
+            }
+            return finalTurn(bareResult(true, "created directory", "fabricated/File.java"), "stop");
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
+        assertThat(outcome.getCodingResult().getModifiedDirectories()).containsExactly("src/generated");
+        verify(writer).createDirectory(workspaceId, "src/generated");
+    }
+
+    @Test
+    void nativeIdempotentDirectoryCreateDoesNotSatisfyChangedWriteGate() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(writer.createDirectory(workspaceId, "src/generated"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/generated", false));
+        AtomicInteger round = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            if (round.getAndIncrement() == 0) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream()
+                        .filter(callback -> "create_directory".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow()
+                        .call("{\"path\":\"src/generated\"}");
+                return toolTurn("create_directory");
+            }
+            return finalTurn(bareResult(true, "directory already exists", null), "stop");
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
     }
 
     @Test
@@ -266,7 +336,7 @@ class CodingAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
         assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
-        assertThat(outcome.getMessage()).contains("requires at least one actual file modification");
+        assertThat(outcome.getMessage()).contains("requires at least one actual file or directory modification");
     }
 
     @Test
@@ -288,8 +358,11 @@ class CodingAgentTest {
     @Test
     void legacyFinalResultSucceeds() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "src/main/java/X.java", "code"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", "new-hash", true));
         when(llm.complete(anyString(), anyList()))
-                .thenReturn("{\"finalResult\":{\"success\":true,\"summary\":\"done\",\"modifiedFiles\":[\"src/main/java/X.java\"]}}");
+                .thenReturn("{\"toolCall\":{\"name\":\"write_file\",\"arguments\":{\"path\":\"src/main/java/X.java\",\"content\":\"code\"}}}",
+                        "{\"finalResult\":{\"success\":true,\"summary\":\"done\",\"modifiedFiles\":[\"src/main/java/X.java\"]}}");
 
         AgentRunOutcome outcome = legacyAgent().run(codingInput());
 

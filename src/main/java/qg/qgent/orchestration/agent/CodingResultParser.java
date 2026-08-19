@@ -74,6 +74,7 @@ public class CodingResultParser {
         result.setSuccess(successNode.asBoolean());
         result.setSummary(optionalText(node, "summary"));
         result.setModifiedFiles(optionalStringArray(node, "modifiedFiles"));
+        result.setModifiedDirectories(optionalStringArray(node, "modifiedDirectories"));
         result.setChanges(optionalStringArray(node, "changes"));
         result.setErrors(optionalStringArray(node, "errors"));
         if (result.isSuccess() && (result.getSummary() == null || result.getSummary().isBlank())) {

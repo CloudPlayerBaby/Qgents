@@ -38,6 +38,16 @@ class ToolRegistryTest {
     }
 
     @Test
+    void discoversDirectoryCreate() throws Exception {
+        ToolRegistry registry = new ToolRegistry(List.of(new DirectoryCreateTool(new RepositoryFileResolver())));
+
+        ToolResult result = registry.execute("directory.create", context(), Map.of("path", "new/dir"));
+
+        assertEquals(true, result.getResult().get("created"));
+        assertTrue(registry.requiresRepository("directory.create"));
+    }
+
+    @Test
     void unknownToolStillReturnsToolNotSupported() {
         ToolRegistry registry = new ToolRegistry(List.of(new FilePatchTool(new RepositoryFileResolver())));
 

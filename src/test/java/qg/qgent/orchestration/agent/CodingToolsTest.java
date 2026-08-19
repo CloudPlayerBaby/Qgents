@@ -3,6 +3,7 @@ package qg.qgent.orchestration.agent;
 import org.junit.jupiter.api.Test;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.orchestration.tool.WorkspaceInfraException;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
@@ -218,6 +219,64 @@ class CodingToolsTest {
         assertThatThrownBy(() -> tools().writeFile("src/main/java/Y.java", "code"))
                 .isInstanceOf(WorkspaceInfraException.class)
                 .hasMessageContaining("write_file infrastructure failure");
+    }
+
+    @Test
+    void createDirectoryRecordsOnlyActualCreation() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/main/java", true));
+        CodingTools tools = tools();
+
+        Map<String, Object> result = tools.createDirectory("src/main/java");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("created")).isEqualTo(true);
+        assertThat(tools.getModifiedDirectories()).containsExactly("src/main/java");
+        assertThat(tools.getModifiedFiles()).isEmpty();
+    }
+
+    @Test
+    void createDirectoryIdempotentResultDoesNotRecordChange() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/main/java", false));
+        CodingTools tools = tools();
+
+        Map<String, Object> result = tools.createDirectory("src/main/java");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("created")).isEqualTo(false);
+        assertThat(tools.getModifiedDirectories()).isEmpty();
+    }
+
+    @Test
+    void createDirectoryInfraFailureThrowsInfraException() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.infraFail("src/main/java", "workspace unavailable"));
+
+        assertThatThrownBy(() -> tools().createDirectory("src/main/java"))
+                .isInstanceOf(WorkspaceInfraException.class)
+                .hasMessageContaining("create_directory infrastructure failure");
+    }
+
+    @Test
+    void writeObserverFiresOnActualDirectoryCreation() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/main/java", true));
+
+        toolsWithObserver().createDirectory("src/main/java");
+
+        verify(observer).onWrite(eq(PROJECT_ID), eq(TASK_ID), eq(TASK_RUN_ID), eq(workspaceId),
+                any(WorkspaceDirectoryResult.class));
+    }
+
+    @Test
+    void writeObserverDoesNotFireForExistingDirectory() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/main/java", false));
+
+        toolsWithObserver().createDirectory("src/main/java");
+
+        verify(observer, never()).onWrite(any(), any(), any(), any(), any());
     }
 
     // ---- 阶段 D：成功写后的 Preview 回调（CodingWriteObserver） ----

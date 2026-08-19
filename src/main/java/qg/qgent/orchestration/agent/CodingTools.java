@@ -5,6 +5,8 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.orchestration.tool.WorkspaceChangeResult;
+import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.orchestration.tool.WorkspaceInfraException;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
@@ -50,6 +52,8 @@ public class CodingTools {
      * 供执行结束后回填 CodingResult.modifiedFiles（Verify/Review 上下文可见本次修改范围）。
      */
     private final Set<String> modifiedFiles = new HashSet<>();
+    /** 本次 run 内实际新建的目录路径，空目录不伪装成文件。 */
+    private final Set<String> modifiedDirectories = new HashSet<>();
     /**
      * 成功写后的预览回调（阶段 D）；null 表示未启用预览记录。由 CodingAgent 按 run 注入。
      */
@@ -80,6 +84,11 @@ public class CodingTools {
      */
     public Set<String> getModifiedFiles() {
         return java.util.Collections.unmodifiableSet(modifiedFiles);
+    }
+
+    /** 本次 run 内实际新建的目录路径。 */
+    public Set<String> getModifiedDirectories() {
+        return java.util.Collections.unmodifiableSet(modifiedDirectories);
     }
 
     @Tool(name = "list_files", description = "列出工作区所有代码文件的相对路径，无参数")
@@ -121,6 +130,32 @@ public class CodingTools {
         return result;
     }
 
+    @Tool(name = "create_directory", description = "递归创建工作区内目录；目录已存在时幂等成功，不创建 .gitkeep")
+    public Map<String, Object> createDirectory(
+            @ToolParam(description = "工作区内的相对目录路径") String path) {
+        if (path == null || path.isBlank()) {
+            return error("create_directory requires non-empty 'path'");
+        }
+        WorkspaceDirectoryResult result = writer.createDirectory(workspaceId, path);
+        if (result.isOk()) {
+            if (result.isChanged()) {
+                modifiedDirectories.add(result.getPath() == null ? path : result.getPath());
+                notifyChange(result);
+            }
+            Map<String, Object> ok = new LinkedHashMap<>();
+            ok.put("ok", true);
+            ok.put("path", result.getPath());
+            ok.put("created", result.isCreated());
+            return ok;
+        }
+        if (result.isInfrastructureFailure()) {
+            throw new WorkspaceInfraException(
+                    "create_directory infrastructure failure: " + (result.getError() == null
+                            ? "workspace unavailable" : result.getError()));
+        }
+        return error(result.getError() == null ? "directory creation failed" : result.getError());
+    }
+
     @Tool(name = "apply_patch", description = "对已有文本文件精确应用统一 Diff（不能用于创建新文件）；"
             + "expectedHash 可省略——省略时使用本会话已确认的最新哈希，否则先 read_file 获取")
     public Map<String, Object> applyPatch(
@@ -146,8 +181,10 @@ public class CodingTools {
         WorkspaceWriteResult result = writer.patchFile(workspaceId, path, expectedHash, patch);
         if (result.isOk()) {
             latestSha256.put(path, result.getNewSha256());
-            modifiedFiles.add(path);
-            notifyWrite(result);
+            if (result.isChanged()) {
+                modifiedFiles.add(path);
+                notifyChange(result);
+            }
             Map<String, Object> ok = new LinkedHashMap<>();
             ok.put("ok", true);
             ok.put("path", path);
@@ -181,8 +218,10 @@ public class CodingTools {
         WorkspaceWriteResult result = writer.writeFile(workspaceId, path, content);
         if (result.isOk()) {
             latestSha256.put(path, result.getNewSha256());
-            modifiedFiles.add(path);
-            notifyWrite(result);
+            if (result.isChanged()) {
+                modifiedFiles.add(path);
+                notifyChange(result);
+            }
             Map<String, Object> ok = new LinkedHashMap<>();
             ok.put("ok", true);
             ok.put("path", path);
@@ -211,7 +250,7 @@ public class CodingTools {
     /**
      * 成功写后通知预览回调；回调失败只记日志，绝不破坏 Coding 主循环。
      */
-    private void notifyWrite(WorkspaceWriteResult result) {
+    private void notifyChange(WorkspaceChangeResult result) {
         if (writeObserver == null || projectId == null) {
             return;
         }

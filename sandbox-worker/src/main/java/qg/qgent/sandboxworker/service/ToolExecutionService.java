@@ -304,9 +304,11 @@ public class ToolExecutionService {
     }
 
     private String safeMessage(RuntimeException exception) {
-        return exception instanceof WorkerException && exception.getMessage() != null
-                ? exception.getMessage()
-                : "工具执行失败";
+        if (exception instanceof WorkerException workerException) {
+            String message = workerException.getMessage();
+            return workerException.getCode() + (message == null || message.isBlank() ? "" : ": " + message);
+        }
+        return "工具执行失败";
     }
 
     private ToolExecutionResponse response(ToolExecutionEntity entity) {
