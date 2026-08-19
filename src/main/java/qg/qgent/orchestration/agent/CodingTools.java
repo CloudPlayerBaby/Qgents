@@ -55,6 +55,8 @@ public class CodingTools {
     private final Set<String> modifiedFiles = new HashSet<>();
     /** 本次 run 内实际新建的目录路径，空目录不伪装成文件。 */
     private final Set<String> modifiedDirectories = new HashSet<>();
+    /** 最近一次工具级失败，供最终无变更门禁保留可操作根因。 */
+    private String lastToolError;
     /**
      * 成功写后的预览回调（阶段 D）；null 表示未启用预览记录。由 CodingAgent 按 run 注入。
      */
@@ -97,6 +99,10 @@ public class CodingTools {
     /** 本次 run 内实际新建的目录路径。 */
     public Set<String> getModifiedDirectories() {
         return java.util.Collections.unmodifiableSet(modifiedDirectories);
+    }
+
+    public String getLastToolError() {
+        return lastToolError;
     }
 
     @Tool(name = "list_files", description = "列出工作区所有代码文件的相对路径，无参数")
@@ -303,6 +309,7 @@ public class CodingTools {
     }
 
     private Map<String, Object> error(String message) {
+        lastToolError = message;
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("ok", false);
         result.put("errorCode", classifyError(message));
@@ -319,10 +326,13 @@ public class CodingTools {
         if (message.contains("UTF-8") || message.contains("exceeds")) {
             return "TOOL_CONTENT_INVALID";
         }
+        if (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")) {
+            return "TOOL_PATCH_FORMAT_INVALID";
+        }
         if (message.contains("outside") || message.contains("escapes") || message.contains("invalid")) {
             return "TOOL_PATH_INVALID";
         }
-        if (message.contains("hash") || message.contains("changed since read")) {
+        if (message.contains("FILE_HASH_MISMATCH") || message.contains("hash") || message.contains("changed since read")) {
             return "TOOL_CONFLICT";
         }
         if (message.contains("requires") || message.contains("non-empty")) {
@@ -332,6 +342,9 @@ public class CodingTools {
     }
 
     private boolean isRetryable(String message) {
+        if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_"))) {
+            return true;
+        }
         return message != null && !message.contains("outside") && !message.contains("escapes")
                 && !message.contains("invalid") && !message.contains("already exists")
                 && !message.contains("exceeds") && !message.contains("UTF-8");
@@ -341,7 +354,10 @@ public class CodingTools {
         if (message == null) {
             return "检查工具参数和工作区状态后再试一次";
         }
-        if (message.contains("hash") || message.contains("changed since read")) {
+        if (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")) {
+            return "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file";
+        }
+        if (message.contains("FILE_HASH_MISMATCH") || message.contains("hash") || message.contains("changed since read")) {
             return "先重新 read_file 获取当前 sha256，再用 apply_patch";
         }
         if (message.contains("only creates new files") || message.contains("already exists")) {

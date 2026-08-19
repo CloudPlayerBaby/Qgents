@@ -371,6 +371,20 @@ class CodingToolsTest {
     }
 
     @Test
+    void patchFormatFailureReturnsStructuredRecoveryGuidance() {
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "bad patch"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java",
+                        "FILE_PATCH_FAILED: hunk 声明行数与正文不一致"));
+
+        Map<String, Object> result = tools().applyPatch("src/main/java/X.java", HASH, "bad patch");
+
+        assertThat(result).containsEntry("ok", false)
+                .containsEntry("errorCode", "TOOL_PATCH_FORMAT_INVALID")
+                .containsEntry("retryable", true)
+                .containsEntry("nextAction", "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file");
+    }
+
+    @Test
     void writeObserverNotFiredWhenNotConfigured() {
         when(codeAccess.listFiles(workspaceId)).thenReturn(List.of());
         when(writer.writeFile(workspaceId, "src/main/java/Y.java", "code"))

@@ -53,6 +53,7 @@ public class CodingPromptBuilder {
                 工作方式：
                 - 先 list_files 或 search_code 定位，再 read_file 获取必要内容；不要为了确认一个文件读取整个工作区。
                 - 已有文件严格使用 apply_patch，且 expectedHash 必须来自最近一次 read_file；hash 冲突时重新 read_file，再生成新的 patch。
+                - 如果返回 FILE_PATCH_FAILED 或 TOOL_PATCH_FORMAT_INVALID，禁止重复原 patch：先重新 read_file 获取最新内容和 sha256，按实际行内容重新生成完整 unified diff（校验 @@ 的行数和 +/-/空格行前缀）；目标是新文件时改用 write_file。
                 - 新文件使用 write_file；父目录由工具自动准备。只有需要单独创建空目录时才调用 create_directory，created=false 不算变更。
                 - 需要调用工具时只使用原生函数调用，每次调用只能使用 schema 中的工具名和完整参数；不要把工具调用 JSON 写进普通文本。
                 - 工具返回 ok=false 时先读取 errorCode、retryable、nextAction，再修正参数；禁止原样重复失败调用。路径越界、权限拒绝或未知工具不可通过重试绕过。
@@ -88,6 +89,7 @@ public class CodingPromptBuilder {
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
                 - 需要调用工具时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
                 - 工具返回 ok=false 时读取 errorCode、retryable、nextAction；最多修正参数重试一次，禁止原样重复失败调用。
+                - 如果返回 FILE_PATCH_FAILED 或 TOOL_PATCH_FORMAT_INVALID，先 read_file 再重建 patch；不要凭旧上下文修补 hunk，也不要把新文件交给 apply_patch。
                 - 多仓库 Workspace 下，所有工具 path 都必须以当前仓库 workspacePath 开头（例如 repo-2/src/App.vue）；新建目录和新建文件也必须带此前缀，禁止使用无法确定仓库的裸路径（例如 src/App.vue、vue3/）。
                 - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}

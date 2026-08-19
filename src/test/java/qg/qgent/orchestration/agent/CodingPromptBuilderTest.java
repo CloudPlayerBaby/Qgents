@@ -90,4 +90,10 @@ class CodingPromptBuilderTest {
                 .contains("已有文件严格使用 apply_patch", "父目录由工具自动准备")
                 .contains("基础设施错误时不得伪造成功");
     }
+
+    @Test
+    void documentsPatchFormatRecoveryWithoutRelaxingPatchValidation() {
+        assertThat(promptBuilder.buildSystem(true))
+                .contains("FILE_PATCH_FAILED", "重新生成完整 unified diff", "新文件时改用 write_file");
+    }
 }

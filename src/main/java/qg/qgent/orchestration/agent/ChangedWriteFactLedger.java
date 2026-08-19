@@ -19,6 +19,27 @@ final class ChangedWriteFactLedger {
 
     private final Set<String> changedFiles = new LinkedHashSet<>();
     private final Set<String> changedDirectories = new LinkedHashSet<>();
+    private String lastToolError;
+
+    void recordToolFailure(String error) {
+        if (error != null && !error.isBlank()) {
+            lastToolError = error;
+        }
+    }
+
+    String lastToolError() {
+        return lastToolError;
+    }
+
+    String recoveryHint() {
+        if (lastToolError == null) {
+            return "";
+        }
+        if (lastToolError.contains("FILE_PATCH_FAILED") || lastToolError.contains("PATCH_")) {
+            return "；建议：先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 patch";
+        }
+        return "；建议：根据工具 errorCode 和 nextAction 修正参数后再试";
+    }
 
     CodingWriteObserver observing(CodingWriteObserver delegate) {
         return (projectId, taskId, taskRunId, workspaceId, result) -> {

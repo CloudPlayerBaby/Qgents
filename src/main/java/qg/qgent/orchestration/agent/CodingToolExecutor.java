@@ -41,6 +41,8 @@ public class CodingToolExecutor {
     private UUID taskRunId;
     private UUID workspaceId;
     private final TaskStepPathPolicy pathPolicy;
+    /** 最近一次工具级失败，供最终无变更门禁保留可操作根因。 */
+    private String lastToolError;
 
     public CodingToolExecutor(WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer) {
         this(codeAccess, writer, List.of());
@@ -88,6 +90,10 @@ public class CodingToolExecutor {
             case "apply_patch" -> applyPatch(workspaceId, name, args);
             default -> error(name, "unknown tool '" + name + "'");
         };
+    }
+
+    public String getLastToolError() {
+        return lastToolError;
     }
 
     private String listFiles(UUID workspaceId, String name) {
@@ -227,11 +233,54 @@ public class CodingToolExecutor {
     }
 
     private String error(String tool, String message) {
+        lastToolError = message;
         ObjectNode node = objectMapper.createObjectNode();
         node.put("tool", tool);
         node.put("ok", false);
+        node.put("errorCode", classifyError(message));
+        node.put("retryable", isRetryable(message));
         node.put("error", message);
+        node.put("nextAction", nextAction(message));
         return node.toString();
+    }
+
+    private String classifyError(String message) {
+        if (message == null) {
+            return "TOOL_EXECUTION_FAILED";
+        }
+        if (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")) {
+            return "TOOL_PATCH_FORMAT_INVALID";
+        }
+        if (message.contains("FILE_HASH_MISMATCH") || message.contains("hash")
+                || message.contains("changed since read")) {
+            return "TOOL_CONFLICT";
+        }
+        if (message.contains("requires") || message.contains("non-empty")) {
+            return "TOOL_ARGUMENT_INVALID";
+        }
+        if (message.contains("outside") || message.contains("escapes") || message.contains("invalid")) {
+            return "TOOL_PATH_INVALID";
+        }
+        return "TOOL_EXECUTION_FAILED";
+    }
+
+    private boolean isRetryable(String message) {
+        if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_"))) {
+            return true;
+        }
+        return message != null && !message.contains("outside") && !message.contains("escapes")
+                && !message.contains("invalid") && !message.contains("already exists");
+    }
+
+    private String nextAction(String message) {
+        if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_"))) {
+            return "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file";
+        }
+        if (message != null && (message.contains("FILE_HASH_MISMATCH") || message.contains("hash")
+                || message.contains("changed since read"))) {
+            return "先重新 read_file 获取当前 sha256，再用 apply_patch";
+        }
+        return "根据 error 修正参数后重试一次，不要原样重复失败调用";
     }
 
     private String ensureWritablePath(String path) {

@@ -182,6 +182,7 @@ public class CodingAgent implements Agent {
                     observedWrites.changedPaths(), observedWrites.changedDirectories());
             Instant turnStartedAt = Instant.now();
             ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
+            observedWrites.recordToolFailure(tools.getLastToolError());
             observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
                     turnStartedAt, Instant.now()));
             if (turn.isInfraAbort()) {
@@ -307,6 +308,7 @@ public class CodingAgent implements Agent {
                 log.info("coding agent round {} tool={} phase={} workspaceId={}",
                         round, toolCall.path("name").asText("?"), input.getPhase(), input.getWorkspaceId());
                 history.add(LlmMessage.tool(toolExecutor.execute(input.getWorkspaceId(), toolCall)));
+                observedWrites.recordToolFailure(toolExecutor.getLastToolError());
                 continue;
             }
             JsonNode finalResult = node.get("finalResult");
@@ -348,8 +350,10 @@ public class CodingAgent implements Agent {
             return;
         }
         if (!observedWrites.hasChangedWrite()) {
+            String cause = observedWrites.lastToolError();
+            String detail = cause == null ? "" : "；上一次工具失败：" + cause + observedWrites.recoveryHint();
             throw new CodingParseException(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE,
-                    "coding success requires at least one actual file or directory modification");
+                    "coding success requires at least one actual file or directory modification" + detail);
         }
         // 结果范围只使用服务端观察到的真实 changed=true 事实，避免模型伪造路径污染 Review/Test 上下文。
         coding.setModifiedFiles(new ArrayList<>(observedWrites.changedPaths()));

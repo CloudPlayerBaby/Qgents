@@ -101,9 +101,12 @@ public class GenericCustomAgent implements Agent {
                 failure.setPhase(input.getPhase());
                 failure.setOutcome(RunOutcome.FAILED);
                 failure.setFailureCode(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+                String toolFailure = observedWrites.lastToolError();
                 failure.setMessage("自定义 Agent 声明成功但未产生任何实际文件或目录变更：请对已有文件使用 "
                         + "apply_patch（write_file 仅用于新建文件），且写入必须实际改变内容（changed=true）；"
-                        + "若确实无法修改，success 必须为 false 并说明原因");
+                        + "若确实无法修改，success 必须为 false 并说明原因"
+                        + (toolFailure == null ? "" : "；上一次工具失败：" + toolFailure
+                        + observedWrites.recoveryHint()));
                 failure.setObservations(observations);
                 return failure;
             }
@@ -192,6 +195,9 @@ public class GenericCustomAgent implements Agent {
                         entity.getId(), input.getPhase(), input.getWorkspaceId(), round, turn.toolName(),
                         turn.infraFailure());
                 throw new IllegalStateException(turn.infraFailure());
+            }
+            if (tools instanceof CodingTools codingTools) {
+                observedWrites.recordToolFailure(codingTools.getLastToolError());
             }
             if ("length".equalsIgnoreCase(turn.finishReason())) {
                 return finalizeCustom(system, requestHistory, turn, observations, round,
