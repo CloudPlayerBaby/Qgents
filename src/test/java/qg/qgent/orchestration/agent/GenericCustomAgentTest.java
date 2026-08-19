@@ -311,6 +311,36 @@ class GenericCustomAgentTest {
     }
 
     @Test
+    void writeRoleSuccessWithoutWritesIsSatisfiedWhenTargetExists() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"目标已由前序步骤完成\",\"message\":\"ok\"}", "stop"));
+        AgentInput input = customInput(OrchestrationPhase.CODING);
+        input.setTargetFiles(List.of("src/main/java/X.java"));
+
+        AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(input);
+
+        // 自定义写角色命中目标已满足：零写入按 SUCCEEDED 收敛，不判为模型行为错误。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getMessage()).isEqualTo("ok");
+    }
+
+    @Test
+    void writeRoleSuccessWithoutWritesStillRejectedWhenTargetMissing() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"done\",\"message\":\"ok\"}", "stop"));
+        AgentInput input = customInput(OrchestrationPhase.CODING);
+        input.setTargetFiles(List.of("src/main/java/X.java"));
+
+        AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(input);
+
+        // 目标未在 Workspace 出现且零写入：仍判为真正的语义失败，不得放行。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+    }
+
+    @Test
     void developerRoleVerifyStepIsReadOnlyAndMaySucceedWithoutChanges() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("repo-2/what the fox said.txt"));
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))

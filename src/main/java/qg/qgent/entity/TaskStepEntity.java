@@ -58,6 +58,12 @@ public class TaskStepEntity {
     /** Planner 为该步骤冻结的 Workspace 相对可写路径；空值仅兼容迁移前历史步骤。 */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<String> allowedPaths;
+    /**
+     * Planner 为该步骤声明的目标文件（Workspace 相对路径），用于运行期判定目标是否已被
+     * 前序步骤满足（目标已满足时无新增写入不算失败）；空值关闭该判定。
+     */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private List<String> targetFiles;
     /** 执行语义：MUTATE/VERIFY/TEST/REVIEW/PLAN。 */
     private String executionMode;
     /**

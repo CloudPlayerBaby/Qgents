@@ -112,7 +112,7 @@ public class CodingAgent implements Agent {
             CodingResult coding = protocol.isNative()
                     ? executeCodingNative(input, observations, observedWrites)
                     : executeCodingLegacy(input, observedWrites);
-            validateAndCompleteChanges(coding, observedWrites);
+            validateAndCompleteChanges(coding, observedWrites, input);
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
             outcome.setOutcome(coding.isSuccess() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED);
@@ -344,12 +344,26 @@ public class CodingAgent implements Agent {
      * Coding 的 success 不能只由模型自报决定：必须至少有一个成功且实际改变内容的写操作，
      * 实际写入路径会补入结果，避免模型遗漏 modifiedFiles/modifiedDirectories；没有任何证据时把结果降为协议失败，防止
      * JSON repair 把“未执行任何文件修改”包装成 Developer 成功。
+     * <p>
+     * 唯一例外是目标已满足：本步骤声明的目标文件已存在于 Workspace（前序步骤越界完成或历史提交已覆盖），
+     * 零写入是本步骤职责已被满足的幂等结果，按 SUCCEEDED 收敛，交由后续 Verify/Review 校验；
+     * 目标缺失且模型声称成功时才判为真正的语义失败。
      */
-    private void validateAndCompleteChanges(CodingResult coding, ChangedWriteFactLedger observedWrites) {
+    private void validateAndCompleteChanges(CodingResult coding, ChangedWriteFactLedger observedWrites,
+                                            AgentInput input) {
         if (coding == null || !coding.isSuccess()) {
             return;
         }
         if (!observedWrites.hasChangedWrite()) {
+            if (TargetSatisfaction.isSatisfied(codeAccess, input.getWorkspaceId(), input.getTargetFiles())) {
+                log.info("CODING_ALREADY_SATISFIED phase={} workspaceId={} targets={}",
+                        input.getPhase(), input.getWorkspaceId(), input.getTargetFiles());
+                // 结果范围只使用服务端观察到的真实变更事实；本步无真实变更，modifiedFiles/Directories 置空，
+                // 最终 Diff 仍由工作区真实 git diff 生成，不虚报本次写入路径。
+                coding.setModifiedFiles(List.of());
+                coding.setModifiedDirectories(List.of());
+                return;
+            }
             String cause = observedWrites.lastToolError();
             String detail = cause == null ? "" : "；上一次工具失败：" + cause + observedWrites.recoveryHint();
             throw new CodingParseException(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE,
