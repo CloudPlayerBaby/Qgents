@@ -522,14 +522,19 @@ CREATE TABLE IF NOT EXISTS agents (
     name VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL,
     avatar TEXT NULL COMMENT 'Agent 头像URL', description TEXT NULL COMMENT 'Agent 用途描述',
     prompt TEXT NULL COMMENT 'Agent 系统提示词',
-    visibility VARCHAR(16) NOT NULL DEFAULT 'TEAM',
+    review_reason TEXT NULL COMMENT '发布审核拒绝原因（Team Owner 填写；批准为空）',
+    reviewed_by BINARY(16) NULL COMMENT '发布审核人（Team Owner）ID',
+    reviewed_at DATETIME(6) NULL COMMENT '发布审核时间（UTC）',
+    visibility VARCHAR(16) NOT NULL DEFAULT 'TEAM' COMMENT '可见性：PRIVATE（默认，仅创建者）/PENDING（提交发布审核）/TEAM（已批准共享，不可回私有）',
     status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
     is_default TINYINT NOT NULL DEFAULT 0 COMMENT '是否团队默认 Agent（每团队每角色至多一条）',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
     default_role VARCHAR(32) GENERATED ALWAYS AS (IF(is_default = 1, role, NULL)) STORED COMMENT '默认Agent角色（唯一约束生成列）',
     UNIQUE KEY uk_agents_team_default_role (team_id, default_role),
     KEY idx_agent_team(team_id,status), CONSTRAINT fk_agent_team FOREIGN KEY(team_id) REFERENCES teams(id),
     CONSTRAINT fk_agent_creator FOREIGN KEY(created_by) REFERENCES users(id),
-    CONSTRAINT ck_agent_visibility CHECK(visibility IN ('TEAM','PRIVATE'))
+    CONSTRAINT ck_agent_visibility CHECK(visibility IN ('TEAM','PENDING','PRIVATE'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Team-scoped assignable Agent identities';
 
 CREATE TABLE IF NOT EXISTS group_agents (

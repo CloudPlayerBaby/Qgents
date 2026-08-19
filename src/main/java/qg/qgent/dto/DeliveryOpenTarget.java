@@ -50,6 +50,12 @@ public class DeliveryOpenTarget {
     @Schema(description = "Skill ID")
     private String skillId;
 
+    /**
+     * Agent ID（AGENT 使用）。
+     */
+    @Schema(description = "Agent ID")
+    private String agentId;
+
     public static DeliveryOpenTarget taskDiffReview(String taskId, String diffReviewBatchId) {
         DeliveryOpenTarget target = new DeliveryOpenTarget();
         target.kind = "TASK_DIFF_REVIEW";
@@ -77,6 +83,13 @@ public class DeliveryOpenTarget {
         DeliveryOpenTarget target = new DeliveryOpenTarget();
         target.kind = "SKILL";
         target.skillId = skillId;
+        return target;
+    }
+
+    public static DeliveryOpenTarget agent(String agentId) {
+        DeliveryOpenTarget target = new DeliveryOpenTarget();
+        target.kind = "AGENT";
+        target.agentId = agentId;
         return target;
     }
 }
