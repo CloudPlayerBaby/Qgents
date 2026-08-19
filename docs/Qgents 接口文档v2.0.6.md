@@ -1071,6 +1071,8 @@ merge-request.updated        -> { projectId, mergeRequestId, repositoryId, numbe
 
     - **自动触发**：发送消息时 `mentions` 含 `type=AGENT` 项（如 @AgentOrchestrator）→ 服务端自动从该消息创建 Task（`triggerMessageId` = 本次消息 ID；同一消息只建一次，幂等）。前置条件：群为 ACTIVE REQUIREMENT 且已绑定至少一个仓库（未绑仓库则跳过并记录 warn，不阻塞消息发送）；`agentId` 仅作调度偏好，不绕过后端角色/并发/项目可见性/仓库授权校验。任务创建后 Task 状态为 `PLANNING`，由编排自动推进（Planner → Developer → Tester → Reviewer）。
 
+    - **自动触发为异步执行**：消息发送接口在消息落库提交后即返回（响应体为纯 `MessageResponse`，不含 Task 字段）；建 Task 与 @ 用户通知在消息事务提交后由服务端异步执行（`MessageSentListener`，`@Async` + `AFTER_COMMIT`）。因此发送响应**不保证** Task 已创建。客户端如需立即拿到 Task：引用 DIFF 卡续作或普通 @Agent 均可显式调用 `trigger-task`（幂等：Task 已由自动触发链创建时返回 409，客户端按「已创建」处理），或订阅 `task.created`/`task.updated` SSE 事件。
+
     - Task 创建事务提交后，后端异步启动编排。客户端不调用 `orchestrate`、`start` 或任何“推进任务”的接口。
 
         Sandbox、工作流图等启动阶段发生意外失败时，Task 会置为 `FAILED`。客户端通过既有 `task.updated`、`message.created`（失败 `TASK_STATUS` 卡片）和 `notification.created`（`kind=TASK_FAILED`）获知结果；断线重连或收到乱序事件后，仍应以 Task、消息和通知查询接口返回的数据为准。
