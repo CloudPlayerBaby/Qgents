@@ -18,6 +18,8 @@ import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.orchestration.worker.SandboxSessionManager;
+import qg.qgent.orchestration.worker.WorkerExecutionTraceContext;
+import qg.qgent.orchestration.worker.WorkerToolExecution;
 import qg.qgent.service.*;
 
 import java.time.LocalDateTime;
@@ -442,6 +444,9 @@ public class TaskOrchestrator {
         AgentInput input = contextAssembler.assemble(task, step, phase, ctx.feedbackFor(step.getId()), run.getId(), ctx.planResult,
                 ctx.codingResult, ctx.testResult, ctx.groupContext);
         AgentRunOutcome outcome = safeExecute(agent.get(), phase, input);
+        for (WorkerToolExecution execution : WorkerExecutionTraceContext.drain(run.getId())) {
+            taskRunService.appendWorkerToolExecution(run, execution);
+        }
         ctx.lastRunId = run.getId();
         if (phase == OrchestrationPhase.CODING && outcome.getOutcome() == RunOutcome.SUCCEEDED) {
             ctx.lastCodingRunId = run.getId();
@@ -451,12 +456,8 @@ public class TaskOrchestrator {
         } else if (phase == OrchestrationPhase.TESTING && outcome.getTestResult() != null) {
             ctx.testResult = outcome.getTestResult();
         }
-        // TestAgent 的 Worker stdout/stderr 已经过执行端长度限制；再次经统一日志入口脱敏、分行
-        // 持久化，再写入 Run 产物和终态事件，保证前端既能实时看日志，也能按 cursor 补拉。
-        if (outcome.getTestResult() != null) {
-            taskRunService.appendWorkerOutput(run, "STDOUT", outcome.getTestResult().getStdout());
-            taskRunService.appendWorkerOutput(run, "STDERR", outcome.getTestResult().getStderr());
-        }
+        // 完整 stdout/stderr 只保存在 Worker 日志库。公开 TaskRun 日志只记录 executionId 和
+        // 脱敏终态摘要，避免项目成员接口或 SSE 暴露原始命令输出。
         taskRunService.appendAgentObservations(run, outcome.getObservations());
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
         // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
@@ -591,8 +592,15 @@ public class TaskOrchestrator {
      */
     private AgentRunOutcome safeExecute(Agent agent, OrchestrationPhase phase, AgentInput input) {
         java.time.Duration limit = orchestrationTimeout.timeoutFor(phase);
-        java.util.concurrent.Future<AgentRunOutcome> future =
-                taskRunTimeoutExecutor.submit(() -> agent.run(input));
+                java.util.concurrent.Future<AgentRunOutcome> future =
+                taskRunTimeoutExecutor.submit(() -> {
+                    WorkerExecutionTraceContext.begin(input == null ? null : input.getTaskRunId());
+                    try {
+                        return agent.run(input);
+                    } finally {
+                        WorkerExecutionTraceContext.detach();
+                    }
+                });
         try {
             return future.get(limit.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch (java.util.concurrent.TimeoutException e) {

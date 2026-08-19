@@ -93,7 +93,7 @@ class TestRunControllerTest {
         UUID projectId = UUID.randomUUID();
         UUID dryRunId = UUID.randomUUID();
         DryRunResponse response = new DryRunResponse(id(dryRunId), id(projectId), id(UUID.randomUUID()),
-                "0123456789012345678901234567890123456789", "main", "QUEUED",
+                "0123456789012345678901234567890123456789", "main", "abcdefabcdefabcdefabcdefabcdefabcdefabcd", "QUEUED",
                 report("abcdefabcdefabcdefabcdefabcdefabcdefabcd", true, List.of(),
                         Map.of("status", "NOT_REQUIRED", "results", List.of())),
                 id(userId), "2026-08-15T02:00:00Z");
@@ -118,7 +118,9 @@ class TestRunControllerTest {
                 report("abcdefabcdefabcdefabcdefabcdefabcdefabcd", true, List.of(),
                         summary("PASSED", "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
                                 List.of(result(id(testsetId), "PASSED", 0, 69, null)))),
-                "2026-08-15T02:00:00Z");
+                "0123456789012345678901234567890123456789", "main",
+                "abcdefabcdefabcdefabcdefabcdefabcdefabcd", 1,
+                "2026-08-15T02:00:00Z", "2026-08-15T02:00:00Z");
         when(testRunService.dryRunReport(any(), any(), any())).thenReturn(response);
 
         mockMvc.perform(get("/api/v1/projects/{projectId}/dry-runs/{dryRunId}/report", projectId, dryRunId))

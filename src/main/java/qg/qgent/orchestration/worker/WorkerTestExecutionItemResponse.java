@@ -14,4 +14,8 @@ public class WorkerTestExecutionItemResponse {
     private Integer exitCode;
     private long durationMs;
     private String failureCode;
+    /**
+     * 由 Worker 生成的脱敏、稳定失败说明；不包含命令原始输出或宿主机路径。
+     */
+    private String message;
 }

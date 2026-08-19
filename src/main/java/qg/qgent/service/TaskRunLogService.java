@@ -13,7 +13,6 @@ import qg.qgent.orchestration.ExecutionContentSanitizer;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -24,7 +23,6 @@ import java.util.UUID;
 @Service
 public class TaskRunLogService {
     private static final int MAX_CONTENT_LENGTH = 4000;
-    private static final int MAX_LINES_PER_APPEND = 200;
 
     private final ExecutionLogMapper logMapper;
     private final TaskMapper taskMapper;
@@ -79,19 +77,6 @@ public class TaskRunLogService {
         eventService.publish(run.getProjectId(), groupId, "task-run.step.progress", run.getId().toString(),
                 TaskEventPayloads.taskRunLog(run, log));
         return log;
-    }
-
-    /** 将 Worker 的 stdout/stderr 按行转存，避免一次超长输出遮蔽游标和前端实时展示。 */
-    @Transactional
-    public void appendWorkerOutput(TaskRunEntity run, String stream, String output) {
-        if (output == null || output.isBlank()) {
-            return;
-        }
-        String node = "WORKER/" + (stream == null || stream.isBlank() ? "OUTPUT" : stream.toUpperCase());
-        List<String> lines = output.lines().limit(MAX_LINES_PER_APPEND).toList();
-        for (String line : lines) {
-            append(run, "EXECUTION", node, line);
-        }
     }
 
     private String truncate(String value, int max) {

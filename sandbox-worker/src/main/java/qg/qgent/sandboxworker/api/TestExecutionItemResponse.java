@@ -18,4 +18,8 @@ public class TestExecutionItemResponse {
     private Integer exitCode;
     private long durationMs;
     private String failureCode;
+    /**
+     * 脱敏且可操作的失败摘要，不返回原始 stdout/stderr。
+     */
+    private String message;
 }

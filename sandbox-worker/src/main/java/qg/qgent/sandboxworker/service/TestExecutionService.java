@@ -61,6 +61,8 @@ public class TestExecutionService {
         String temporaryBranch = temporary ? "qgents-test-" + request.getExecutionId() : null;
         UUID sandboxId = UUID.randomUUID();
         try {
+            String resolvedSource = null;
+            String resolvedTarget = null;
             if (temporary) workspaces.cleanupTemporary(workspaceId, request.getRepositoryId(), temporaryBranch);
             WorkspaceResponse workspace = temporary ? provisionTemporary(workspaceId, request) : workspaces.get(workspaceId);
             if (!request.getProjectId().equals(workspace.getProjectId()) || workspace.getRepositories().stream()
@@ -73,7 +75,8 @@ public class TestExecutionService {
                     throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, "MERGE_TEST_REQUIRES_TEMPORARY_WORKSPACE",
                             "合并门禁只能在一次性 Workspace 中执行");
                 }
-                workspaces.mergeForTest(workspaceId, request.getRepositoryId(), request.getMergeSourceRef());
+                resolvedSource = workspaces.mergeForTest(workspaceId, request.getRepositoryId(), request.getMergeSourceRef());
+                resolvedTarget = request.getRef();
                 workspace = workspaces.get(workspaceId);
             }
             CreateSandboxRequest create = new CreateSandboxRequest();
@@ -93,7 +96,8 @@ public class TestExecutionService {
                 results.add(run(allocation, request.getRepositoryId(), testset));
             }
             String status = results.stream().allMatch(item -> "PASSED".equals(item.getStatus())) ? "PASSED" : "FAILED";
-            return new TestExecutionResponse(request.getExecutionId(), status, resolvedHead, List.copyOf(results));
+            return new TestExecutionResponse(request.getExecutionId(), status, resolvedHead, resolvedSource,
+                    resolvedTarget, List.copyOf(results));
         } finally {
             try {
                 sandboxes.destroy(sandboxId);
@@ -136,22 +140,24 @@ public class TestExecutionService {
                     paths.resolveRepositoryContainer(allocation, repositoryId), command, timeout);
             if (result.getExitCode() == 126 || result.getExitCode() == 127) {
                 return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", result.getExitCode(),
-                        elapsed(started), "BUILD_ENVIRONMENT_UNAVAILABLE");
+                        elapsed(started), "BUILD_ENVIRONMENT_UNAVAILABLE", "构建环境无法启动选定的测试命令");
             }
             boolean passed = result.getExitCode() == testset.getExpectedExitCode();
             return new TestExecutionItemResponse(testset.getTestsetId(), passed ? "PASSED" : "FAILED",
-                    result.getExitCode(), elapsed(started), passed ? null : "UNEXPECTED_EXIT_CODE");
+                    result.getExitCode(), elapsed(started), passed ? null : "UNEXPECTED_EXIT_CODE",
+                    passed ? null : "测试命令退出码与 Testset 预期不一致");
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started), "TIMED_OUT");
+            return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started), "TIMED_OUT",
+                    "测试执行超时");
         } catch (RuntimeException exception) {
             if (exception instanceof WorkerException workerException
                     && "TEST_COMMAND_NOT_ALLOWED".equals(workerException.getCode())) {
                 return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started),
-                        "TEST_COMMAND_NOT_ALLOWED");
+                        "TEST_COMMAND_NOT_ALLOWED", "Testset 命令不在受控测试白名单内");
             }
             return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started),
-                    "EXECUTION_FAILED");
+                    "EXECUTION_FAILED", "测试执行未能完成");
         }
     }
 

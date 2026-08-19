@@ -3,6 +3,7 @@ package qg.qgent.service;
 import org.junit.jupiter.api.Test;
 import qg.qgent.dto.DryRunResponse;
 import qg.qgent.dto.MergeRequestCreateRequest;
+import qg.qgent.dto.PreflightGateResponse;
 import qg.qgent.entity.DryRunEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.TaskEntity;
@@ -30,8 +31,9 @@ class MrFirstAutomationServiceTest {
     private final MergeRequestMapper mergeRequests = mock(MergeRequestMapper.class);
     private final TestRunService testRuns = mock(TestRunService.class);
     private final MergeRequestService mrService = mock(MergeRequestService.class);
+    private final PreflightGateService preflightGates = mock(PreflightGateService.class);
     private final MrFirstAutomationService service = new MrFirstAutomationService(tasks, worktrees, repositories,
-            dryRuns, mergeRequests, testRuns, mrService);
+            dryRuns, mergeRequests, testRuns, mrService, preflightGates);
 
     @Test
     void preflightRequestedStartsOneDryRunPerWorkspaceRepository() {
@@ -74,6 +76,11 @@ class MrFirstAutomationServiceTest {
         dryRun.setStatus("PASSED");
         when(dryRuns.selectById(dryRunId)).thenReturn(dryRun);
         when(tasks.selectById(taskId)).thenReturn(task);
+        WorkspaceRepositoryEntity worktree = worktree(workspaceId, repositoryId, "develop");
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree));
+        when(repositories.selectById(repositoryId)).thenReturn(new ProjectRepositoryEntity());
+        when(preflightGates.get(projectId, taskId, repositoryId, "develop", creator))
+                .thenReturn(new PreflightGateResponse(null, null, null, null, null, "PASSED", List.of(), null, null));
 
         service.onCqApproved(new PreflightCqApprovedDomainEvent(projectId, dryRunId));
 

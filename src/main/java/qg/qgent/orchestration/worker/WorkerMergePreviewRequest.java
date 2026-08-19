@@ -11,5 +11,8 @@ import java.util.UUID;
 public class WorkerMergePreviewRequest {
     private UUID repositoryId;
     private String sourceRef;
-    private String targetBranch;
+    /**
+     * 已由主后端刷新并冻结的目标提交 SHA。Worker 不得在执行时重新解析目标分支。
+     */
+    private String targetCommit;
 }

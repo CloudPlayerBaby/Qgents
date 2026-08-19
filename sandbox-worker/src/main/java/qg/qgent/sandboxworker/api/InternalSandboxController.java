@@ -138,8 +138,13 @@ public class InternalSandboxController {
      */
     @PostMapping("/merge-previews")
     public MergePreviewResponse mergePreview(@Valid @RequestBody MergePreviewRequest request) {
+        if (!request.getSourceRef().matches("(?i)[0-9a-f]{40,64}")
+                || !request.getTargetCommit().matches("(?i)[0-9a-f]{40,64}")) {
+            throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, "GIT_COMMIT_SHA_REQUIRED",
+                    "Merge preview 只接受已固定的 commit SHA");
+        }
         return workspaceManagerService.mergePreview(request.getRepositoryId(), request.getSourceRef(),
-                request.getTargetBranch());
+                request.getTargetCommit());
     }
 
     /**

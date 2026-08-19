@@ -16,5 +16,10 @@ public class DryRunReportResponse {
     private String id;
     private String status;
     private Map<String, Object> report;
+    private String headCommit;
+    private String targetBranch;
+    private String targetCommit;
+    private Integer attemptCount;
     private String createdAt;
+    private String updatedAt;
 }

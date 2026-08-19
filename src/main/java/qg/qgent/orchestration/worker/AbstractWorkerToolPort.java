@@ -59,7 +59,12 @@ abstract class AbstractWorkerToolPort {
         request.setArguments(arguments);
         request.setTimeoutSeconds(timeout == null ? null : Math.max(1, timeout.toSeconds()));
         WorkerToolExecution submitted = client.submitToolExecution(sandboxId, request);
-        return pollUntilTerminal(sandboxId, submitted.getId());
+        // 提交成功后立即记录 ID：即使后续轮询超时或线程被取消，运维仍可定位 Worker 日志。
+        WorkerExecutionTraceContext.record(submitted);
+        WorkerToolExecution execution = pollUntilTerminal(sandboxId, submitted.getId());
+        // 同一 ID 的终态会覆盖 QUEUED/RUNNING 摘要。
+        WorkerExecutionTraceContext.record(execution);
+        return execution;
     }
 
     private WorkerToolExecution pollUntilTerminal(UUID sandboxId, UUID executionId) {
