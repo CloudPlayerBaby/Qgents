@@ -8,11 +8,13 @@ import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.mapper.ExecutionLogMapper;
 import qg.qgent.mapper.TaskMapper;
+import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.mapper.TaskRunMapper;
 import qg.qgent.orchestration.ExecutionContentSanitizer;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -23,6 +25,7 @@ import java.util.UUID;
 @Service
 public class TaskRunLogService {
     private static final int MAX_CONTENT_LENGTH = 4000;
+    private static final int MAX_LINES_PER_APPEND = 200;
 
     private final ExecutionLogMapper logMapper;
     private final TaskMapper taskMapper;
@@ -77,6 +80,60 @@ public class TaskRunLogService {
         eventService.publish(run.getProjectId(), groupId, "task-run.step.progress", run.getId().toString(),
                 TaskEventPayloads.taskRunLog(run, log));
         return log;
+    }
+
+    /** 将 Worker 的 stdout/stderr 按行转存，避免一次超长输出遮蔽游标和前端实时展示。 */
+    @Transactional
+    public void appendWorkerOutput(TaskRunEntity run, String stream, String output) {
+        if (output == null || output.isBlank()) {
+            return;
+        }
+        String node = "WORKER/" + (stream == null || stream.isBlank() ? "OUTPUT" : stream.toUpperCase());
+        List<String> lines = output.lines().limit(MAX_LINES_PER_APPEND).toList();
+        for (String line : lines) {
+            append(run, "EXECUTION", node, line);
+        }
+    }
+
+    /**
+     * 持久化 Verify 的结构化结果摘要。命令、退出码和摘要必须与 stdout/stderr 同属一个
+     * TaskRun 日志序列，前端只读取现有 logs 接口即可还原“执行了什么、结果如何、为什么失败”。
+     * 原始 stdout/stderr 仍由 {@link #appendWorkerOutput(TaskRunEntity, String, String)} 分行写入，
+     * 失败项只保留脱敏后的有限摘要，避免把完整 LLM 响应或敏感命令参数写入日志。
+     */
+    @Transactional
+    public void appendVerificationResult(TaskRunEntity run, TestResult result) {
+        if (result == null) {
+            return;
+        }
+        String verificationMode = result.getVerificationMode() == null || result.getVerificationMode().isBlank()
+                ? "UNKNOWN" : result.getVerificationMode();
+        String command = result.getCommand() == null || result.getCommand().isBlank()
+                ? "未执行命令" : result.getCommand();
+        String outcome = result.isSuccess() ? "PASSED" : "FAILED";
+        StringBuilder summary = new StringBuilder("验证结果：")
+                .append(outcome)
+                .append("；验证方式：").append(verificationMode)
+                .append("；命令：").append(command)
+                .append("；exitCode：").append(result.getExitCode())
+                .append("；摘要：").append(result.getSummary() == null ? "" : result.getSummary());
+        append(run, "EXECUTION", "VERIFY", summary.toString());
+        if (result.getFailures() != null) {
+            result.getFailures().stream().limit(20).forEach(failure -> {
+                if (failure == null) {
+                    return;
+                }
+                StringBuilder detail = new StringBuilder("失败项：")
+                        .append(failure.getName() == null ? "未命名" : failure.getName());
+                if (failure.getSeverity() != null && !failure.getSeverity().isBlank()) {
+                    detail.append("；级别：").append(failure.getSeverity());
+                }
+                if (failure.getReason() != null && !failure.getReason().isBlank()) {
+                    detail.append("；原因：").append(failure.getReason());
+                }
+                append(run, "EXECUTION", "VERIFY/FAILURE", detail.toString());
+            });
+        }
     }
 
     private String truncate(String value, int max) {

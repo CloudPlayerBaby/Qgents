@@ -456,8 +456,13 @@ public class TaskOrchestrator {
         } else if (phase == OrchestrationPhase.TESTING && outcome.getTestResult() != null) {
             ctx.testResult = outcome.getTestResult();
         }
-        // 完整 stdout/stderr 只保存在 Worker 日志库。公开 TaskRun 日志只记录 executionId 和
-        // 脱敏终态摘要，避免项目成员接口或 SSE 暴露原始命令输出。
+        // TestAgent 的 Worker stdout/stderr 已经过执行端长度限制；再次经统一日志入口脱敏、分行
+        // 持久化。公开日志不包含 Worker 原始完整日志，只保留受限、脱敏后的诊断内容。
+        if (outcome.getTestResult() != null) {
+            taskRunService.appendWorkerOutput(run, "STDOUT", outcome.getTestResult().getStdout());
+            taskRunService.appendWorkerOutput(run, "STDERR", outcome.getTestResult().getStderr());
+            taskRunService.appendVerificationResult(run, outcome.getTestResult());
+        }
         taskRunService.appendAgentObservations(run, outcome.getObservations());
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
         // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
