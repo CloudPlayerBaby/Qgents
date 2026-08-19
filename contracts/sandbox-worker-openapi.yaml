@@ -105,8 +105,8 @@ paths:
       operationId: createSandbox
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CreateSandboxRequest'}}}}
       responses:
-        '201': {description: Sandbox 已创建（相同 sandboxId 与相同任务/Workspace 规格的重复请求幂等返回已有 Sandbox）, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}
-        '409': {description: 相同 sandboxId 但任务/Workspace 规格不一致（SANDBOX_ID_CONFLICT）}
+        '201': {description: Sandbox 已创建（相同 sandboxId 与相同关联/Workspace 规格的重复请求幂等返回已有 Sandbox）, content: {application/json: {schema: {$ref: '#/components/schemas/Sandbox'}}}}
+        '409': {description: 相同 sandboxId 但关联/Workspace 规格不一致（SANDBOX_ID_CONFLICT）}
         '422': {description: 重复仓库、镜像不在白名单或 workspaceStorageKey 非法}
   /internal/v1/sandboxes/{sandboxId}:
     parameters: [{$ref: '#/components/parameters/SandboxId'}]
@@ -309,6 +309,7 @@ components:
       properties:
         sandboxId: {type: string, format: uuid}
         taskRunId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid, nullable: true}
         workspaceStorageKey: {type: string, minLength: 47, maxLength: 47, pattern: '^workspaces/[0-9a-fA-F-]{36}$'}
         imageProfile: {type: string, minLength: 1, maxLength: 64, pattern: '^[a-z0-9][a-z0-9-]*$'}
         repositoryIds: {type: array, maxItems: 32, uniqueItems: true, items: {type: string, format: uuid}}
@@ -318,6 +319,7 @@ components:
       properties:
         id: {type: string, format: uuid}
         taskRunId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid, nullable: true}
         workspaceStorageKey: {type: string}
         imageProfile: {type: string}
         repositoryIds: {type: array, uniqueItems: true, items: {type: string, format: uuid}}

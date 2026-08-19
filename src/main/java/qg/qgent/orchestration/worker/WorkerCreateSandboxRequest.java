@@ -18,9 +18,15 @@ public class WorkerCreateSandboxRequest {
     private UUID sandboxId;
 
     /**
-     * 使用该沙箱的任务运行编号；PLAN 相位无 TaskRun 时使用 taskId 充当标签。
+     * 兼容既有 Worker 的会话关联编号。Task 编排在创建 Sandbox 时尚未生成 TaskRun，
+     * 因此不能将此字段视为真实的 TaskRun 编号。
      */
     private UUID taskRunId;
+
+    /**
+     * Sandbox 所属 Task 编号，用于 Worker 生命周期和工具执行日志关联。
+     */
+    private UUID taskId;
 
     /**
      * Workspace 不透明存储键，由 Worker 解析为受控根目录下的实际路径。

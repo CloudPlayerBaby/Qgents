@@ -79,15 +79,19 @@ class DockerContainerRuntimeTest {
         CreateSandboxRequest request = new CreateSandboxRequest();
         request.setSandboxId(UUID.randomUUID());
         request.setTaskRunId(UUID.randomUUID());
+        request.setTaskId(UUID.randomUUID());
         request.setWorkspaceStorageKey("workspaces/" + workspaceId);
         request.setImageProfile("dev-tools");
-        SandboxAllocation allocation = new SandboxAllocation(request.getSandboxId(), request.getTaskRunId(),
+        SandboxAllocation allocation = new SandboxAllocation(request.getSandboxId(), request.getTaskRunId(), request.getTaskId(),
                 request.getWorkspaceStorageKey(), request.getImageProfile(), "READY", "DOCKER",
                 Instant.EPOCH, Instant.EPOCH, Instant.EPOCH, Instant.EPOCH, Duration.ofMinutes(1), null, Map.of());
 
         runtime.create(request, allocation);
 
         verify(createCmd).withUser("10001:10001");
+        ArgumentCaptor<Map<String, String>> labelsCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(createCmd).withLabels(labelsCaptor.capture());
+        assertEquals(request.getTaskId().toString(), labelsCaptor.getValue().get("qgents.task-id"));
         ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
         verify(createCmd).withHostConfig(hostConfigCaptor.capture());
         HostConfig hostConfig = hostConfigCaptor.getValue();

@@ -224,6 +224,7 @@ public class SandboxSessionManager {
         UUID sandboxId = UuidV7.next();
         WorkerCreateSandboxRequest create = new WorkerCreateSandboxRequest();
         create.setSandboxId(sandboxId);
+        create.setTaskId(taskId);
         create.setTaskRunId(taskId);
         create.setWorkspaceStorageKey(storageKey);
         create.setImageProfile(properties.getImageProfile());
@@ -436,6 +437,8 @@ public class SandboxSessionManager {
 
     private boolean sameSandboxSpec(WorkerCreateSandboxRequest request, WorkerSandbox existing) {
         return Objects.equals(request.getTaskRunId(), existing.getTaskRunId())
+                // 旧 Worker 返回没有 taskId；缺失时按旧规格兼容恢复，不把瞬时超时升级为冲突。
+                && (existing.getTaskId() == null || Objects.equals(request.getTaskId(), existing.getTaskId()))
                 && Objects.equals(request.getWorkspaceStorageKey(), existing.getWorkspaceStorageKey())
                 && Objects.equals(request.getImageProfile(), existing.getImageProfile())
                 && existing.getRepositoryIds() != null

@@ -106,6 +106,7 @@ class SandboxServiceTest {
         SandboxResponse response = service().create(request);
 
         assertEquals(request.getWorkspaceStorageKey(), response.getWorkspaceStorageKey());
+        assertEquals(request.getTaskId(), response.getTaskId());
         assertEquals(request.getImageProfile(), response.getImageProfile());
         assertEquals(java.util.List.of(), response.getRepositoryIds());
     }
@@ -130,6 +131,7 @@ class SandboxServiceTest {
         CreateSandboxRequest request = new CreateSandboxRequest();
         request.setSandboxId(UUID.randomUUID());
         request.setTaskRunId(UUID.randomUUID());
+        request.setTaskId(UUID.randomUUID());
         request.setWorkspaceStorageKey("workspaces/" + UUID.randomUUID());
         request.setImageProfile("dev-tools");
         return request;

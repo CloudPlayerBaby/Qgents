@@ -300,7 +300,7 @@ class ToolExecutionServiceTest {
 
     private SandboxAllocation allocation(UUID sandboxId) {
         Instant now = Instant.now();
-        return new SandboxAllocation(sandboxId, UUID.randomUUID(), "workspaces/" + UUID.randomUUID(), "dev-tools",
+        return new SandboxAllocation(sandboxId, UUID.randomUUID(), UUID.randomUUID(), "workspaces/" + UUID.randomUUID(), "dev-tools",
                 "READY", "FAKE", now, now, now.plusSeconds(60), now.plusSeconds(3600),
                 Duration.ofMinutes(15), null, Map.of());
     }

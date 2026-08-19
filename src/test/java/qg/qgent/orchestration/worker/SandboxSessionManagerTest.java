@@ -192,6 +192,7 @@ class SandboxSessionManagerTest {
         verify(client).createSandbox(createCaptor.capture());
         WorkerCreateSandboxRequest create = createCaptor.getValue();
         assertThat(create.getWorkspaceStorageKey()).isEqualTo("workspaces/" + WORKSPACE);
+        assertThat(create.getTaskId()).isEqualTo(TASK);
         assertThat(create.getTaskRunId()).isEqualTo(TASK);
         assertThat(create.getRepositoryIds()).containsExactly(REPO);
         assertThat(create.getImageProfile()).isEqualTo("dev-tools");

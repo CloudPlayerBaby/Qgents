@@ -17,6 +17,7 @@ import java.util.UUID;
 public class SandboxResponse {
     private UUID id;
     private UUID taskRunId;
+    private UUID taskId;
     /**
      * Sandbox 使用的持久 Workspace 存储标识。
      */

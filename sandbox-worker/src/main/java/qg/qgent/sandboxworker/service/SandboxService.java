@@ -59,16 +59,17 @@ public class SandboxService {
                 if (existing != null) {
                     SandboxAllocation requested = allocation(request);
                     if (sameSandboxSpec(existing, requested)) {
-                        log.info("sandbox idempotent return sandboxId={} taskRunId={} workspace={}",
-                                existing.getId(), existing.getTaskRunId(), existing.getWorkspaceStorageKey());
+                        log.info("sandbox idempotent return sandboxId={} taskId={} taskRunId={} workspace={}",
+                                existing.getId(), existing.getTaskId(), existing.getTaskRunId(),
+                                existing.getWorkspaceStorageKey());
                         return response(existing);
                     }
                     throw new WorkerException(HttpStatus.CONFLICT, "SANDBOX_ID_CONFLICT", "同名沙箱规格不一致");
                 }
                 SandboxAllocation allocation = allocation(request);
                 SandboxAllocation created = runtime.create(request, allocation);
-                log.info("sandbox created sandboxId={} taskRunId={} workspace={} image={} repos={} container={}",
-                        created.getId(), created.getTaskRunId(), created.getWorkspaceStorageKey(),
+                log.info("sandbox created sandboxId={} taskId={} taskRunId={} workspace={} image={} repos={} container={}",
+                        created.getId(), created.getTaskId(), created.getTaskRunId(), created.getWorkspaceStorageKey(),
                         created.getImageProfile(), created.getRepositoryPaths().size(), created.getRuntimeHandle());
                 return response(created);
             });
@@ -85,6 +86,7 @@ public class SandboxService {
         return new SandboxAllocation(
                 request.getSandboxId(),
                 request.getTaskRunId(),
+                request.getTaskId(),
                 request.getWorkspaceStorageKey(),
                 request.getImageProfile(),
                 "READY",
@@ -104,6 +106,7 @@ public class SandboxService {
      */
     private boolean sameSandboxSpec(SandboxAllocation existing, SandboxAllocation requested) {
         return java.util.Objects.equals(existing.getTaskRunId(), requested.getTaskRunId())
+                && (existing.getTaskId() == null || java.util.Objects.equals(existing.getTaskId(), requested.getTaskId()))
                 && java.util.Objects.equals(existing.getWorkspaceStorageKey(), requested.getWorkspaceStorageKey())
                 && java.util.Objects.equals(existing.getImageProfile(), requested.getImageProfile())
                 && java.util.Objects.equals(existing.getRepositoryPaths(), requested.getRepositoryPaths());
@@ -210,6 +213,7 @@ public class SandboxService {
         return new SandboxResponse(
                 allocation.getId(),
                 allocation.getTaskRunId(),
+                allocation.getTaskId(),
                 allocation.getWorkspaceStorageKey(),
                 allocation.getImageProfile(),
                 allocation.getRepositoryPaths().keySet().stream()

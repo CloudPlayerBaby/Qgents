@@ -26,6 +26,11 @@ public class WorkerSandbox {
     private UUID taskRunId;
 
     /**
+     * Sandbox 所属 Task 编号；独立测试执行创建的 Sandbox 可以为空。
+     */
+    private UUID taskId;
+
+    /**
      * Sandbox 使用的持久 Workspace 存储标识。
      */
     private String workspaceStorageKey;
