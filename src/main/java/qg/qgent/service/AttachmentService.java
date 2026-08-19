@@ -5,13 +5,19 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
+import qg.qgent.auth.TokenService;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
 import qg.qgent.entity.AttachmentEntity;
 import qg.qgent.mapper.AttachmentMapper;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -26,16 +32,18 @@ public class AttachmentService {
     private final AttachmentMapper attachmentMapper;
     private final AttachmentStorageStrategy storage;
     private final ProjectAccessService access;
+    private final TokenService tokens;
     private final long maxSizeBytes;
     private final long downloadExpirySeconds;
 
     public AttachmentService(AttachmentMapper attachmentMapper, AttachmentStorageStrategy storage,
-                             ProjectAccessService access,
+                             ProjectAccessService access, TokenService tokens,
                              @Value("${app.attachment-max-size-bytes:52428800}") long maxSizeBytes,
                              @Value("${app.attachment-download-expiry-seconds:900}") long downloadExpirySeconds) {
         this.attachmentMapper = attachmentMapper;
         this.storage = storage;
         this.access = access;
+        this.tokens = tokens;
         this.maxSizeBytes = maxSizeBytes;
         this.downloadExpirySeconds = downloadExpirySeconds;
     }
@@ -150,6 +158,216 @@ public class AttachmentService {
         } catch (UnsupportedOperationException e) {
             throw new ApiException(HttpStatus.NOT_IMPLEMENTED, "ATTACHMENT_CONTENT_UNSUPPORTED",
                     "当前存储策略暂不支持内容下载（请启用阿里云 OSS）");
+        }
+    }
+
+    /**
+     * 为已上传附件签发内联预览元数据与短期签名预览地址（契约 §4）。
+     * <p>
+     * 校验项目成员资格、附件归属与 READY 后，签发带短期 access token 的预览地址；浏览器/系统查看器
+     * 携带该地址直接打开，无需任何请求头。下载地址不可用（本地存储回退）时 downloadUrl 为 null，
+     * 前端可用 previewUrl 完成下载。token 只进 URL，不得写入日志、异常或 SSE 事件。
+     *
+     * @param actor        当前用户 ID
+     * @param projectId    项目 ID
+     * @param attachmentId 附件 ID
+     * @return 预览元数据与签名预览地址
+     */
+    public AttachmentPreviewUrlResponse previewUrl(UUID actor, UUID projectId, UUID attachmentId) {
+        access.requireProjectMember(projectId, actor);
+        AttachmentEntity attachment = requireAttachment(projectId, attachmentId);
+        if (!"READY".equals(attachment.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "ATTACHMENT_NOT_READY", "附件尚未上传完成");
+        }
+        String previewType = classifyPreviewType(attachment);
+        String downloadUrl = null;
+        try {
+            downloadUrl = storage.createDownloadUrl(attachment.getObjectKey(), downloadExpirySeconds);
+        } catch (UnsupportedOperationException e) {
+            // 本地存储回退：不签发下载地址；previewUrl 仍可用（preview 对不支持的内容读取返回 501）
+        }
+        String accessToken = tokens.access(actor);
+        String previewUrl = "/api/v1/projects/" + projectId + "/attachments/" + attachmentId
+                + "/preview?token=" + accessToken;
+        LocalDateTime expiresAt = LocalDateTime.now(ZoneOffset.UTC).plusSeconds(tokens.accessSeconds());
+        return new AttachmentPreviewUrlResponse(attachment.getId().toString(), attachment.getFileName(),
+                attachment.getMediaType(), attachment.getSizeBytes(),
+                !"UNSUPPORTED".equals(previewType), previewType, previewUrl, downloadUrl, expiresAt);
+    }
+
+    /**
+     * 读取附件的预览元数据（类型 + 声明大小），不读取字节、不签发 token。
+     * <p>
+     * 供多模态输入链路在读取附件字节前先按 previewType 与大小预算裁剪：IMAGE 按字节预算转媒体、
+     * TEXT/CODE 按预算内联文本，避免把超大附件整体读入内存再丢弃。读取失败或越权由调用方按
+     * 预算跳过，不影响主流程。
+     *
+     * @param actor        当前用户 ID
+     * @param projectId    项目 ID
+     * @param attachmentId 附件 ID
+     * @return 预览类型与声明大小
+     */
+    public AttachmentPreviewMetadata previewMetadata(UUID actor, UUID projectId, UUID attachmentId) {
+        access.requireProjectMember(projectId, actor);
+        AttachmentEntity attachment = requireAttachment(projectId, attachmentId);
+        if (!"READY".equals(attachment.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "ATTACHMENT_NOT_READY", "附件尚未上传完成");
+        }
+        return new AttachmentPreviewMetadata(classifyPreviewType(attachment), attachment.getSizeBytes());
+    }
+
+    /**
+     * 读取附件全部字节用于内联预览（契约 §5）。
+     * <p>
+     * 校验项目成员资格、附件归属与 READY 后从对象存储读取全部字节；本地存储回退返回 501。
+     * 控制器负责按 previewType 与 Range 组织响应头。字节整体读入内存，受附件大小上限约束，
+     * 适合图片/PDF/文本预览场景。
+     *
+     * @param actor        当前用户 ID
+     * @param projectId    项目 ID
+     * @param attachmentId 附件 ID
+     * @return 附件字节与预览类型元数据
+     */
+    public AttachmentPreviewContent previewContent(UUID actor, UUID projectId, UUID attachmentId) {
+        access.requireProjectMember(projectId, actor);
+        AttachmentEntity attachment = requireAttachment(projectId, attachmentId);
+        if (!"READY".equals(attachment.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "ATTACHMENT_NOT_READY", "附件尚未上传完成");
+        }
+        AttachmentContent loaded;
+        try {
+            loaded = storage.loadContent(attachment.getObjectKey(), attachment.getFileName(), attachment.getMediaType());
+        } catch (UnsupportedOperationException e) {
+            throw new ApiException(HttpStatus.NOT_IMPLEMENTED, "ATTACHMENT_CONTENT_UNSUPPORTED",
+                    "当前存储策略暂不支持内容读取（请启用阿里云 OSS）");
+        }
+        return new AttachmentPreviewContent(readAll(loaded.getStream()), classifyPreviewType(attachment),
+                attachment.getFileName(), attachment.getMediaType(), attachment.getSizeBytes());
+    }
+
+    private byte[] readAll(InputStream in) {
+        try (InputStream stream = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = stream.read(buf)) != -1) {
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "ATTACHMENT_READ_FAILED", "读取附件内容失败");
+        }
+    }
+
+    /** CODE 判定用 MIME：结构化文本/代码文件。 */
+    private static final Set<String> CODE_MEDIA_TYPES = Set.of(
+            "application/json", "application/xml", "application/javascript", "application/x-javascript",
+            "application/x-yaml", "application/x-sh", "application/x-python");
+
+    /** CODE 判定用文件扩展名（契约 §2.1）。 */
+    private static final Set<String> CODE_EXTENSIONS = Set.of(
+            "java", "kt", "ts", "tsx", "js", "jsx", "py", "go", "rs", "c", "cpp", "cc", "h", "hpp",
+            "sql", "sh", "bash", "zsh", "json", "yaml", "yml", "xml", "md", "markdown", "properties",
+            "css", "scss", "html", "htm", "vue", "gradle", "toml", "ini", "cfg", "conf");
+
+    /** TEXT 判定用扩展名（mediaType 未知时的兜底）。 */
+    private static final Set<String> TEXT_EXTENSIONS = Set.of("txt", "log");
+
+    /**
+     * 按 mediaType 与文件名扩展名判定预览类型（契约 §2.1）。
+     * <p>
+     * 以 mediaType 为主、扩展名兜底；IMAGE/PDF/TEXT/CODE 可直接内联预览，其余为
+     * UNSUPPORTED（前端回退为下载按钮）。判定结果随 preview-url 返回给前端。
+     */
+    private String classifyPreviewType(AttachmentEntity attachment) {
+        String mediaType = attachment.getMediaType();
+        if (mediaType != null) {
+            String lower = mediaType.toLowerCase(Locale.ROOT).trim();
+            if (lower.startsWith("image/")) {
+                return "IMAGE";
+            }
+            if ("application/pdf".equals(lower)) {
+                return "PDF";
+            }
+            if (lower.startsWith("text/")) {
+                return "TEXT";
+            }
+            if (CODE_MEDIA_TYPES.contains(lower)) {
+                return "CODE";
+            }
+        }
+        String fileName = attachment.getFileName();
+        if (fileName != null) {
+            int dot = fileName.lastIndexOf('.');
+            if (dot >= 0 && dot < fileName.length() - 1) {
+                String ext = fileName.substring(dot + 1).toLowerCase(Locale.ROOT).trim();
+                if (CODE_EXTENSIONS.contains(ext)) {
+                    return "CODE";
+                }
+                if (TEXT_EXTENSIONS.contains(ext)) {
+                    return "TEXT";
+                }
+            }
+        }
+        return "UNSUPPORTED";
+    }
+
+    /**
+     * 预览元数据载体：附件预览类型与声明大小，不含字节（非接口 DTO，仅服务内部传递）。
+     */
+    public static class AttachmentPreviewMetadata {
+        private final String previewType;
+        private final Long sizeBytes;
+
+        public AttachmentPreviewMetadata(String previewType, Long sizeBytes) {
+            this.previewType = previewType;
+            this.sizeBytes = sizeBytes;
+        }
+
+        public String previewType() {
+            return previewType;
+        }
+
+        public Long sizeBytes() {
+            return sizeBytes;
+        }
+    }
+
+    /**
+     * 预览内容载体：附件全部字节与预览元数据（非接口 DTO，仅服务内部传递）。
+     */
+    public static class AttachmentPreviewContent {
+        private final byte[] bytes;
+        private final String previewType;
+        private final String fileName;
+        private final String mediaType;
+        private final Long sizeBytes;
+
+        public AttachmentPreviewContent(byte[] bytes, String previewType, String fileName, String mediaType, Long sizeBytes) {
+            this.bytes = bytes;
+            this.previewType = previewType;
+            this.fileName = fileName;
+            this.mediaType = mediaType;
+            this.sizeBytes = sizeBytes;
+        }
+
+        public byte[] bytes() {
+            return bytes;
+        }
+
+        public String previewType() {
+            return previewType;
+        }
+
+        public String fileName() {
+            return fileName;
+        }
+
+        public String mediaType() {
+            return mediaType;
+        }
+
+        public Long sizeBytes() {
+            return sizeBytes;
         }
     }
 

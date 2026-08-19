@@ -64,6 +64,30 @@ class ContextPromptRendererTest {
         assertThat(rendered).contains("- 缓存约定: Redis key 以 projectId 前缀");
     }
 
+    @Test void rendersImageAndFileAttachmentsAsReferences() {
+        AgentInput input = input();
+        input.setConversation(List.of(
+                new ContextMessage(1L, "IMAGE", "USER", "u-1", "",
+                        java.util.UUID.randomUUID().toString(), "登录页设计.png", "image/png"),
+                new ContextMessage(2L, "IMAGE", "USER", "u-1", "",
+                        java.util.UUID.randomUUID().toString(), "截屏.jpg", null),
+                new ContextMessage(3L, "IMAGE", "USER", "u-1", "", null, null, null),
+                new ContextMessage(4L, "FILE", "USER", "u-1", "",
+                        java.util.UUID.randomUUID().toString(), "requirements.txt", "text/plain"),
+                new ContextMessage(5L, "FILE", "USER", "u-1", "",
+                        java.util.UUID.randomUUID().toString(), "data.csv", null)));
+
+        String rendered = ContextPromptRenderer.render(input);
+
+        // 图片/文件附件渲染为引用，不把原始 content JSON 退化成 prompt
+        assertThat(rendered).contains("[图片附件: 登录页设计.png]");
+        assertThat(rendered).contains("[图片附件: 截屏.jpg]");
+        assertThat(rendered).contains("[图片附件]");
+        assertThat(rendered).contains("[文件附件: requirements.txt(text/plain)]");
+        assertThat(rendered).contains("[文件附件: data.csv]");
+        assertThat(rendered).doesNotContain("{\"url\":").doesNotContain("attachmentId");
+    }
+
     @Test void emptyContextRendersNothing() {
         assertThat(ContextPromptRenderer.render(new AgentInput())).isEmpty();
     }

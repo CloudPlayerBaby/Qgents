@@ -3,17 +3,18 @@ package qg.qgent.orchestration.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.content.Media;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import qg.qgent.dto.ContextMessage;
 import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.RunOutcome;
-import qg.qgent.api.ApiException;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.LlmMessage;
 import qg.qgent.orchestration.llm.LlmObservation;
@@ -26,7 +27,9 @@ import qg.qgent.service.ContextService;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 真实 Coding Agent：理解任务与计划，通过只读工具按需读取工作区代码，用 apply_patch
@@ -66,6 +69,11 @@ public class CodingAgent implements Agent {
      */
     private final ContextSearchProperties contextSearchProperties;
     /**
+     * 附件多模态输入加载器：按项目成员身份读取 IMAGE 字节转媒体、FILE 文本/代码内联文本；
+     * 读取失败或越预算时降级为文本引用，不影响编码主流程。
+     */
+    private final AttachmentMediaLoader attachmentMediaLoader;
+    /**
      * 成功写后的预览回调（阶段 D），可空；Spring 注入 {@link CodingWriteObserver} 实现，
      * 未配置时 Coding 工具静默跳过，不影响编码流程。
      */
@@ -73,13 +81,14 @@ public class CodingAgent implements Agent {
 
     public CodingAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
                        AgentProtocol protocol, ContextService contextService,
-                       ContextSearchProperties contextSearchProperties) {
+                       ContextSearchProperties contextSearchProperties, AttachmentMediaLoader attachmentMediaLoader) {
         this.llm = llm;
         this.codeAccess = codeAccess;
         this.writer = writer;
         this.protocol = protocol;
         this.contextService = contextService;
         this.contextSearchProperties = contextSearchProperties;
+        this.attachmentMediaLoader = attachmentMediaLoader;
     }
 
     /**
@@ -94,18 +103,13 @@ public class CodingAgent implements Agent {
     public AgentRunOutcome run(AgentInput input) {
         log.info("coding agent start phase={} workspaceId={} protocol={}",
                 input.getPhase(), input.getWorkspaceId(), protocol.isNative() ? "native" : "legacy");
-        log.info("coding agent input context {}", AgentContextLogFormatter.summary(input));
-        if (log.isDebugEnabled()) {
-            log.debug("coding agent input context samples taskId={} {}", input.getTaskId(),
-                    AgentContextLogFormatter.samples(input));
-        }
         List<LlmObservation> observations = new ArrayList<>();
-        ChangedWriteFactLedger observedWrites = new ChangedWriteFactLedger();
+        Set<String> observedChangedFiles = new LinkedHashSet<>();
         try {
             CodingResult coding = protocol.isNative()
-                    ? executeCodingNative(input, observations, observedWrites)
-                    : executeCodingLegacy(input, observedWrites);
-            validateAndCompleteChanges(coding, observedWrites);
+                    ? executeCodingNative(input, observations, observedChangedFiles)
+                    : executeCodingLegacy(input, observedChangedFiles);
+            validateAndCompleteChanges(coding, observedChangedFiles);
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
             outcome.setOutcome(coding.isSuccess() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED);
@@ -123,14 +127,6 @@ public class CodingAgent implements Agent {
             failure.setPhase(input.getPhase());
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
             failure.setFailureCode(e.getCode().name());
-            failure.setMessage("coding agent failed: " + e.getMessage());
-            failure.setObservations(observations);
-            return failure;
-        } catch (ApiException e) {
-            AgentRunOutcome failure = new AgentRunOutcome();
-            failure.setPhase(input.getPhase());
-            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
-            failure.setFailureCode(e.code());
             failure.setMessage("coding agent failed: " + e.getMessage());
             failure.setObservations(observations);
             return failure;
@@ -152,41 +148,37 @@ public class CodingAgent implements Agent {
      * {@link IllegalStateException}，由 run() 统一转为 FAILED_INFRASTRUCTURE。
      */
     private CodingResult executeCodingNative(AgentInput input, List<LlmObservation> observations,
-                                             ChangedWriteFactLedger observedWrites) {
+                                             Set<String> observedChangedFiles) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         log.info("coding agent workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
         List<Message> history = new ArrayList<>();
-        history.add(new UserMessage(promptBuilder.buildUser(input, files)));
+        history.add(buildUserMessage(input, files));
         String system = promptBuilder.buildSystem(true);
         CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer);
-        tools.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
+        tools.setWriteObserver(trackingObserver(observedChangedFiles), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId());
         ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
                 input.getProjectId());
         ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
                 input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
         List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
+        String finishReason = null;
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
-            List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round,
-                    observedWrites.changedPaths());
-            ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
+            ToolTurnResult turn = llm.nextToolTurn(system, history, callbacks);
             observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
+            finishReason = turn.finishReason();
             if (turn.isInfraAbort()) {
                 log.error("CODING_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
                         input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
                 throw new IllegalStateException(turn.infraFailure());
             }
-            if ("length".equalsIgnoreCase(turn.finishReason())) {
-                return finalizeCoding(system, requestHistory, turn, observations, round, input.getPhase().name(),
-                        ProtocolFailureCode.LLM_FINISH_LENGTH, observedWrites);
+            if ("length".equalsIgnoreCase(finishReason)) {
+                throw new CodingParseException(ProtocolFailureCode.LLM_FINISH_LENGTH,
+                        "coding output truncated by max tokens");
             }
             if (turn.continuesToolLoop()) {
                 history = turn.history();
-                if (round == MAX_TOOL_ROUNDS) {
-                    return finalizeCoding(system, requestHistory, turn, observations, round, input.getPhase().name(),
-                            ProtocolFailureCode.LLM_CONTEXT_LIMIT, observedWrites);
-                }
                 continue;
             }
             if (turn.isFinalText()) {
@@ -211,23 +203,30 @@ public class CodingAgent implements Agent {
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
     }
 
-    private CodingResult finalizeCoding(String system, List<Message> requestHistory, ToolTurnResult trigger,
-                                        List<LlmObservation> observations, int round,
-                                        String phase, ProtocolFailureCode triggerCode,
-                                        ChangedWriteFactLedger observedWrites) {
-        ToolTurnResult finalization = llm.finalizeToolTurn(system,
-                NativeToolLoopSupport.prepareFinalization(requestHistory, trigger),
-                NativeToolLoopSupport.finalizationInstruction(
-                        "{\"finalResult\":{\"success\":true|false,\"summary\":\"结果摘要\","
-                                + "\"modifiedFiles\":[\"相对路径\"],\"changes\":[\"变更说明\"],"
-                                + "\"errors\":[\"错误说明\"]}}", observedWrites.changedPaths()));
-        observations.add(LlmObservation.of(phase, round + 1, finalization));
-        if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
-            throw new CodingParseException(triggerCode, "bounded coding finalization did not produce complete JSON");
+    /**
+     * 构建 Coding 首轮 UserMessage：正文（promptBuilder）+ 群聊中的图片媒体（IMAGE 附件，
+     * base64 data URI）+ 文本/代码附件内容块（FILE，TEXT/CODE 且 ≤64KB）。
+     * <p>
+     * 按 {@link AttachmentMediaLoader} 先裁剪类型与大小，避免把超大附件读入内存。
+     * 读取失败、越权、越预算或类型不支持的附件降级为文本引用（ContextPromptRenderer 已渲染
+     * [图片附件]/[文件附件]），不影响编码主流程与成功收敛。
+     */
+    private UserMessage buildUserMessage(AgentInput input, List<String> files) {
+        String text = promptBuilder.buildUser(input, files);
+        AttachmentMediaLoader.Result attachments =
+                attachmentMediaLoader.load(input.getActorId(), input.getProjectId(), input.getConversation());
+        String finalText = attachments.extraText().isEmpty() ? text : text + attachments.extraText();
+        UserMessage.Builder builder = UserMessage.builder().text(finalText);
+        if (!attachments.media().isEmpty()) {
+            builder.media(attachments.media());
         }
-        return parser.parse(finalization.text());
+        return builder.build();
     }
 
+    /**
+     * 读取 IMAGE 附件字节并转为 base64 data URI 媒体；越预算、类型不符或读取失败时跳过并降级为
+     * 文本引用。读取异常仅告警，不中断编码流程。
+     */
     /**
      * 原生 Tool Calling 不能同时启用 response_format，因此最终文本仍可能出现未转义引号或围栏。
      * 解析失败时用一次无工具、强制 JSON_OBJECT 的补救调用重述原结果；不自行修补 JSON，避免
@@ -253,7 +252,7 @@ public class CodingAgent implements Agent {
      * legacy 手写 JSON 协议循环：模型输出 toolCall/finalResult 文本，由 {@link CodingToolExecutor}
      * 执行工具。仅灰度期使用，协议切换稳定后删除。
      */
-    private CodingResult executeCodingLegacy(AgentInput input, ChangedWriteFactLedger observedWrites) {
+    private CodingResult executeCodingLegacy(AgentInput input, Set<String> observedChangedFiles) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         log.info("coding agent (legacy) workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
@@ -261,7 +260,7 @@ public class CodingAgent implements Agent {
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem(false);
         CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer);
-        toolExecutor.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
+        toolExecutor.setWriteObserver(trackingObserver(observedChangedFiles), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId(), input.getWorkspaceId());
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             String raw = llm.complete(system, history);
@@ -309,7 +308,7 @@ public class CodingAgent implements Agent {
      * 会补入结果，避免模型遗漏 modifiedFiles；没有任何证据时把结果降为协议失败，防止
      * JSON repair 把“未执行任何文件修改”包装成 Developer 成功。
      */
-    private void validateAndCompleteChanges(CodingResult coding, ChangedWriteFactLedger observedWrites) {
+    private void validateAndCompleteChanges(CodingResult coding, Set<String> observedChangedFiles) {
         if (coding == null || !coding.isSuccess()) {
             return;
         }
@@ -317,20 +316,23 @@ public class CodingAgent implements Agent {
         if (declared == null) {
             declared = List.of();
         }
-        if (declared.isEmpty() && !observedWrites.hasChangedWrite()) {
+        if (declared.isEmpty() && observedChangedFiles.isEmpty()) {
             throw new CodingParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
                     "coding success requires at least one actual file modification");
         }
-        if (declared.isEmpty() && observedWrites.hasChangedWrite()) {
-            coding.setModifiedFiles(new ArrayList<>(observedWrites.changedPaths()));
+        if (declared.isEmpty() && !observedChangedFiles.isEmpty()) {
+            coding.setModifiedFiles(new ArrayList<>(observedChangedFiles));
         }
     }
 
     /**
      * 记录本次 run 的真实变更，同时保留已有的 Diff 预览回调。回调异常不能影响 Coding 主循环。
      */
-    private CodingWriteObserver trackingObserver(ChangedWriteFactLedger observedWrites) {
-        CodingWriteObserver delegate = (projectId, taskId, taskRunId, workspaceId, result) -> {
+    private CodingWriteObserver trackingObserver(Set<String> observedChangedFiles) {
+        return (projectId, taskId, taskRunId, workspaceId, result) -> {
+            if (result != null && result.isOk() && result.isChanged() && result.getPath() != null) {
+                observedChangedFiles.add(result.getPath());
+            }
             if (writeObserver != null) {
                 try {
                     writeObserver.onWrite(projectId, taskId, taskRunId, workspaceId, result);
@@ -340,7 +342,6 @@ public class CodingAgent implements Agent {
                 }
             }
         };
-        return observedWrites.observing(delegate);
     }
 
 }

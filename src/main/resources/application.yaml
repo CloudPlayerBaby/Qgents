@@ -3,11 +3,13 @@ spring:
     import: optional:file:.env[.properties]
   ai:
     openai:
-      api-key: ${DEEPSEEK_API_KEY}
-      base-url: https://api.deepseek.com/
+      # Qwen3-VL-Plus（DashScope OpenAI 兼容）：支持图片/文件多模态输入。
+      # 回退 DeepSeek：api-key=${DEEPSEEK_API_KEY} / base-url=https://api.deepseek.com/ / model=deepseek-v4-flash
+      api-key: ${DASHSCOPE_API_KEY}
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
       chat:
         options:
-          model: deepseek-v4-flash
+          model: qwen3-vl-plus
           temperature: 0.2
           max-tokens: 8192
   application:

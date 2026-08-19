@@ -318,6 +318,47 @@ class TestAgentTest {
     }
 
     @Test
+    void pureFileTaskSkipsBuildTestEvenWhenBuildToolExists() {
+        when(codeAccess.listFiles(any()))
+                .thenReturn(List.of("build.gradle", "gradlew", "README.md"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("README.md", "111", "hash"));
+
+        AgentInput fileInput = input();
+        fileInput.setRequirement("在 README.md 中写入内容 111");
+        fileInput.getCodingResult().setModifiedFiles(List.of("README.md"));
+
+        AgentRunOutcome outcome = agent().run(fileInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().isSuccess()).isTrue();
+        assertThat(outcome.getTestResult().getVerificationMode()).isEqualTo("FILE_ASSERTION");
+        assertThat(outcome.getTestResult().getCommand()).isEqualTo("file assertions");
+        verify(executionPort, never()).execute(any(), anyList(), any());
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void pureFileTaskFailsAssertionWhenTargetMissing() {
+        when(codeAccess.listFiles(any()))
+                .thenReturn(List.of("build.gradle", "gradlew"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("README.md", "111", "hash"));
+
+        AgentInput fileInput = input();
+        fileInput.setRequirement("在 README.md 中写入内容 111");
+        fileInput.getCodingResult().setModifiedFiles(List.of("README.md"));
+
+        AgentRunOutcome outcome = agent().run(fileInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getTestResult().isSuccess()).isFalse();
+        assertThat(outcome.getTestResult().getFailures().get(0).getReason()).contains("不存在");
+        verify(executionPort, never()).execute(any(), anyList(), any());
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
     void testResultCarriesRealExecutionFields() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("build.gradle"));
         when(executionPort.execute(any(), anyList(), any()))

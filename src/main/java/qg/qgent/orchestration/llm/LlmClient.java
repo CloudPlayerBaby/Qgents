@@ -1,6 +1,7 @@
 package qg.qgent.orchestration.llm;
 
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.content.Media;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.util.List;
@@ -27,6 +28,18 @@ public interface LlmClient {
      * @throws RuntimeException 调用失败（网络、鉴权、解析）时抛出，由调用方决定重试语义。
      */
     String complete(String systemPrompt, String userPrompt);
+
+    /**
+     * 以 system + 一条 user 消息调用一次模型，user 消息可携带多模态媒体（图片等），返回模型输出的纯文本。
+     *
+     * @param systemPrompt 系统角色指令（职责、约束、输出格式）。
+     * @param userPrompt   用户输入（任务上下文、文件树、按需读取的文件内容）。
+     * @param media        附加到 user 消息的多模态媒体（图片 base64 data URI 等）；为空时等价于
+     *                     {@link #complete(String, String)}。
+     * @return 模型生成的文本；实现不得返回明文 Secret。
+     * @throws RuntimeException 调用失败（网络、鉴权、解析）时抛出，由调用方决定重试语义。
+     */
+    String complete(String systemPrompt, String userPrompt, List<Media> media);
 
     /**
      * 以 system + 对话历史调用一次模型，返回模型输出的纯文本。

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.content.Media;
 import org.springframework.stereotype.Component;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.api.ApiException;
@@ -52,14 +53,17 @@ public class PlanAgent implements Agent {
     private final LlmClient llm;
     private final WorkspaceCodeAccess codeAccess;
     private final AgentDispatcher agentDispatcher;
+    private final AttachmentMediaLoader attachmentMediaLoader;
     private final PlanPromptBuilder promptBuilder = new PlanPromptBuilder();
     private final PlanResultParser parser = new PlanResultParser();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public PlanAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, AgentDispatcher agentDispatcher) {
+    public PlanAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, AgentDispatcher agentDispatcher,
+                     AttachmentMediaLoader attachmentMediaLoader) {
         this.llm = llm;
         this.codeAccess = codeAccess;
         this.agentDispatcher = agentDispatcher;
+        this.attachmentMediaLoader = attachmentMediaLoader;
     }
 
     @Override
@@ -81,9 +85,17 @@ public class PlanAgent implements Agent {
             List<AgentEntity> pool = loadCandidatePool(input);
             String planSystem = promptBuilder.buildPlanSystem();
             String planUser = promptBuilder.buildPlanUser(input, files, contents, pool);
-            log.info("plan agent prompt assembled taskId={} systemChars={} userChars={} fileContents={} agentCandidates={}",
-                    input.getTaskId(), planSystem.length(), planUser.length(), contents.size(), pool.size());
-            String planJson = llm.complete(planSystem, planUser);
+            AttachmentMediaLoader.Result attachments =
+                    attachmentMediaLoader.load(input.getActorId(), input.getProjectId(), input.getConversation());
+            if (!attachments.extraText().isEmpty()) {
+                planUser = planUser + attachments.extraText();
+            }
+            log.info("plan agent prompt assembled taskId={} systemChars={} userChars={} fileContents={} agentCandidates={} media={}",
+                    input.getTaskId(), planSystem.length(), planUser.length(), contents.size(), pool.size(),
+                    attachments.media().size());
+            String planJson = attachments.media().isEmpty()
+                    ? llm.complete(planSystem, planUser)
+                    : llm.complete(planSystem, planUser, attachments.media());
             log.info("plan agent raw plan response taskId={} responseChars={} responseSha256={} empty={}",
                     input.getTaskId(), length(planJson), hash(planJson), planJson == null || planJson.isBlank());
             PlanResult plan;

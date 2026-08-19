@@ -100,6 +100,9 @@ public class SecurityConfig {
                         // WebSocket 握手升级为 HTTP GET，需放行初始请求；真实鉴权由
                         // RealtimeAuthInterceptor 解析 query token 完成（浏览器升级无法携带 Authorization 头）。
                         .requestMatchers("/api/v1/ws/realtime").permitAll()
+                        // 附件内联预览：浏览器 <img>/新标签页/iframe 无法携带 Authorization 头，
+                        // 与 WebSocket 握手一致，由控制器解析 ?token= 完成鉴权（Authorization 头仍可用）。
+                        .requestMatchers(HttpMethod.GET, "/api/v1/projects/*/attachments/*/preview").permitAll()
                         // Worker 内部调用使用独立 service token，由内部 Controller 自行校验。
                         .requestMatchers("/internal/v1/**").permitAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/error").permitAll().anyRequest()
