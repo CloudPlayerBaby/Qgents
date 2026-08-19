@@ -20,6 +20,7 @@ import qg.qgent.api.PagedApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.AgentAssignmentListItem;
 import qg.qgent.dto.AgentResponse;
+import qg.qgent.dto.AgentReviewRejectRequest;
 import qg.qgent.dto.AgentRuntimeSummary;
 import qg.qgent.dto.AvatarConfirmRequest;
 import qg.qgent.dto.AvatarConfirmResponse;
@@ -136,7 +137,8 @@ public class AgentController {
     }
 
     /**
-     * 契约 §11.1（接口补充 v2.0.3 §4）：发布为 TEAM（仅创建者，PRIVATE+ACTIVE → TEAM+ACTIVE）。
+     * 契约 §11.1（v2.0.6 审核化）：提交发布审核（仅创建者，PRIVATE+ACTIVE → PENDING+ACTIVE）。
+     * 不再直接发布为 TEAM；需 Team Owner 调用 approve 批准后方为 TEAM 共享。
      */
     @PostMapping("/teams/{teamId}/agents/{agentId}/publish")
     public ApiResponse<AgentResponse> publish(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
@@ -149,7 +151,37 @@ public class AgentController {
     }
 
     /**
-     * 契约 §11.1（接口补充 v2.0.3 §5）：收回发布（创建者或 Team Owner，TEAM+ACTIVE → PRIVATE+ACTIVE）。
+     * 契约 §11.1（v2.0.6 审核化）：批准发布（Team Owner，PENDING+ACTIVE → TEAM+ACTIVE）。
+     * 批准后团队共享，不可再收回为私有（只能归档）。
+     */
+    @PostMapping("/teams/{teamId}/agents/{agentId}/approve")
+    public ApiResponse<AgentResponse> approve(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
+            @PathVariable UUID agentId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key, HttpServletRequest request) {
+        AgentResponse result = idempotency.execute(actor, "POST:/teams/{teamId}/agents/{agentId}/approve", key,
+                Map.of("teamId", teamId, "agentId", agentId), 200, AgentResponse.class,
+                () -> service.approve(actor, teamId, agentId));
+        return ApiResponse.ok(result, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 契约 §11.1（v2.0.6 审核化）：拒绝发布（Team Owner，PENDING+ACTIVE → PRIVATE+ACTIVE，
+     * 写入拒绝原因供创建者查看后修正重新提交）。
+     */
+    @PostMapping("/teams/{teamId}/agents/{agentId}/reject")
+    public ApiResponse<AgentResponse> reject(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,
+            @PathVariable UUID agentId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key,
+            @Valid @RequestBody(required = false) AgentReviewRejectRequest body, HttpServletRequest request) {
+        AgentResponse result = idempotency.execute(actor, "POST:/teams/{teamId}/agents/{agentId}/reject", key,
+                Map.of("teamId", teamId, "agentId", agentId, "body", body), 200, AgentResponse.class,
+                () -> service.reject(actor, teamId, agentId, body == null ? null : body.getReason()));
+        return ApiResponse.ok(result, (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
+     * 契约 §11.1（接口补充 v2.0.3 §5）：收回发布已废弃——TEAM 发布需审核且批准后不可回私有，
+     * 返回 409 AGENT_UNPUBLISH_DISALLOWED（保留端点兼容旧客户端，仅能归档）。
      */
     @PostMapping("/teams/{teamId}/agents/{agentId}/unpublish")
     public ApiResponse<AgentResponse> unpublish(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,

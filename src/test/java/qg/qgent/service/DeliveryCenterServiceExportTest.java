@@ -23,15 +23,18 @@ import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.DiffReviewBatchMapper;
+import qg.qgent.mapper.AgentMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
 import qg.qgent.mapper.MemoryMapper;
 import qg.qgent.mapper.MemoryMessageSourceMapper;
 import qg.qgent.mapper.MergeRequestMapper;
 import qg.qgent.mapper.MessageMapper;
+import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.SkillMapper;
 import qg.qgent.mapper.TaskMapper;
+import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.UserMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 
@@ -68,6 +71,9 @@ class DeliveryCenterServiceExportTest {
     private final GitHubRepositoryMapper githubRepositories = mock(GitHubRepositoryMapper.class);
     private final MemoryMapper memories = mock(MemoryMapper.class);
     private final SkillMapper skills = mock(SkillMapper.class);
+    private final AgentMapper agents = mock(AgentMapper.class);
+    private final ProjectMapper projects = mock(ProjectMapper.class);
+    private final TeamMapper teams = mock(TeamMapper.class);
     private final UserMapper users = mock(UserMapper.class);
     private final MemoryMessageSourceMapper memorySources = mock(MemoryMessageSourceMapper.class);
     private final MessageMapper messages = mock(MessageMapper.class);
@@ -75,7 +81,7 @@ class DeliveryCenterServiceExportTest {
 
     private final DeliveryCenterService service = new DeliveryCenterService(
             diffBatches, diffs, mergeRequests, tasks, groups, projectRepositories, worktrees,
-            githubRepositories, memories, skills, users, memorySources, messages, access);
+            githubRepositories, memories, skills, agents, projects, teams, users, memorySources, messages, access);
 
     private final UUID projectId = UUID.randomUUID();
     private final UUID actor = UUID.randomUUID();

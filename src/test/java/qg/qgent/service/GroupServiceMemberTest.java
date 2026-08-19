@@ -247,7 +247,7 @@ class GroupServiceMemberTest {
         when(groupMapper.listVisibleByProject(projectId, memberA)).thenReturn(List.of(requirementGroup()));
         when(messageMapper.selectLatestByGroupIds(List.of(groupId))).thenReturn(List.of());
         when(messageMapper.countUnreadByGroupIds(List.of(groupId), memberA)).thenReturn(List.of());
-        when(messageMapper.countMentionUnreadByGroupIds(List.of(groupId), memberA)).thenReturn(List.of());
+        when(messageMapper.countMentionUnreadByGroupIds(List.of(groupId), memberA, memberA.toString())).thenReturn(List.of());
 
         List<GroupResponse> groups = service.list(memberA, projectId);
 
@@ -264,20 +264,20 @@ class GroupServiceMemberTest {
 
         verify(messageMapper, never()).selectLatestByGroupIds(any());
         verify(messageMapper, never()).countUnreadByGroupIds(any(), any());
-        verify(messageMapper, never()).countMentionUnreadByGroupIds(any(), any());
+        verify(messageMapper, never()).countMentionUnreadByGroupIds(any(), any(), any());
     }
 
     @Test
     void groupDetailsOnlyCountUnreadForRequestedGroup() {
         when(groupMemberMapper.countMember(groupId, memberA)).thenReturn(1);
         when(messageMapper.countUnreadByGroupIds(List.of(groupId), memberA)).thenReturn(List.of());
-        when(messageMapper.countMentionUnreadByGroupIds(List.of(groupId), memberA)).thenReturn(List.of());
+        when(messageMapper.countMentionUnreadByGroupIds(List.of(groupId), memberA, memberA.toString())).thenReturn(List.of());
 
         GroupResponse response = service.get(memberA, projectId, groupId);
 
         assertEquals(groupId.toString(), response.getId());
         verify(messageMapper).countUnreadByGroupIds(List.of(groupId), memberA);
-        verify(messageMapper).countMentionUnreadByGroupIds(List.of(groupId), memberA);
+        verify(messageMapper).countMentionUnreadByGroupIds(List.of(groupId), memberA, memberA.toString());
     }
 
     @Test

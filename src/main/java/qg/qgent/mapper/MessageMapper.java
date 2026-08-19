@@ -207,9 +207,14 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
      * 统计当前用户在指定可见群中「@ 我」的未读消息数（排除本人消息）。
      * mentions 为 JSON 数组（如 {@code [{"type":"USER","id":"..."}]}），用 JSON_CONTAINS 匹配
      * {@code {"type":"USER","id":当前用户}}；未读 = sequence_no 大于已读游标。
+     * <p>
+     * 注意：mentions 里存的 id 是 Jackson 序列化的字符串 UUID；而 {@code userId} 参数受全局
+     * {@link UuidBinaryTypeHandler} 影响会以 BINARY(16) 绑定，直接 CAST 成乱码，JSON_CONTAINS
+     * 永远匹配不上。因此 JSON 匹配必须使用独立传入的字符串参数 {@code userIdText}。
      *
-     * @param groupIds 已确认可见的群 ID
-     * @param userId    当前用户 ID
+     * @param groupIds   已确认可见的群 ID
+     * @param userId     当前用户 ID（BINARY(16) 绑定，用于游标/发送者比较）
+     * @param userIdText 当前用户 ID 的字符串形式（JSON 匹配用）
      * @return 群 ID → @ 我的未读消息数
      */
     @Select({"<script>",
@@ -221,7 +226,7 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             "(<foreach collection='groupIds' item='groupId' separator=','>#{groupId}</foreach>) ",
             "AND m.sequence_no &gt; COALESCE(r.last_read_sequence_no, 0) ",
             "AND m.author_user_id &lt;&gt; #{userId} ",
-            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', CAST(#{userId} AS CHAR))) ",
+            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', #{userIdText})) ",
             "GROUP BY m.requirement_group_id",
             "</script>"})
     @Results({
@@ -230,7 +235,8 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             @Result(column = "unread", property = "unread")
     })
     List<GroupUnreadRow> countMentionUnreadByGroupIds(@Param("groupIds") List<UUID> groupIds,
-                                                      @Param("userId") UUID userId);
+                                                      @Param("userId") UUID userId,
+                                                      @Param("userIdText") String userIdText);
 
     /**
      * 兼容旧调用方的项目级「@ 我」未读统计；新业务代码应优先传入已校验的群 ID 集合。
@@ -245,7 +251,7 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             "WHERE g.project_id = #{projectId} ",
             "AND m.sequence_no &gt; COALESCE(r.last_read_sequence_no, 0) ",
             "AND m.author_user_id &lt;&gt; #{userId} ",
-            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', CAST(#{userId} AS CHAR))) ",
+            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', #{userIdText})) ",
             "GROUP BY m.requirement_group_id",
             "</script>"})
     @Results({
@@ -254,5 +260,6 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             @Result(column = "unread", property = "unread")
     })
     List<GroupUnreadRow> countMentionUnreadByProject(@Param("projectId") UUID projectId,
-                                                     @Param("userId") UUID userId);
+                                                     @Param("userId") UUID userId,
+                                                     @Param("userIdText") String userIdText);
 }

@@ -38,7 +38,7 @@ public class TaskRunDetailResponse {
      * 产物摘要，由受控执行服务写入；未产出时为空。
      */
     private Map<String, Object> artifactSummary;
-    /** 执行服务尚未持久化内部节点轨迹时返回空数组。 */
+    /** 执行器已持久化的脱敏内部节点轨迹；尚未持久化时返回空数组。 */
     private List<TaskRunStepResponse> steps;
     private String startedAt;
     private String finishedAt;

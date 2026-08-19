@@ -91,12 +91,13 @@ public class AgentService {
         if (teamMemberMapper.selectByTeamAndUser(teamId, actorId) == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "TEAM_RESOURCE_NOT_FOUND", "团队资源不存在或不可见");
         }
+        boolean teamOwner = isTeamOwner(teamId, actorId);
         return agentMapper.selectList(new LambdaQueryWrapper<AgentEntity>()
                         .eq(AgentEntity::getTeamId, teamId)
                         .eq(AgentEntity::getStatus, "ACTIVE")
                         .orderByAsc(AgentEntity::getName))
                 .stream()
-                .filter(agent -> "TEAM".equals(agent.getVisibility()) || actorId.equals(agent.getCreatedBy()))
+                .filter(agent -> visibleTo(agent, actorId, teamOwner))
                 .map(agent -> toResponse(agent, actorId.equals(agent.getCreatedBy())))
                 .toList();
     }
@@ -122,7 +123,9 @@ public class AgentService {
             throw new ApiException(HttpStatus.NOT_FOUND, "AGENT_NOT_FOUND", "Agent 不存在或不可见");
         }
         boolean owner = actor.equals(agent.getCreatedBy());
-        if (!"TEAM".equals(agent.getVisibility()) && !owner) {
+        boolean teamOwner = isTeamOwner(teamId, actor);
+        if (!"TEAM".equals(agent.getVisibility()) && !owner
+                && !("PENDING".equals(agent.getVisibility()) && teamOwner)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "AGENT_NOT_FOUND", "Agent 不存在或不可见");
         }
         return toResponse(agent, owner);
@@ -258,7 +261,8 @@ public class AgentService {
     }
 
     /**
-     * 发布 Agent：PRIVATE + ACTIVE → TEAM + ACTIVE。仅创建者可发布；发布后团队成员可查询和使用。
+     * 提交发布审核：PRIVATE + ACTIVE → PENDING + ACTIVE。仅创建者可提交。
+     * 提交后进入待审核队列（交付中心 AGENT 类型可见），由 Team Owner 批准为 TEAM 或拒绝回 PRIVATE。
      */
     @Transactional
     public AgentResponse publish(UUID actor, UUID teamId, UUID agentId) {
@@ -267,37 +271,75 @@ public class AgentService {
         requireNotDefault(agent);
         requireVisibleForManage(agent, actor);
         if (agent.getCreatedBy() == null || !agent.getCreatedBy().equals(actor)) {
-            throw forbidden("仅 Agent 创建者可以发布");
+            throw forbidden("仅 Agent 创建者可以提交发布审核");
         }
         if (!"ACTIVE".equals(agent.getStatus()) || !"PRIVATE".equals(agent.getVisibility())) {
             throw new ApiException(HttpStatus.CONFLICT, "AGENT_STATE_CONFLICT",
-                    "只有 PRIVATE 且 ACTIVE 的 Agent 可以发布");
+                    "只有 PRIVATE 且 ACTIVE 的 Agent 可以提交发布审核");
         }
-        agent.setVisibility("TEAM");
+        agent.setVisibility("PENDING");
+        agent.setReviewReason(null);
+        agent.setReviewedBy(null);
+        agent.setReviewedAt(null);
         agentMapper.updateById(agent);
         return toResponse(agent, true);
     }
 
     /**
-     * 收回发布：TEAM + ACTIVE → PRIVATE + ACTIVE。仅创建者或 Team Owner 可收回；
-     * 非创建者收回后 Agent 仍归原创建者所有。
+     * 批准发布：PENDING + ACTIVE → TEAM + ACTIVE。仅 Team Owner（canonical owner）可批准。
+     * 批准后团队共享，不可再变回私有（只能归档）。
+     */
+    @Transactional
+    public AgentResponse approve(UUID actor, UUID teamId, UUID agentId) {
+        requireTeamMember(teamId, actor);
+        requireTeamOwner(teamId, actor);
+        AgentEntity agent = requireAgentInTeam(teamId, agentId);
+        requireNotDefault(agent);
+        if (!"ACTIVE".equals(agent.getStatus()) || !"PENDING".equals(agent.getVisibility())) {
+            throw new ApiException(HttpStatus.CONFLICT, "AGENT_STATE_CONFLICT",
+                    "只有 PENDING（待审核）且 ACTIVE 的 Agent 可以批准发布");
+        }
+        agent.setVisibility("TEAM");
+        agent.setReviewedBy(actor);
+        agent.setReviewedAt(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+        agent.setReviewReason(null);
+        agentMapper.updateById(agent);
+        return toResponse(agent, false);
+    }
+
+    /**
+     * 拒绝发布：PENDING + ACTIVE → PRIVATE + ACTIVE（可修改后重新提交）。仅 Team Owner 可拒绝；
+     * 拒绝原因写入 reviewReason，仅创建者可见。
+     */
+    @Transactional
+    public AgentResponse reject(UUID actor, UUID teamId, UUID agentId, String reason) {
+        requireTeamMember(teamId, actor);
+        requireTeamOwner(teamId, actor);
+        AgentEntity agent = requireAgentInTeam(teamId, agentId);
+        requireNotDefault(agent);
+        if (!"ACTIVE".equals(agent.getStatus()) || !"PENDING".equals(agent.getVisibility())) {
+            throw new ApiException(HttpStatus.CONFLICT, "AGENT_STATE_CONFLICT",
+                    "只有 PENDING（待审核）且 ACTIVE 的 Agent 可以拒绝");
+        }
+        agent.setVisibility("PRIVATE");
+        agent.setReviewedBy(actor);
+        agent.setReviewedAt(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+        agent.setReviewReason(reason == null || reason.isBlank() ? null : reason.trim());
+        agentMapper.updateById(agent);
+        return toResponse(agent, true);
+    }
+
+    /**
+     * 收回发布已废弃：TEAM 发布需 Team Owner 审核批准，批准后不可再变回 PRIVATE（只能归档）。
+     * 保留端点返回 409 明确语义，避免客户端误以为可自由切换。
      */
     @Transactional
     public AgentResponse unpublish(UUID actor, UUID teamId, UUID agentId) {
         requireTeamMember(teamId, actor);
         AgentEntity agent = requireAgentInTeam(teamId, agentId);
         requireNotDefault(agent);
-        requireVisibleForManage(agent, actor);
-        if (!canManagePublished(agent, actor, teamId)) {
-            throw forbidden("仅 Agent 创建者或 Team Owner 可收回发布");
-        }
-        if (!"ACTIVE".equals(agent.getStatus()) || !"TEAM".equals(agent.getVisibility())) {
-            throw new ApiException(HttpStatus.CONFLICT, "AGENT_STATE_CONFLICT",
-                    "只有 TEAM 且 ACTIVE 的 Agent 可以收回发布");
-        }
-        agent.setVisibility("PRIVATE");
-        agentMapper.updateById(agent);
-        return toResponse(agent, true);
+        throw new ApiException(HttpStatus.CONFLICT, "AGENT_UNPUBLISH_DISALLOWED",
+                "已发布的团队 Agent 不可收回为私有，只能归档（archive）");
     }
 
     /**
@@ -324,6 +366,37 @@ public class AgentService {
     public void requireTeamMember(UUID teamId, UUID actor) {
         if (teamMemberMapper.selectByTeamAndUser(teamId, actor) == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "TEAM_NOT_FOUND", "团队不存在或不可见");
+        }
+    }
+
+    /**
+     * 列表可见性：TEAM 全团队成员可见；PRIVATE/PENDING 仅创建者可见；PENDING 额外对 Team Owner 可见（待审核）。
+     */
+    private boolean visibleTo(AgentEntity agent, UUID actor, boolean teamOwner) {
+        if ("TEAM".equals(agent.getVisibility())) {
+            return true;
+        }
+        if (agent.getCreatedBy() != null && agent.getCreatedBy().equals(actor)) {
+            return true;
+        }
+        return "PENDING".equals(agent.getVisibility()) && teamOwner;
+    }
+
+    /**
+     * 是否为团队 canonical Owner（Team Owner）。
+     */
+    private boolean isTeamOwner(UUID teamId, UUID actor) {
+        TeamEntity team = teamMapper.selectById(teamId);
+        return team != null && actor.equals(team.getOwnerUserId());
+    }
+
+    /**
+     * 仅团队 canonical Owner 可执行（发布审核批准/拒绝）。
+     */
+    private void requireTeamOwner(UUID teamId, UUID actor) {
+        if (!isTeamOwner(teamId, actor)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "TEAM_OWNER_REQUIRED",
+                    "仅 Team Owner 可以审核 Agent 发布");
         }
     }
 
@@ -443,10 +516,16 @@ public class AgentService {
     }
 
     private AgentResponse toResponse(AgentEntity agent, boolean owner) {
-        return new AgentResponse(agent.getId().toString(), agent.getName(), agent.getAvatar(), agent.getRole(),
-                agent.getDescription(), owner ? agent.getPrompt() : null, agent.getVisibility(), agent.getStatus(),
-                agent.getCreatedBy() == null ? null : agent.getCreatedBy().toString(),
+        AgentResponse response = new AgentResponse(agent.getId().toString(), agent.getName(), agent.getAvatar(),
+                agent.getRole(), agent.getDescription(), owner ? agent.getPrompt() : null, agent.getVisibility(),
+                agent.getStatus(), agent.getCreatedBy() == null ? null : agent.getCreatedBy().toString(),
                 Boolean.TRUE.equals(agent.getIsDefault()));
+        // 审核字段：拒绝原因仅创建者可见；审核人/时间团队内可见（Team Owner 审核需要看到历史）
+        response.setReviewReason(owner ? agent.getReviewReason() : null);
+        response.setReviewedBy(agent.getReviewedBy() == null ? null : agent.getReviewedBy().toString());
+        response.setReviewedAt(agent.getReviewedAt() == null ? null
+                : agent.getReviewedAt().toInstant(java.time.ZoneOffset.UTC).toString());
+        return response;
     }
 
     private int clampLimit(Integer limit) {

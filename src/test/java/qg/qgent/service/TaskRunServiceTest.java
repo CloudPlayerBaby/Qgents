@@ -152,6 +152,58 @@ class TaskRunServiceTest {
     }
 
     @Test
+    void detailProjectsPersistedObservationsIntoInternalNodes() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+        TaskExecutionArtifactEntity artifact = new TaskExecutionArtifactEntity();
+        artifact.setTaskRunId(runId);
+        artifact.setSequenceNo(1);
+        artifact.setSummary(Map.of("observations", List.of(
+                Map.of("phase", "CODING", "round", 1, "promptChars", 120,
+                        "responseChars", 80, "responseSha256", "not-a-node-field"),
+                Map.of("phase", "CODING", "round", 2, "promptChars", 140,
+                        "responseChars", 60, "toolName", "write_file"))));
+        when(artifacts.selectList(any())).thenReturn(List.of(artifact));
+
+        TaskRunDetailResponse response = service.detail(projectId, runId, UUID.randomUUID());
+
+        assertEquals(2, response.getSteps().size());
+        assertEquals("CODING#round-1", response.getSteps().get(0).getNode());
+        assertEquals("PASSED", response.getSteps().get(0).getStatus());
+        assertNull(response.getSteps().get(0).getErrorCode());
+        assertEquals("CODING#round-2", response.getSteps().get(1).getNode());
+        // DTO 只暴露节点状态，不携带观测中的 prompt/响应长度、工具名或哈希。
+        assertNull(response.getSteps().get(1).getStartedAt());
+        assertNull(response.getSteps().get(1).getFinishedAt());
+        assertNull(response.getSteps().get(1).getDurationMs());
+    }
+
+    @Test
+    void detailMarksProtocolFailureObservationAsFailed() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+        TaskExecutionArtifactEntity artifact = new TaskExecutionArtifactEntity();
+        artifact.setTaskRunId(runId);
+        artifact.setSequenceNo(1);
+        artifact.setSummary(Map.of("observations", List.of(
+                Map.of("phase", "CODING", "round", 3,
+                        "protocolFailureCode", "LLM_FINISH_LENGTH"))));
+        when(artifacts.selectList(any())).thenReturn(List.of(artifact));
+
+        TaskRunDetailResponse response = service.detail(projectId, runId, UUID.randomUUID());
+
+        assertEquals(1, response.getSteps().size());
+        assertEquals("CODING#round-3", response.getSteps().getFirst().getNode());
+        assertEquals("FAILED", response.getSteps().getFirst().getStatus());
+        assertEquals("LLM_FINISH_LENGTH", response.getSteps().getFirst().getErrorCode());
+    }
+
+    @Test
     void summaryBoundaryOmitsExecutionTimingsAndArtifacts() {
         UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
         TaskRunEntity run = run(projectId, runId);
@@ -218,6 +270,31 @@ class TaskRunServiceTest {
         assertEquals(2, page.data().size());
         assertFalse(page.page().getHasMore());
         assertNull(page.page().getNextCursor());
+    }
+
+    @Test
+    void failedLogsExposeTerminalSummaryWhenExecutorDidNotPersistLogs() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("FAILED");
+        run.setFinishedAt(LocalDateTime.now(ZoneOffset.UTC));
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+        TaskExecutionArtifactEntity artifact = new TaskExecutionArtifactEntity();
+        artifact.setTaskRunId(runId);
+        artifact.setSequenceNo(1);
+        artifact.setSummary(Map.of("failureCode", "EXECUTION_FAILED",
+                "message", "工具集缺少目录创建能力"));
+        when(artifacts.selectList(any())).thenReturn(List.of(artifact));
+        when(logs.selectList(any())).thenReturn(List.of());
+
+        ApiPageResponse<LogEntryResponse> page = service.logs(projectId, runId, UUID.randomUUID(), null, 20, "req");
+
+        assertEquals(1, page.data().size());
+        assertEquals("DEVELOPER", page.data().getFirst().getNode());
+        assertTrue(page.data().getFirst().getContent().contains("工具集缺少目录创建能力"));
+        assertEquals(1L, page.data().getFirst().getSequence());
+        assertFalse(page.page().getHasMore());
     }
 
     @Test

@@ -13,29 +13,26 @@ import org.springframework.web.util.HtmlUtils;
 import jakarta.mail.internet.MimeMessage;
 
 /**
- * 发送密码重置邮件。
+ * 发送密码重置邮件（6 位数字验证码）。
  * <p>
- * 邮件包含指向前端重置页面的深链（{@code /reset-password?token=...}），链接 30 分钟内有效，
- * 用户点击后在前端引导输入新密码。重置流程必须依赖点击链接，因此提供按钮式深链并附明文
- * 链接作为兜底。异步发送；发送失败只记录固定事件，不暴露令牌内容。
+ * 验证码 30 分钟内有效，用于重置密码时校验邮箱真实归属；与注册验证码（
+ * {@link VerificationCodeMailer}）同模式，仅主题与引导文案不同。异步发送；
+ * 发送失败只记录固定事件，不暴露验证码明文到日志。
  */
 @Component
 public class PasswordResetMailer {
     private static final Logger log = LoggerFactory.getLogger(PasswordResetMailer.class);
     private final JavaMailSender sender;
     private final String from;
-    private final String frontend;
 
-    public PasswordResetMailer(JavaMailSender sender, @Value("${spring.mail.username}") String from,
-                               @Value("${app.frontend-url}") String frontend) {
+    public PasswordResetMailer(JavaMailSender sender, @Value("${spring.mail.username}") String from) {
         this.sender = sender;
         this.from = from;
-        this.frontend = frontend;
     }
 
     @Async
-    public void send(String email, String token) {
-        String safeUrl = HtmlUtils.htmlEscape(frontend + "/reset-password?token=" + token);
+    public void send(String email, String code) {
+        String safeCode = HtmlUtils.htmlEscape(code);
         String html = """
                 <!DOCTYPE html>
                 <html lang="zh-CN">
@@ -51,14 +48,11 @@ public class PasswordResetMailer {
                           </tr>
                           <tr>
                             <td style="padding:32px;">
-                              <p style="margin:0 0 24px;font-size:15px;color:#334155;line-height:1.7;">我们收到了重置你 Qgents 账户密码的请求。点击下方按钮，按提示设置新密码：</p>
-                              <p align="center" style="margin:0 0 24px;">
-                                <a href="%s" style="display:inline-block;background:#2563eb;color:#ffffff;border-radius:8px;padding:12px 32px;font-size:15px;font-weight:600;text-decoration:none;">重置密码</a>
-                              </p>
-                              <p style="margin:0 0 8px;font-size:13px;color:#475569;">如果按钮无法点击，请复制下方链接到浏览器打开：</p>
-                              <p style="margin:0;font-size:12px;color:#334155;word-break:break-all;">%s</p>
+                              <p style="margin:0 0 8px;font-size:15px;color:#334155;line-height:1.7;">你正在重置 Qgents 账户密码，本次验证码为：</p>
+                              <p align="center" style="margin:24px 0;font-size:36px;font-weight:700;letter-spacing:8px;color:#2563eb;">%s</p>
+                              <p style="margin:0 0 24px;font-size:13px;color:#475569;line-height:1.7;">验证码 30 分钟内有效。如果你没有发起重置，请忽略此邮件，切勿将验证码告知他人。</p>
                               <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0 16px;">
-                              <p style="margin:0;font-size:12px;color:#94a3b8;">链接 30 分钟内有效。如果你没有请求重置密码，请忽略此邮件。</p>
+                              <p style="margin:0;font-size:12px;color:#94a3b8;">此邮件由 Qgents 自动发送，请勿直接回复。</p>
                             </td>
                           </tr>
                         </table>
@@ -67,20 +61,20 @@ public class PasswordResetMailer {
                   </table>
                 </body>
                 </html>
-                """.formatted(safeUrl, safeUrl);
+                """.formatted(safeCode);
         try {
             MimeMessage message = sender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, false, "UTF-8");
             helper.setFrom(from);
             helper.setTo(email);
-            helper.setSubject("Qgents 重置密码");
+            helper.setSubject("Qgents 重置密码验证码");
             helper.setText(html, true);
             sender.send(message);
         } catch (MailException e) {
-            // 发送失败记录异常摘要（不含令牌），便于排查 SMTP 问题。
+            // 发送失败记录异常摘要（不含验证码），便于排查 SMTP 问题。
             log.warn("Password reset email delivery failed: {}", e.getMessage());
         } catch (Exception e) {
-            // MimeMessage 构造异常视为邮件组装失败，同样不暴露令牌细节。
+            // MimeMessage 构造异常视为邮件组装失败，同样不暴露验证码细节。
             log.warn("Password reset email assembly failed: {}", e.getMessage());
         }
     }

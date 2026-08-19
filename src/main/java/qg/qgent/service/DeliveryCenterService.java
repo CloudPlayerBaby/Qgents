@@ -31,7 +31,7 @@ public class DeliveryCenterService {
     private static final int DEFAULT_LIMIT = 30;
     private static final int MAX_LIMIT = 100;
     private static final int EXCERPT_LIMIT = 200;
-    private static final Set<String> DELIVERY_TYPES = Set.of("CODE", "MEMORY", "SKILL");
+    private static final Set<String> DELIVERY_TYPES = Set.of("CODE", "MEMORY", "SKILL", "AGENT");
 
     private final DiffReviewBatchMapper diffBatches;
     private final DiffMapper diffs;
@@ -43,6 +43,9 @@ public class DeliveryCenterService {
     private final GitHubRepositoryMapper githubRepositories;
     private final MemoryMapper memories;
     private final SkillMapper skills;
+    private final AgentMapper agents;
+    private final ProjectMapper projects;
+    private final TeamMapper teams;
     private final UserMapper users;
     private final MemoryMessageSourceMapper memorySources;
     private final MessageMapper messages;
@@ -51,7 +54,8 @@ public class DeliveryCenterService {
     public DeliveryCenterService(DiffReviewBatchMapper diffBatches, DiffMapper diffs, MergeRequestMapper mergeRequests,
                                  TaskMapper tasks, RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories,
                                  WorkspaceRepositoryMapper worktrees, GitHubRepositoryMapper githubRepositories,
-                                 MemoryMapper memories, SkillMapper skills, UserMapper users,
+                                 MemoryMapper memories, SkillMapper skills, AgentMapper agents, ProjectMapper projects,
+                                 TeamMapper teams, UserMapper users,
                                  MemoryMessageSourceMapper memorySources, MessageMapper messages,
                                  ProjectAccessService access) {
         this.diffBatches = diffBatches;
@@ -64,6 +68,9 @@ public class DeliveryCenterService {
         this.githubRepositories = githubRepositories;
         this.memories = memories;
         this.skills = skills;
+        this.agents = agents;
+        this.projects = projects;
+        this.teams = teams;
         this.users = users;
         this.memorySources = memorySources;
         this.messages = messages;
@@ -165,7 +172,7 @@ public class DeliveryCenterService {
         List<DeliveryItem> all = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid,
                 creatorUuid, keyword);
 
-        long code = 0, memory = 0, skill = 0;
+        long code = 0, memory = 0, skill = 0, agent = 0;
         long draft = 0, pendingReview = 0, processing = 0, accepted = 0, rejected = 0, delivered = 0,
                 failed = 0, archived = 0;
         long pendingForCurrentUser = 0;
@@ -173,6 +180,7 @@ public class DeliveryCenterService {
             switch (item.getResourceType()) {
                 case "CODE" -> code++;
                 case "MEMORY" -> memory++;
+                case "AGENT" -> agent++;
                 default -> skill++;
             }
             switch (item.getDisplayStatus()) {
@@ -194,6 +202,7 @@ public class DeliveryCenterService {
         typeCounts.put("CODE", code);
         typeCounts.put("MEMORY", memory);
         typeCounts.put("SKILL", skill);
+        typeCounts.put("AGENT", agent);
         Map<String, Long> statusCounts = new LinkedHashMap<>();
         statusCounts.put("DRAFT", draft);
         statusCounts.put("PENDING_REVIEW", pendingReview);
@@ -225,6 +234,9 @@ public class DeliveryCenterService {
         }
         if (type == null || "SKILL".equals(type)) {
             items.addAll(skillItems(projectId, actor, groupUuid, displayStatus, creatorUuid));
+        }
+        if (type == null || "AGENT".equals(type)) {
+            items.addAll(agentItems(projectId, actor, groupUuid, displayStatus, creatorUuid));
         }
         String normalized = normalizeKeyword(keyword);
         return items.stream()
@@ -352,6 +364,117 @@ public class DeliveryCenterService {
                 .filter(i -> displayStatus == null || displayStatus.equals(i.getDisplayStatus()))
                 .map(i -> (DeliveryItem) i)
                 .toList();
+    }
+
+    /**
+     * AGENT 交付项：团队自定义 Agent 的发布审核聚合。
+     * 只展示进入共享审核流程的 Agent：PRIVATE（未提交审核）不进入；
+     * PENDING（待审核）/TEAM（已批准共享）/ARCHIVED（已归档）进入。
+     * 系统预置 Agent（isDefault）不进入交付中心（无审核流程）。
+     */
+    private List<DeliveryItem> agentItems(UUID projectId, UUID actor, UUID groupUuid, String displayStatus,
+                                          UUID creatorUuid) {
+        if (groupUuid != null) {
+            // Agent 无需求群来源，按群筛选时不返回 AGENT 项
+            return List.of();
+        }
+        // 交付中心按项目聚合，但 Agent 属于团队：通过项目 → team 反查该团队全部自定义 Agent
+        qg.qgent.entity.ProjectEntity project = projects.selectById(projectId);
+        if (project == null || project.getTeamId() == null) {
+            return List.of();
+        }
+        return agents.selectList(Wrappers.<AgentEntity>lambdaQuery()
+                        .eq(AgentEntity::getTeamId, project.getTeamId()))
+                .stream()
+                .filter(a -> !Boolean.TRUE.equals(a.getIsDefault()))  // 系统预置不进交付中心
+                .filter(a -> !"PRIVATE".equals(a.getVisibility()))    // 未提交审核不进入
+                .filter(a -> creatorUuid == null || (a.getCreatedBy() != null && creatorUuid.equals(a.getCreatedBy())))
+                .map(a -> toAgentItem(projectId, a, actor))
+                .filter(i -> displayStatus == null || displayStatus.equals(i.getDisplayStatus()))
+                .map(i -> (DeliveryItem) i)
+                .toList();
+    }
+
+    private AgentDeliveryItem toAgentItem(UUID projectId, AgentEntity agent, UUID actor) {
+        AgentDeliveryItem item = new AgentDeliveryItem();
+        String agentId = id(agent.getId());
+        item.setId(agentId);
+        item.setProjectId(id(projectId));
+        item.setResourceType("AGENT");
+        item.setResourceId(agentId);
+        item.setTitle(agent.getName());
+        item.setSummary(excerpt(agent.getDescription()));
+        item.setVersion(null);
+        item.setResourceStatus(agent.getVisibility());  // PRIVATE/PENDING/TEAM（进入交付中心时无 PRIVATE）
+        item.setDisplayStatus(agentDisplayStatus(agent.getVisibility()));
+        item.setRequirementGroup(null);
+        item.setSource(new DeliveryItem.DeliverySource(null, null, null, null, null, null, null));
+        item.setCreator(userSummary(agent.getCreatedBy()));
+        item.setSubmitter(userSummary(agent.getCreatedBy()));  // 提交审核者即创建者
+        item.setReviewer(userSummary(agent.getReviewedBy()));
+        item.setReviewReason(agent.getReviewReason());
+        item.setCreatedAt(iso(agent.getCreatedAt()));
+        item.setSubmittedAt(iso(agent.getReviewedAt()));       // 提交审核时间以审核时间近似（无独立提交时间列）
+        item.setReviewedAt(iso(agent.getReviewedAt()));
+        item.setUpdatedAt(iso(agent.getUpdatedAt()));
+        item.setRole(agent.getRole());
+        item.setDescriptionExcerpt(excerpt(agent.getDescription()));
+        item.setIsDefault(Boolean.TRUE.equals(agent.getIsDefault()));
+        item.setCapabilities(agentCapabilities(agent, actor));
+        item.setOpenTarget(DeliveryOpenTarget.agent(agentId));
+        return item;
+    }
+
+    /**
+     * AGENT 展示状态：PENDING→PENDING_REVIEW（待审核）；TEAM→ACCEPTED（已批准共享）；ARCHIVED→ARCHIVED。
+     */
+    private String agentDisplayStatus(String visibility) {
+        return switch (visibility == null ? "" : visibility) {
+            case "PENDING" -> "PENDING_REVIEW";
+            case "TEAM" -> "ACCEPTED";
+            case "ARCHIVED" -> "ARCHIVED";
+            default -> visibility;
+        };
+    }
+
+    /**
+     * AGENT 操作能力（v2.0.6 审核化）：
+     * - submit：创建者 且 PENDING 状态下可重新提交（拒绝后修正重提）；创建者 且 PRIVATE 可提交审核（但 PRIVATE 不进交付中心，故此处不出现）
+     * - approve/reject：Team Owner 且 PENDING
+     * - archive：创建者或 Team Owner 且 TEAM（已发布）
+     * 交付中心仅展示 PENDING/TEAM/ARCHIVED，因此实际可操作项为 approve/reject（PENDING）与 archive（TEAM）。
+     */
+    private DeliveryCapabilities agentCapabilities(AgentEntity agent, UUID actor) {
+        boolean owner = agent.getCreatedBy() != null && agent.getCreatedBy().equals(actor);
+        boolean pending = "PENDING".equals(agent.getVisibility());
+        boolean team = "TEAM".equals(agent.getVisibility());
+        // Team Owner 判定：通过 agent.teamId 反查 teams.owner_user_id
+        boolean teamOwner = isTeamOwnerOf(agent, actor);
+        DeliveryCapabilities caps = new DeliveryCapabilities();
+        caps.setCanSubmitReview(false);
+        caps.setCanApprove(teamOwner && pending);
+        caps.setCanReject(teamOwner && pending);
+        caps.setCanArchive((owner || teamOwner) && team);
+        caps.setCanRetryDelivery(false);
+        caps.setCanOpenResource(true);
+        DeliveryCapabilities.DeliveryCapabilityReasons reasons = new DeliveryCapabilities.DeliveryCapabilityReasons();
+        reasons.setCanSubmitReview("AGENT_NOT_SUBMITTABLE");
+        reasons.setCanApprove(teamOwner ? (pending ? null : "AGENT_STATE_CONFLICT") : "TEAM_OWNER_REQUIRED");
+        reasons.setCanReject(teamOwner ? (pending ? null : "AGENT_STATE_CONFLICT") : "TEAM_OWNER_REQUIRED");
+        reasons.setCanArchive((owner || teamOwner) ? (team ? null : "AGENT_STATE_CONFLICT")
+                : "AGENT_ARCHIVE_FORBIDDEN");
+        reasons.setCanRetryDelivery(null);
+        reasons.setCanOpenResource(null);
+        caps.setDisabledReasons(reasons);
+        return caps;
+    }
+
+    private boolean isTeamOwnerOf(AgentEntity agent, UUID actor) {
+        if (agent.getTeamId() == null) {
+            return false;
+        }
+        qg.qgent.entity.TeamEntity team = teams.selectById(agent.getTeamId());
+        return team != null && actor.equals(team.getOwnerUserId());
     }
 
     // ---------- 单类组装 ----------
