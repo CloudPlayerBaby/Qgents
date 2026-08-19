@@ -3,6 +3,7 @@ package qg.qgent.orchestration;
 import lombok.Data;
 import qg.qgent.dto.ContextMemory;
 import qg.qgent.dto.ContextMessage;
+import qg.qgent.dto.ContextRepository;
 import qg.qgent.dto.ContextSkill;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
@@ -95,4 +96,6 @@ public class AgentInput {
      * 项目已批准 Memory（架构约定/历史决策），供 Agent 复用确认知识；可为空列表。
      */
     private List<ContextMemory> memories;
+    /** 当前 Task 实际可见的仓库清单及其 Workspace/分支映射。 */
+    private List<ContextRepository> repositories;
 }

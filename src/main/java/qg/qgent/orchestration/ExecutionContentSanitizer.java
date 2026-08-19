@@ -54,7 +54,7 @@ public final class ExecutionContentSanitizer {
             case "LLM_TOOL_NOT_ALLOWED", "LLM_TOOL_ARGUMENT_INVALID", "LLM_TOOL_CALL_MALFORMED" ->
                     "模型工具协议未能稳定完成";
             case "AGENT_RUN_TIMEOUT" -> "Agent 执行超过相位时限";
-            case "SANDBOX_WORKER_UNAVAILABLE" -> "Sandbox Worker 当前不可用";
+            case "SANDBOX_WORKER_UNAVAILABLE", "SANDBOX_WORKER_ERROR" -> "Sandbox Worker 当前不可用";
             case "WORKSPACE_WRITE_LEASE_LOST" -> "Workspace 写入租约已失效";
             case "SANDBOX_NOT_FOUND" -> "测试 Sandbox 已不存在或已过期";
             case "DOCKER_EXEC_FAILED" -> "Sandbox 内进程启动失败";

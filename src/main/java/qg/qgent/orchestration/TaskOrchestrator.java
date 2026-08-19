@@ -319,9 +319,34 @@ public class TaskOrchestrator {
                     task.getId(), latest == null ? "MISSING" : latest.getStatus());
             return;
         }
+        StartupFailure failure = startupFailure(cause);
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        latest.setFailureCode(failure.code());
+        latest.setFailureReason(failure.reason());
+        latest.setFailureRetryable(failure.retryable());
+        latest.setFailureOccurredAt(now);
         updateTaskStatus(latest, "FAILED");
         sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null,
-                "任务启动失败：执行环境暂不可用，请稍后重试或联系管理员");
+                "任务启动失败：" + failure.title() + "。" + failure.reason()
+                        + (failure.retryable() ? "，可以稍后重试" : "，请先修复配置后重试"));
+    }
+
+    /**
+     * 将内部启动异常收敛为稳定码和用户安全文案。原始异常只进入服务端日志，
+     * 不把堆栈、Worker 地址、命令参数或凭据写入 Task/API/SSE。
+     */
+    private StartupFailure startupFailure(RuntimeException cause) {
+        String rawCode = cause instanceof ApiException api ? api.code() : null;
+        String code = ExecutionContentSanitizer.stableInfrastructureCode(rawCode);
+        String reason = ExecutionContentSanitizer.infrastructureDescription(code);
+        String title = switch (code) {
+            case "GIT_STORE_FETCH_FAILED", "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH" -> "代码仓库同步失败";
+            case "GIT_BASE_REF_NOT_FOUND", "GIT_REF_NOT_FOUND" -> "代码仓库基线不可用";
+            case "SANDBOX_WORKER_UNAVAILABLE", "SANDBOX_WORKER_ERROR" -> "执行环境不可用";
+            case "GITHUB_API_UNAVAILABLE" -> "GitHub 服务不可用";
+            default -> "任务启动失败";
+        };
+        return new StartupFailure(code, title, reason, true);
     }
 
     /**
@@ -433,6 +458,13 @@ public class TaskOrchestrator {
                 outcome.getMessage());
         markStepSettled(task, step, outcome.getOutcome());
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
+        // Test/Review 必须明确声明失败是否可由 Coding 修复。旧 Agent/测试构造若没有
+        // 结构化结果时保留历史兼容行为；一旦有结果且 needsCodingFix=false，直接终止，
+        // 避免把测试环境、命令配置或不可修复问题反复送回 Coding。
+        if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
+                && !needsCodingFix(outcome)) {
+            decision = StateMachineDecision.failed();
+        }
         // 只读任务可能没有任何可修复的 MUTATE 步骤。此时质量失败不能沿用
         // requeue 路由回到一个 VERIFY/TEST 节点，否则会重复验证同一事实直到耗尽循环。
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
@@ -469,6 +501,20 @@ public class TaskOrchestrator {
     private boolean hasFollowingStep(TaskStepEntity current, List<TaskStepEntity> steps) {
         int index = indexOfStep(steps, current);
         return index >= 0 && index + 1 < steps.size();
+    }
+
+    private boolean needsCodingFix(AgentRunOutcome outcome) {
+        if (outcome == null) {
+            return false;
+        }
+        if (outcome.getPhase() == OrchestrationPhase.TESTING && outcome.getTestResult() != null) {
+            return outcome.getTestResult().isNeedsCodingFix();
+        }
+        if (outcome.getPhase() == OrchestrationPhase.REVIEWING && outcome.getReviewResult() != null) {
+            return outcome.getReviewResult().isNeedsCodingFix();
+        }
+        // 没有结构化质量结果时沿用状态机原有行为，兼容旧 Agent 与历史数据。
+        return true;
     }
 
     /**
@@ -1050,6 +1096,9 @@ public class TaskOrchestrator {
         eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated",
                 task.getId().toString(), TaskEventPayloads.taskUpdated(task));
         notifyTaskTerminal(task, status);
+    }
+
+    private record StartupFailure(String code, String title, String reason, boolean retryable) {
     }
 
     /**

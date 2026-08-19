@@ -13,6 +13,7 @@ import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.ReviewResult;
+import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.service.EventService;
 import qg.qgent.service.FinalDiffBundleService;
@@ -230,6 +231,31 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void testQualityFailureWithoutCodingFixDoesNotRequeueCoding() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester));
+
+        AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
+        TestResult testResult = new TestResult();
+        testResult.setSuccess(false);
+        testResult.setNeedsCodingFix(false);
+        testResult.setSummary("测试环境不可用");
+        failedTest.setTestResult(testResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), failedTest))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+    }
+
+    @Test
     void failedPlannerDoesNotEnterFormalGraphOrCreateTaskRun() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
@@ -276,6 +302,23 @@ class TaskOrchestratorTest {
         assertThat(fixture.updatedStatuses()).contains("FAILED");
         verifyNoInteractions(fixture.taskRuns);
         verify(fixture.sessions, times(1)).acquire(any(), any(), any());
+    }
+
+    @Test
+    void startupFailurePersistsStableUserVisibleReason() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        doThrow(new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                "SANDBOX_WORKER_ERROR", "502 Bad Gateway: internal worker url"))
+                .when(fixture.sessions).acquire(any(), any(), any());
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess()))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(task.getFailureCode()).isEqualTo("SANDBOX_WORKER_ERROR");
+        assertThat(task.getFailureReason()).isEqualTo("Sandbox Worker 当前不可用");
+        assertThat(task.getFailureReason()).doesNotContain("internal worker url");
+        assertThat(task.getFailureRetryable()).isTrue();
     }
 
     @Test

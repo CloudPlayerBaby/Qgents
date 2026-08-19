@@ -11,7 +11,7 @@ import java.util.UUID;
  * Task 模型项目级事件载荷构造器（SSE 契约）。
  * 所有 payload 均为已脱敏内容；六种事件类型及关联 ID 约定：
  * <ul>
- *   <li>task.updated      → {projectId, taskId, requirementGroupId, status, workspaceId, timestamp}</li>
+ *   <li>task.updated      → {projectId, taskId, requirementGroupId, status, workspaceId, failureCode, failureReason, failureRetryable, timestamp}</li>
  *   <li>task-step.updated → {projectId, taskId, taskStepId, sequenceNo, status, timestamp}</li>
  *   <li>task-run.updated  → {projectId, taskId, taskStepId, taskRunId, status, sequence, timestamp}</li>
  *   <li>task-run.step.progress → {projectId, taskId, taskStepId, taskRunId, node, entryType, sequence, content, timestamp}</li>
@@ -33,6 +33,13 @@ public final class TaskEventPayloads {
         p.put("status", task.getStatus());
         p.put("deliveryMode", task.getDeliveryMode());
         p.put("deliveryReason", task.getDeliveryReason());
+        if (task.getFailureCode() != null) {
+            p.put("failureCode", task.getFailureCode());
+            p.put("failureReason", task.getFailureReason());
+            p.put("failureRetryable", task.getFailureRetryable());
+            p.put("failureOccurredAt", task.getFailureOccurredAt() == null ? null
+                    : task.getFailureOccurredAt().atOffset(java.time.ZoneOffset.UTC).toInstant().toString());
+        }
         p.put("workspaceId", task.getWorkspaceId());
         p.put("timestamp", Instant.now().toString());
         return p;

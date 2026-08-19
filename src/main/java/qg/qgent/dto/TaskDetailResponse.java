@@ -56,6 +56,12 @@ public class TaskDetailResponse {
     private String status;
 
     /**
+     * Task 级失败/启动原因；任务尚未创建 TaskRun 时也可通过此字段解释失败。
+     */
+    @Schema(description = "Task 级失败或启动原因")
+    private TaskStatusReason statusReason;
+
+    /**
      * 优先级；当前不提供，恒为 null。
      */
     @Schema(description = "优先级（当前不提供）")

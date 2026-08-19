@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import qg.qgent.dto.ContextMessage;
 import qg.qgent.dto.GroupContext;
+import qg.qgent.dto.ContextRepository;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.DiffReviewBatchEntity;
 import qg.qgent.entity.TaskEntity;
@@ -17,6 +18,8 @@ import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.service.ContextService;
+import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.entity.WorkspaceRepositoryEntity;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,13 +48,22 @@ public class AgentContextAssembler {
     private final TaskContextSnapshotCodec contextSnapshotCodec;
     private final DiffReviewBatchMapper diffBatches;
     private final DiffMapper diffMapper;
+    private final WorkspaceRepositoryMapper workspaceRepositories;
 
     public AgentContextAssembler(ContextService contextService, TaskContextSnapshotCodec contextSnapshotCodec,
                                  DiffReviewBatchMapper diffBatches, DiffMapper diffMapper) {
+        this(contextService, contextSnapshotCodec, diffBatches, diffMapper, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentContextAssembler(ContextService contextService, TaskContextSnapshotCodec contextSnapshotCodec,
+                                 DiffReviewBatchMapper diffBatches, DiffMapper diffMapper,
+                                 WorkspaceRepositoryMapper workspaceRepositories) {
         this.contextService = contextService;
         this.contextSnapshotCodec = contextSnapshotCodec;
         this.diffBatches = diffBatches;
         this.diffMapper = diffMapper;
+        this.workspaceRepositories = workspaceRepositories;
     }
 
     /**
@@ -131,10 +143,36 @@ public class AgentContextAssembler {
             input.setConversation(groupContext.getConversation());
             input.setSkills(groupContext.getSkills());
             input.setMemories(groupContext.getMemories());
+            input.setRepositories(enrichRepositories(task, groupContext.getRepositories()));
         }
         // 续作任务：把源 Task 的正式 Diff 摘要显式注入对话头，让 Agent 明确本轮是基于哪一版 Diff 增量修改；
         // 顺带补全群上下文缺失（buildForGroup 失效）时仍可见源 Diff 来源。非续作任务保持原列表不变。
         input.setConversation(attachContinuationDiff(task, input.getConversation()));
+    }
+
+    /** 为群仓库清单补充当前 Task 的 repo 别名、基线和 feature branch。 */
+    private List<ContextRepository> enrichRepositories(TaskEntity task, List<ContextRepository> repositories) {
+        if (repositories == null || repositories.isEmpty() || workspaceRepositories == null
+                || task.getWorkspaceId() == null) {
+            return repositories;
+        }
+        List<WorkspaceRepositoryEntity> worktrees = workspaceRepositories.selectByWorkspace(task.getWorkspaceId());
+        if (worktrees == null || worktrees.isEmpty()) {
+            return repositories;
+        }
+        java.util.Map<String, WorkspaceRepositoryEntity> byRepository = worktrees.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        worktree -> String.valueOf(worktree.getProjectRepositoryId()),
+                        java.util.function.Function.identity(), (first, ignored) -> first));
+        return repositories.stream().map(repository -> {
+            WorkspaceRepositoryEntity worktree = byRepository.get(repository.getRepositoryId());
+            if (worktree == null) {
+                return repository;
+            }
+            return new ContextRepository(repository.getRepositoryId(), repository.getName(), repository.getFullName(),
+                    repository.getDefaultBranch(), worktree.getWorkspacePath(), worktree.getBaseRef(),
+                    worktree.getSourceBranch());
+        }).toList();
     }
 
     /**
