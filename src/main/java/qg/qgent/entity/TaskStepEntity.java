@@ -55,6 +55,11 @@ public class TaskStepEntity {
      */
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<String> requiredCapabilities;
+    /** Planner 为该步骤冻结的 Workspace 相对可写路径；空值仅兼容迁移前历史步骤。 */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private List<String> allowedPaths;
+    /** 执行语义：MUTATE/VERIFY/TEST/REVIEW/PLAN。 */
+    private String executionMode;
     /**
      * State: PENDING/RUNNING/SUCCEEDED/FAILED/SKIPPED/CANCELLED.
      */

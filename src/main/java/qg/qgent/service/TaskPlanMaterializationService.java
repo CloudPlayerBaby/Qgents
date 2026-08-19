@@ -17,6 +17,8 @@ import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.orchestration.AgentDispatcher;
 import qg.qgent.orchestration.DeliveryMode;
 import qg.qgent.orchestration.DeliveryModeDecider;
+import qg.qgent.orchestration.TaskStepExecutionMode;
+import qg.qgent.orchestration.agent.TaskStepPathPolicy;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.mapper.RepositoryBranchConfigMapper;
@@ -85,6 +87,7 @@ public class TaskPlanMaterializationService {
             planner.setTitle("Plan");
             planner.setInstruction("分析需求并制定实现计划");
             planner.setRole("PLANNER");
+            planner.setExecutionMode(TaskStepExecutionMode.PLAN.name());
             planner.setAcceptanceCriteria("产出可执行且可冻结的实现计划");
             planner.setRequiredCapabilities(List.of("planning"));
             planner.setStatus("PENDING");
@@ -141,21 +144,23 @@ public class TaskPlanMaterializationService {
         for (PlanResult.ImplementationStep item : plan.getImplementationSteps()) {
             TaskStepEntity step = step(task, sequence++, item.getTitle(), developerInstruction(plan, item), "DEVELOPER",
                     item.getRequiredCapabilities(), "完成 " + item.getTitle() + " 并通过相关自检",
-                    item.getSuggestedAgentId());
+                    item.getSuggestedAgentId(), item.getExecutionMode());
+            TaskStepExecutionMode mode = TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole());
+            step.setAllowedPaths(allowedPathsFor(item, worktreeList));
             steps.insert(step);
             dependencies.insertLink(step.getId(), previous);
-            insertScopes(step.getId(), repositoriesForStep(item, worktreeList), "WRITE");
+            insertScopes(step.getId(), repositoriesForStep(item, worktreeList), mode.allowWrite() ? "WRITE" : "READ");
             created.add(step);
             previous = step.getId();
         }
         TaskStepEntity tester = step(task, sequence++, "Verify", plan.getTestPlan(), "TESTER", List.of(),
-                "执行计划测试并记录真实结果", null);
+                "执行计划测试并记录真实结果", null, "TEST");
         steps.insert(tester);
         dependencies.insertLink(tester.getId(), previous);
         insertScopes(tester.getId(), repositories, "READ");
         created.add(tester);
         TaskStepEntity reviewer = step(task, sequence, "Review", "审查本次改动是否符合需求、质量与安全要求", "REVIEWER",
-                List.of(), "完成独立代码审查", null);
+                List.of(), "完成独立代码审查", null, "REVIEW");
         steps.insert(reviewer);
         dependencies.insertLink(reviewer.getId(), tester.getId());
         insertScopes(reviewer.getId(), repositories, "READ");
@@ -196,7 +201,8 @@ public class TaskPlanMaterializationService {
     }
 
     private TaskStepEntity step(TaskEntity task, int sequence, String title, String instruction, String role,
-                                List<String> requiredCapabilities, String acceptance, UUID suggestedAgentId) {
+                                List<String> requiredCapabilities, String acceptance, UUID suggestedAgentId,
+                                String executionMode) {
         TaskStepEntity step = new TaskStepEntity();
         step.setId(UuidV7.next());
         step.setTaskId(task.getId());
@@ -204,6 +210,7 @@ public class TaskPlanMaterializationService {
         step.setTitle(title);
         step.setInstruction(instruction);
         step.setRole(role);
+        step.setExecutionMode(TaskStepExecutionMode.resolve(executionMode, role).name());
         step.setRequiredCapabilities(requiredCapabilities == null ? List.of() : List.copyOf(requiredCapabilities));
         step.setAssignedAgentId(resolveAgent(task, role, step.getRequiredCapabilities(), suggestedAgentId));
         step.setAcceptanceCriteria(acceptance);
@@ -228,6 +235,53 @@ public class TaskPlanMaterializationService {
         repositories.forEach(repositoryId -> scopes.insertLink(stepId, repositoryId, mode));
     }
 
+    /**
+     * Freeze Planner file declarations as workspace-relative write paths. A
+     * raw single-repository path is expanded with the worktree prefix as well
+     * because local access exposes the prefix while Worker accepts the
+     * repository-relative alias. Empty file lists fall back to repository
+     * roots rather than an unrestricted new step.
+     */
+    private List<String> allowedPathsFor(PlanResult.ImplementationStep item,
+                                         List<WorkspaceRepositoryEntity> worktreeList) {
+        List<String> raw = item == null || item.getFiles() == null ? List.of() : item.getFiles();
+        List<String> result = new ArrayList<>();
+        if (raw.isEmpty()) {
+            if (worktreeList.isEmpty()) {
+                return List.of();
+            }
+            worktreeList.stream().map(WorkspaceRepositoryEntity::getWorkspacePath)
+                    .filter(path -> path != null && !path.isBlank())
+                    .forEach(result::add);
+            // A single Worker repository also accepts repository-relative paths.
+            if (worktreeList.size() == 1) {
+                result.add(".");
+            }
+            return normalizeAllowedPaths(result);
+        }
+        List<String> prefixes = worktreeList.stream().map(WorkspaceRepositoryEntity::getWorkspacePath)
+                .filter(path -> path != null && !path.isBlank())
+                .map(path -> path.replace('\\', '/').replaceAll("^/+|/+$", ""))
+                .toList();
+        for (String path : raw) {
+            String normalized = TaskStepPathPolicy.normalize(path);
+            if (normalized == null) {
+                continue;
+            }
+            result.add(normalized);
+            boolean prefixed = prefixes.stream().anyMatch(prefix -> normalized.equals(prefix)
+                    || normalized.startsWith(prefix + "/"));
+            if (!prefixed && prefixes.size() == 1) {
+                result.add(prefixes.get(0) + "/" + normalized);
+            }
+        }
+        return normalizeAllowedPaths(result);
+    }
+
+    private List<String> normalizeAllowedPaths(List<String> paths) {
+        return paths.stream().map(TaskStepPathPolicy::normalize).filter(java.util.Objects::nonNull).distinct().toList();
+    }
+
     private String developerInstruction(PlanResult plan, PlanResult.ImplementationStep item) {
         return "实现目标：" + String.join("；", plan.getObjectives()) + "\n步骤：" + item.getTitle()
                 + "\n涉及文件：" + String.join(", ", item.getFiles())
@@ -243,6 +297,7 @@ public class TaskPlanMaterializationService {
             step.put("title", item.getTitle());
             step.put("files", item.getFiles());
             step.put("description", item.getDescription());
+            step.put("executionMode", item.getExecutionMode());
             step.put("requiredCapabilities", item.getRequiredCapabilities());
             step.put("suggestedAgentId", item.getSuggestedAgentId() == null ? null : item.getSuggestedAgentId().toString());
             return step;

@@ -157,6 +157,10 @@ qgents:
     # 恢复器回收陈旧活跃 Run 的阈值，必须大于最大的相位时限（testing-timeout）
     stale-run-threshold: ${QGENTS_RECOVERY_STALE_RUN:20m}
     poll-delay-ms: ${QGENTS_RECOVERY_POLL_DELAY_MS:30000}
+  conflict-resolution:
+    # 每个 Task 因合并冲突自动派发"解决冲突"续跑任务的上限；达到上限后改由人工处理。
+    max-continuations-per-task: ${QGENTS_CONFLICT_MAX_CONTINUATIONS:3}
+    poll-delay-ms: ${QGENTS_CONFLICT_POLL_DELAY_MS:15000}
 
 
 mybatis-plus:

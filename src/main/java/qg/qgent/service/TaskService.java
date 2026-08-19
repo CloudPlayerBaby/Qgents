@@ -12,6 +12,7 @@ import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
 import qg.qgent.orchestration.DeliveryMode;
 import qg.qgent.orchestration.TaskContextSnapshotCodec;
+import qg.qgent.orchestration.TaskStepExecutionMode;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -384,6 +385,7 @@ public class TaskService {
         step.setTitle(request.getTitle().trim());
         step.setInstruction(request.getInstruction().trim());
         step.setRole(request.getRole().trim());
+        step.setExecutionMode(TaskStepExecutionMode.resolve(null, step.getRole()).name());
         step.setAssignedAgentId(request.getAssignedAgentId());
         step.setAcceptanceCriteria(request.getAcceptanceCriteria());
         step.setRequiredCapabilities(request.getRequiredCapabilities());

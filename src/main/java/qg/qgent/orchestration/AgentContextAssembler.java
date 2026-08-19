@@ -78,6 +78,8 @@ public class AgentContextAssembler {
         input.setTaskStepId(step.getId());
         input.setTaskRunId(taskRunId);
         input.setInstruction(step.getInstruction());
+        input.setExecutionMode(step.getExecutionMode());
+        input.setAllowedPaths(step.getAllowedPaths());
         input.setFeedback(feedback == null ? null : formatFeedback(feedback));
         input.setPlanResult(planResult);
         input.setCodingResult(codingResult);

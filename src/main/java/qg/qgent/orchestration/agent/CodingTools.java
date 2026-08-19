@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.Collection;
 
 /**
  * Coding Agent 的白名单工具（阶段 B 原生 Tool Calling）：以 Spring AI {@link Tool} 注解声明
@@ -61,11 +62,18 @@ public class CodingTools {
     private UUID projectId;
     private UUID taskId;
     private UUID taskRunId;
+    private final TaskStepPathPolicy pathPolicy;
 
     public CodingTools(UUID workspaceId, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer) {
+        this(workspaceId, codeAccess, writer, List.of());
+    }
+
+    public CodingTools(UUID workspaceId, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
+                       Collection<String> allowedPaths) {
         this.workspaceId = workspaceId;
         this.codeAccess = codeAccess;
         this.writer = writer;
+        this.pathPolicy = TaskStepPathPolicy.of(allowedPaths);
     }
 
     /**
@@ -136,6 +144,10 @@ public class CodingTools {
         if (path == null || path.isBlank()) {
             return error("create_directory requires non-empty 'path'");
         }
+        String denied = ensureDirectoryPath(path);
+        if (denied != null) {
+            return error(denied);
+        }
         WorkspaceDirectoryResult result = writer.createDirectory(workspaceId, path);
         if (result.isOk()) {
             if (result.isChanged()) {
@@ -164,6 +176,10 @@ public class CodingTools {
             @ToolParam(description = "统一 Diff 文本") String patch) {
         if (path == null || path.isBlank()) {
             return error("apply_patch requires non-empty 'path'");
+        }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(denied);
         }
         if (expectedHash == null || expectedHash.isBlank()) {
             expectedHash = latestSha256.get(path);
@@ -208,6 +224,10 @@ public class CodingTools {
         if (path == null || path.isBlank()) {
             return error("write_file requires non-empty 'path'");
         }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(denied);
+        }
         if (content == null) {
             return error("write_file requires non-empty 'content'");
         }
@@ -245,6 +265,26 @@ public class CodingTools {
         String normalized = path.replace('\\', '/');
         return codeAccess.listFiles(workspaceId).stream()
                 .anyMatch(file -> normalized.equals(file.replace('\\', '/')));
+    }
+
+    private String ensureWritablePath(String path) {
+        if (TaskStepPathPolicy.normalize(path) == null) {
+            return "path is invalid or escapes the workspace";
+        }
+        if (!pathPolicy.allows(path)) {
+            return "path is outside the current TaskStep allowed paths";
+        }
+        return null;
+    }
+
+    private String ensureDirectoryPath(String path) {
+        if (TaskStepPathPolicy.normalize(path) == null) {
+            return "path is invalid or escapes the workspace";
+        }
+        if (!pathPolicy.allowsDirectory(path)) {
+            return "path is outside the current TaskStep allowed paths";
+        }
+        return null;
     }
 
     /**

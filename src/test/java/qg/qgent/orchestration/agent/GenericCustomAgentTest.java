@@ -310,6 +310,24 @@ class GenericCustomAgentTest {
         assertThat(outcome.getMessage()).contains("实际文件或目录变更");
     }
 
+    @Test
+    void developerRoleVerifyStepIsReadOnlyAndMaySucceedWithoutChanges() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("repo-2/what the fox said.txt"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"success\":true,\"summary\":\"目标状态已满足\"}", "stop"));
+        AgentInput input = customInput(OrchestrationPhase.TESTING);
+        input.setExecutionMode("VERIFY");
+
+        AgentRunOutcome outcome = agent(customAgent("DEVELOPER")).run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ToolCallback>> toolsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
+        assertThat(toolsCaptor.getValue().stream().map(callback -> callback.getToolDefinition().name()).sorted().toList())
+                .containsExactly("list_files", "read_file", "search_code");
+    }
+
     private ToolTurnResult finalTurn(String json, String finishReason) {
         return ToolTurnResult.finalAnswer(json, finishReason, 20, 10, "aabb", null);
     }

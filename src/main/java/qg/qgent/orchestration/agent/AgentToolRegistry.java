@@ -6,6 +6,8 @@ import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 
 import java.util.Set;
 import java.util.UUID;
+import java.util.Collection;
+import java.util.List;
 
 /**
  * Agent 角色 → 工具白名单注册表：决定自定义 Agent 能拿到哪些工具。结构即权限，编译期可审计。
@@ -45,8 +47,25 @@ public class AgentToolRegistry {
      * 按角色构建工具集：读工具恒有，写工具仅当角色具备写权限。
      */
     public Object toolsFor(UUID workspaceId, String role) {
-        return hasWriteRole(role)
-                ? new CodingTools(workspaceId, codeAccess, writer)
+        return toolsFor(workspaceId, role, hasWriteRole(role));
+    }
+
+    /**
+     * 按角色和已冻结的步骤写权限构建工具集。步骤策略优先于角色，
+     * 例如 DEVELOPER 角色执行 VERIFY 步骤时仍必须是只读。
+     */
+    public Object toolsFor(UUID workspaceId, String role, boolean allowWrite) {
+        return toolsFor(workspaceId, role, allowWrite, List.of());
+    }
+
+    /**
+     * Builds a step-scoped tool set. Read tools remain workspace-wide; the
+     * write tools receive the immutable TaskStep path policy.
+     */
+    public Object toolsFor(UUID workspaceId, String role, boolean allowWrite,
+                           Collection<String> allowedPaths) {
+        return allowWrite && hasWriteRole(role)
+                ? new CodingTools(workspaceId, codeAccess, writer, allowedPaths)
                 : new ReviewTools(workspaceId, codeAccess);
     }
 }
