@@ -152,6 +152,48 @@ class TaskRunServiceTest {
     }
 
     @Test
+    void failedDetailDoesNotExposeAgentMessage() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+        TaskExecutionArtifactEntity artifact = new TaskExecutionArtifactEntity();
+        artifact.setTaskRunId(runId);
+        artifact.setSequenceNo(1);
+        artifact.setSummary(Map.of("failureCode", "CODING_NO_ACTUAL_CHANGE",
+                "message", "coding agent failed: CODING_NO_ACTUAL_CHANGE: internal model details"));
+        when(artifacts.selectList(any())).thenReturn(List.of(artifact));
+
+        TaskRunDetailResponse response = service.detail(projectId, runId, UUID.randomUUID());
+
+        assertEquals("CODING_NO_ACTUAL_CHANGE", response.getStatusReason().getFailureCode());
+        assertEquals("代码步骤未产生实际文件变更", response.getStatusReason().getSummary());
+        assertFalse(response.getStatusReason().getSummary().contains("internal model details"));
+        assertTrue(response.getStatusReason().isRetryable());
+    }
+
+    @Test
+    void failedDetailUsesGenericMessageWhenHistoricalCodeIsMissing() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+        TaskExecutionArtifactEntity artifact = new TaskExecutionArtifactEntity();
+        artifact.setTaskRunId(runId);
+        artifact.setSequenceNo(1);
+        artifact.setSummary(Map.of("message", "raw exception from model"));
+        when(artifacts.selectList(any())).thenReturn(List.of(artifact));
+
+        TaskRunDetailResponse response = service.detail(projectId, runId, UUID.randomUUID());
+
+        assertNull(response.getStatusReason().getFailureCode());
+        assertEquals("任务执行失败，请查看执行记录", response.getStatusReason().getSummary());
+        assertFalse(response.getStatusReason().isRetryable());
+    }
+
+    @Test
     void detailProjectsPersistedObservationsIntoInternalNodes() {
         UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
         TaskRunEntity run = run(projectId, runId);
@@ -292,9 +334,52 @@ class TaskRunServiceTest {
 
         assertEquals(1, page.data().size());
         assertEquals("DEVELOPER", page.data().getFirst().getNode());
-        assertTrue(page.data().getFirst().getContent().contains("工具集缺少目录创建能力"));
+        assertTrue(page.data().getFirst().getContent().contains("任务执行失败，请查看执行记录"));
         assertEquals(1L, page.data().getFirst().getSequence());
         assertFalse(page.page().getHasMore());
+    }
+
+    @Test
+    void workerToolLogDoesNotExposeWorkerFailureReason() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        when(logs.nextSequence(runId)).thenReturn(0L);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+        qg.qgent.orchestration.worker.WorkerToolExecution execution =
+                new qg.qgent.orchestration.worker.WorkerToolExecution();
+        execution.setId(UUID.randomUUID());
+        execution.setTool("file.patch");
+        execution.setStatus("FAILED");
+        execution.setFailureCode("FILE_PATCH_FAILED");
+        execution.setFailureReason("补丁上下文与文件不一致（第 7 行），模型原始细节");
+
+        service.appendWorkerToolExecution(run, execution);
+
+        var log = org.mockito.ArgumentCaptor.forClass(ExecutionLogEntity.class);
+        verify(logs).insert(log.capture());
+        assertTrue(log.getValue().getContent().contains("failureCode=FILE_PATCH_FAILED"));
+        assertTrue(log.getValue().getContent().contains("补丁无法应用，请重新读取文件后重试"));
+        assertFalse(log.getValue().getContent().contains("第 7 行"));
+        assertFalse(log.getValue().getContent().contains("模型原始细节"));
+    }
+
+    @Test
+    void terminalLogDoesNotExposeAgentFailureDetail() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("RUNNING");
+        when(runs.selectById(runId)).thenReturn(run);
+        when(logs.nextSequence(runId)).thenReturn(0L);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+
+        service.complete(runId, "FAILED", "CODING_NO_ACTUAL_CHANGE",
+                "coding agent failed: internal model error");
+
+        var log = org.mockito.ArgumentCaptor.forClass(ExecutionLogEntity.class);
+        verify(logs).insert(log.capture());
+        assertTrue(log.getValue().getContent().contains("CODING_NO_ACTUAL_CHANGE"));
+        assertTrue(log.getValue().getContent().contains("代码步骤未产生实际文件变更"));
+        assertFalse(log.getValue().getContent().contains("internal model error"));
     }
 
     @Test

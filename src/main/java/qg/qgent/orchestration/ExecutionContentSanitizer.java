@@ -8,6 +8,8 @@ import java.util.regex.Pattern;
  */
 public final class ExecutionContentSanitizer {
 
+    private static final String GENERIC_FAILURE_DESCRIPTION = "任务执行失败，请查看执行记录";
+
     private static final Pattern BEARER = Pattern.compile("(?i)\\bBearer\\s+[^\\s,;]+");
     private static final Pattern SENSITIVE_VALUE = Pattern.compile(
             "(?i)\\b(token|password|secret|api[-_]?key|authorization)\\b\\s*[:=]\\s*([^\\s,;}]*)");
@@ -69,6 +71,77 @@ public final class ExecutionContentSanitizer {
             case "DRY_RUN_TIMEOUT" -> "Dry Run 执行超时";
             case "WORKER_PUSH_FAILED" -> "代码推送到仓库失败";
             default -> "执行基础设施暂不可用";
+        };
+    }
+
+    /**
+     * 将内部失败码映射为稳定的用户可见说明；不返回模型原文或异常消息。
+     */
+    public static String userFailureDescription(String code) {
+        if (code == null || code.isBlank()) {
+            return GENERIC_FAILURE_DESCRIPTION;
+        }
+        return switch (code.toUpperCase(Locale.ROOT)) {
+            case "LLM_TOOL_CALL_MALFORMED", "LLM_TOOL_NOT_ALLOWED", "LLM_TOOL_ARGUMENT_INVALID" ->
+                    "模型工具协议未能稳定完成";
+            case "CODING_NO_ACTUAL_CHANGE" -> "代码步骤未产生实际文件变更";
+            case "FILE_PATCH_FAILED" -> "补丁无法应用，请重新读取文件后重试";
+            case "FILE_HASH_MISMATCH" -> "文件内容已变化，请重新读取后重试";
+            case "TOOL_PATH_INVALID" -> "工具路径或目标文件无效";
+            case "TOOL_ARGUMENT_INVALID" -> "工具参数无效";
+            case "PROCESS_EXIT_NONZERO" -> "工具进程执行失败";
+            case "AGENT_RUN_TIMEOUT" -> "Agent 执行超时";
+            case "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
+                    "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
+                    "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
+                    "GIT_BASE_REF_NOT_FOUND", "GIT_REF_NOT_FOUND", "GIT_STORE_FETCH_FAILED",
+                    "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
+                    "WORKER_PUSH_FAILED", "DRY_RUN_TIMEOUT" -> infrastructureDescription(code);
+            default -> GENERIC_FAILURE_DESCRIPTION;
+        };
+    }
+
+    /**
+     * 过滤未知内部码，避免将未定义的实现细节作为公开接口字段返回。
+     */
+    public static String publicFailureCode(String code) {
+        if (code == null || code.isBlank()) {
+            return null;
+        }
+        return switch (code.toUpperCase(Locale.ROOT)) {
+            case "FAILED_INFRASTRUCTURE", "LLM_TOOL_CALL_MALFORMED", "LLM_TOOL_NOT_ALLOWED",
+                    "LLM_TOOL_ARGUMENT_INVALID", "CODING_NO_ACTUAL_CHANGE", "FILE_PATCH_FAILED",
+                    "FILE_HASH_MISMATCH", "TOOL_PATH_INVALID", "TOOL_ARGUMENT_INVALID",
+                    "PROCESS_EXIT_NONZERO", "AGENT_RUN_TIMEOUT", "TOOL_EXECUTION_FAILED",
+                    "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
+                    "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
+                    "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
+                    "GIT_BASE_REF_NOT_FOUND", "GIT_REF_NOT_FOUND", "GIT_STORE_FETCH_FAILED",
+                    "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
+                    "WORKER_PUSH_FAILED", "DRY_RUN_TIMEOUT" -> code.toUpperCase(Locale.ROOT);
+            default -> null;
+        };
+    }
+
+    /**
+     * 仅依据稳定失败码计算用户可重试提示；未知码不默认暴露为可重试。
+     */
+    public static boolean userFailureRetryable(String code) {
+        if (code == null || code.isBlank()) {
+            return false;
+        }
+        return switch (code.toUpperCase(Locale.ROOT)) {
+            case "FAILED_INFRASTRUCTURE", "LLM_TOOL_CALL_MALFORMED", "LLM_TOOL_NOT_ALLOWED",
+                    "LLM_TOOL_ARGUMENT_INVALID", "CODING_NO_ACTUAL_CHANGE", "FILE_PATCH_FAILED",
+                    "FILE_HASH_MISMATCH", "TOOL_PATH_INVALID", "TOOL_ARGUMENT_INVALID",
+                    "PROCESS_EXIT_NONZERO", "AGENT_RUN_TIMEOUT", "TOOL_EXECUTION_FAILED",
+                    "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
+                    "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
+                    "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
+                    "GIT_BASE_REF_NOT_FOUND", "GIT_REF_NOT_FOUND", "GIT_STORE_FETCH_FAILED",
+                    "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
+                    "WORKER_PUSH_FAILED", "DRY_RUN_TIMEOUT" -> true;
+            default -> false;
         };
     }
 }

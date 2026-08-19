@@ -9,6 +9,7 @@ import qg.qgent.api.ApiException;
 import qg.qgent.api.PagedApiResponse;
 import qg.qgent.dto.*;
 import qg.qgent.entity.*;
+import qg.qgent.orchestration.ExecutionContentSanitizer;
 import qg.qgent.mapper.*;
 
 import java.time.Duration;
@@ -209,9 +210,11 @@ public class TaskDisplayService {
                 || task.getFailureCode() == null || task.getFailureCode().isBlank()) {
             return null;
         }
-        return new TaskStatusReason("STARTUP_FAILED", task.getFailureCode(),
-                "任务启动失败", task.getFailureReason(),
-                Boolean.TRUE.equals(task.getFailureRetryable()), iso(task.getFailureOccurredAt()));
+        String failureCode = ExecutionContentSanitizer.publicFailureCode(task.getFailureCode());
+        return new TaskStatusReason("STARTUP_FAILED", failureCode,
+                "任务启动失败", ExecutionContentSanitizer.userFailureDescription(failureCode),
+                ExecutionContentSanitizer.userFailureRetryable(failureCode),
+                iso(task.getFailureOccurredAt()));
     }
 
     /**

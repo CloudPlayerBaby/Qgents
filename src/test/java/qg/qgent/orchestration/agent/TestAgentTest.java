@@ -235,7 +235,9 @@ class TestAgentTest {
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
         assertThat(outcome.getTestResult().getExitCode()).isEqualTo(2);
-        assertThat(outcome.getTestResult().getSummary()).contains("LLM 分析失败");
+        assertThat(outcome.getTestResult().getSummary())
+                .isEqualTo("测试已执行，但模型未能生成可用的分析结果")
+                .doesNotContain("llm down");
     }
 
     @Test

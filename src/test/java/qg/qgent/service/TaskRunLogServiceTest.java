@@ -82,9 +82,10 @@ class TaskRunLogServiceTest {
         assertTrue(captured.getAllValues().stream().anyMatch(entry -> "VERIFY".equals(entry.getNode())
                 && entry.getContent().contains("mvn test")
                 && entry.getContent().contains("exitCode：1")
-                && entry.getContent().contains("1 个测试失败")));
+                && entry.getContent().contains("失败项数量：1")
+                && !entry.getContent().contains("1 个测试失败")));
         assertTrue(captured.getAllValues().stream().anyMatch(entry -> "VERIFY/FAILURE".equals(entry.getNode())
-                && entry.getContent().contains("LoginTest")
-                && entry.getContent().contains("expected 200 but got 500")));
+                && entry.getContent().contains("验证失败项详情已隐藏")
+                && !entry.getContent().contains("expected 200 but got 500")));
     }
 }

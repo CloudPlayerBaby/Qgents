@@ -2973,7 +2973,7 @@ SSE 事件仍使用 §12\.1 的事件信封；以下为 `data` 中的业务 payl
 
     
 
-- `statusReason`：等待/阻塞/失败原因 `{ code, title, summary, retryable, occurredAt }`，无等待或失败时为 `null`。
+- `statusReason`：等待/阻塞/失败原因 `{ code, failureCode, title, summary, retryable, occurredAt }`，无等待或失败时为 `null`。`failureCode` 仅返回公开稳定码；`summary` 为服务端映射的受控中文说明，不返回模型、工具或异常原文。
 
     
 

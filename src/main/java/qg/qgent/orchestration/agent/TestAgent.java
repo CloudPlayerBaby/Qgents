@@ -148,17 +148,21 @@ public class TestAgent implements Agent {
             test.setStderr(exec.stderr());
             return test;
         } catch (RuntimeException e) {
-            return fallback(exec, command, e.getMessage());
+            log.warn("test result analysis failed workspaceId={}", input.getWorkspaceId(), e);
+            return fallback(exec, command);
         }
     }
 
-    private TestResult fallback(ExecutionResult exec, List<String> command, String analysisError) {
+    /**
+     * 模型分析不可用时保留真实执行事实，但不将模型或异常原文带入公共 TaskRun 日志。
+     */
+    private TestResult fallback(ExecutionResult exec, List<String> command) {
         TestResult test = new TestResult();
         test.setExitCode(exec.exitCode());
         test.setCommand(String.join(" ", command));
         test.setStdout(exec.stdout());
         test.setStderr(exec.stderr());
-        test.setSummary("测试已执行，LLM 分析失败：" + ExecutionContentSanitizer.sanitize(analysisError));
+        test.setSummary("测试已执行，但模型未能生成可用的分析结果");
         if (exec.exitCode() != 0) {
             TestResult.Failure failure = new TestResult.Failure();
             failure.setName("test execution");

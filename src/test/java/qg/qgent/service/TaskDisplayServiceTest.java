@@ -305,6 +305,27 @@ class TaskDisplayServiceTest {
     }
 
     @Test
+    void detailDoesNotExposeTaskInternalFailureReason() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, actor, workspaceId, "FAILED");
+        task.setFailureCode("CODING_NO_ACTUAL_CHANGE");
+        task.setFailureReason("coding agent failed: CODING_NO_ACTUAL_CHANGE: internal model details");
+        task.setFailureRetryable(true);
+        when(tasks.selectById(task.getId())).thenReturn(task);
+        when(workspaces.selectById(workspaceId)).thenReturn(workspace(workspaceId));
+        when(steps.selectList(any())).thenReturn(List.of());
+        when(runs.selectList(any())).thenReturn(List.of());
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+
+        TaskDetailResponse detail = service.detail(projectId, task.getId(), actor);
+
+        assertEquals("CODING_NO_ACTUAL_CHANGE", detail.getStatusReason().getFailureCode());
+        assertEquals("代码步骤未产生实际文件变更", detail.getStatusReason().getSummary());
+        assertFalse(detail.getStatusReason().getSummary().contains("internal model details"));
+    }
+
+    @Test
     void detailExposesFirstDiffIdInDiffReviewSummary() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
         UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();

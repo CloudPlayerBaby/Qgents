@@ -15,6 +15,7 @@ import qg.qgent.orchestration.ExecutionContentSanitizer;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -111,28 +112,17 @@ public class TaskRunLogService {
         String command = result.getCommand() == null || result.getCommand().isBlank()
                 ? "未执行命令" : result.getCommand();
         String outcome = result.isSuccess() ? "PASSED" : "FAILED";
+        int failureCount = result.getFailures() == null ? 0 : (int) result.getFailures().stream()
+                .filter(Objects::nonNull).count();
         StringBuilder summary = new StringBuilder("验证结果：")
                 .append(outcome)
                 .append("；验证方式：").append(verificationMode)
                 .append("；命令：").append(command)
                 .append("；exitCode：").append(result.getExitCode())
-                .append("；摘要：").append(result.getSummary() == null ? "" : result.getSummary());
+                .append("；失败项数量：").append(failureCount);
         append(run, "EXECUTION", "VERIFY", summary.toString());
-        if (result.getFailures() != null) {
-            result.getFailures().stream().limit(20).forEach(failure -> {
-                if (failure == null) {
-                    return;
-                }
-                StringBuilder detail = new StringBuilder("失败项：")
-                        .append(failure.getName() == null ? "未命名" : failure.getName());
-                if (failure.getSeverity() != null && !failure.getSeverity().isBlank()) {
-                    detail.append("；级别：").append(failure.getSeverity());
-                }
-                if (failure.getReason() != null && !failure.getReason().isBlank()) {
-                    detail.append("；原因：").append(failure.getReason());
-                }
-                append(run, "EXECUTION", "VERIFY/FAILURE", detail.toString());
-            });
+        if (failureCount > 0) {
+            append(run, "EXECUTION", "VERIFY/FAILURE", "验证失败项详情已隐藏，请查看受控执行记录");
         }
     }
 

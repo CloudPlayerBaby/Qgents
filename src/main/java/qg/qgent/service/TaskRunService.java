@@ -12,6 +12,7 @@ import qg.qgent.mapper.*;
 import qg.qgent.orchestration.llm.LlmObservation;
 import qg.qgent.orchestration.worker.WorkerToolExecution;
 import qg.qgent.orchestration.result.TestResult;
+import qg.qgent.orchestration.ExecutionContentSanitizer;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -450,7 +451,7 @@ public class TaskRunService {
         complete(taskRunId, terminalStatus, null, null);
     }
 
-    /** 完成运行并把稳定失败码/脱敏摘要写入终态日志。 */
+    /** 完成运行并把稳定失败码对应的受控说明写入终态日志。 */
     @Transactional
     public void complete(UUID taskRunId, String terminalStatus, String failureCode, String detail) {
         if (!Set.of("SUCCEEDED", "FAILED", "CANCELLED").contains(terminalStatus)) {
@@ -470,8 +471,11 @@ public class TaskRunService {
             case "CANCELLED" -> "执行已取消";
             default -> "执行失败";
         };
-        if (failureCode != null && !failureCode.isBlank()) {
-            message = failureCode.strip() + (detail == null || detail.isBlank() ? "" : "：" + detail);
+        if ("FAILED".equals(terminalStatus)) {
+            String publicFailureCode = ExecutionContentSanitizer.publicFailureCode(failureCode);
+            message = publicFailureCode == null ? "执行失败：任务执行失败，请查看执行记录"
+                    : "执行失败（" + publicFailureCode + "）："
+                    + ExecutionContentSanitizer.userFailureDescription(publicFailureCode);
         }
         taskRunLogService.append(run, "TERMINAL", run.getRole(), message);
         eventService.publish(run.getProjectId(), null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
@@ -850,13 +854,10 @@ public class TaskRunService {
     }
 
     private TaskStatusReason failedReason(TaskRunEntity run, Map<String, Object> failureSummary) {
-        String failureCode = text(failureSummary, "failureCode");
-        String message = text(failureSummary, "message");
-        if (message == null || message.isBlank()) {
-            message = "任务运行执行失败，可查看执行记录";
-        }
+        String failureCode = ExecutionContentSanitizer.publicFailureCode(text(failureSummary, "failureCode"));
+        String message = ExecutionContentSanitizer.userFailureDescription(failureCode);
         return new TaskStatusReason("EXECUTION_FAILED", failureCode, "执行失败", message,
-                true, iso(run.getUpdatedAt()));
+                ExecutionContentSanitizer.userFailureRetryable(failureCode), iso(run.getUpdatedAt()));
     }
 
     private String text(Map<String, Object> values, String key) {
@@ -951,8 +952,8 @@ public class TaskRunService {
     }
 
     /**
-     * 将 Worker 工具执行摘要写入 TaskRun 脱敏日志，供受控诊断定位完整 Worker 日志。
-     * 不写入工具参数、文件内容、stdout 或 stderr；完整日志仍只通过 Worker 内网接口读取。
+     * 将 Worker 工具执行摘要写入 TaskRun 公共日志。只输出稳定失败码和受控说明；
+     * 原始 failureReason 仅保留在 Worker 内网诊断记录，不能进入项目成员可见的 REST 或 SSE 日志。
      */
     public void appendWorkerToolExecution(TaskRunEntity run, WorkerToolExecution execution) {
         if (execution == null || execution.getId() == null) {
@@ -964,8 +965,11 @@ public class TaskRunService {
         if (execution.getExitCode() != null) {
             content.append("，exitCode=").append(execution.getExitCode());
         }
-        if (execution.getFailureReason() != null && !execution.getFailureReason().isBlank()) {
-            content.append("，failureReason=").append(execution.getFailureReason());
+        String failureCode = ExecutionContentSanitizer.publicFailureCode(execution.getFailureCode());
+        if (failureCode != null) {
+            content.append("，failureCode=").append(failureCode)
+                    .append("，failureReason=")
+                    .append(ExecutionContentSanitizer.userFailureDescription(failureCode));
         }
         taskRunLogService.append(run, "EXECUTION", "WORKER/" + (execution.getTool() == null
                 ? "TOOL" : execution.getTool()), content.toString());
