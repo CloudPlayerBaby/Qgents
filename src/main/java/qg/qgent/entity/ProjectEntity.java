@@ -19,6 +19,10 @@ public class ProjectEntity {
     private UUID createdBy;
     private String name;
     private String description;
+    /**
+     * 项目头像 URL（OSS 公共读长期地址，可为空；由项目头像上传确认后写入）。
+     */
+    private String avatarUrl;
 
     /**
      * 项目设置 JSON：需求群规则开关（allowCreateGroup/autoArchiveGroup/allowAgentTrigger/autoJoinAllGroups）；

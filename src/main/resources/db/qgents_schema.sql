@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS
         created_by BINARY(16) NOT NULL COMMENT '项目创建用户ID',
         name VARCHAR(255) NOT NULL COMMENT '项目名称',
         description TEXT NULL COMMENT '项目说明',
+        avatar_url TEXT NULL COMMENT '项目头像URL（OSS 公共读长期地址，可为空）',
         settings JSON NULL COMMENT '项目设置：需求群规则开关（allowCreateGroup/autoArchiveGroup/allowAgentTrigger/autoJoinAllGroups）',
         status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '项目状态枚举：ACTIVE/ARCHIVED',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',

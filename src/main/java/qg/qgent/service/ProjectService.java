@@ -400,13 +400,17 @@ public class ProjectService {
     }
 
     private ProjectResponse response(ProjectEntity project, String role) {
-        return response(new ProjectResponse(project.getId().toString(), project.getTeamId().toString(),
-                project.getName(), project.getDescription(), role, project.getStatus(), null, null));
+        ProjectResponse r = new ProjectResponse(project.getId().toString(), project.getTeamId().toString(),
+                project.getName(), project.getDescription(), role, project.getStatus(), null, null);
+        r.setAvatarUrl(project.getAvatarUrl());
+        return response(r);
     }
 
     private ProjectResponse response(ProjectMembershipView row) {
-        return response(new ProjectResponse(row.getId().toString(), row.getTeamId().toString(), row.getName(),
-                row.getDescription(), row.getRole(), row.getStatus(), null, null));
+        ProjectResponse r = new ProjectResponse(row.getId().toString(), row.getTeamId().toString(), row.getName(),
+                row.getDescription(), row.getRole(), row.getStatus(), null, null);
+        r.setAvatarUrl(row.getAvatarUrl());
+        return response(r);
     }
 
     private ProjectResponse response(ProjectResponse r) {
