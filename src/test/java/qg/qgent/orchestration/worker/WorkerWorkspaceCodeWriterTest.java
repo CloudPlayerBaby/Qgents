@@ -219,6 +219,19 @@ class WorkerWorkspaceCodeWriterTest {
     }
 
     @Test
+    void patchFileMapsPatchFormatFailureToToolFailure() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> failed("FILE_PATCH_FAILED: hunk 声明行数与正文不一致"));
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isFalse();
+        assertThat(result.getError()).contains("hunk 声明行数");
+    }
+
+    @Test
     void patchFileMapsTransportFailureToInfrastructure() {
         when(sessions.require(WORKSPACE)).thenReturn(session());
         when(client.submitToolExecution(any(), any())).thenThrow(new IllegalStateException("worker down"));

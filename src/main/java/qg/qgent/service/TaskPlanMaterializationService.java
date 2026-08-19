@@ -1,11 +1,13 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import qg.qgent.auth.UuidV7;
+import qg.qgent.api.ApiException;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
@@ -120,6 +122,9 @@ public class TaskPlanMaterializationService {
         DeliveryDecision decision = resolveDeliveryMode(locked, plan, worktreeList);
         locked.setDeliveryMode(decision.mode());
         locked.setDeliveryReason(decision.reason());
+        if (!manualPlan) {
+            validatePlanPaths(plan, worktreeList);
+        }
         artifacts.createPlan(locked, planSummary(plan, decision));
         if (!manualPlan) {
             createGeneratedSteps(locked, plan, planner, worktreeList);
@@ -172,8 +177,8 @@ public class TaskPlanMaterializationService {
      * 根据 Planner 输出的工作区相对路径收敛开发步骤的仓库范围。
      *
      * Planner 文件路径通常带有 worktree 前缀（例如 repo-1/README.md）。
-     * 旧计划可能没有此前缀，或引用了需要新建的文件；此时保留全仓库范围作为兼容回退，
-     * 避免把一个无法可靠归属的步骤错误限制到某个仓库。
+     * 多仓库计划在物化前已经校验过每个路径的 workspacePath 前缀；这里不再把无法匹配的
+     * 路径静默回退到全部仓库，避免错误的 Planner 输出扩大写入范围。
      */
     private List<UUID> repositoriesForStep(PlanResult.ImplementationStep item,
                                             List<WorkspaceRepositoryEntity> worktreeList) {
@@ -187,7 +192,50 @@ public class TaskPlanMaterializationService {
                 .map(WorkspaceRepositoryEntity::getProjectRepositoryId)
                 .distinct()
                 .toList();
-        return matched.isEmpty() ? all : matched;
+        return matched;
+    }
+
+    /**
+     * 校验 Planner 的路径是否能唯一映射到 Workspace 中的仓库。
+     * <p>
+     * 单仓库任务继续兼容仓库内相对路径（例如 {@code src/App.java}）；多仓库任务则必须
+     * 使用 {@code workspacePath/path}，因为新文件没有既有目录可用于推断归属。校验放在
+     * 任何步骤写入数据库前，避免执行到 Coding 阶段才由 Worker 报一个无法定位仓库的错误。
+     */
+    private void validatePlanPaths(PlanResult plan, List<WorkspaceRepositoryEntity> worktreeList) {
+        if (plan == null || worktreeList.size() <= 1) {
+            return;
+        }
+        List<String> prefixes = worktreeList.stream()
+                .map(WorkspaceRepositoryEntity::getWorkspacePath)
+                .filter(path -> path != null && !path.isBlank())
+                .map(TaskStepPathPolicy::normalize)
+                .filter(path -> path != null && !path.isBlank())
+                .distinct()
+                .toList();
+        if (prefixes.size() != worktreeList.size()) {
+            throw invalidPlanPath("多仓库 Workspace 的 workspacePath 映射不完整或重复");
+        }
+        for (PlanResult.ImplementationStep item : plan.getImplementationSteps()) {
+            List<String> files = item == null || item.getFiles() == null ? List.of() : item.getFiles();
+            for (String raw : files) {
+                String normalized = TaskStepPathPolicy.normalize(raw);
+                if (normalized == null || prefixes.stream().noneMatch(prefix -> isUnderPrefix(normalized, prefix))) {
+                    String title = item == null || item.getTitle() == null ? "未命名步骤" : item.getTitle();
+                    throw invalidPlanPath("步骤「" + title + "」的路径「" + raw
+                            + "」无法映射到多仓库 Workspace；请使用 workspacePath/仓库内路径，"
+                            + "可用 workspacePath：" + String.join(", ", prefixes));
+                }
+            }
+        }
+    }
+
+    private ApiException invalidPlanPath(String message) {
+        return new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "TASK_PLAN_PATH_INVALID", message);
+    }
+
+    private boolean isUnderPrefix(String path, String prefix) {
+        return path.equals(prefix) || path.startsWith(prefix + "/");
     }
 
     private boolean belongsToWorktree(String file, WorkspaceRepositoryEntity worktree) {
@@ -269,8 +317,7 @@ public class TaskPlanMaterializationService {
                 continue;
             }
             result.add(normalized);
-            boolean prefixed = prefixes.stream().anyMatch(prefix -> normalized.equals(prefix)
-                    || normalized.startsWith(prefix + "/"));
+            boolean prefixed = prefixes.stream().anyMatch(prefix -> isUnderPrefix(normalized, prefix));
             if (!prefixed && prefixes.size() == 1) {
                 result.add(prefixes.get(0) + "/" + normalized);
             }

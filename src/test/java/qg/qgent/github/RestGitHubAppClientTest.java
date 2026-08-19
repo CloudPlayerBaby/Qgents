@@ -6,6 +6,7 @@ import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withBadRequest;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
@@ -240,6 +241,57 @@ class RestGitHubAppClientTest {
             return;
         }
         throw new AssertionError("Expected GitHub API failure");
+    }
+
+    @Test
+    void listsRemoteBranchesWithPaginationContract() {
+        server.expect(once(), requestTo("https://api.github.com/repos/owner/repo/branches?per_page=100&page=1"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("Authorization", "Bearer test-token"))
+                .andRespond(withSuccess("""
+                        [{"name":"develop","commit":{"sha":"develop-sha"}},
+                         {"name":"main","commit":{"sha":"main-sha"}}]
+                        """, MediaType.APPLICATION_JSON));
+
+        List<GitHubBranchDetails> branches = client.listBranches(12345L, "owner", "repo");
+
+        assertEquals(2, branches.size());
+        assertEquals("develop", branches.get(0).name());
+        assertEquals("main-sha", branches.get(1).commitSha());
+        server.verify();
+    }
+
+    @Test
+    void createsRemoteBranchFromSourceSha() {
+        server.expect(once(), requestTo("https://api.github.com/repos/owner/repo/git/refs"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("Authorization", "Bearer test-token"))
+                .andExpect(content().json("{\"ref\":\"refs/heads/develop\",\"sha\":\"source-sha\"}"))
+                .andRespond(withSuccess("""
+                        {"ref":"refs/heads/develop","object":{"sha":"source-sha","type":"commit"}}
+                        """, MediaType.APPLICATION_JSON));
+
+        GitHubBranchDetails branch = client.createBranch(12345L, "owner", "repo", "develop", "source-sha");
+
+        assertEquals("develop", branch.name());
+        assertEquals("source-sha", branch.commitSha());
+        server.verify();
+    }
+
+    @Test
+    void mapsMissingBranchToStableNotFoundCode() {
+        server.expect(once(), requestTo("https://api.github.com/repos/owner/repo/branches/missing"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND));
+
+        try {
+            client.getBranch(12345L, "owner", "repo", "missing");
+        } catch (qg.qgent.api.ApiException exception) {
+            assertEquals("GIT_BRANCH_NOT_FOUND", exception.code());
+            assertEquals(HttpStatus.NOT_FOUND, exception.status());
+            return;
+        }
+        throw new AssertionError("Expected missing branch failure");
     }
 
     @Test

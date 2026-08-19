@@ -16,6 +16,7 @@ import static org.mockito.Mockito.when;
 
 import java.time.Clock;
 import java.time.Instant; import java.time.LocalDateTime;
+import java.util.List;
 import java.time.ZoneOffset;
 import java.util.UUID;
 
@@ -37,8 +38,10 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.BindProjectRepositoryRequest;
+import qg.qgent.dto.CreateRemoteBranchRequest;
 import qg.qgent.dto.NewProjectRepositoryRequest;
 import qg.qgent.dto.ProjectRepositoryResponse;
+import qg.qgent.dto.RemoteBranchResponse;
 import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.GitHubRepositoryEntity;
 import qg.qgent.entity.ProjectEntity;
@@ -46,6 +49,7 @@ import qg.qgent.entity.ProjectMemberEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.TeamMemberEntity;
 import qg.qgent.github.GitHubClient;
+import qg.qgent.github.GitHubBranchDetails;
 import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
 import qg.qgent.mapper.ProjectMapper;
@@ -235,6 +239,80 @@ class GitHubRepositoryServiceTest {
         assertEquals(HttpStatus.CONFLICT, exception.status());
         assertEquals("PROJECT_REPOSITORY_UNBOUND", exception.code());
         verify(projectRepositoryMapper, never()).updateById(any(ProjectRepositoryEntity.class));
+    }
+
+    @Test
+    void listsRealRemoteBranchesAndMarksProjectDefault() {
+        UUID projectRepositoryId = UUID.randomUUID();
+        ProjectRepositoryEntity binding = projectBinding(projectRepositoryId, "develop");
+        GitHubRepositoryEntity repository = repository("main");
+        GitHubInstallationEntity installation = activeInstallation();
+        authorizeProjectAdmin();
+        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(binding);
+        when(repositoryMapper.selectById(repositoryId)).thenReturn(repository);
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(gitHubClient.listBranches(12345L, "qgents", "backend")).thenReturn(java.util.List.of(
+                new GitHubBranchDetails("develop", "develop-sha"),
+                new GitHubBranchDetails("main", "main-sha")));
+
+        List<RemoteBranchResponse> branches = service.listRemoteBranches(actorId, projectId, projectRepositoryId);
+
+        assertEquals(2, branches.size());
+        assertEquals("develop", branches.get(0).getName());
+        assertEquals("develop-sha", branches.get(0).getCommitSha());
+        assertEquals("main", branches.get(1).getName());
+        assertEquals(true, branches.get(1).isGithubDefault());
+        assertEquals(true, branches.get(0).isProjectDefault());
+    }
+
+    @Test
+    void createsRemoteBranchFromResolvedSourceBranch() {
+        UUID projectRepositoryId = UUID.randomUUID();
+        ProjectRepositoryEntity binding = projectBinding(projectRepositoryId, "main");
+        GitHubRepositoryEntity repository = repository("main");
+        GitHubInstallationEntity installation = activeInstallation();
+        authorizeProjectAdmin();
+        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(binding);
+        when(repositoryMapper.selectById(repositoryId)).thenReturn(repository);
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(gitHubClient.getBranch(12345L, "qgents", "backend", "main"))
+                .thenReturn(new GitHubBranchDetails("main", "main-sha"));
+        when(gitHubClient.createBranch(12345L, "qgents", "backend", "develop", "main-sha"))
+                .thenReturn(new GitHubBranchDetails("develop", "main-sha"));
+        CreateRemoteBranchRequest request = new CreateRemoteBranchRequest();
+        request.setName("develop");
+        request.setFromRef("main");
+
+        RemoteBranchResponse response = service.createRemoteBranch(actorId, projectId, projectRepositoryId, request);
+
+        assertEquals("develop", response.getName());
+        assertEquals("main-sha", response.getCommitSha());
+        verify(gitHubClient).createBranch(12345L, "qgents", "backend", "develop", "main-sha");
+    }
+
+    @Test
+    void validatesProjectDefaultBranchAgainstGitHubBeforeUpdating() {
+        UUID projectRepositoryId = UUID.randomUUID();
+        ProjectRepositoryEntity binding = projectBinding(projectRepositoryId, "main");
+        GitHubRepositoryEntity repository = repository("main");
+        GitHubInstallationEntity installation = activeInstallation();
+        authorizeProjectAdmin();
+        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(binding);
+        when(projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId)).thenReturn(binding);
+        when(repositoryMapper.selectById(repositoryId)).thenReturn(repository);
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(gitHubClient.getBranch(12345L, "qgents", "backend", "develop"))
+                .thenReturn(new GitHubBranchDetails("develop", "develop-sha"));
+        qg.qgent.dto.UpdateProjectRepositoryRequest request = new qg.qgent.dto.UpdateProjectRepositoryRequest();
+        request.setDefaultBranch(" develop ");
+        request.setDisplayName("Backend");
+
+        ProjectRepositoryResponse response = service.updateProjectRepository(actorId, projectId, projectRepositoryId,
+                request);
+
+        assertEquals("develop", response.getDefaultBranch());
+        assertEquals("develop", binding.getDefaultBranch());
+        verify(projectRepositoryMapper).updateById(binding);
     }
 
     @Test
@@ -535,6 +613,25 @@ class GitHubRepositoryServiceTest {
         repository.setAuthorizationStatus("AUTHORIZED");
         repository.setSyncedAt(LocalDateTime.now());
         return repository;
+    }
+
+    private ProjectRepositoryEntity projectBinding(UUID id, String defaultBranch) {
+        ProjectRepositoryEntity binding = new ProjectRepositoryEntity();
+        binding.setId(id);
+        binding.setProjectId(projectId);
+        binding.setRepositoryId(repositoryId);
+        binding.setDefaultBranch(defaultBranch);
+        binding.setStatus("ACTIVE");
+        return binding;
+    }
+
+    private GitHubInstallationEntity activeInstallation() {
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setTeamId(UUID.randomUUID());
+        installation.setProviderInstallationId(12345L);
+        installation.setStatus("ACTIVE");
+        return installation;
     }
 
     private void authorizeProjectAdmin() {

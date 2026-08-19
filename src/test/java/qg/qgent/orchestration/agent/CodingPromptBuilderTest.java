@@ -41,6 +41,14 @@ class CodingPromptBuilderTest {
     }
 
     @Test
+    void documentsMultiRepositoryPathContract() {
+        assertThat(promptBuilder.buildSystem())
+                .contains("workspacePath 开头")
+                .contains("新建目录和新建文件")
+                .contains("禁止使用无法确定仓库的裸路径");
+    }
+
+    @Test
     void rendersPreviousCodingResultForSequentialDeveloperSteps() {
         AgentInput input = new AgentInput();
         input.setTaskTitle("汇总检查报告");

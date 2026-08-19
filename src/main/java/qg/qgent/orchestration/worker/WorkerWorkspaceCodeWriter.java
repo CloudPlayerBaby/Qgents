@@ -216,6 +216,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
         String reason = execution.getFailureReason();
         return reason != null && (reason.startsWith("TOOL_")
                 || reason.startsWith("FILE_HASH_MISMATCH")
+                || reason.startsWith("FILE_PATCH_FAILED")
                 || reason.startsWith("PATCH_"));
     }
 }

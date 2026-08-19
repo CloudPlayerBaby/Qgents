@@ -286,7 +286,7 @@ public class TaskOrchestrator {
                     planMaterialization.materialize(task, outcome.getPlanResult());
                 } catch (ApiException e) {
                     markStepSettled(task, planner, RunOutcome.FAILED);
-                    failTaskIfStartable(task, e.getMessage());
+                    failTaskIfStartable(task, e);
                     return false;
                 }
                 TaskEntity materialized = taskMapper.selectById(task.getId());
@@ -368,15 +368,22 @@ public class TaskOrchestrator {
      * PENDING/RUNNING，无终态、无用户取消意图）时才覆盖，避免用过期内存对象把并发取消
      * （CANCELLING/CANCELLED）或已终态的任务误改为 FAILED。与 failStartup 的覆盖条件一致。
      */
-    private void failTaskIfStartable(TaskEntity task, String message) {
+    private void failTaskIfStartable(TaskEntity task, ApiException failure) {
         TaskEntity latest = taskMapper.selectById(task.getId());
         if (latest == null || !STARTABLE_TASK_STATUSES.contains(latest.getStatus())) {
             log.warn("plan failure not persisted, task already left startable states, taskId={}",
                     task.getId());
             return;
         }
+        latest.setFailureCode(failure.code());
+        latest.setFailureReason(ExecutionContentSanitizer.sanitize(failure.getMessage()));
+        // 计划路径错误来自本次 Planner 输出，不是用户数据不可修复错误；允许重新规划一次，
+        // 让强化后的路径契约有机会在重试中生效。其他 4xx 计划异常仍不可自动重试。
+        latest.setFailureRetryable(failure.status().is5xxServerError()
+                || "TASK_PLAN_PATH_INVALID".equals(failure.code()));
+        latest.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
         updateTaskStatus(latest, "FAILED");
-        sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null, message);
+        sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null, failure.getMessage());
     }
 
     /**

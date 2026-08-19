@@ -70,6 +70,7 @@ public class PlanPromptBuilder {
                 - requiredCapabilities 是可选的小写 kebab-case 能力标签数组；只填写该步骤实际需要的专项能力。
                 - suggestedAgentId 是可选的建议执行 Agent id：必须来自用户消息中「可用 Agent 清单」列出的 id；每个步骤尽量指派职责匹配的候选 Agent，让不同专长的 Agent 各司其职；无法确定或无需指定时省略该字段。
                 - files 必须是无 .. 的相对路径；只能引用给出的文件树中已有的文件，或明确需要新建的文件（在 description 说明）。
+                - 多仓库 Workspace 下，files 的每一项必须以对应仓库的 workspacePath 开头，格式为 workspacePath/仓库内路径；新建目录和新建文件同样必须带此前缀。禁止输出 src/App.vue、vue3/、package.json 这类无法确定仓库的裸路径。单仓库时才可使用仓库内相对路径。
                 - 不要臆造文件树中不存在的既有文件。
 
                 交付模式判定规则（deliveryMode 二选一，必须给出且只能给出 DIFF_FIRST 或 MR_FIRST）：

@@ -99,6 +99,25 @@ public class GitHubRepositoryController {
     }
 
     /**
+     * 契约 §6：查询项目绑定仓库的真实 GitHub 远程分支（项目成员）。
+     */
+    @GetMapping("/projects/{projectId}/repositories/{projectRepositoryId}/branches")
+    public ApiResponse<List<RemoteBranchResponse>> listRemoteBranches(
+            @PathVariable UUID projectId, @PathVariable UUID projectRepositoryId, HttpServletRequest request) {
+        return ok(service.listRemoteBranches(currentActor.currentUserId(), projectId, projectRepositoryId), request);
+    }
+
+    /**
+     * 契约 §6：从已有远程分支创建 GitHub 远程分支（Project Admin）。
+     */
+    @PostMapping("/projects/{projectId}/repositories/{projectRepositoryId}/branches")
+    public ApiResponse<RemoteBranchResponse> createRemoteBranch(
+            @PathVariable UUID projectId, @PathVariable UUID projectRepositoryId,
+            @Valid @RequestBody CreateRemoteBranchRequest body, HttpServletRequest request) {
+        return ok(service.createRemoteBranch(currentActor.currentUserId(), projectId, projectRepositoryId, body), request);
+    }
+
+    /**
      * 契约 §6：将团队已授权仓库绑定到项目（Project Admin）。
      */
     @PostMapping("/projects/{projectId}/repositories")
