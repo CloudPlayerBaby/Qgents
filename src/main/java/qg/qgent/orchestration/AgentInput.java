@@ -61,6 +61,11 @@ public class AgentInput {
     /** 当前 TaskStep 的冻结可写路径；空值表示迁移前历史步骤兼容模式。 */
     private List<String> allowedPaths;
     /**
+     * 当前 TaskStep 声明的目标文件（Workspace 相对路径）；供运行期判定目标是否已被前序步骤
+     * 满足（目标已满足时无新增写入不算失败）。空值关闭该判定。
+     */
+    private List<String> targetFiles;
+    /**
      * 前一轮重试反馈：质量循环携带 Test/Review finding；基础设施重试只携带稳定失败码与受控描述。
      */
     private String feedback;

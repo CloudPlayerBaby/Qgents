@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import qg.qgent.entity.*;
+import qg.qgent.orchestration.ExecutionContentSanitizer;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -34,9 +35,10 @@ public final class TaskEventPayloads {
         p.put("deliveryMode", task.getDeliveryMode());
         p.put("deliveryReason", task.getDeliveryReason());
         if (task.getFailureCode() != null) {
-            p.put("failureCode", task.getFailureCode());
-            p.put("failureReason", task.getFailureReason());
-            p.put("failureRetryable", task.getFailureRetryable());
+            String failureCode = ExecutionContentSanitizer.publicFailureCode(task.getFailureCode());
+            p.put("failureCode", failureCode);
+            p.put("failureReason", ExecutionContentSanitizer.userFailureDescription(failureCode));
+            p.put("failureRetryable", ExecutionContentSanitizer.userFailureRetryable(failureCode));
             p.put("failureOccurredAt", task.getFailureOccurredAt() == null ? null
                     : task.getFailureOccurredAt().atOffset(java.time.ZoneOffset.UTC).toInstant().toString());
         }

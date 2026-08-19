@@ -152,6 +152,7 @@ public class TaskPlanMaterializationService {
                     item.getSuggestedAgentId(), item.getExecutionMode());
             TaskStepExecutionMode mode = TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole());
             step.setAllowedPaths(allowedPathsFor(item, worktreeList));
+            step.setTargetFiles(targetFilesFor(item, worktreeList));
             steps.insert(step);
             dependencies.insertLink(step.getId(), previous);
             insertScopes(step.getId(), repositoriesForStep(item, worktreeList), mode.allowWrite() ? "WRITE" : "READ");
@@ -327,6 +328,40 @@ public class TaskPlanMaterializationService {
 
     private List<String> normalizeAllowedPaths(List<String> paths) {
         return paths.stream().map(TaskStepPathPolicy::normalize).filter(java.util.Objects::nonNull).distinct().toList();
+    }
+
+    /**
+     * Freeze Planner file declarations as workspace-relative target files for the
+     * target-already-satisfied check. Mirrors {@link #allowedPathsFor} mapping:
+     * a raw single-repository path is expanded with the worktree prefix as well
+     * because local access exposes the prefix while Worker accepts the
+     * repository-relative alias; unmappable paths are dropped. Empty file lists
+     * yield no declared targets (the post-check rescue is then disabled), unlike
+     * allowed paths which still fall back to repository roots as a write scope.
+     */
+    private List<String> targetFilesFor(PlanResult.ImplementationStep item,
+                                        List<WorkspaceRepositoryEntity> worktreeList) {
+        List<String> raw = item == null || item.getFiles() == null ? List.of() : item.getFiles();
+        if (raw.isEmpty()) {
+            return List.of();
+        }
+        List<String> prefixes = worktreeList.stream().map(WorkspaceRepositoryEntity::getWorkspacePath)
+                .filter(path -> path != null && !path.isBlank())
+                .map(path -> path.replace('\\', '/').replaceAll("^/+|/+$", ""))
+                .toList();
+        List<String> result = new ArrayList<>();
+        for (String path : raw) {
+            String normalized = TaskStepPathPolicy.normalize(path);
+            if (normalized == null) {
+                continue;
+            }
+            result.add(normalized);
+            boolean prefixed = prefixes.stream().anyMatch(prefix -> isUnderPrefix(normalized, prefix));
+            if (!prefixed && prefixes.size() == 1) {
+                result.add(prefixes.get(0) + "/" + normalized);
+            }
+        }
+        return result.stream().map(TaskStepPathPolicy::normalize).filter(java.util.Objects::nonNull).distinct().toList();
     }
 
     private String developerInstruction(PlanResult plan, PlanResult.ImplementationStep item) {

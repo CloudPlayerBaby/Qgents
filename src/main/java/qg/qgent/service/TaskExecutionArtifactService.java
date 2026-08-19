@@ -108,7 +108,9 @@ public class TaskExecutionArtifactService {
         if (summary == null) {
             return result;
         }
-        boolean infrastructureFailure = "FAILED_INFRASTRUCTURE".equals(String.valueOf(summary.get("outcome")));
+        boolean failure = "FAILED".equals(String.valueOf(summary.get("status")))
+                || "FAILED".equals(String.valueOf(summary.get("outcome")))
+                || "FAILED_INFRASTRUCTURE".equals(String.valueOf(summary.get("outcome")));
         for (Map.Entry<String, Object> entry : summary.entrySet()) {
             if (result.size() == MAX_SUMMARY_ENTRIES || sensitiveKey(entry.getKey())) {
                 continue;
@@ -118,11 +120,16 @@ public class TaskExecutionArtifactService {
                 result.put(entry.getKey(), value);
             }
         }
-        if (infrastructureFailure) {
-            String code = ExecutionContentSanitizer.stableInfrastructureCode(
-                    summary.get("failureCode") == null ? null : String.valueOf(summary.get("failureCode")));
+        if (failure) {
+            String originalCode = summary.get("failureCode") == null ? null : String.valueOf(summary.get("failureCode"));
+            boolean infrastructureFailure = "FAILED_INFRASTRUCTURE".equals(String.valueOf(summary.get("outcome")));
+            String code = infrastructureFailure
+                    ? ExecutionContentSanitizer.stableInfrastructureCode(originalCode)
+                    : ExecutionContentSanitizer.publicFailureCode(originalCode);
             result.put("failureCode", code);
-            result.put("message", ExecutionContentSanitizer.infrastructureDescription(code));
+            result.put("message", infrastructureFailure
+                    ? ExecutionContentSanitizer.infrastructureDescription(code)
+                    : ExecutionContentSanitizer.userFailureDescription(code));
         }
         return result;
     }

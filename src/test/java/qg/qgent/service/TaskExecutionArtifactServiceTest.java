@@ -41,4 +41,18 @@ class TaskExecutionArtifactServiceTest {
         assertThat(sanitized).containsEntry("failureCode", "FAILED_INFRASTRUCTURE")
                 .containsEntry("message", "执行基础设施暂不可用");
     }
+
+    @Test
+    void ordinaryFailureReplacesAgentMessageWithControlledDescription() {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("outcome", "FAILED");
+        summary.put("status", "FAILED");
+        summary.put("failureCode", "FILE_PATCH_FAILED");
+        summary.put("message", "apply_patch 工具调用失败，内部模型上下文不应返回");
+
+        Map<String, Object> sanitized = service.sanitizeSummary(summary);
+
+        assertThat(sanitized).containsEntry("failureCode", "FILE_PATCH_FAILED")
+                .containsEntry("message", "补丁无法应用，请重新读取文件后重试");
+    }
 }

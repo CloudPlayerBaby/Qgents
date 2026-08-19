@@ -319,6 +319,16 @@ class TaskOrchestratorTest {
         assertThat(task.getFailureReason()).isEqualTo("Sandbox Worker 当前不可用");
         assertThat(task.getFailureReason()).doesNotContain("internal worker url");
         assertThat(task.getFailureRetryable()).isTrue();
+
+        ArgumentCaptor<MessageSendRequest> cards = ArgumentCaptor.forClass(MessageSendRequest.class);
+        verify(fixture.messages, atLeastOnce()).upsertTaskStatusCard(eq(task.getRequirementGroupId()), any(), cards.capture());
+        MessageSendRequest failed = cards.getAllValues().stream()
+                .filter(card -> "FAILED".equals(card.getContent().get("status")))
+                .findFirst().orElseThrow();
+        String failedMessage = String.valueOf(failed.getContent().get("message"));
+        assertThat(failedMessage)
+                .isEqualTo("任务启动失败：执行环境不可用。Sandbox Worker 当前不可用，可以稍后重试")
+                .doesNotContain("internal worker url");
     }
 
     @Test

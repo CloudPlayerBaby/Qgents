@@ -377,15 +377,17 @@ public class TaskOrchestrator {
                     task.getId());
             return;
         }
+        String userFailureReason = ExecutionContentSanitizer.userFailureDescription(failure.code());
         latest.setFailureCode(failure.code());
-        latest.setFailureReason(ExecutionContentSanitizer.sanitize(failure.getMessage()));
+        // 规划异常详情只保留在服务端日志，任务字段和群聊状态卡片只能使用受控说明。
+        latest.setFailureReason(userFailureReason);
         // 计划路径错误来自本次 Planner 输出，不是用户数据不可修复错误；允许重新规划一次，
         // 让强化后的路径契约有机会在重试中生效。其他 4xx 计划异常仍不可自动重试。
         latest.setFailureRetryable(failure.status().is5xxServerError()
                 || "TASK_PLAN_PATH_INVALID".equals(failure.code()));
         latest.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
         updateTaskStatus(latest, "FAILED");
-        sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null, failure.getMessage());
+        sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null, userFailureReason);
     }
 
     /**

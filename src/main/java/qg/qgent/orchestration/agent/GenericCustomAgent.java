@@ -92,6 +92,21 @@ public class GenericCustomAgent implements Agent {
         try {
             CustomResult result = executeCustom(input, observations, writeCapable, observedWrites);
             if (executionMode.requireChange() && result.success() && !observedWrites.hasChangedWrite()) {
+                // 目标已满足：本步骤声明的目标文件已存在于 Workspace（前序步骤越界完成或历史提交覆盖），
+                // 零写入是本步骤职责已被满足的幂等结果，按 SUCCEEDED 收敛，不判为模型行为错误。
+                if (TargetSatisfaction.isSatisfied(codeAccess, input.getWorkspaceId(), input.getTargetFiles())) {
+                    log.info("CUSTOM_ALREADY_SATISFIED agentId={} phase={} workspaceId={} targets={}",
+                            entity.getId(), input.getPhase(), input.getWorkspaceId(), input.getTargetFiles());
+                    AgentRunOutcome satisfied = new AgentRunOutcome();
+                    satisfied.setPhase(input.getPhase());
+                    satisfied.setOutcome(RunOutcome.SUCCEEDED);
+                    satisfied.setMessage(result.message() != null && !result.message().isBlank()
+                            ? result.message()
+                            : (result.summary() == null || result.summary().isBlank()
+                                    ? "目标已由前序步骤满足，本步骤无新增写入" : result.summary()));
+                    satisfied.setObservations(observations);
+                    return satisfied;
+                }
                 // 确定性模型行为错误：声明 success 但没有任何可信文件变更。重试同相位不会改变模型
                 // 下一次的输出（提示词已明确要求至少一次 changed=true 写入），只会在基础设施重试
                 // 计数内空转；直接判 FAILED 让任务立即失败并通知用户，避免 4 次无意义重跑。
