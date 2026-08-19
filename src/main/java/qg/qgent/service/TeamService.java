@@ -195,8 +195,11 @@ public class TeamService {
         TeamEntity team = requireTeamForUpdate(teamId);
         // 检查用户是否是团队的owner
         requireOwner(team, actor);
-        // 设置并写入数据库；description 传 null 表示保留原值，传空串表示清空
-        team.setName(request.getName().trim());
+        // 设置并写入数据库（PATCH 语义）：name/description/avatarUrl 传 null 均表示保留原值；
+        // 空串表示清空（name 空串由前端校验，此处仅 trim 后写入）
+        if (request.getName() != null) {
+            team.setName(request.getName().trim());
+        }
         if (request.getDescription() != null) {
             team.setDescription(request.getDescription());
         }

@@ -1,12 +1,16 @@
 package qg.qgent.dto;
 
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
+/**
+ * 团队更新请求（PATCH 语义：所有字段可选，传 null 表示保留原值）。
+ */
 @Data
 public class UpdateTeamRequest {
-    @NotBlank
+    /**
+     * 团队名称（可选）：传 null 表示保留原值；非 null 时去除首尾空白后覆盖保存，最长 255 字符。
+     */
     @Size(max = 255)
     private String name;
     /**
