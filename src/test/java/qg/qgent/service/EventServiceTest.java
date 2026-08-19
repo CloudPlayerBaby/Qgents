@@ -16,6 +16,7 @@ import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.mapper.UserMapper;
 import qg.qgent.mapper.TeamMapper;
 import qg.qgent.service.event.DeliveryStartedDomainEvent;
+import qg.qgent.service.event.DryRunConflictCandidateDomainEvent;
 import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
 import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 
@@ -152,6 +153,31 @@ class EventServiceTest {
         PreflightCqApprovedDomainEvent approval = (PreflightCqApprovedDomainEvent) captured.getAllValues().get(1);
         assertEquals(projectId, approval.projectId());
         assertEquals(dryRunId, approval.dryRunId());
+    }
+
+    @Test
+    void dryRunFailurePublishesConflictCandidateDomainEventOnlyWhenFailed() {
+        EventMapper events = mock(EventMapper.class);
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        ProjectMapper projects = mock(ProjectMapper.class);
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID dryRunId = UUID.randomUUID();
+        when(events.nextSequence(projectId)).thenReturn(1L, 2L);
+        EventService service = service(events, projects, publisher);
+
+        // FAILED 且带 taskId → 桥接候选事件；PASSED → 不发布。
+        service.publish(projectId, null, "dry-run.updated", dryRunId.toString(),
+                Map.of("taskId", taskId, "status", "FAILED"));
+        service.publish(projectId, null, "dry-run.updated", dryRunId.toString(),
+                Map.of("taskId", taskId, "status", "PASSED"));
+
+        org.mockito.ArgumentCaptor<Object> captured = org.mockito.ArgumentCaptor.forClass(Object.class);
+        verify(publisher, org.mockito.Mockito.times(1)).publishEvent(captured.capture());
+        DryRunConflictCandidateDomainEvent event = (DryRunConflictCandidateDomainEvent) captured.getValue();
+        assertEquals(projectId, event.projectId());
+        assertEquals(dryRunId, event.dryRunId());
+        assertEquals(taskId, event.taskId());
     }
 
     private EventService service(EventMapper events, ProjectMapper projects) {
