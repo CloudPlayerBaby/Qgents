@@ -250,6 +250,19 @@ class TestAgentTest {
     }
 
     @Test
+    void dockerExecutionFailureRetainsStableFailureCode() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(false, -1, "", "", "DOCKER_EXEC_FAILED: Docker Exec 执行失败"));
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo("DOCKER_EXEC_FAILED");
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
     void nodeTargetDoesNotRunUnrelatedGradleWrapper() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("build.gradle", "gradlew", "hello.js"));
         AgentInput nodeInput = input();

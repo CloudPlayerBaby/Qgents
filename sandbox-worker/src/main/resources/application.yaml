@@ -67,6 +67,7 @@ sandbox:
   gradle-cache-size: ${SANDBOX_GRADLE_CACHE_SIZE:3g}
   # 单个 Sandbox 的 npm 临时缓存容量上限（容器内可写 tmpfs，Sandbox 销毁后清理）
   npm-cache-size: ${SANDBOX_NPM_CACHE_SIZE:1g}
+  developer-home-size: ${SANDBOX_DEVELOPER_HOME_SIZE:8g}
 
 management:
   endpoints:

@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
+import qg.qgent.sandboxworker.api.WorkerException;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -75,7 +76,8 @@ public class DockerCommandExecutor implements CommandExecutor {
             restartContainer(sandbox.getRuntimeHandle());
             throw exception;
         } catch (Exception exception) {
-            throw new IllegalStateException("Docker Exec 执行失败", exception);
+            throw new WorkerException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                    "DOCKER_EXEC_FAILED", "Docker Exec 执行失败");
         }
         Long exitCode = docker.inspectExecCmd(execId).exec().getExitCodeLong();
         return new CommandExecutionResult(exitCode == null ? -1 : exitCode.intValue(), lines(stdout), lines(stderr));

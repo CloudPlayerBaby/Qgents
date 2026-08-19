@@ -1,6 +1,7 @@
 package qg.qgent.orchestration.agent;
 
 import org.springframework.stereotype.Component;
+import lombok.extern.slf4j.Slf4j;
 import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
@@ -36,6 +37,7 @@ import java.util.Set;
  * 不修改 Workspace、不 write_file、不调用其他 Agent、不执行 Git 命令、不访问宿主机。
  */
 @Component
+@Slf4j
 public class TestAgent implements Agent {
 
     private static final Duration TEST_TIMEOUT = Duration.ofMinutes(10);
@@ -312,8 +314,23 @@ public class TestAgent implements Agent {
         AgentRunOutcome failure = new AgentRunOutcome();
         failure.setPhase(input.getPhase());
         failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
-        failure.setMessage("test agent failed: " + ExecutionContentSanitizer.sanitize(message));
+        String safeMessage = ExecutionContentSanitizer.sanitize(message);
+        String code = infrastructureCode(safeMessage);
+        failure.setFailureCode(code);
+        failure.setMessage("test agent failed: " + safeMessage);
+        log.warn("tester infrastructure failure workspaceId={} failureCode={}", input.getWorkspaceId(), code);
         return failure;
+    }
+
+    private String infrastructureCode(String message) {
+        String value = message == null ? "" : message.toUpperCase(java.util.Locale.ROOT);
+        if (value.contains("SANDBOX_WORKER_UNAVAILABLE")) return "SANDBOX_WORKER_UNAVAILABLE";
+        if (value.contains("WORKSPACE_WRITE_LEASE_LOST")) return "WORKSPACE_WRITE_LEASE_LOST";
+        if (value.contains("SANDBOX_NOT_FOUND")) return "SANDBOX_NOT_FOUND";
+        if (value.contains("DOCKER_EXEC") || value.contains("DOCKER_ENGINE")) return "DOCKER_EXEC_FAILED";
+        if (value.contains("BUILD ENVIRONMENT UNAVAILABLE")) return "BUILD_ENVIRONMENT_UNAVAILABLE";
+        if (value.contains("TIMEOUT") || value.contains("TIMED OUT") || value.contains("超时")) return "TEST_EXECUTION_TIMEOUT";
+        return "FAILED_INFRASTRUCTURE";
     }
 
     private ExecutionResult sanitizedAndLimited(ExecutionResult exec) {

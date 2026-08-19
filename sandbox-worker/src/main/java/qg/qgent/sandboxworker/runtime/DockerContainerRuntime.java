@@ -142,7 +142,7 @@ public class DockerContainerRuntime implements ContainerRuntime {
     }
 
     /**
-     * 构建容器可写 tmpfs 挂载：/tmp、/run 以及 Maven、Gradle、npm 缓存目录。
+     * 构建容器可写 tmpfs 挂载：/tmp、/run、开发用户 HOME 以及构建缓存目录。
      * 各构建缓存容量由 Worker 配置控制，仅作为本 Sandbox 的临时缓存，随容器销毁清理；
      * 不挂载宿主机路径，不放开 rootfs 其他位置的只读隔离。
      */
@@ -150,11 +150,14 @@ public class DockerContainerRuntime implements ContainerRuntime {
         String developerCacheOptions = "rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=";
         return Map.of(
                 "/tmp", "rw,noexec,nosuid,size=512m",
+                "/var/tmp", "rw,noexec,nosuid,size=512m",
                 "/run", "rw,noexec,nosuid,size=64m",
+                "/home/developer", developerCacheOptions + properties.getDeveloperHomeSize(),
                 "/home/developer/.m2", developerCacheOptions + properties.getMavenCacheSize(),
                 "/home/developer/.gradle", developerCacheOptions + properties.getGradleCacheSize(),
                 "/home/developer/.npm", developerCacheOptions + properties.getNpmCacheSize(),
-                "/home/developer/.cache", developerCacheOptions + "512m");
+                "/home/developer/.cache", developerCacheOptions + "512m",
+                "/opt/pnpm", developerCacheOptions + "1g");
     }
 
     @Override

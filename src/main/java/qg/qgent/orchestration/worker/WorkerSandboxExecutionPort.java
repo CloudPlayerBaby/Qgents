@@ -3,6 +3,7 @@ package qg.qgent.orchestration.worker;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
+import lombok.extern.slf4j.Slf4j;
 import qg.qgent.orchestration.tool.ExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionResult;
 
@@ -24,6 +25,7 @@ import java.util.UUID;
  */
 @Component
 @Primary
+@Slf4j
 @ConditionalOnProperty(name = "app.worker.enabled", havingValue = "true")
 public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implements ExecutionPort {
 
@@ -42,9 +44,9 @@ public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implement
         if (command == null || command.isEmpty()) {
             return new ExecutionResult(false, -1, "", "", "command must not be empty");
         }
+        UUID repositoryId = null;
         try {
             SandboxSession current = session(workspaceId);
-            UUID repositoryId;
             if (repositoryPath == null || repositoryPath.isBlank()) {
                 repositoryId = current.singleRepository();
             } else {
@@ -59,12 +61,20 @@ public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implement
             String stderr = collectLogs(execution.getId(), "STDERR");
             Integer exitCode = execution.getExitCode();
             if (exitCode == null) {
-                return new ExecutionResult(false, -1, stdout, stderr,
-                        execution.getFailureReason() == null ? "process execution failed" : execution.getFailureReason());
+                String reason = execution.getFailureReason() == null ? "process execution failed" : execution.getFailureReason();
+                log.warn("tester process execution failed workspaceId={} repositoryId={} executionId={} status={} reason={}",
+                        workspaceId, repositoryId, execution.getId(), execution.getStatus(), reason);
+                return new ExecutionResult(false, -1, stdout, stderr, reason);
             }
             return new ExecutionResult(true, exitCode, stdout, stderr, null);
         } catch (RuntimeException e) {
-            return new ExecutionResult(false, -1, "", "", e.getMessage());
+            String reason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            if (e instanceof qg.qgent.api.ApiException api) {
+                reason = api.code() + ": " + reason;
+            }
+            log.warn("tester process execution infrastructure failure workspaceId={} repositoryId={} command={} reason={}",
+                    workspaceId, repositoryId, command, reason);
+            return new ExecutionResult(false, -1, "", "", reason);
         }
     }
 

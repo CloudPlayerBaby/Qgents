@@ -4,7 +4,7 @@
 
 全部 Git 操作由 Sandbox 外的 Workspace Manager 执行；容器只接收当前 TaskRun 获得授权的仓库 worktree bind mount。
 
-镜像使用非 root 用户 `developer`（uid/gid 10001）。Worker 以容器级 tmpfs 挂载 Maven、Gradle、npm 和通用缓存目录（默认分别为 `2g`、`3g`、`1g`、`512m`），rootfs 其余位置保持只读。项目自带 Wrapper 优先，Wrapper 没有 executable bit 时使用 `sh ./gradlew` 或 `sh ./mvnw` 启动。
+镜像使用非 root 用户 `developer`（uid/gid 10001）。Worker 以容器级 tmpfs 挂载开发用户 HOME（默认 `8g`）、pnpm 全局目录（`1g`）以及 Maven、Gradle、npm 和通用缓存目录（默认分别为 `2g`、`3g`、`1g`、`512m`），并开放 `/tmp`、`/var/tmp` 和 `/run` 的临时空间，用于覆盖 Gradle/Java/Kotlin/Android 等工具的隐藏状态目录；rootfs 其余位置保持只读。项目自带 Wrapper 优先，Wrapper 没有 executable bit 时使用 `sh ./gradlew` 或 `sh ./mvnw` 启动。
 
 ```powershell
 docker build -t qgents/sandbox-dev-tools:0.2.0 sandbox-images/dev-tools
@@ -15,11 +15,14 @@ docker build -t qgents/sandbox-dev-tools:0.2.0 sandbox-images/dev-tools
 ```bash
 docker run --rm --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=512m \
+  --tmpfs /var/tmp:rw,noexec,nosuid,size=512m \
   --tmpfs /run:rw,noexec,nosuid,size=64m \
+  --tmpfs /home/developer:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=8g \
   --tmpfs /home/developer/.m2:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=2g \
   --tmpfs /home/developer/.gradle:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=3g \
   --tmpfs /home/developer/.npm:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=1g \
   --tmpfs /home/developer/.cache:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=512m \
+  --tmpfs /opt/pnpm:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=1g \
   qgents/sandbox-dev-tools:0.2.0 \
-  sh -lc 'set -eu; java -version; mvn -version; gradle --version; node --version; npm --version; test -w /home/developer/.m2; test -w /home/developer/.gradle; test -w /home/developer/.npm'
+  sh -lc 'set -eu; java -version; mvn -version; gradle --version; node --version; npm --version; test -w /home/developer; test -w /home/developer/.m2; test -w /home/developer/.gradle; test -w /home/developer/.npm; mkdir -p /home/developer/.android /home/developer/.config /home/developer/.local'
 ```

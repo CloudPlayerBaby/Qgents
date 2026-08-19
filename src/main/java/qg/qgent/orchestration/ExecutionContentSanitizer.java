@@ -39,7 +39,9 @@ public final class ExecutionContentSanitizer {
                     "SANDBOX_WORKER_UNAVAILABLE", "SANDBOX_WORKER_ERROR", "GIT_BASE_REF_NOT_FOUND",
                     "GIT_REF_NOT_FOUND",
                     "GIT_STORE_FETCH_FAILED", "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH",
-                    "GITHUB_API_UNAVAILABLE", "WORKER_PUSH_FAILED" ->
+                    "GITHUB_API_UNAVAILABLE", "WORKER_PUSH_FAILED", "WORKSPACE_WRITE_LEASE_LOST",
+                    "SANDBOX_NOT_FOUND", "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT",
+                    "BUILD_ENVIRONMENT_UNAVAILABLE" ->
                     code.toUpperCase(Locale.ROOT);
             default -> "FAILED_INFRASTRUCTURE";
         };
@@ -53,6 +55,11 @@ public final class ExecutionContentSanitizer {
                     "模型工具协议未能稳定完成";
             case "AGENT_RUN_TIMEOUT" -> "Agent 执行超过相位时限";
             case "SANDBOX_WORKER_UNAVAILABLE" -> "Sandbox Worker 当前不可用";
+            case "WORKSPACE_WRITE_LEASE_LOST" -> "Workspace 写入租约已失效";
+            case "SANDBOX_NOT_FOUND" -> "测试 Sandbox 已不存在或已过期";
+            case "DOCKER_EXEC_FAILED" -> "Sandbox 内进程启动失败";
+            case "TEST_EXECUTION_TIMEOUT" -> "测试命令执行超时";
+            case "BUILD_ENVIRONMENT_UNAVAILABLE" -> "测试构建环境不可用";
             case "GIT_BASE_REF_NOT_FOUND" -> "找不到任务指定的基线分支或提交";
             case "GIT_REF_NOT_FOUND" -> "Worker Git Store 中找不到指定分支或提交";
             case "GIT_STORE_FETCH_FAILED", "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH" ->

@@ -2,6 +2,7 @@
 target/
 .m2/
 .m2-local/
+.m2-temp/
 /data/
 
 # Compiled class file

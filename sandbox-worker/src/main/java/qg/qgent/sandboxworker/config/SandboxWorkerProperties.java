@@ -143,6 +143,9 @@ public class SandboxWorkerProperties {
      */
     private String npmCacheSize = "1g";
 
+    /** 沙箱开发用户 HOME 的临时可写容量，覆盖各构建工具的隐藏状态目录。 */
+    private String developerHomeSize = "8g";
+
     /**
      * 主后端地址，供 Worker 访问内部接口。
      */
