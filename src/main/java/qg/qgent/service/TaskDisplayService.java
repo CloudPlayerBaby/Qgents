@@ -192,12 +192,26 @@ public class TaskDisplayService {
                         .orderByAsc(TaskAcceptanceCriterionEntity::getSequenceNo)));
 
         return new TaskDetailResponse(id(task.getId()), task.getDisplayCode(), id(task.getProjectId()), task.getTitle(),
-                task.getRequirement(), task.getStatus(), null, task.getDeliveryMode(), task.getDeliveryReason(),
+                task.getRequirement(), task.getStatus(), taskStatusReason(task), null,
+                task.getDeliveryMode(), task.getDeliveryReason(),
                 groupSummary(groupById.get(task.getRequirementGroupId())),
                 userSummary(userById.get(task.getCreatedBy())), criteria, execution,
                 workspaceSummary(task, worktreeData), buildCapabilities(task, actor, stepList, batch),
                 artifactSummary(taskId), diffReviewSummary(batch, batchDiffs), sourceMessage(task),
                 id(task.getTriggerMessageId()), iso(task.getCreatedAt()), iso(task.getUpdatedAt()));
+    }
+
+    /**
+     * TaskRun 尚未创建时仍返回启动失败原因；旧任务没有持久化原因则保持 null。
+     */
+    private TaskStatusReason taskStatusReason(TaskEntity task) {
+        if (task == null || !"FAILED".equals(task.getStatus())
+                || task.getFailureCode() == null || task.getFailureCode().isBlank()) {
+            return null;
+        }
+        return new TaskStatusReason("STARTUP_FAILED", task.getFailureCode(),
+                "任务启动失败", task.getFailureReason(),
+                Boolean.TRUE.equals(task.getFailureRetryable()), iso(task.getFailureOccurredAt()));
     }
 
     /**
