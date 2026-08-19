@@ -305,7 +305,54 @@ public class CodingTools {
     private Map<String, Object> error(String message) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("ok", false);
+        result.put("errorCode", classifyError(message));
+        result.put("retryable", isRetryable(message));
         result.put("error", message);
+        result.put("nextAction", nextAction(message));
         return result;
+    }
+
+    private String classifyError(String message) {
+        if (message == null) {
+            return "TOOL_EXECUTION_FAILED";
+        }
+        if (message.contains("UTF-8") || message.contains("exceeds")) {
+            return "TOOL_CONTENT_INVALID";
+        }
+        if (message.contains("outside") || message.contains("escapes") || message.contains("invalid")) {
+            return "TOOL_PATH_INVALID";
+        }
+        if (message.contains("hash") || message.contains("changed since read")) {
+            return "TOOL_CONFLICT";
+        }
+        if (message.contains("requires") || message.contains("non-empty")) {
+            return "TOOL_ARGUMENT_INVALID";
+        }
+        return "TOOL_EXECUTION_FAILED";
+    }
+
+    private boolean isRetryable(String message) {
+        return message != null && !message.contains("outside") && !message.contains("escapes")
+                && !message.contains("invalid") && !message.contains("already exists")
+                && !message.contains("exceeds") && !message.contains("UTF-8");
+    }
+
+    private String nextAction(String message) {
+        if (message == null) {
+            return "检查工具参数和工作区状态后再试一次";
+        }
+        if (message.contains("hash") || message.contains("changed since read")) {
+            return "先重新 read_file 获取当前 sha256，再用 apply_patch";
+        }
+        if (message.contains("only creates new files") || message.contains("already exists")) {
+            return "已有文件必须使用 apply_patch，不要用 write_file 覆盖";
+        }
+        if (message.contains("exceeds") || message.contains("UTF-8")) {
+            return "缩小内容或使用 UTF-8 文本后再调用，不要原样重试";
+        }
+        if (message.contains("outside") || message.contains("escapes") || message.contains("invalid")) {
+            return "改用当前工作区内的相对路径，不要重试越界路径";
+        }
+        return "根据 error 修正参数后重试一次，不要原样重复失败调用";
     }
 }

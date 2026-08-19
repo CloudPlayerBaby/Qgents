@@ -69,7 +69,36 @@ public class ReviewTools {
     private Map<String, Object> error(String message) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("ok", false);
+        result.put("errorCode", classifyError(message));
+        result.put("retryable", isRetryable(message));
         result.put("error", message);
+        result.put("nextAction", nextAction(message));
         return result;
+    }
+
+    private String classifyError(String message) {
+        if (message == null) {
+            return "TOOL_EXECUTION_FAILED";
+        }
+        if (message.contains("requires") || message.contains("non-empty")) {
+            return "TOOL_ARGUMENT_INVALID";
+        }
+        if (message.contains("invalid") || message.contains("outside") || message.contains("escapes")) {
+            return "TOOL_PATH_INVALID";
+        }
+        return "TOOL_EXECUTION_FAILED";
+    }
+
+    private boolean isRetryable(String message) {
+        return message != null && !message.contains("invalid") && !message.contains("outside")
+                && !message.contains("escapes");
+    }
+
+    private String nextAction(String message) {
+        if (message != null && (message.contains("invalid") || message.contains("outside")
+                || message.contains("escapes"))) {
+            return "改用工作区内的相对路径，不要重复越界调用";
+        }
+        return "根据 error 修正参数后重试一次，不要原样重复失败调用";
     }
 }

@@ -144,7 +144,16 @@ public class SpringAiChatLlmClient implements LlmClient {
         }
         OpenAiChatOptions options = nativeOptions(tools);
         long started = System.nanoTime();
-        ChatResponse response = chatModel.call(new Prompt(springMessages, options));
+        ChatResponse response;
+        try {
+            response = chatModel.call(new Prompt(springMessages, options));
+        } catch (RuntimeException exception) {
+            log.error("LLM_TOOL_CALL_FAILED messages={} tools={} promptChars={} category={} durationMs={}",
+                    springMessages.size(), tools == null ? 0 : tools.size(), promptChars,
+                    exception.getClass().getSimpleName(),
+                    Duration.ofNanos(System.nanoTime() - started).toMillis(), exception);
+            throw exception;
+        }
         String finishReason = finishReasonOf(response);
         AssistantMessage output = response.getResult().getOutput();
         String text = output == null ? null : output.getText();
@@ -213,7 +222,8 @@ public class SpringAiChatLlmClient implements LlmClient {
             if (callback == null) {
                 roundCode = ProtocolFailureCode.LLM_TOOL_NOT_ALLOWED;
                 responses.add(new ToolResponseMessage.ToolResponse(call.id(), call.name(),
-                        errorJson("unknown tool '" + call.name() + "'")));
+                        errorJson(call.name(), "TOOL_NOT_ALLOWED", "unknown tool '" + call.name() + "'",
+                                false, "选择本轮提供的工具名称，不要自行发明工具")));
                 continue;
             }
             try {
@@ -229,12 +239,14 @@ public class SpringAiChatLlmClient implements LlmClient {
                 }
                 roundCode = ProtocolFailureCode.LLM_TOOL_ARGUMENT_INVALID;
                 responses.add(new ToolResponseMessage.ToolResponse(call.id(), call.name(),
-                        errorJson(safeMessage(cause))));
+                        errorJson(call.name(), "TOOL_ARGUMENT_INVALID", safeMessage(cause), true,
+                                "根据工具 schema 修正参数；若是 hash 错误，先重新 read_file")));
             } catch (RuntimeException e) {
                 // 非基础设施的意外工具异常：按工具级失败回灌，不让模型循环整体中断。
                 roundCode = ProtocolFailureCode.LLM_TOOL_ARGUMENT_INVALID;
                 responses.add(new ToolResponseMessage.ToolResponse(call.id(), call.name(),
-                        errorJson(safeMessage(e))));
+                        errorJson(call.name(), "TOOL_EXECUTION_FAILED", safeMessage(e), true,
+                                "检查参数和工作区相对路径后再试一次，不要重复相同失败调用")));
             }
         }
         conversation.add(ToolResponseMessage.builder().responses(responses).build());
@@ -268,7 +280,11 @@ public class SpringAiChatLlmClient implements LlmClient {
     private OpenAiChatOptions nativeOptions(List<ToolCallback> tools) {
         ChatOptions defaults = chatModel.getOptions();
         if (defaults instanceof OpenAiChatOptions openAi) {
-            return (OpenAiChatOptions) openAi.mutate().toolCallbacks(tools).build();
+            return (OpenAiChatOptions) openAi.mutate()
+                    .toolCallbacks(tools)
+                    // 工具调用可能产生写入；禁止 SDK 自动重放同一请求，重试由有状态 Agent 循环控制。
+                    .maxRetries(0)
+                    .build();
         }
         throw new IllegalStateException("ChatModel options must be OpenAiChatOptions for native tool calling; got "
                 + (defaults == null ? "null" : defaults.getClass().getSimpleName()));
@@ -311,10 +327,14 @@ public class SpringAiChatLlmClient implements LlmClient {
     /**
      * 工具级错误的结构化 JSON（ok=false），回灌模型供其自纠；不含 Secret 与宿主机路径。
      */
-    private String errorJson(String message) {
+    private String errorJson(String tool, String errorCode, String message, boolean retryable, String nextAction) {
         Map<String, Object> node = new LinkedHashMap<>();
         node.put("ok", false);
+        node.put("tool", tool);
+        node.put("errorCode", errorCode);
+        node.put("retryable", retryable);
         node.put("error", message == null ? "tool failed" : message);
+        node.put("nextAction", nextAction);
         try {
             return OBJECT_MAPPER.writeValueAsString(node);
         } catch (Exception e) {

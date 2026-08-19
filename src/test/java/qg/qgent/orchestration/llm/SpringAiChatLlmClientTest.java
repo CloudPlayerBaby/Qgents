@@ -261,7 +261,9 @@ class SpringAiChatLlmClientTest {
         assertThat(turn.continuesToolLoop()).isTrue();
         assertThat(turn.protocolFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_NOT_ALLOWED);
         ToolResponseMessage toolResponse = (ToolResponseMessage) turn.history().get(2);
-        assertThat(toolResponse.getResponses().get(0).responseData()).contains("\"ok\":false", "not_allowed");
+        assertThat(toolResponse.getResponses().get(0).responseData())
+                .contains("\"ok\":false", "not_allowed", "\"errorCode\":\"TOOL_NOT_ALLOWED\"",
+                        "\"retryable\":false", "nextAction");
     }
 
     @Test
@@ -286,7 +288,8 @@ class SpringAiChatLlmClientTest {
         assertThat(turn.continuesToolLoop()).isTrue();
         assertThat(turn.protocolFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_ARGUMENT_INVALID);
         ToolResponseMessage toolResponse = (ToolResponseMessage) turn.history().get(2);
-        assertThat(toolResponse.getResponses().get(0).responseData()).contains("\"ok\":false");
+        assertThat(toolResponse.getResponses().get(0).responseData())
+                .contains("\"ok\":false", "\"errorCode\":\"TOOL_ARGUMENT_INVALID\"", "nextAction");
     }
 
     @Test
@@ -332,6 +335,17 @@ class SpringAiChatLlmClientTest {
                 .isEqualTo(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT);
         assertThat(options.getMaxRetries()).isZero();
         assertThat(options.getToolCallbacks()).isEmpty();
+    }
+
+    @Test
+    void nativeToolCallingDisablesSdkRetriesToAvoidReplayOfWrites() {
+        stubFinalTextOutput("done");
+
+        client().nextToolTurn("system", List.of(new UserMessage("task")), List.of(tool("echo")));
+
+        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chatModel).call(promptCaptor.capture());
+        assertThat(((OpenAiChatOptions) promptCaptor.getValue().getOptions()).getMaxRetries()).isZero();
     }
 
     // ---------- 测试用白名单工具 ----------

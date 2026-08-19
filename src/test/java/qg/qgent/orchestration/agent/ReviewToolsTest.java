@@ -85,6 +85,9 @@ class ReviewToolsTest {
 
         assertThat(result.get("ok")).isEqualTo(false);
         assertThat((String) result.get("error")).contains("file not found or unreadable");
+        assertThat(result).containsEntry("errorCode", "TOOL_EXECUTION_FAILED")
+                .containsEntry("retryable", true)
+                .containsKey("nextAction");
     }
 
     @Test

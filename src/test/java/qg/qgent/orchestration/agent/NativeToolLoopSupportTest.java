@@ -74,8 +74,35 @@ class NativeToolLoopSupportTest {
                 .build();
     }
 
+    @Test
+    void failedToolResponseAddsCorrectiveGuidance() {
+        List<Message> history = List.of(new UserMessage("initial"), assistantCall(1), failedToolResponse(1));
+
+        List<Message> prepared = NativeToolLoopSupport.prepareToolRound(history, 2);
+
+        assertThat(prepared.get(prepared.size() - 1).getText())
+                .contains("errorCode、retryable 和 nextAction", "禁止原样重复失败调用");
+    }
+
+    @Test
+    void repeatedFailedToolCallRequiresDifferentParameters() {
+        List<Message> history = List.of(new UserMessage("initial"), assistantCall(1), failedToolResponse(1),
+                assistantCall(2), failedToolResponse(2));
+
+        List<Message> prepared = NativeToolLoopSupport.prepareToolRound(history, 3);
+
+        assertThat(prepared.get(prepared.size() - 1).getText())
+                .contains("同一工具失败已经重复一次", "禁止再次使用完全相同的工具名和参数");
+    }
+
     private ToolResponseMessage toolResponse(int index) {
         return ToolResponseMessage.builder().responses(List.of(
                 new ToolResponseMessage.ToolResponse("call_" + index, "read_file", "result-" + index))).build();
+    }
+
+    private ToolResponseMessage failedToolResponse(int index) {
+        return ToolResponseMessage.builder().responses(List.of(
+                new ToolResponseMessage.ToolResponse("call_" + index, "read_file",
+                        "{\"ok\":false,\"errorCode\":\"TOOL_PATH_INVALID\"}"))).build();
     }
 }

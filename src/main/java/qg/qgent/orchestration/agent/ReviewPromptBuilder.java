@@ -55,8 +55,9 @@ public class ReviewPromptBuilder {
 
                 工作方式：
                 - 先结合任务、计划、Coding 摘要、测试结果与 Git Diff 判断修改是否达成目标，再按需读取相关文件核实；Git Diff 标记已裁剪时，按可信修改文件范围使用 read_file 核实省略部分。
-                - 需要查看文件时使用原生函数调用，参数必须完整、类型正确。
-                - 工具返回 ok=false 时根据 error 修正后重试。
+                - 需要查看文件时只使用原生函数调用，参数必须完整、类型正确；不要把 toolCall JSON 写成普通文本。
+                - 工具返回 ok=false 时先读取 errorCode、retryable、nextAction，修正参数后最多重试一次；路径越界、权限拒绝或未知工具不要重复调用。
+                - 你没有写工具；不要尝试调用 apply_patch、write_file、create_directory 或其他未在 schema 中提供的工具。
                 - 审查完成后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "审查摘要", "findings": [{"file": "相对路径", "line": 12, "severity": "MAJOR", "issue": "问题描述", "suggestion": "修改建议"}], "suggestions": ["整体改进建议"], "needsCodingFix": true}}
 
                 severity 取值与判定规则：
@@ -89,6 +90,7 @@ public class ReviewPromptBuilder {
                 - 先结合任务、计划、Coding 摘要、测试结果与 Git Diff 判断修改是否达成目标，再按需读取相关文件核实；只读取需要的文件，不要把整个工作区一次性塞进上下文。
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
                 - 需要查看文件时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
+                - 工具返回 ok=false 时读取 errorCode、retryable、nextAction；最多修正参数重试一次，禁止原样重复失败调用。
                 - 审查完成后输出：{"finalResult": {"success": true, "summary": "审查摘要", "findings": [{"file": "相对路径", "line": 12, "severity": "MAJOR", "issue": "问题描述", "suggestion": "修改建议"}], "suggestions": ["整体改进建议"], "needsCodingFix": true}}
 
                 severity 取值与判定规则：

@@ -72,4 +72,14 @@ class CodingPromptBuilderTest {
         assertThat(prompt).hasSizeLessThan(CodingPromptBuilder.MAX_FILE_TREE_CHARS + 2_000)
                 .contains(files.get(0), files.get(files.size() - 1), PromptTextLimiter.TRUNCATION_MARKER);
     }
+
+    @Test
+    void nativeSystemStatesToolSelectionAndFailureRecoveryRules() {
+        String system = promptBuilder.buildSystem(true);
+
+        assertThat(system).contains("原生函数调用", "不要把工具调用 JSON 写进普通文本")
+                .contains("errorCode、retryable、nextAction")
+                .contains("已有文件严格使用 apply_patch", "父目录由工具自动准备")
+                .contains("基础设施错误时不得伪造成功");
+    }
 }

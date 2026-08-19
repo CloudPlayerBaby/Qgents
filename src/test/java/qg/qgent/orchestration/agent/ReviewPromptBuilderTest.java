@@ -41,6 +41,14 @@ class ReviewPromptBuilderTest {
     }
 
     @Test
+    void systemPromptKeepsReviewToolsReadOnlyAndExplainsToolErrors() {
+        String system = promptBuilder.buildSystem(true);
+
+        assertThat(system).contains("全部只读", "errorCode、retryable、nextAction")
+                .contains("没有任何写权限", "不要尝试调用 apply_patch");
+    }
+
+    @Test
     void boundsLargeDiffCopyAndKeepsTrustedModifiedFileScope() {
         String rawDiff = "DIFF-HEAD\n" + "x".repeat(100_000) + "\nDIFF-TAIL";
         GitDiffResult diff = GitDiffResult.ok(rawDiff, "base", "head");

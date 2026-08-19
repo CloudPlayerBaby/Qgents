@@ -51,10 +51,12 @@ public class CodingPromptBuilder {
                 - write_file：创建新文件，参数 {"path": "相对路径", "content": "文件内容"}；目标文件已存在时会被拒绝，改用 apply_patch。
 
                 工作方式：
-                - 先读取与任务相关的文件，理解现状后再修改；只读取需要的文件，不要把整个工作区一次性塞进上下文。
-                - 已有文件的修改优先使用 apply_patch 做精确局部修改；只有新建文件时才使用 write_file。
-                - 需要调用工具时使用原生函数调用，每次调用的参数必须完整、类型正确。
-                - 工具返回 ok=false 时根据 error 修正后重试，不要重复同样的失败调用；hash 冲突时重新 read_file 再 apply_patch。
+                - 先 list_files 或 search_code 定位，再 read_file 获取必要内容；不要为了确认一个文件读取整个工作区。
+                - 已有文件严格使用 apply_patch，且 expectedHash 必须来自最近一次 read_file；hash 冲突时重新 read_file，再生成新的 patch。
+                - 新文件使用 write_file；父目录由工具自动准备。只有需要单独创建空目录时才调用 create_directory，created=false 不算变更。
+                - 需要调用工具时只使用原生函数调用，每次调用只能使用 schema 中的工具名和完整参数；不要把工具调用 JSON 写进普通文本。
+                - 工具返回 ok=false 时先读取 errorCode、retryable、nextAction，再修正参数；禁止原样重复失败调用。路径越界、权限拒绝或未知工具不可通过重试绕过。
+                - 工具返回基础设施错误时不得伪造成功；停止并在 finalResult.errors 说明。工具返回成功但 changed=false 时也不能声称产生了文件变更。
                 - 只能修改当前步骤允许路径；若工具返回 outside the current TaskStep allowed paths，说明该文件属于其他步骤，不能修改。
                 - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出 JSON：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
@@ -84,6 +86,7 @@ public class CodingPromptBuilder {
                 - 已有文件的修改优先使用 apply_patch 做精确局部修改；只有新建文件或需要整文件替换时才使用 write_file。
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
                 - 需要调用工具时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
+                - 工具返回 ok=false 时读取 errorCode、retryable、nextAction；最多修正参数重试一次，禁止原样重复失败调用。
                 - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
 
