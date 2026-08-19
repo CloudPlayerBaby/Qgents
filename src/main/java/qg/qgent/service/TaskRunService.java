@@ -10,6 +10,7 @@ import qg.qgent.dto.*;
 import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
 import qg.qgent.orchestration.llm.LlmObservation;
+import qg.qgent.orchestration.result.TestResult;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -947,6 +948,11 @@ public class TaskRunService {
     /** 将 TestAgent 收集的 Worker stdout/stderr 接入统一日志入口。 */
     public void appendWorkerOutput(TaskRunEntity run, String stream, String output) {
         taskRunLogService.appendWorkerOutput(run, stream, output);
+    }
+
+    /** 将 Verify 的命令、退出码、摘要和失败项投影到统一运行日志。 */
+    public void appendVerificationResult(TaskRunEntity run, TestResult result) {
+        taskRunLogService.appendVerificationResult(run, result);
     }
 
     /** 将 Agent 每轮脱敏观测投影为可游标读取的执行日志；完整原文仍只留在结构化摘要中。 */

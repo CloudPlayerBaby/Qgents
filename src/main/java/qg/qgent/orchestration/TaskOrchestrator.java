@@ -456,6 +456,7 @@ public class TaskOrchestrator {
         if (outcome.getTestResult() != null) {
             taskRunService.appendWorkerOutput(run, "STDOUT", outcome.getTestResult().getStdout());
             taskRunService.appendWorkerOutput(run, "STDERR", outcome.getTestResult().getStderr());
+            taskRunService.appendVerificationResult(run, outcome.getTestResult());
         }
         taskRunService.appendAgentObservations(run, outcome.getObservations());
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
