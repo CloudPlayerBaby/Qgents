@@ -458,6 +458,13 @@ public class TaskOrchestrator {
                 outcome.getMessage());
         markStepSettled(task, step, outcome.getOutcome());
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
+        // Test/Review 必须明确声明失败是否可由 Coding 修复。旧 Agent/测试构造若没有
+        // 结构化结果时保留历史兼容行为；一旦有结果且 needsCodingFix=false，直接终止，
+        // 避免把测试环境、命令配置或不可修复问题反复送回 Coding。
+        if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
+                && !needsCodingFix(outcome)) {
+            decision = StateMachineDecision.failed();
+        }
         // 只读任务可能没有任何可修复的 MUTATE 步骤。此时质量失败不能沿用
         // requeue 路由回到一个 VERIFY/TEST 节点，否则会重复验证同一事实直到耗尽循环。
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
@@ -494,6 +501,20 @@ public class TaskOrchestrator {
     private boolean hasFollowingStep(TaskStepEntity current, List<TaskStepEntity> steps) {
         int index = indexOfStep(steps, current);
         return index >= 0 && index + 1 < steps.size();
+    }
+
+    private boolean needsCodingFix(AgentRunOutcome outcome) {
+        if (outcome == null) {
+            return false;
+        }
+        if (outcome.getPhase() == OrchestrationPhase.TESTING && outcome.getTestResult() != null) {
+            return outcome.getTestResult().isNeedsCodingFix();
+        }
+        if (outcome.getPhase() == OrchestrationPhase.REVIEWING && outcome.getReviewResult() != null) {
+            return outcome.getReviewResult().isNeedsCodingFix();
+        }
+        // 没有结构化质量结果时沿用状态机原有行为，兼容旧 Agent 与历史数据。
+        return true;
     }
 
     /**

@@ -13,6 +13,7 @@ import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.ReviewResult;
+import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.orchestration.worker.SandboxSessionManager;
 import qg.qgent.service.EventService;
 import qg.qgent.service.FinalDiffBundleService;
@@ -226,6 +227,31 @@ class TaskOrchestratorTest {
                 eq(verification.getId()), anyString(), any(), any(), any());
         verify(fixture.taskRuns, never()).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(reviewer.getId()), anyString(), any(), any(), any());
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+    }
+
+    @Test
+    void testQualityFailureWithoutCodingFixDoesNotRequeueCoding() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester));
+
+        AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
+        TestResult testResult = new TestResult();
+        testResult.setSuccess(false);
+        testResult.setNeedsCodingFix(false);
+        testResult.setSummary("测试环境不可用");
+        failedTest.setTestResult(testResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), failedTest))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
         assertThat(fixture.updatedStatuses()).contains("FAILED");
     }
 

@@ -78,8 +78,8 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
         assertThat(outcome.getObservations()).hasSize(1);
         assertThat(outcome.getObservations().get(0).phase()).isEqualTo("CODING");
     }
@@ -92,8 +92,8 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
     }
 
     @Test
@@ -187,8 +187,8 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
         verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
     }
 
@@ -201,8 +201,8 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
         verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
         verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
         assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS + 1);
@@ -275,8 +275,8 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
         assertThat(outcome.getObservations()).hasSize(2);
         verify(llm).complete(anyString(), anyList());
     }
@@ -329,8 +329,8 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
     }
 
     @Test
@@ -343,8 +343,8 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
         assertThat(outcome.getMessage()).contains("requires at least one actual file or directory modification");
     }
 

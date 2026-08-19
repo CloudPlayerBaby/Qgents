@@ -128,7 +128,10 @@ public class CodingAgent implements Agent {
                     e.getMessage());
             AgentRunOutcome failure = new AgentRunOutcome();
             failure.setPhase(input.getPhase());
-            failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            // 无实际变更是本次 Coding 的语义失败。若按基础设施失败处理，状态机会
+            // 重试同一个已达到目标状态的 Coding，产生 no-op 重试回环。
+            failure.setOutcome(e.getCode() == ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE
+                    ? RunOutcome.FAILED : RunOutcome.FAILED_INFRASTRUCTURE);
             failure.setFailureCode(e.getCode().name());
             failure.setMessage("coding agent failed: " + e.getMessage());
             failure.setObservations(observations);
@@ -345,7 +348,7 @@ public class CodingAgent implements Agent {
             return;
         }
         if (!observedWrites.hasChangedWrite()) {
-            throw new CodingParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
+            throw new CodingParseException(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE,
                     "coding success requires at least one actual file or directory modification");
         }
         // 结果范围只使用服务端观察到的真实 changed=true 事实，避免模型伪造路径污染 Review/Test 上下文。
