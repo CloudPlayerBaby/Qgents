@@ -108,6 +108,17 @@ public interface GitHubAppClient {
     GitHubBranchDetails getBranch(long installationId, String owner, String repo, String branch);
 
     /**
+     * 查询仓库的全部远程分支（由实现负责分页）。
+     */
+    List<GitHubBranchDetails> listBranches(long installationId, String owner, String repo);
+
+    /**
+     * 从已有提交创建远程分支。
+     */
+    GitHubBranchDetails createBranch(long installationId, String owner, String repo,
+                                     String branchName, String sourceSha);
+
+    /**
      * Gets the current Pull Request state and source/target refs from GitHub.
      */
     GitHubPullRequestDetails getPullRequest(long installationId, String owner, String repo, int pullNumber);

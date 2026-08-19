@@ -9,10 +9,12 @@ import org.mockito.MockitoAnnotations;
 import org.springframework.http.ResponseEntity;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.dto.BindProjectRepositoryRequest;
+import qg.qgent.dto.CreateRemoteBranchRequest;
 import qg.qgent.dto.GitHubInstallationResponse;
 import qg.qgent.dto.GitHubInstallationUrlResponse;
 import qg.qgent.dto.GitHubRepositoryResponse;
 import qg.qgent.dto.ProjectRepositoryResponse;
+import qg.qgent.dto.RemoteBranchResponse;
 import qg.qgent.dto.UpdateProjectRepositoryRequest;
 import qg.qgent.github.GitHubClient;
 import qg.qgent.github.GitHubInstallationState;
@@ -153,6 +155,41 @@ class GitHubRepositoryControllerTest {
         assertNotNull(response);
         assertEquals(1, response.data().size());
         assertEquals("owner/repo", response.data().get(0).getFullName());
+    }
+
+    @Test
+    void listRemoteBranches() {
+        UUID projectId = UUID.randomUUID();
+        UUID repoId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        when(currentActor.currentUserId()).thenReturn(userId);
+        when(service.listRemoteBranches(userId, projectId, repoId)).thenReturn(List.of(
+                new RemoteBranchResponse("main", "sha", true, true)));
+
+        ApiResponse<List<RemoteBranchResponse>> response = controller.listRemoteBranches(projectId, repoId, request);
+
+        assertNotNull(response);
+        assertEquals("main", response.data().get(0).getName());
+        verify(service).listRemoteBranches(userId, projectId, repoId);
+    }
+
+    @Test
+    void createRemoteBranch() {
+        UUID projectId = UUID.randomUUID();
+        UUID repoId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        when(currentActor.currentUserId()).thenReturn(userId);
+        CreateRemoteBranchRequest body = new CreateRemoteBranchRequest();
+        body.setName("develop");
+        body.setFromRef("main");
+        when(service.createRemoteBranch(userId, projectId, repoId, body))
+                .thenReturn(new RemoteBranchResponse("develop", "sha", false, true));
+
+        ApiResponse<RemoteBranchResponse> response = controller.createRemoteBranch(projectId, repoId, body, request);
+
+        assertNotNull(response);
+        assertEquals("develop", response.data().getName());
+        verify(service).createRemoteBranch(userId, projectId, repoId, body);
     }
 
     @Test

@@ -398,10 +398,100 @@ public class RestGitHubAppClient implements GitHubAppClient {
             // 记录状态码与响应体：空仓库/分支不存在时 GitHub 返回 404，需与凭据失败（401）区分定位
             log.warn("GitHub getBranch rejected: owner={} repo={} branch={} status={} body={}",
                     owner, repo, branch, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            if (exception.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "GIT_BRANCH_NOT_FOUND", "GitHub 远程分支不存在");
+            }
             throw upstreamFailure();
         } catch (RestClientException exception) {
             log.warn("GitHub getBranch failed before receiving a response: owner={} repo={} branch={} {}",
                     owner, repo, branch, exception.getMessage());
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
+    public List<GitHubBranchDetails> listBranches(long installationId, String owner, String repo) {
+        requireConfigured();
+        List<GitHubBranchDetails> branches = new ArrayList<>();
+        int page = 1;
+        long deadlineNanos = System.nanoTime() + PAGE_TOTAL_DEADLINE.toNanos();
+        try {
+            while (true) {
+                if (System.nanoTime() > deadlineNanos) {
+                    throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_API_UNAVAILABLE",
+                            "GitHub 分支列表请求超过总超时，请重试");
+                }
+                int currentPage = page;
+                List<BranchResponse> response = client.get()
+                        .uri(uriBuilder -> uriBuilder.path("/repos/{owner}/{repo}/branches")
+                                .queryParam("per_page", 100).queryParam("page", currentPage).build(owner, repo))
+                        .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                        .retrieve()
+                        .body(new org.springframework.core.ParameterizedTypeReference<List<BranchResponse>>() {
+                        });
+                if (response == null || response.isEmpty()) {
+                    return branches;
+                }
+                for (BranchResponse branch : response) {
+                    if (branch == null || branch.name() == null || branch.commit() == null
+                            || branch.commit().sha() == null) {
+                        throw upstreamFailure();
+                    }
+                    branches.add(new GitHubBranchDetails(branch.name(), branch.commit().sha()));
+                }
+                if (response.size() < 100) {
+                    return branches;
+                }
+                page++;
+            }
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub listBranches rejected: owner={} repo={} status={} body={}",
+                    owner, repo, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            if (exception.getStatusCode().value() == HttpStatus.FORBIDDEN.value()) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "GITHUB_BRANCH_READ_FORBIDDEN",
+                        "GitHub App 没有读取该仓库分支的权限");
+            }
+            throw upstreamFailure();
+        } catch (RestClientException exception) {
+            log.warn("GitHub listBranches failed before receiving a response: owner={} repo={} {}",
+                    owner, repo, exception.getMessage());
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
+    public GitHubBranchDetails createBranch(long installationId, String owner, String repo,
+                                            String branchName, String sourceSha) {
+        requireConfigured();
+        try {
+            RefResponse response = client.post()
+                    .uri("/repos/{owner}/{repo}/git/refs", owner, repo)
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .body(new CreateRefRequest("refs/heads/" + branchName, sourceSha))
+                    .retrieve()
+                    .body(RefResponse.class);
+            String expectedRef = "refs/heads/" + branchName;
+            if (response == null || !expectedRef.equals(response.ref()) || response.object() == null
+                    || response.object().sha() == null) {
+                throw upstreamFailure();
+            }
+            return new GitHubBranchDetails(branchName, response.object().sha());
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub createBranch rejected: owner={} repo={} branch={} status={} body={}",
+                    owner, repo, branchName, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            if (exception.getStatusCode().value() == HttpStatus.FORBIDDEN.value()) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "GITHUB_BRANCH_CREATE_FORBIDDEN",
+                        "GitHub App 没有创建该仓库分支的权限");
+            }
+            if (exception.getStatusCode().value() == HttpStatus.UNPROCESSABLE_ENTITY.value()
+                    || exception.getStatusCode().value() == HttpStatus.CONFLICT.value()) {
+                throw new ApiException(HttpStatus.CONFLICT, "GIT_BRANCH_ALREADY_EXISTS",
+                        "GitHub 远程分支已存在或无法创建");
+            }
+            throw upstreamFailure();
+        } catch (RestClientException exception) {
+            log.warn("GitHub createBranch failed before receiving a response: owner={} repo={} branch={} {}",
+                    owner, repo, branchName, exception.getMessage());
             throw upstreamFailure();
         }
     }
@@ -558,5 +648,14 @@ public class RestGitHubAppClient implements GitHubAppClient {
     }
 
     private record CommitResponse(String sha) {
+    }
+
+    private record CreateRefRequest(String ref, String sha) {
+    }
+
+    private record RefResponse(String ref, RefObject object) {
+    }
+
+    private record RefObject(String sha) {
     }
 }
