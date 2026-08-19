@@ -20,6 +20,7 @@ import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 import qg.qgent.service.DiffSnapshotStorage;
 import qg.qgent.service.EventService;
+import qg.qgent.service.GroupService;
 import qg.qgent.service.ProjectAccessService;
 
 import java.time.LocalDateTime;
@@ -55,6 +56,7 @@ public class WorkspaceDiffPreviewService {
     private final WorkspaceDiffPreviewMapper previewMapper;
     private final WorkspaceDiffPreviewRevisionMapper revisionMapper;
     private final ProjectAccessService access;
+    private final GroupService groups;
     private final TaskMapper tasks;
     private final boolean workerEnabled;
 
@@ -62,7 +64,7 @@ public class WorkspaceDiffPreviewService {
                                        DiffSnapshotStorage snapshots,
                                        WorkspaceDiffPreviewMapper previewMapper,
                                        WorkspaceDiffPreviewRevisionMapper revisionMapper,
-                                       ProjectAccessService access, TaskMapper tasks,
+                                       ProjectAccessService access, GroupService groups, TaskMapper tasks,
                                        @Value("${app.worker.enabled:false}") boolean workerEnabled) {
         this.diffAccess = diffAccess;
         this.eventService = eventService;
@@ -70,6 +72,7 @@ public class WorkspaceDiffPreviewService {
         this.previewMapper = previewMapper;
         this.revisionMapper = revisionMapper;
         this.access = access;
+        this.groups = groups;
         this.tasks = tasks;
         this.workerEnabled = workerEnabled;
     }
@@ -130,7 +133,7 @@ public class WorkspaceDiffPreviewService {
         rev.setDeletions(diff.deletions());
         rev.setCreatedAt(now);
         revisionMapper.insert(rev);
-        publish(projectId, taskId, taskRunId, workspaceId, revision, diff, now);
+        publish(projectId, taskId, taskRunId, workspaceId, revision, diff, now, groupId(projectId, taskId));
         log.info("workspace diff preview recorded workspaceId={} revision={} files={} add={} del={}",
                 workspaceId, revision, diff.filesChanged(), diff.additions(), diff.deletions());
     }
@@ -166,9 +169,10 @@ public class WorkspaceDiffPreviewService {
 
     /**
      * 修订已持久化后才发布事件；payload 只含元数据，不携带 patch 或源码。
+     * groupId 使用 Task 所属需求群，遵循需求群隔离（任务归属项目总群或群缺失时退化为项目级广播）。
      */
     private void publish(UUID projectId, UUID taskId, UUID taskRunId, UUID workspaceId, long revision,
-                         GitDiffResult diff, LocalDateTime now) {
+                         GitDiffResult diff, LocalDateTime now, UUID groupId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("eventVersion", 1);
         payload.put("projectId", projectId);
@@ -180,42 +184,69 @@ public class WorkspaceDiffPreviewService {
         payload.put("additions", diff.additions());
         payload.put("deletions", diff.deletions());
         payload.put("updatedAt", now.toString());
-        eventService.publish(projectId, null, EVENT_TYPE, workspaceId.toString(), payload);
+        eventService.publish(projectId, groupId, EVENT_TYPE, workspaceId.toString(), payload);
     }
 
     // ---- 阶段 E：只读查询接口（项目成员可读） ----
 
     /**
      * 查询指定任务的实时 Diff Preview：缺省返回最新修订，可选指定 revision。
-     * 鉴权后按 task→workspace 归属解析修订；patch 从受控快照读取，快照已清理时返回 null。
+     * 鉴权要求：项目成员 + Task 所属需求群成员（PROJECT_MAIN 项目总群任务退化为项目成员可见）；
+     * 修订行按 projectId + taskId + workspaceId 精确归属，避免复用 Workspace 时读到其他 Task 的预览。
      */
     public WorkspaceDiffPreviewResponse preview(UUID projectId, UUID taskId, UUID actor, Long revision) {
         access.requireProjectMember(projectId, actor);
-        WorkspaceDiffPreviewRevisionEntity rev = requireRevision(projectId, taskId, revision);
+        TaskEntity task = requireTask(projectId, taskId);
+        requireGroupVisible(projectId, task, actor);
+        WorkspaceDiffPreviewRevisionEntity rev = requireRevision(projectId, taskId, task.getWorkspaceId(), revision);
         return toResponse(rev, loadQuietly(rev.getSnapshotKey()));
     }
 
     /**
      * 查询指定任务的实时 Diff Preview 结构化文件列表（从受控 patch 解析，不落额外存储）。
+     * 权限与归属校验同 {@link #preview}。
      */
     public List<WorkspaceDiffPreviewFileResponse> files(UUID projectId, UUID taskId, UUID actor, Long revision) {
         access.requireProjectMember(projectId, actor);
-        WorkspaceDiffPreviewRevisionEntity rev = requireRevision(projectId, taskId, revision);
+        TaskEntity task = requireTask(projectId, taskId);
+        requireGroupVisible(projectId, task, actor);
+        WorkspaceDiffPreviewRevisionEntity rev = requireRevision(projectId, taskId, task.getWorkspaceId(), revision);
         return DiffPatchFileParser.parse(loadQuietly(rev.getSnapshotKey()));
     }
 
     /**
-     * 解析目标修订：校验项目成员（调用方已做）与 task→project 归属，按 workspaceId 查 revision 行。
-     * 无修订 / task 归属不一致 / workspace 缺失 → 404，防枚举。
+     * 校验 Task 归属：任务属于当前项目且已准备 Workspace，否则 404 防枚举。
      */
-    private WorkspaceDiffPreviewRevisionEntity requireRevision(UUID projectId, UUID taskId, Long revision) {
+    private TaskEntity requireTask(UUID projectId, UUID taskId) {
         TaskEntity task = tasks.selectById(taskId);
         if (task == null || !projectId.equals(task.getProjectId()) || task.getWorkspaceId() == null) {
             throw notFound();
         }
+        return task;
+    }
+
+    /**
+     * 需求群可见性：Task 归属项目总群或需求群缺失时按项目成员可见性处理（调用方已校验），
+     * 否则要求当前用户是该需求群成员。
+     */
+    private void requireGroupVisible(UUID projectId, TaskEntity task, UUID actor) {
+        if (task.getRequirementGroupId() == null) {
+            return;
+        }
+        groups.requireGroupMember(projectId, task.getRequirementGroupId(), actor);
+    }
+
+    /**
+     * 解析目标修订：按 projectId + taskId + workspaceId（+ 可选 revision）精确匹配 revision 行，
+     * 避免复用 Workspace 时跨 Task 读取其他预览。无匹配 → 404 防枚举。
+     */
+    private WorkspaceDiffPreviewRevisionEntity requireRevision(UUID projectId, UUID taskId, UUID workspaceId,
+                                                               Long revision) {
         WorkspaceDiffPreviewRevisionEntity rev = revisionMapper.selectOne(Wrappers
                 .<WorkspaceDiffPreviewRevisionEntity>lambdaQuery()
-                .eq(WorkspaceDiffPreviewRevisionEntity::getWorkspaceId, task.getWorkspaceId())
+                .eq(WorkspaceDiffPreviewRevisionEntity::getProjectId, projectId)
+                .eq(WorkspaceDiffPreviewRevisionEntity::getTaskId, taskId)
+                .eq(WorkspaceDiffPreviewRevisionEntity::getWorkspaceId, workspaceId)
                 .eq(revision != null, WorkspaceDiffPreviewRevisionEntity::getRevision, revision)
                 .orderByDesc(WorkspaceDiffPreviewRevisionEntity::getRevision)
                 .last("LIMIT 1"));
@@ -223,6 +254,17 @@ public class WorkspaceDiffPreviewService {
             throw notFound();
         }
         return rev;
+    }
+
+    /**
+     * 读取 Task 的归属需求群；Task 缺失或不属于当前项目时返回 null（退化为项目级广播）。
+     */
+    private UUID groupId(UUID projectId, UUID taskId) {
+        TaskEntity task = tasks.selectById(taskId);
+        if (task == null || !projectId.equals(task.getProjectId())) {
+            return null;
+        }
+        return task.getRequirementGroupId();
     }
 
     private String loadQuietly(String snapshotKey) {

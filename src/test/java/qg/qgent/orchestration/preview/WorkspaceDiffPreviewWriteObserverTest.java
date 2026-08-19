@@ -37,4 +37,12 @@ class WorkspaceDiffPreviewWriteObserverTest {
 
         verify(previewService).record(projectId, taskId, taskRunId, workspaceId);
     }
+
+    @Test
+    void unchangedFileWriteDoesNotTriggerDiffPreview() {
+        observer.onWrite(projectId, taskId, taskRunId, workspaceId,
+                WorkspaceWriteResult.ok("src/generated/App.java", "hash", false));
+
+        verify(previewService, never()).record(projectId, taskId, taskRunId, workspaceId);
+    }
 }
