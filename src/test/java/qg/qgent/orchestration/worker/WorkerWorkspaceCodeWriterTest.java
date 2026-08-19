@@ -78,9 +78,9 @@ class WorkerWorkspaceCodeWriterTest {
         WorkspaceWriteResult result = writer.writeFile(WORKSPACE, "repo-1/src/Foo.java", "hello");
 
         assertThat(result.isOk()).isTrue();
-        // Worker 未返回 changed 时按 false 透传，sha256 透传新哈希。
+        // 兼容旧 Worker：缺少 changed 时，按写入前后的 SHA 推断为真实变更。
         assertThat(result.getNewSha256()).isEqualTo("new-hash");
-        assertThat(result.isChanged()).isFalse();
+        assertThat(result.isChanged()).isTrue();
         ArgumentCaptor<WorkerToolExecutionRequest> captor =
                 ArgumentCaptor.forClass(WorkerToolExecutionRequest.class);
         verify(client, times(2)).submitToolExecution(any(), captor.capture());
@@ -110,6 +110,23 @@ class WorkerWorkspaceCodeWriterTest {
         assertThat(result.isOk()).isTrue();
         assertThat(result.isChanged()).isTrue();
         assertThat(result.getNewSha256()).isEqualTo("new-hash");
+    }
+
+    @Test
+    void writeFileTreatsMissingChangedAsUnchangedWhenShaIsIdentical() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> {
+            WorkerToolExecution execution = new WorkerToolExecution();
+            execution.setStatus("SUCCEEDED");
+            execution.setResult(Map.of("path", request.getArguments().get("path"),
+                    "sha256", "same-hash", "bytes", 5));
+            return execution;
+        });
+
+        WorkspaceWriteResult result = writer.writeFile(WORKSPACE, "repo-1/src/Foo.java", "hello");
+
+        assertThat(result.isOk()).isTrue();
+        assertThat(result.isChanged()).isFalse();
     }
 
     @Test

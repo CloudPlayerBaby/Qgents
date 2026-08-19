@@ -4,10 +4,13 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
@@ -25,6 +28,8 @@ import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
+import qg.qgent.mapper.TeamMapper;
+import qg.qgent.mapper.UserMapper;
 import qg.qgent.service.event.DeliveryStartedDomainEvent;
 import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
 import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
@@ -92,13 +97,16 @@ public class EventService {
     private final RequirementGroupMapper groupMapper;
     private final GroupMemberMapper groupMemberMapper;
     private final ProjectMapper projectMapper;
+    private final UserMapper userMapper;
+    private final TeamMapper teamMapper;
 
+    @Autowired
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
                         NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
                         ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
                         ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
                         RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
-                        ProjectMapper projectMapper) {
+                        ProjectMapper projectMapper, UserMapper userMapper, TeamMapper teamMapper) {
         this.eventMapper = eventMapper;
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
@@ -110,6 +118,8 @@ public class EventService {
         this.groupMapper = groupMapper;
         this.groupMemberMapper = groupMemberMapper;
         this.projectMapper = projectMapper;
+        this.userMapper = userMapper;
+        this.teamMapper = teamMapper;
         // SSE 泵线程执行期间保留提交线程的 MDC（requestId），便于按请求串联日志
         MdcTaskDecorator mdcDecorator = new MdcTaskDecorator();
         AtomicInteger seq = new AtomicInteger(1);
@@ -120,6 +130,19 @@ public class EventService {
         };
         // 每连接占用一个轮询线程；规模扩大后应改为共享调度器或推模式
         this.executor = Executors.newFixedThreadPool(8, factory);
+    }
+
+    /**
+     * 保留测试与既有直接构造调用；生产 Spring Bean 始终使用包含用户、团队锁 Mapper 的构造器。
+     */
+    public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
+                        NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
+                        ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
+                        ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
+                        RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
+                        ProjectMapper projectMapper) {
+        this(eventMapper, projectAccess, notificationEventMapper, teamEventMapper, publisher, realtimeHub,
+                projectMemberMapper, teamMemberMapper, groupMapper, groupMemberMapper, projectMapper, null, null);
     }
 
     /**
@@ -232,10 +255,14 @@ public class EventService {
      * @param kind            通知类型
      * @param payload         脱敏事件载荷
      */
+    @Transactional
     public void publishNotification(UUID recipientUserId, UUID notificationId, String kind,
                                     Map<String, Object> payload) {
         if (recipientUserId == null) {
             return;
+        }
+        if (userMapper != null) {
+            userMapper.selectByIdForUpdate(recipientUserId);
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         NotificationEventEntity event = new NotificationEventEntity();
@@ -316,9 +343,13 @@ public class EventService {
      * @param resourceId 关联资源 ID（可为 null）
      * @param payload    脱敏事件载荷
      */
+    @Transactional
     public void publishTeamEvent(UUID teamId, String eventType, String resourceId, Map<String, Object> payload) {
         if (teamId == null) {
             return;
+        }
+        if (teamMapper != null) {
+            teamMapper.selectByIdForUpdate(teamId);
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         TeamEventEntity event = new TeamEventEntity();
@@ -511,6 +542,23 @@ public class EventService {
      */
     private void fan(Set<UUID> userIds, String scope, String projectId, String groupId, String teamId,
                      String recipientUserId, String resourceId, String eventType, Map<String, Object> payload) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            // 事务提交前浏览器若据 WS 帧立即查询，可能读不到尚未提交的事件/消息。
+            // 只在提交成功后 fan-out，回滚时不发布易失刷新信号。
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    broadcast(userIds, scope, projectId, groupId, teamId, recipientUserId, resourceId,
+                            eventType, payload);
+                }
+            });
+            return;
+        }
+        broadcast(userIds, scope, projectId, groupId, teamId, recipientUserId, resourceId, eventType, payload);
+    }
+
+    private void broadcast(Set<UUID> userIds, String scope, String projectId, String groupId, String teamId,
+                           String recipientUserId, String resourceId, String eventType, Map<String, Object> payload) {
         try {
             realtimeHub.broadcastToUsers(userIds, RealtimeFrame.of(eventType, scope, projectId, groupId,
                     teamId, recipientUserId, resourceId, payload));

@@ -56,9 +56,10 @@ public class FileWriteTool implements SandboxTool {
                 throw new WorkerException(CONFLICT, "FILE_HASH_MISMATCH", "文件已经发生变化，请重新读取后再写入");
             }
             byte[] next = content.getBytes(StandardCharsets.UTF_8);
+            boolean changed = !java.util.Arrays.equals(previous, next);
             atomicReplace(target, next);
             return ToolResult.value(Map.of("path", relativePath, "sha256", FileReadTool.sha256(next),
-                    "bytes", next.length));
+                    "bytes", next.length, "changed", changed));
         } catch (WorkerException exception) {
             throw exception;
         } catch (Exception exception) {

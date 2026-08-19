@@ -65,7 +65,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
                     Map.of("path", target.relativePath(), "expectedHash", expectedHash, "content", content),
                     TOOL_TIMEOUT);
             if ("SUCCEEDED".equals(execution.getStatus())) {
-                return okResult(path, execution);
+                return okResult(path, execution, expectedHash);
             }
             return WorkspaceWriteResult.fail(path,
                     execution.getFailureReason() == null ? "write failed" : execution.getFailureReason());
@@ -97,7 +97,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
                     Map.of("path", target.relativePath(), "expectedHash", expectedHash, "patch", patch),
                     TOOL_TIMEOUT);
             if ("SUCCEEDED".equals(execution.getStatus())) {
-                return okResult(path, execution);
+                return okResult(path, execution, expectedHash);
             }
             return WorkspaceWriteResult.fail(path,
                     execution.getFailureReason() == null ? "patch failed" : execution.getFailureReason());
@@ -108,13 +108,21 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
 
     /**
      * 透传 Worker file.write / file.patch 成功结果中的新 sha256 与 changed；
-     * Worker 未返回时按「写入过但哈希未知」处理（changed=false、newSha256=null），不阻断成功。
+     * 兼容旧 Worker 缺少 changed 字段的情况，用写入前后的 SHA 做保守推断。
      */
-    private static WorkspaceWriteResult okResult(String path, WorkerToolExecution execution) {
+    private static WorkspaceWriteResult okResult(String path, WorkerToolExecution execution, String expectedHash) {
         Map<String, Object> result = resultOf(execution);
         Object sha = result.get("sha256");
         String newSha256 = sha == null ? null : String.valueOf(sha);
-        boolean changed = Boolean.TRUE.equals(result.get("changed"));
+        Object changedValue = result.get("changed");
+        boolean changed;
+        if (changedValue instanceof Boolean value) {
+            changed = value;
+        } else {
+            // 兼容旧 Worker：旧版本没有返回 changed 时，用写入前后的 SHA 判断。
+            changed = newSha256 != null && expectedHash != null
+                    && !newSha256.equalsIgnoreCase(expectedHash);
+        }
         return WorkspaceWriteResult.ok(path, newSha256, changed);
     }
 

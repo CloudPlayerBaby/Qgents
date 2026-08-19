@@ -57,6 +57,22 @@ public class MessageController {
     }
 
     /**
+     * 断线恢复增量消息：仅返回 sequence 大于 afterSequence 的消息，按 sequence 升序。
+     */
+    @GetMapping("/projects/{projectId}/groups/{groupId}/messages/incremental")
+    public PagedApiResponse<MessageResponse> listIncremental(@AuthenticationPrincipal UUID userId,
+                                                              @PathVariable UUID projectId,
+                                                              @PathVariable UUID groupId,
+                                                              @RequestParam long afterSequence,
+                                                              @RequestParam(defaultValue = "100") int limit,
+                                                              HttpServletRequest request) {
+        PageSlice<MessageResponse> slice = messageService.listAfterSequence(userId, projectId, groupId,
+                afterSequence, limit);
+        return new PagedApiResponse<>(slice.getData(), slice.getPage(),
+                (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
+    }
+
+    /**
      * 契约「群聊@提及-后端接口补充」§六：按消息 ID 拉取单条群消息（通知跳转精确定位，
      * 目标消息不在当前分页窗口时前端调用后合并进列表再滚动高亮）。
      */

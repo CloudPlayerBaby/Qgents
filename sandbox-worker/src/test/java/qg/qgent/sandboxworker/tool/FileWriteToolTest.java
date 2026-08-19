@@ -31,6 +31,20 @@ class FileWriteToolTest {
 
         assertEquals("新内容", Files.readString(file));
         assertEquals(FileReadTool.sha256("新内容".getBytes(StandardCharsets.UTF_8)), result.getResult().get("sha256"));
+        assertEquals(true, result.getResult().get("changed"));
+    }
+
+    @Test
+    void reportsUnchangedWhenContentIsIdentical() throws Exception {
+        Path file = repository.resolve("example.txt");
+        Files.writeString(file, "原内容", StandardCharsets.UTF_8);
+        FileWriteTool tool = new FileWriteTool(new RepositoryFileResolver());
+        String expectedHash = FileReadTool.sha256(Files.readAllBytes(file));
+
+        ToolResult result = tool.execute(context(), Map.of("path", "example.txt", "expectedHash", expectedHash,
+                "content", "原内容"));
+
+        assertEquals(false, result.getResult().get("changed"));
     }
 
     @Test

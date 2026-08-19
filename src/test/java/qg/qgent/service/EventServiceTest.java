@@ -3,6 +3,8 @@ package qg.qgent.service;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.entity.EventEntity;
+import qg.qgent.entity.NotificationEventEntity;
+import qg.qgent.entity.TeamEventEntity;
 import qg.qgent.mapper.EventMapper;
 import qg.qgent.mapper.GroupMemberMapper;
 import qg.qgent.mapper.NotificationEventMapper;
@@ -11,6 +13,8 @@ import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
+import qg.qgent.mapper.UserMapper;
+import qg.qgent.mapper.TeamMapper;
 import qg.qgent.service.event.DeliveryStartedDomainEvent;
 import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
 import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
@@ -91,6 +95,42 @@ class EventServiceTest {
     }
 
     @Test
+    void notificationSequenceIsAllocatedWhileRecipientRowIsLocked() {
+        NotificationEventMapper notifications = mock(NotificationEventMapper.class);
+        UserMapper users = mock(UserMapper.class);
+        UUID userId = UUID.randomUUID();
+        when(notifications.maxSequence(userId)).thenReturn(4L);
+        EventService service = fullService(mock(EventMapper.class), notifications, mock(TeamEventMapper.class),
+                users, mock(TeamMapper.class));
+
+        service.publishNotification(userId, UUID.randomUUID(), "TASK_COMPLETED", Map.of("ok", true));
+
+        verify(users).selectByIdForUpdate(userId);
+        org.mockito.ArgumentCaptor<NotificationEventEntity> captured =
+                org.mockito.ArgumentCaptor.forClass(NotificationEventEntity.class);
+        verify(notifications).insert(captured.capture());
+        assertEquals(5L, captured.getValue().getSequenceNo());
+    }
+
+    @Test
+    void teamSequenceIsAllocatedWhileTeamRowIsLocked() {
+        TeamEventMapper teams = mock(TeamEventMapper.class);
+        qg.qgent.mapper.TeamMapper teamRows = mock(qg.qgent.mapper.TeamMapper.class);
+        UUID teamId = UUID.randomUUID();
+        when(teams.maxSequence(teamId)).thenReturn(7L);
+        EventService service = fullService(mock(EventMapper.class), mock(NotificationEventMapper.class), teams,
+                mock(UserMapper.class), teamRows);
+
+        service.publishTeamEvent(teamId, "activity.created", "resource-1", Map.of("ok", true));
+
+        verify(teamRows).selectByIdForUpdate(teamId);
+        org.mockito.ArgumentCaptor<TeamEventEntity> captured =
+                org.mockito.ArgumentCaptor.forClass(TeamEventEntity.class);
+        verify(teams).insert(captured.capture());
+        assertEquals(8L, captured.getValue().getSequenceNo());
+    }
+
+    @Test
     void mrFirstPreflightAndCqApprovalPublishTypedDomainEvents() {
         EventMapper events = mock(EventMapper.class);
         ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
@@ -123,5 +163,13 @@ class EventServiceTest {
                 mock(TeamEventMapper.class), publisher, mock(RealtimeHub.class),
                 mock(ProjectMemberMapper.class), mock(TeamMemberMapper.class),
                 mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class), projects);
+    }
+
+    private EventService fullService(EventMapper events, NotificationEventMapper notifications,
+                                     TeamEventMapper teams, UserMapper users, TeamMapper teamRows) {
+        return new EventService(events, mock(ProjectAccessService.class), notifications, teams,
+                mock(ApplicationEventPublisher.class), mock(RealtimeHub.class), mock(ProjectMemberMapper.class),
+                mock(TeamMemberMapper.class), mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class),
+                mock(ProjectMapper.class), users, teamRows);
     }
 }

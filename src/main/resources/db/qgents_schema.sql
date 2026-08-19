@@ -1077,6 +1077,44 @@ CREATE TABLE IF NOT EXISTS
         KEY idx_ghwd_install (provider_installation_id, received_at)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'GitHub Webhook 投递幂等记录';
 
+CREATE TABLE IF NOT EXISTS push_devices (
+    id BINARY(16) PRIMARY KEY COMMENT '推送设备UUIDv7',
+    user_id BINARY(16) NOT NULL COMMENT '设备所属用户ID',
+    installation_id VARCHAR(128) NOT NULL COMMENT '客户端安装实例稳定ID',
+    platform VARCHAR(16) NOT NULL COMMENT '平台：ANDROID/IOS',
+    provider VARCHAR(16) NOT NULL DEFAULT 'FCM' COMMENT '推送提供方：FCM',
+    token_hash CHAR(64) NOT NULL COMMENT '设备Token的SHA-256摘要',
+    token_ciphertext TEXT NOT NULL COMMENT 'AES-GCM加密后的设备Token',
+    active TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否接收离线推送',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uk_push_device_installation (user_id, installation_id),
+    UNIQUE KEY uk_push_device_token (provider, token_hash),
+    KEY idx_push_device_user_active (user_id, active),
+    CONSTRAINT fk_push_device_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT chk_push_device_platform CHECK (platform IN ('ANDROID', 'IOS')),
+    CONSTRAINT chk_push_device_provider CHECK (provider IN ('FCM'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='移动端离线推送设备注册';
+
+CREATE TABLE IF NOT EXISTS push_deliveries (
+    id BINARY(16) PRIMARY KEY COMMENT '推送投递UUIDv7',
+    notification_id BINARY(16) NOT NULL COMMENT '对应的持久通知ID',
+    device_id BINARY(16) NOT NULL COMMENT '目标设备ID',
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/SENDING/SENT/FAILED',
+    attempt_count INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '实际投递尝试次数',
+    next_attempt_at DATETIME(6) NOT NULL COMMENT '下次允许重试时间（UTC）',
+    provider_message_id VARCHAR(255) NULL COMMENT '提供方返回的真实消息ID',
+    last_error_code VARCHAR(64) NULL COMMENT '稳定错误码',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    sent_at DATETIME(6) NULL COMMENT '提供方受理时间（UTC）',
+    UNIQUE KEY uk_push_delivery_notification_device (notification_id, device_id),
+    KEY idx_push_delivery_due (status, next_attempt_at),
+    CONSTRAINT fk_push_delivery_notification FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE,
+    CONSTRAINT fk_push_delivery_device FOREIGN KEY (device_id) REFERENCES push_devices(id) ON DELETE CASCADE,
+    CONSTRAINT chk_push_delivery_status CHECK (status IN ('PENDING', 'SENDING', 'SENT', 'FAILED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='可恢复、幂等的移动端推送投递Outbox';
+
 CREATE TABLE IF NOT EXISTS notification_events (
     id BINARY(16) PRIMARY KEY COMMENT '事件UUIDv7',
     recipient_user_id BINARY(16) NOT NULL COMMENT '接收通知的用户ID',
@@ -1085,7 +1123,7 @@ CREATE TABLE IF NOT EXISTS notification_events (
     kind VARCHAR(32) NULL COMMENT '通知类型（TASK_COMPLETED/INVITED 等）',
     payload JSON NULL COMMENT '脱敏事件载荷',
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '产生时间（UTC）',
-    KEY idx_ne_recipient_seq (recipient_user_id, sequence_no),
+    UNIQUE KEY uk_ne_recipient_seq (recipient_user_id, sequence_no),
     CONSTRAINT fk_ne_notification FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知级 SSE 事件（用户维度游标）';
 
@@ -1097,7 +1135,7 @@ CREATE TABLE IF NOT EXISTS team_events (
     resource_id VARCHAR(64) NULL COMMENT '关联资源ID（projectId 等）',
     payload JSON NULL COMMENT '脱敏事件载荷',
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '产生时间（UTC）',
-    KEY idx_te_team_seq (team_id, sequence_no),
+    UNIQUE KEY uk_te_team_seq (team_id, sequence_no),
     CONSTRAINT fk_te_team FOREIGN KEY (team_id) REFERENCES teams(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='团队级 SSE 事件（团队维度游标）';
 

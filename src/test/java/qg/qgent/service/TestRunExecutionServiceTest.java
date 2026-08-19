@@ -4,9 +4,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.entity.DryRunEntity;
+import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.TestRunEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.mapper.DryRunMapper;
+import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TestRunMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.orchestration.worker.*;
@@ -23,8 +25,10 @@ class TestRunExecutionServiceTest {
     private final DryRunMapper dryRuns = mock(DryRunMapper.class);
     private final SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
     private final TaskMapper tasks = mock(TaskMapper.class);
+    private final ProjectRepositoryMapper projectRepositories = mock(ProjectRepositoryMapper.class);
+    private final GitStoreSyncService gitStores = mock(GitStoreSyncService.class);
     private final TestRunExecutionService service = new TestRunExecutionService(testRuns, dryRuns, worker,
-            mock(EventService.class), tasks);
+            mock(EventService.class), tasks, projectRepositories, gitStores);
 
     @Test
     void onlyAtomicClaimWinnerCallsWorkerAndUsesPersistedSnapshot() {
@@ -83,11 +87,14 @@ class TestRunExecutionServiceTest {
         TestRunEntity run = new TestRunEntity();
         run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
         run.setExecutionSourceRef("feature/login"); run.setExecutionSnapshot(List.of());
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(run.getProjectRepositoryId());
+        repository.setProjectId(run.getProjectId());
+        when(projectRepositories.selectById(run.getProjectRepositoryId())).thenReturn(repository);
+        when(gitStores.refreshTargetBranch(run.getProjectId(), repository, "feature/login"))
+                .thenReturn("0123456789012345678901234567890123456789");
         when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
         when(testRuns.selectById(runId)).thenReturn(run);
-        WorkerGitResolveResponse resolved = new WorkerGitResolveResponse();
-        resolved.setCommitSha("0123456789012345678901234567890123456789");
-        when(worker.resolveGitRef(any())).thenReturn(resolved);
         WorkerTestExecutionResponse response = new WorkerTestExecutionResponse();
         response.setStatus("PASSED"); response.setResolvedHeadCommit("0123456789012345678901234567890123456789"); response.setResults(List.of());
         when(worker.executeTests(any())).thenReturn(response);
@@ -95,8 +102,8 @@ class TestRunExecutionServiceTest {
 
         service.executeTestRun(runId);
 
-        verify(worker).resolveGitRef(argThat(request -> run.getProjectRepositoryId().equals(request.getRepositoryId())
-                && "feature/login".equals(request.getRef())));
+        verify(gitStores).refreshTargetBranch(run.getProjectId(), repository, "feature/login");
+        verify(worker, never()).resolveGitRef(any());
         verify(worker).executeTests(argThat(request ->
                 "0123456789012345678901234567890123456789".equals(request.getRef())));
     }
@@ -118,7 +125,8 @@ class TestRunExecutionServiceTest {
         service.executeTestRun(runId);
 
         verify(testRuns).complete(eq(runId), anyString(), eq("FAILED"),
-                argThat(summary -> "TEST_RUN_CONTEXT_MISMATCH".equals(summary.get("failureCode"))));
+                argThat(summary -> "TEST_RUN_CONTEXT_MISMATCH".equals(summary.get("failureCode"))
+                        && summary.get("message") != null));
     }
 
     @Test
@@ -140,7 +148,8 @@ class TestRunExecutionServiceTest {
         service.executeTestRun(runId);
 
         verify(testRuns).complete(eq(runId), anyString(), eq("FAILED"),
-                argThat(summary -> "SANDBOX_WORKER_UNAVAILABLE".equals(summary.get("failureCode"))));
+                argThat(summary -> "SANDBOX_WORKER_UNAVAILABLE".equals(summary.get("failureCode"))
+                        && summary.get("message") != null));
         verify(worker, never()).executeTests(any());
     }
 

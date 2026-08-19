@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
@@ -27,10 +28,19 @@ public class NotificationService {
 
     private final NotificationMapper notificationMapper;
     private final EventService eventService;
+    private final PushNotificationService pushNotificationService;
 
-    public NotificationService(NotificationMapper notificationMapper, EventService eventService) {
+    @Autowired
+    public NotificationService(NotificationMapper notificationMapper, EventService eventService,
+                               PushNotificationService pushNotificationService) {
         this.notificationMapper = notificationMapper;
         this.eventService = eventService;
+        this.pushNotificationService = pushNotificationService;
+    }
+
+    /** 保留直接构造测试与旧调用的兼容重载。 */
+    public NotificationService(NotificationMapper notificationMapper, EventService eventService) {
+        this(notificationMapper, eventService, null);
     }
 
     /**
@@ -81,6 +91,7 @@ public class NotificationService {
      * @param description     补充说明，可为空
      * @param resourceId      关联资源 ID 字符串，可为空
      */
+    @Transactional
     public void notify(UUID recipientUserId, UUID projectId, UUID groupId, String kind, String title,
                        String description, String resourceId) {
         if (recipientUserId == null) {
@@ -101,6 +112,9 @@ public class NotificationService {
         // 通知级 SSE：新通知信号（前端 SSE 需求清单 ③），事件名 notification.created
         eventService.publishNotification(recipientUserId, entity.getId(), kind,
                 Map.of("notificationId", id(entity.getId()), "kind", kind));
+        if (pushNotificationService != null) {
+            pushNotificationService.enqueue(entity);
+        }
     }
 
     private NotificationResponse toResponse(NotificationEntity n) {

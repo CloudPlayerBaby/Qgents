@@ -28,6 +28,30 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
     Long nextSequence(UUID groupId);
 
     /**
+     * 按群内消息序号拉取增量消息，返回严格升序结果。
+     * 调用方必须先完成需求群成员权限校验；sequence_no 是服务端分配的可靠游标。
+     */
+    @Select("SELECT id, requirement_group_id, sequence_no, author_user_id, agent_id, client_message_id, "
+            + "message_type, content, mentions, reply_to_message_id, created_at "
+            + "FROM messages WHERE requirement_group_id = #{groupId} AND sequence_no > #{afterSequence} "
+            + "ORDER BY sequence_no ASC LIMIT #{limit}")
+    @Results({
+            @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "requirement_group_id", property = "requirementGroupId",
+                    typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "author_user_id", property = "authorUserId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "agent_id", property = "agentId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "reply_to_message_id", property = "replyToMessageId",
+                    typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "message_type", property = "messageType"),
+            @Result(column = "content", property = "content"),
+            @Result(column = "mentions", property = "mentions")
+    })
+    List<MessageEntity> selectAfterSequence(@Param("groupId") UUID groupId,
+                                             @Param("afterSequence") long afterSequence,
+                                             @Param("limit") int limit);
+
+    /**
      * 批量查询项目下每个群的最新一条消息摘要（群列表 latestMessage 用，避免逐群 N+1）。
      * <p>
      * senderName 通过 LEFT JOIN users/agents 取 {@code COALESCE(display_name, name)}，
@@ -197,7 +221,7 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             "(<foreach collection='groupIds' item='groupId' separator=','>#{groupId}</foreach>) ",
             "AND m.sequence_no &gt; COALESCE(r.last_read_sequence_no, 0) ",
             "AND m.author_user_id &lt;&gt; #{userId} ",
-            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', #{userId})) ",
+            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', CAST(#{userId} AS CHAR))) ",
             "GROUP BY m.requirement_group_id",
             "</script>"})
     @Results({
@@ -221,7 +245,7 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
             "WHERE g.project_id = #{projectId} ",
             "AND m.sequence_no &gt; COALESCE(r.last_read_sequence_no, 0) ",
             "AND m.author_user_id &lt;&gt; #{userId} ",
-            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', #{userId})) ",
+            "AND JSON_CONTAINS(m.mentions, JSON_OBJECT('type', 'USER', 'id', CAST(#{userId} AS CHAR))) ",
             "GROUP BY m.requirement_group_id",
             "</script>"})
     @Results({

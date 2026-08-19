@@ -139,6 +139,15 @@ sandbox:
 
 # Agent Run 单相位总时限与任务恢复相关配置
 qgents:
+  push:
+    # 移动端 FCM HTTP v1 离线推送默认关闭；服务账号密钥只允许由受控环境变量注入。
+    enabled: ${QGENTS_PUSH_ENABLED:false}
+    fcm-endpoint: ${QGENTS_PUSH_FCM_ENDPOINT:https://fcm.googleapis.com/v1/projects}
+    fcm-project-id: ${QGENTS_PUSH_FCM_PROJECT_ID:}
+    fcm-service-account-json-base64: ${QGENTS_PUSH_FCM_SERVICE_ACCOUNT_JSON_BASE64:}
+    token-encryption-key: ${QGENTS_PUSH_TOKEN_ENCRYPTION_KEY:}
+    max-attempts: ${QGENTS_PUSH_MAX_ATTEMPTS:5}
+    poll-interval-ms: ${QGENTS_PUSH_POLL_INTERVAL_MS:5000}
   orchestration:
     # 单次 agent.run() 的总时限；超时按基础设施失败落库（failureCode=AGENT_RUN_TIMEOUT）
     coding-timeout: ${QGENTS_CODING_TIMEOUT:10m}

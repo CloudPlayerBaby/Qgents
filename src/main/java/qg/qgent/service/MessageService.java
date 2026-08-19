@@ -318,7 +318,7 @@ public class MessageService {
             }
             eventService.publish(group.getProjectId(), groupId, "message.updated", id(existing.getId()),
                     Map.of("projectId", id(group.getProjectId()), "groupId", id(groupId),
-                            "messageId", id(existing.getId())));
+                            "messageId", id(existing.getId()), "sequence", existing.getSequenceNo()));
             return toResponse(existing);
         }
 
@@ -417,7 +417,8 @@ public class MessageService {
         }
         // 项目级 SSE：新消息信号（REST 存真相，前端收到后刷新消息列表）
         eventService.publish(projectId, groupId, "message.created", id(message.getId()),
-                Map.of("projectId", id(projectId), "groupId", id(groupId), "messageId", id(message.getId())));
+                Map.of("projectId", id(projectId), "groupId", id(groupId), "messageId", id(message.getId()),
+                        "sequence", message.getSequenceNo()));
         return toResponse(messageMapper.selectById(message.getId()));
     }
 
@@ -470,6 +471,32 @@ public class MessageService {
         String nextCursor = hasMore && !views.isEmpty()
                 ? encodeCursor(views.get(views.size() - 1).getSequence())
                 : null;
+        return new PageSlice<>(views, new PageInfo(nextCursor, hasMore));
+    }
+
+    /**
+     * 拉取指定序号之后的新消息，供实时连接恢复时补齐聊天窗口。
+     * 返回结果严格按 sequence 升序；服务端不接受客户端伪造的消息 ID 作为游标。
+     */
+    public PageSlice<MessageResponse> listAfterSequence(UUID actor, UUID projectId, UUID groupId,
+                                                         long afterSequence, int limit) {
+        groupService.requireGroupMember(projectId, groupId, actor);
+        RequirementGroupEntity group = groupMapper.selectById(groupId);
+        if (group == null || !group.getProjectId().equals(projectId)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
+        }
+        if (afterSequence < 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MESSAGE_CURSOR", "afterSequence 必须为非负数");
+        }
+        int pageSize = Math.min(Math.max(limit, 1), 100);
+        List<MessageEntity> rows = messageMapper.selectAfterSequence(groupId, afterSequence, pageSize + 1);
+        boolean hasMore = rows.size() > pageSize;
+        List<MessageEntity> pageRows = rows.stream().limit(pageSize).toList();
+        Map<UUID, String> userNames = loadUserNames(pageRows);
+        Map<UUID, String> agentNames = loadAgentNames(pageRows);
+        List<MessageResponse> views = pageRows.stream().map(m -> toResponse(m, userNames, agentNames)).toList();
+        String nextCursor = hasMore && !views.isEmpty()
+                ? String.valueOf(views.get(views.size() - 1).getSequence()) : null;
         return new PageSlice<>(views, new PageInfo(nextCursor, hasMore));
     }
 

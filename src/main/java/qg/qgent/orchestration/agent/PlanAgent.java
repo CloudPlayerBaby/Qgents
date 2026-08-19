@@ -17,7 +17,9 @@ import qg.qgent.orchestration.llm.LlmOutputTruncatedException;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
+import qg.qgent.orchestration.tool.Sha256;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -64,17 +66,32 @@ public class PlanAgent implements Agent {
     public AgentRunOutcome run(AgentInput input) {
         try {
             List<String> files = codeAccess.listFiles(input.getWorkspaceId());
+            log.info("plan agent input context {} workspaceFiles={}", AgentContextLogFormatter.summary(input),
+                    AgentContextLogFormatter.fileTreeSummary(files));
+            if (log.isDebugEnabled()) {
+                log.debug("plan agent input context samples taskId={} {}", input.getTaskId(),
+                        AgentContextLogFormatter.samples(input));
+            }
             List<String> toRead = selectFilesToRead(input, files);
             Map<String, String> contents = readSelectedFiles(input, toRead);
+            log.info("plan agent selected context taskId={} requestedFiles={} readableFiles={} readableChars={} fileTree={}",
+                    input.getTaskId(), toRead.size(), contents.size(),
+                    contents.values().stream().mapToInt(String::length).sum(),
+                    AgentContextLogFormatter.fileTreeSummary(files));
             List<AgentEntity> pool = loadCandidatePool(input);
             String planSystem = promptBuilder.buildPlanSystem();
-            String planJson = llm.complete(planSystem,
-                    promptBuilder.buildPlanUser(input, files, contents, pool));
+            String planUser = promptBuilder.buildPlanUser(input, files, contents, pool);
+            log.info("plan agent prompt assembled taskId={} systemChars={} userChars={} fileContents={} agentCandidates={}",
+                    input.getTaskId(), planSystem.length(), planUser.length(), contents.size(), pool.size());
+            String planJson = llm.complete(planSystem, planUser);
+            log.info("plan agent raw plan response taskId={} responseChars={} responseSha256={} empty={}",
+                    input.getTaskId(), length(planJson), hash(planJson), planJson == null || planJson.isBlank());
             PlanResult plan;
             try {
                 plan = parser.parse(planJson);
             } catch (PlanParseException malformed) {
-                log.warn("plan agent final output not valid JSON, repairing code={}", malformed.getMessage());
+                log.warn("plan agent final output not valid JSON, repairing taskId={} responseChars={} responseSha256={} code={}",
+                        input.getTaskId(), length(planJson), hash(planJson), malformed.getMessage());
                 String repaired = JsonRepairSupport.repairOnce(llm, planSystem, planJson, malformed.getMessage(),
                         "{\"taskUnderstanding\":\"...\",\"implementationGoals\":[\"...\"],"
                                 + "\"steps\":[{\"title\":\"...\",\"files\":[\"relative/path\"],"
@@ -84,6 +101,8 @@ public class PlanAgent implements Agent {
                 if (repaired == null) {
                     throw malformed;
                 }
+                log.info("plan agent repaired response taskId={} responseChars={} responseSha256={}",
+                        input.getTaskId(), length(repaired), hash(repaired));
                 plan = parser.parse(repaired);
             }
 
@@ -92,6 +111,9 @@ public class PlanAgent implements Agent {
             outcome.setOutcome(RunOutcome.SUCCEEDED);
             outcome.setPlanResult(plan);
             outcome.setMessage("plan ready");
+            log.info("plan agent parsed plan taskId={} steps={} objectives={} risks={} testPlanChars={} verificationMode={} deliveryMode={}",
+                    input.getTaskId(), plan.getImplementationSteps().size(), plan.getObjectives().size(),
+                    plan.getRisks().size(), length(plan.getTestPlan()), plan.getVerificationMode(), plan.getDeliveryMode());
             return outcome;
         } catch (PlanParseException e) {
             AgentRunOutcome failure = new AgentRunOutcome();
@@ -143,6 +165,9 @@ public class PlanAgent implements Agent {
         try {
             String raw = llm.complete(promptBuilder.buildSelectFilesSystem(),
                     promptBuilder.buildSelectFilesUser(input, files));
+            log.info("plan agent file selection response taskId={} fileTree={} responseChars={} responseSha256={} empty={}",
+                    input.getTaskId(), AgentContextLogFormatter.fileTreeSummary(files), length(raw), hash(raw),
+                    raw == null || raw.isBlank());
             JsonNode node = JsonTextExtractor.parseObject(objectMapper, raw);
             JsonNode requests = node.get("readRequests");
             List<String> selected = new ArrayList<>();
@@ -156,6 +181,8 @@ public class PlanAgent implements Agent {
             return selected;
         } catch (Exception e) {
             // 读取选择解析失败时退回不读取任何文件，不阻塞计划生成。
+            log.warn("plan agent file selection unavailable taskId={} fileTree={} category={}", input.getTaskId(),
+                    AgentContextLogFormatter.fileTreeSummary(files), e.getClass().getSimpleName());
             return List.of();
         }
     }
@@ -175,5 +202,16 @@ public class PlanAgent implements Agent {
             }
         }
         return contents;
+    }
+
+    private static int length(String value) {
+        return value == null ? 0 : value.length();
+    }
+
+    private static String hash(String value) {
+        if (value == null || value.isEmpty()) {
+            return Sha256.hex(new byte[0]);
+        }
+        return Sha256.hex(value.getBytes(StandardCharsets.UTF_8));
     }
 }
