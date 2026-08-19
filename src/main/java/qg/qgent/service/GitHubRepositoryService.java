@@ -200,6 +200,87 @@ public class GitHubRepositoryService {
     }
 
     /**
+     * 查询项目绑定仓库的真实 GitHub 远程分支。工作分支（Task/Workspace）由另一个接口负责，
+     * 本接口只返回 GitHub 上确实存在的 refs/heads/*。
+     */
+    public List<RemoteBranchResponse> listRemoteBranches(UUID actorId, UUID projectId,
+                                                         UUID projectRepositoryId) {
+        BranchContext context = requireBranchContext(actorId, projectId, projectRepositoryId, false);
+        List<GitHubBranchDetails> branches = gitHubClient.listBranches(
+                context.installation().getProviderInstallationId(), context.repository().getOwnerLogin(),
+                context.repository().getName());
+        if (branches == null) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_API_UNAVAILABLE",
+                    "GitHub 未返回有效的分支列表");
+        }
+        for (GitHubBranchDetails branch : branches) {
+            if (branch == null || branch.name() == null || branch.name().isBlank()
+                    || branch.commitSha() == null || branch.commitSha().isBlank()) {
+                throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_API_UNAVAILABLE",
+                        "GitHub 返回的分支数据不完整");
+            }
+        }
+        return branches.stream()
+                .sorted(java.util.Comparator.comparing(GitHubBranchDetails::name))
+                .map(branch -> new RemoteBranchResponse(branch.name(), branch.commitSha(),
+                        branch.name().equals(context.repository().getDefaultBranch()),
+                        branch.name().equals(context.binding().getDefaultBranch())))
+                .toList();
+    }
+
+    /**
+     * 从已有远程分支创建 GitHub 远程分支。来源引用先由 GitHub 解析为 SHA，
+     * 再调用受控 GitHub App 客户端创建 refs/heads，不接受客户端直接提交 SHA。
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public RemoteBranchResponse createRemoteBranch(UUID actorId, UUID projectId, UUID projectRepositoryId,
+                                                   CreateRemoteBranchRequest request) {
+        BranchContext context = requireBranchContext(actorId, projectId, projectRepositoryId, true);
+        String branchName = normalizeBranchName(request.getName());
+        String fromRef = normalizeBranchName(request.getFromRef());
+        if (branchName.equals(fromRef)) {
+            throw new ApiException(HttpStatus.CONFLICT, "INVALID_BRANCH_NAME", "新分支不能与来源分支相同");
+        }
+        long installationId = context.installation().getProviderInstallationId();
+        GitHubBranchDetails source = gitHubClient.getBranch(installationId, context.repository().getOwnerLogin(),
+                context.repository().getName(), fromRef);
+        if (source == null || source.commitSha() == null || source.commitSha().isBlank()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "GIT_BRANCH_NOT_FOUND", "来源分支不存在");
+        }
+        String owner = context.repository().getOwnerLogin();
+        String repositoryName = context.repository().getName();
+        GitHubBranchDetails existing = findExistingBranch(gitHubClient, installationId, owner, repositoryName,
+                branchName);
+        if (existing != null) {
+            return existingBranchResponse(context, branchName, source.commitSha(), existing);
+        }
+        GitHubBranchDetails created;
+        try {
+            created = gitHubClient.createBranch(installationId, owner, repositoryName, branchName, source.commitSha());
+        } catch (ApiException exception) {
+            // GitHub 已完成创建但响应丢失时，重试会返回 422/409。重新读取目标引用恢复幂等结果。
+            if (!"GIT_BRANCH_ALREADY_EXISTS".equals(exception.code())) {
+                throw exception;
+            }
+            GitHubBranchDetails recovered = findExistingBranch(gitHubClient, installationId, owner, repositoryName,
+                    branchName);
+            if (recovered != null) {
+                return existingBranchResponse(context, branchName, source.commitSha(), recovered);
+            }
+            throw exception;
+        }
+        if (created == null || created.name() == null || created.commitSha() == null || created.commitSha().isBlank()) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_API_UNAVAILABLE", "GitHub 未返回有效的分支创建结果");
+        }
+        if (!branchName.equals(created.name())) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_API_UNAVAILABLE", "GitHub 返回的分支名与请求不一致");
+        }
+        return new RemoteBranchResponse(created.name(), created.commitSha(),
+                created.name().equals(context.repository().getDefaultBranch()),
+                created.name().equals(context.binding().getDefaultBranch()));
+    }
+
+    /**
      * 在团队 GitHub App 账号下新建一个仓库（事务外），返回建仓结果与所用安装记录，不落库。
      * 采用 NOT_SUPPORTED 挂起调用方事务，确保 GitHub 建仓 HTTP 不持有数据库事务或行锁（AGENTS §3.4）。
      */
@@ -338,29 +419,29 @@ public class GitHubRepositoryService {
      * @param request             包含需要更新的默认分支和显示名称的请求体
      * @return 更新后的项目绑定仓库详情响应
      */
-    @Transactional
     public ProjectRepositoryResponse updateProjectRepository(UUID actorId, UUID projectId, UUID projectRepositoryId,
-                                                             UpdateProjectRepositoryRequest request) {
-        // 权限校验：必须是项目管理员
-        requireProjectAdmin(actorId, projectId);
-        // 根据绑定 ID 查找当前的绑定记录
-        ProjectRepositoryEntity current = projectRepositoryMapper.selectById(projectRepositoryId);
-        // 防越权：确保要更新的绑定关系确实属于请求的 projectId
-        if (current == null || !projectId.equals(current.getProjectId())) {
-            throw notFound("Project repository binding does not exist");
-        }
-        // 软解绑后的绑定不再可配置：拒绝修改默认分支/显示名，需先重新绑定
-        if ("UNBOUND".equals(current.getStatus())) {
-            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_UNBOUND",
-                    "Project repository binding is unbound");
-        }
-        // 更新默认分支和自定义显示名称
-        current.setDefaultBranch(request.getDefaultBranch());
-        current.setDisplayName(request.getDisplayName());
-        projectRepositoryMapper.updateById(current);
+                                                              UpdateProjectRepositoryRequest request) {
+        BranchContext context = requireBranchContext(actorId, projectId, projectRepositoryId, true);
+        String defaultBranch = normalizeBranchName(request.getDefaultBranch());
+        // GitHub 远程校验必须发生在事务外，避免外部 HTTP 调用持有数据库锁。
+        gitHubClient.getBranch(context.installation().getProviderInstallationId(),
+                context.repository().getOwnerLogin(), context.repository().getName(), defaultBranch);
 
-        GitHubRepositoryEntity repository = repositoryMapper.selectById(current.getRepositoryId());
-        return toProjectRepositoryResponse(current, repository);
+        return required.execute(status -> {
+            ProjectRepositoryEntity current = projectRepositoryMapper.selectByIdForUpdate(projectRepositoryId);
+            if (current == null || !projectId.equals(current.getProjectId())) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_REPOSITORY_NOT_FOUND",
+                        "Project repository binding does not exist");
+            }
+            if (!"ACTIVE".equals(current.getStatus())) {
+                throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_UNBOUND",
+                        "Project repository binding is unbound");
+            }
+            current.setDefaultBranch(defaultBranch);
+            current.setDisplayName(request.getDisplayName());
+            projectRepositoryMapper.updateById(current);
+            return toProjectRepositoryResponse(current, context.repository());
+        });
     }
 
     /**
@@ -728,6 +809,80 @@ public class GitHubRepositoryService {
         return value == null || value.isBlank() ? fallback : value;
     }
 
+    private GitHubBranchDetails findExistingBranch(GitHubAppClient client, long installationId, String owner,
+                                                    String repository, String branchName) {
+        try {
+            return client.getBranch(installationId, owner, repository, branchName);
+        } catch (ApiException exception) {
+            if ("GIT_BRANCH_NOT_FOUND".equals(exception.code())) {
+                return null;
+            }
+            throw exception;
+        }
+    }
+
+    private RemoteBranchResponse existingBranchResponse(BranchContext context, String branchName, String sourceSha,
+                                                        GitHubBranchDetails existing) {
+        if (existing.commitSha() == null || !sourceSha.equalsIgnoreCase(existing.commitSha())) {
+            throw new ApiException(HttpStatus.CONFLICT, "GIT_BRANCH_ALREADY_EXISTS",
+                    "目标远程分支已存在且来源提交不同");
+        }
+        return new RemoteBranchResponse(branchName, existing.commitSha(),
+                branchName.equals(context.repository().getDefaultBranch()),
+                branchName.equals(context.binding().getDefaultBranch()));
+    }
+
+    private BranchContext requireBranchContext(UUID actorId, UUID projectId, UUID projectRepositoryId,
+                                                boolean adminRequired) {
+        if (adminRequired) {
+            requireProjectAdmin(actorId, projectId);
+        } else {
+            requireProjectMember(actorId, projectId);
+        }
+        ProjectRepositoryEntity binding = projectRepositoryMapper.selectById(projectRepositoryId);
+        if (binding == null || !projectId.equals(binding.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_REPOSITORY_NOT_FOUND",
+                    "Project repository binding does not exist");
+        }
+        if (!"ACTIVE".equals(binding.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_UNBOUND",
+                    "Project repository binding is unbound");
+        }
+        GitHubRepositoryEntity repository = repositoryMapper.selectById(binding.getRepositoryId());
+        if (repository == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "GITHUB_REPOSITORY_NOT_FOUND",
+                    "GitHub repository does not exist");
+        }
+        if (!"AUTHORIZED".equals(repository.getAuthorizationStatus()) || Boolean.TRUE.equals(repository.getArchived())) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_UNAVAILABLE",
+                    "GitHub repository is not available");
+        }
+        GitHubInstallationEntity installation = installationMapper.selectById(repository.getInstallationId());
+        if (installation == null || !"ACTIVE".equals(installation.getStatus())
+                || installation.getProviderInstallationId() == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_UNAVAILABLE",
+                    "GitHub App installation is not active");
+        }
+        return new BranchContext(binding, repository, installation);
+    }
+
+    /**
+     * 统一约束分支引用格式，拒绝 GitHub API 的 refs/heads 前缀和危险 ref 语法。
+     */
+    private String normalizeBranchName(String value) {
+        if (value == null || value.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BRANCH_NAME", "分支名不能为空");
+        }
+        String branch = value.trim();
+        if (branch.length() > 255 || !branch.matches("[A-Za-z0-9][A-Za-z0-9._/-]{0,254}")
+                || branch.startsWith("/") || branch.startsWith("refs/") || branch.contains("//")
+                || branch.contains("..") || branch.contains("@{") || branch.endsWith("/")
+                || branch.endsWith(".") || branch.endsWith(".lock") || branch.contains("\\")) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BRANCH_NAME", "分支名格式不合法");
+        }
+        return branch;
+    }
+
     private String normalizeEnum(String value) {
         return value == null ? "" : value.toUpperCase(Locale.ROOT);
     }
@@ -747,7 +902,7 @@ public class GitHubRepositoryService {
      * 查询持行锁（FOR UPDATE）串行化同键上的软解绑与并发绑定，避免竞态或重复插入。
      */
     private ProjectRepositoryEntity upsertProjectBinding(UUID projectId, GitHubRepositoryEntity repository,
-                                                         String displayName) {
+                                                          String displayName) {
         ProjectRepositoryEntity existing = projectRepositoryMapper
                 .selectByProjectAndRepositoryForUpdate(projectId, repository.getId());
         if (existing != null) {
@@ -817,5 +972,9 @@ public class GitHubRepositoryService {
      * 自动建仓的事务外结果：所用安装记录 + 新建仓库元数据。
      */
     public record RemoteRepositoryCreation(GitHubInstallationEntity installation, GitHubRepositoryDetails repository) {
+    }
+
+    private record BranchContext(ProjectRepositoryEntity binding, GitHubRepositoryEntity repository,
+                                 GitHubInstallationEntity installation) {
     }
 }
