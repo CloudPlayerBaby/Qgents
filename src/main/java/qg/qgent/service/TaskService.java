@@ -459,9 +459,11 @@ public class TaskService {
     /**
      * 新 Workspace 各仓库共享的功能分支名：&lt;type&gt;/&lt;标题slug&gt;-&lt;id前缀&gt;。
      * type 不固定 feat，按标题内容识别 conventional 类型（"fix: 登录报错"/"修复…"/"fix login bug" → fix，
-     * "实现…"/"新增…" → feat），识别不到兜底 feat；标题转小写短横线段（保留中文等 Unicode 字母/数字，
-     * 其余符号折叠为 '-', 截断 24 个码点），id 前缀取 UUIDv7 去横线后的前 12 位
+     * "实现…"/"新增…" → feat），识别不到兜底 feat；标题经 {@link #slugify} 转为 ASCII 短横线段
+     * （截断 24 个码点），id 前缀取 UUIDv7 去横线后的前 12 位
      * （48 位毫秒时间戳，毫秒级唯一；避免整段 UUID 使分支名过长且像乱码）。
+     * 分支名必须为 ASCII：沙箱 Worker 的 {@code WorkspaceRepositoryRequest} 只接受
+     * {@code [A-Za-z0-9][A-Za-z0-9._/-]*}，中文等非 ASCII 字符会导致任务启动被拒绝。
      */
     private static String featureBranch(UUID taskId, String title) {
         String[] typeAndName = detectType(title);
@@ -521,12 +523,18 @@ public class TaskService {
         return new String[]{"feat", trimmed};
     }
 
+    /**
+     * 将标题片段折叠为 ASCII 短横线段：只保留小写字母与数字，其余字符（含中文等非 ASCII 字母/数字、
+     * 符号）统一折叠为 '-',连续短横线合并、去除首尾短横线；全非 ASCII 或空时兜底返回 "task"。
+     * 因为 {@link #featureBranch} 生成的分支名会被沙箱 Worker 校验（仅接受 ASCII），此处不允许
+     * 保留 Unicode 字符，避免中文标题生成的分支名导致任务启动失败。
+     */
     private static String slugify(String title) {
         if (title == null) {
             return "task";
         }
         String slug = title.trim().toLowerCase(Locale.ROOT)
-                .replaceAll("[^\\p{L}\\p{N}]+", "-")
+                .replaceAll("[^a-z0-9]+", "-")
                 .replaceAll("-{2,}", "-")
                 .replaceAll("^-|-$", "");
         if (slug.isEmpty()) {

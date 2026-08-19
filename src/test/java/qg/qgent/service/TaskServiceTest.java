@@ -95,8 +95,26 @@ class TaskServiceTest {
 
         ArgumentCaptor<String> branch = ArgumentCaptor.forClass(String.class);
         verify(repositories).insertLink(any(), any(), any(), any(), branch.capture());
-        assertThat(branch.getValue()).startsWith("fix/修复登录接口报错-")
-                .matches("fix/修复登录接口报错-[0-9a-f]{12}");
+        // 中文标题仍能识别 fix 类型，但 slug 只保留 ASCII：全中文被折叠为兜底 "task"，
+        // 分支名必须能被沙箱 Worker 的 [A-Za-z0-9][A-Za-z0-9._/-]* 校验通过
+        assertThat(branch.getValue()).startsWith("fix/task-").matches("fix/task-[0-9a-f]{12}");
+    }
+
+    @Test
+    void createFeatureBranchFromChineseTitleIsAsciiSafe() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID backend = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
+        when(repositories.selectByWorkspace(any(UUID.class))).thenReturn(List.of());
+
+        service.create(projectId, actor, request(groupId, List.of(backend), "新增用户控制台页面"));
+
+        ArgumentCaptor<String> branch = ArgumentCaptor.forClass(String.class);
+        verify(repositories).insertLink(any(), any(), any(), any(), branch.capture());
+        // 复现线上故障：中文标题曾生成 feat/新增用户控制台页面-<id>，被沙箱 Worker 的 ASCII 校验拒绝；
+        // 现在必须落在 Worker 契约 [A-Za-z0-9][A-Za-z0-9._/-]* 之内
+        assertThat(branch.getValue()).startsWith("feat/task-").matches("feat/task-[0-9a-f]{12}");
     }
 
     @Test
