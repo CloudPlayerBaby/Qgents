@@ -115,20 +115,33 @@ public class GenericCustomAgent implements Agent {
                 AgentRunOutcome failure = new AgentRunOutcome();
                 failure.setPhase(input.getPhase());
                 failure.setOutcome(RunOutcome.FAILED);
-                failure.setFailureCode(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
                 String toolFailure = observedWrites.lastToolError();
+                boolean patchUnrecoverable = toolFailure != null
+                        && toolFailure.contains("TOOL_PATCH_REPAIR_REQUIRED");
+                failure.setFailureCode(patchUnrecoverable
+                        ? ProtocolFailureCode.TOOL_PATCH_UNRECOVERABLE.name()
+                        : ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
                 failure.setMessage("自定义 Agent 声明成功但未产生任何实际文件或目录变更：请对已有文件使用 "
                         + "apply_patch（write_file 仅用于新建文件），且写入必须实际改变内容（changed=true）；"
                         + "若确实无法修改，success 必须为 false 并说明原因"
                         + (toolFailure == null ? "" : "；上一次工具失败：" + toolFailure
-                        + observedWrites.recoveryHint()));
+                        + observedWrites.recoveryHint())
+                        + (patchUnrecoverable ? "；连续补丁失败后的 replace_file 也未完成" : ""));
                 failure.setObservations(observations);
                 return failure;
             }
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
-            outcome.setOutcome(result.success() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED_QUALITY);
-            outcome.setMessage(pickMessage(result));
+            boolean patchUnrecoverable = !result.success()
+                    && observedWrites.lastToolError() != null
+                    && observedWrites.lastToolError().contains("TOOL_PATCH_REPAIR_REQUIRED");
+            outcome.setOutcome(result.success() ? RunOutcome.SUCCEEDED
+                    : (patchUnrecoverable ? RunOutcome.FAILED : RunOutcome.FAILED_QUALITY));
+            if (patchUnrecoverable) {
+                outcome.setFailureCode(ProtocolFailureCode.TOOL_PATCH_UNRECOVERABLE.name());
+            }
+            outcome.setMessage(pickMessage(result)
+                    + (patchUnrecoverable ? "；补丁连续失败且 replace_file 未完成，无法继续自动修复" : ""));
             outcome.setObservations(observations);
             // 写角色成功且本次确实产生变更时，回填最小 CodingResult；目录与文件分开记录。
             if (result.success() && writeCapable && lastCodingTools != null
@@ -393,5 +406,6 @@ public class GenericCustomAgent implements Agent {
             - apply_patch：对已有文本文件精确应用统一 Diff，参数 {"path": "相对路径", "expectedHash": "read_file 返回的 64 位十六进制 sha256", "patch": "统一 Diff 文本"}；expectedHash 必须来自同一次 read_file。修改已有文件必须用本工具。
             - create_directory：递归创建目录，参数 {"path": "相对目录路径"}；已存在目录幂等成功，不创建 .gitkeep。
             - write_file：仅用于创建新文件，参数 {"path": "相对路径", "content": "文件内容"}；目标文件已存在时会被拒绝（返回 ok=false），已存在文件一律改用 apply_patch。
+            - replace_file：对已有 UTF-8 文本文件执行带 expectedHash 的整文件原子替换，参数 {"path": "相对路径", "expectedHash": "read_file 返回的 sha256", "content": "完整文件内容"}；仅在 Patch 连续失败后使用。
             """;
 }

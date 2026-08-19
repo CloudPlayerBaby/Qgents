@@ -107,6 +107,39 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
     }
 
     @Override
+    public WorkspaceWriteResult replaceFile(UUID workspaceId, String path, String expectedHash, String content) {
+        if (path == null || path.isBlank()) {
+            return WorkspaceWriteResult.fail(null, "path must not be blank");
+        }
+        if (expectedHash == null || !expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return WorkspaceWriteResult.fail(path, "expectedHash must be 64 hex chars");
+        }
+        if (content == null) {
+            return WorkspaceWriteResult.fail(path, "content must not be null");
+        }
+        if (content.getBytes(StandardCharsets.UTF_8).length > MAX_WRITE_BYTES) {
+            return WorkspaceWriteResult.fail(path, "content exceeds 256KB limit");
+        }
+        WorkerPathResolver.Target target = WorkerPathResolver.resolve(session(workspaceId), path);
+        if (target == null) {
+            return WorkspaceWriteResult.fail(path, "path does not map to a workspace repository");
+        }
+        try {
+            // file.write 在 expectedHash 非空时仍执行旧内容哈希校验，因此不会覆盖并发更新；
+            // 非空 hash 也会阻止 replace_file 借道创建不存在的新文件。
+            WorkerToolExecution execution = executeTool(workspaceId, target.repositoryId(), "file.write",
+                    Map.of("path", target.relativePath(), "expectedHash", expectedHash, "content", content),
+                    TOOL_TIMEOUT);
+            if ("SUCCEEDED".equals(execution.getStatus())) {
+                return okResult(path, execution, expectedHash);
+            }
+            return writeFailure(path, execution, "replace failed");
+        } catch (RuntimeException e) {
+            return WorkspaceWriteResult.infraFail(path, "replace failed: " + e.getMessage());
+        }
+    }
+
+    @Override
     public WorkspaceWriteResult patchFile(UUID workspaceId, String path, String expectedHash, String patch) {
         if (path == null || path.isBlank()) {
             return WorkspaceWriteResult.fail(null, "path must not be blank");

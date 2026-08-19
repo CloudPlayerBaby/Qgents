@@ -45,6 +45,9 @@ final class ChangedWriteFactLedger {
         if (lastToolError == null) {
             return "";
         }
+        if (lastToolError.contains("TOOL_PATCH_REPAIR_REQUIRED")) {
+            return "；建议：停止生成 patch，先 read_file 获取最新内容和 sha256，再调用 replace_file；replace_file 仍失败后结束本次运行";
+        }
         if (lastToolError.contains("FILE_PATCH_FAILED") || lastToolError.contains("PATCH_")) {
             return "；建议：先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 patch";
         }

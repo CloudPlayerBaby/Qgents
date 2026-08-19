@@ -232,7 +232,7 @@ class GenericCustomAgentTest {
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
         assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory", "list_files",
-                "read_file", "search_chat_history", "search_code", "write_file");
+                "read_file", "replace_file", "search_chat_history", "search_code", "write_file");
     }
 
     @Test

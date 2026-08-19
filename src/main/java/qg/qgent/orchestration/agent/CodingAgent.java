@@ -115,9 +115,14 @@ public class CodingAgent implements Agent {
             validateAndCompleteChanges(coding, observedWrites, input);
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
+            boolean patchUnrecoverable = !coding.isSuccess() && hasPatchRepairRequired(observedWrites);
             outcome.setOutcome(coding.isSuccess() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED);
+            if (patchUnrecoverable) {
+                outcome.setFailureCode(ProtocolFailureCode.TOOL_PATCH_UNRECOVERABLE.name());
+            }
             outcome.setCodingResult(coding);
-            outcome.setMessage(coding.isSuccess() ? coding.getSummary() : firstError(coding));
+            outcome.setMessage((coding.isSuccess() ? coding.getSummary() : firstError(coding))
+                    + (patchUnrecoverable ? "；补丁连续失败且 replace_file 未完成，无法继续自动修复" : ""));
             outcome.setObservations(observations);
             log.info("coding agent done phase={} workspaceId={} outcome={} observations={}",
                     input.getPhase(), input.getWorkspaceId(), outcome.getOutcome(), observations.size());
@@ -130,10 +135,14 @@ public class CodingAgent implements Agent {
             failure.setPhase(input.getPhase());
             // 无实际变更是本次 Coding 的语义失败。若按基础设施失败处理，状态机会
             // 重试同一个已达到目标状态的 Coding，产生 no-op 重试回环。
-            failure.setOutcome(e.getCode() == ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE
+            boolean patchUnrecoverable = e.getCode() == ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE
+                    && hasPatchRepairRequired(observedWrites);
+            failure.setOutcome(e.getCode() == ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE || patchUnrecoverable
                     ? RunOutcome.FAILED : RunOutcome.FAILED_INFRASTRUCTURE);
-            failure.setFailureCode(e.getCode().name());
-            failure.setMessage("coding agent failed: " + e.getMessage());
+            failure.setFailureCode(patchUnrecoverable
+                    ? ProtocolFailureCode.TOOL_PATCH_UNRECOVERABLE.name() : e.getCode().name());
+            failure.setMessage("coding agent failed: " + e.getMessage()
+                    + (patchUnrecoverable ? "；补丁连续失败且 replace_file 未完成，无法继续自动修复" : ""));
             failure.setObservations(observations);
             return failure;
         } catch (ApiException e) {
@@ -154,6 +163,11 @@ public class CodingAgent implements Agent {
             failure.setObservations(observations);
             return failure;
         }
+    }
+
+    private boolean hasPatchRepairRequired(ChangedWriteFactLedger observedWrites) {
+        String error = observedWrites.lastToolError();
+        return error != null && error.contains("TOOL_PATCH_REPAIR_REQUIRED");
     }
 
     /**

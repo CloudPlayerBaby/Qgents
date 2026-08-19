@@ -13,7 +13,7 @@ import java.util.List;
  * Agent 角色 → 工具白名单注册表：决定自定义 Agent 能拿到哪些工具。结构即权限，编译期可审计。
  * <ul>
  *   <li>只读工具 {@link ReviewTools}（list_files/read_file/search_code）恒有；</li>
- *   <li>写工具 {@link CodingTools}（含 apply_patch/write_file/create_directory）仅当角色具备写权限才授予——
+ *   <li>写工具 {@link CodingTools}（含 apply_patch/replace_file/write_file/create_directory）仅当角色具备写权限才授予——
  *       按 role 决定（{@code DEVELOPER} 授写，其余角色默认只读）；</li>
  *   <li>自定义角色除非显式声明为写角色，否则一律只读（写权限默认拒绝）。</li>
  * </ul>

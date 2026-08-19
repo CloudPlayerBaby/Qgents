@@ -144,7 +144,7 @@ class CodingAgentTest {
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
         assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory", "list_files", "read_file",
-                "search_chat_history", "search_code", "write_file");
+                "replace_file", "search_chat_history", "search_code", "write_file");
     }
 
     @Test
@@ -394,6 +394,34 @@ class CodingAgentTest {
                 .contains("编码工具尝试汇总")
                 .contains("apply_patch 共 1 次（失败 1 次）")
                 .contains("hunk 声明行数与正文不一致");
+    }
+
+    @Test
+    void repeatedPatchFailureBecomesUnrecoverableToolFailure() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", "0".repeat(64), "patch"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED",
+                        "hunk 声明行数与正文不一致"));
+        AtomicInteger round = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            if (round.getAndIncrement() < CodingTools.PATCH_FAILURE_ESCALATION_THRESHOLD) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream()
+                        .filter(callback -> "apply_patch".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow()
+                        .call("{\"path\":\"src/main/java/X.java\",\"expectedHash\":\""
+                                + "0".repeat(64) + "\",\"patch\":\"patch\"}");
+                return toolTurn("apply_patch");
+            }
+            return finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop");
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.TOOL_PATCH_UNRECOVERABLE.name());
+        assertThat(outcome.getMessage()).contains("replace_file");
     }
 
     @Test

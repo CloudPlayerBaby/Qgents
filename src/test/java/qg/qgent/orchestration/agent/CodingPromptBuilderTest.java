@@ -101,10 +101,10 @@ class CodingPromptBuilderTest {
     void nativeSystemDocumentsPatchEscalationAndRetryReality() {
         String system = promptBuilder.buildSystem(true);
 
-        // apply_patch 连续失败升级规则、write_file 升级放行、打回重做必须产生真实变更。
+        // apply_patch 连续失败升级规则、replace_file 修复路径、打回重做必须产生真实变更。
         assertThat(system)
-                .contains("连续失败 3 次后会升级为允许 write_file 整文件覆盖")
-                .contains("因 apply_patch 连续失败被升级的文件允许整文件覆盖")
+                .contains("连续失败 3 次后必须改用 replace_file")
+                .contains("replace_file 提供完整文件内容")
                 .contains("收到前一轮反馈或重试上下文（打回重做）时")
                 .contains("只读复核、重复已存在内容、确认现状或空操作不构成完成");
     }

@@ -12,9 +12,11 @@ import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 import qg.qgent.orchestration.tool.WorkspaceChangeResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 
-import java.util.UUID;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * 执行 Coding Agent 的白名单工具调用，并把结果格式化为可回灌给 LLM 的 JSON 字符串。
@@ -43,6 +45,8 @@ public class CodingToolExecutor {
     private final TaskStepPathPolicy pathPolicy;
     /** 最近一次工具级失败，供最终无变更门禁保留可操作根因。 */
     private String lastToolError;
+    private final Map<String, Integer> patchFailuresByPath = new HashMap<>();
+    private static final int PATCH_FAILURE_ESCALATION_THRESHOLD = 3;
 
     public CodingToolExecutor(WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer) {
         this(codeAccess, writer, List.of());
@@ -88,6 +92,7 @@ public class CodingToolExecutor {
             case "create_directory" -> createDirectory(workspaceId, name, args);
             case "write_file" -> writeFile(workspaceId, name, args);
             case "apply_patch" -> applyPatch(workspaceId, name, args);
+            case "replace_file" -> replaceFile(workspaceId, name, args);
             default -> error(name, "unknown tool '" + name + "'");
         };
     }
@@ -147,8 +152,14 @@ public class CodingToolExecutor {
         if (denied != null) {
             return error(name, denied);
         }
+        if (codeAccess.listFiles(workspaceId).stream().map(p -> p.replace('\\', '/'))
+                .anyMatch(p -> p.equals(path.replace('\\', '/')))) {
+            return error(name, "write_file only creates new files; '" + path
+                    + "' already exists, use apply_patch or replace_file");
+        }
         WorkspaceWriteResult result = writer.writeFile(workspaceId, path, content);
         if (result.isOk()) {
+            lastToolError = null;
             if (result.isChanged()) {
                 notifyChange(result);
             }
@@ -209,6 +220,7 @@ public class CodingToolExecutor {
         }
         WorkspaceWriteResult result = writer.patchFile(workspaceId, path, expectedHash, patch);
         if (result.isOk()) {
+            patchFailuresByPath.remove(path);
             if (result.isChanged()) {
                 notifyChange(result);
             }
@@ -221,7 +233,64 @@ public class CodingToolExecutor {
             throw new IllegalStateException("apply_patch infrastructure failure: "
                     + (result.getError() == null ? "workspace unavailable" : result.getError()));
         }
-        return error(name, result.getFailureCode(), result.getError() == null ? "patch failed" : result.getError());
+        return patchFailed(name, path, result.getFailureCode(), result.getError() == null ? "patch failed" : result.getError());
+    }
+
+    private String replaceFile(UUID workspaceId, String name, JsonNode args) {
+        String path = args.path("path").asText("").trim();
+        String expectedHash = args.path("expectedHash").asText("").trim();
+        String content = args.path("content").asText("");
+        if (path.isBlank()) {
+            return error(name, "replace_file requires non-empty 'path'");
+        }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(name, denied);
+        }
+        if (!expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return error(name, "replace_file requires 64-char hex 'expectedHash' from read_file");
+        }
+        WorkspaceWriteResult result = writer.replaceFile(workspaceId, path, expectedHash, content);
+        if (result.isOk()) {
+            patchFailuresByPath.remove(path);
+            lastToolError = null;
+            if (result.isChanged()) {
+                notifyChange(result);
+            }
+            ObjectNode resultNode = objectMapper.createObjectNode();
+            resultNode.put("path", result.getPath());
+            resultNode.put("changed", result.isChanged());
+            resultNode.put("oldSha", expectedHash);
+            resultNode.put("newSha", result.getNewSha256());
+            return ok(name, resultNode);
+        }
+        if (result.isInfrastructureFailure()) {
+            throw new IllegalStateException("replace_file infrastructure failure: "
+                    + (result.getError() == null ? "workspace unavailable" : result.getError()));
+        }
+        String message = result.getError() == null ? "replace failed" : result.getError();
+        String failure = error(name, result.getFailureCode(), message);
+        if (patchFailuresByPath.getOrDefault(path, 0) >= PATCH_FAILURE_ESCALATION_THRESHOLD) {
+            lastToolError = "TOOL_PATCH_REPAIR_REQUIRED: replace_file failed: " + message;
+        }
+        return failure;
+    }
+
+    private String patchFailed(String tool, String path, String failureCode, String message) {
+        int failures = patchFailuresByPath.merge(path, 1, Integer::sum);
+        if (failures >= PATCH_FAILURE_ESCALATION_THRESHOLD) {
+            lastToolError = "TOOL_PATCH_REPAIR_REQUIRED: " + message;
+            ObjectNode node = objectMapper.createObjectNode();
+            node.put("tool", tool);
+            node.put("ok", false);
+            node.put("errorCode", "TOOL_PATCH_REPAIR_REQUIRED");
+            node.put("retryable", true);
+            node.put("error", message);
+            node.put("nextAction", "该文件已连续 " + PATCH_FAILURE_ESCALATION_THRESHOLD
+                    + " 次补丁失败；请先 read_file 获取最新内容和 sha256，再调用 replace_file 提供完整文件内容");
+            return node.toString();
+        }
+        return error(tool, failureCode, message);
     }
 
     private String ok(String tool, ObjectNode result) {
@@ -256,6 +325,7 @@ public class CodingToolExecutor {
         if (failureCode != null) {
             return switch (failureCode) {
                 case "FILE_PATCH_FAILED" -> "TOOL_PATCH_FORMAT_INVALID";
+                case "TOOL_PATCH_REPAIR_REQUIRED" -> "TOOL_PATCH_REPAIR_REQUIRED";
                 case "FILE_HASH_MISMATCH" -> "TOOL_CONFLICT";
                 case "TOOL_PATH_INVALID" -> "TOOL_PATH_INVALID";
                 case "TOOL_ARGUMENT_INVALID", "COMMAND_NOT_ALLOWED" -> "TOOL_ARGUMENT_INVALID";
@@ -265,7 +335,8 @@ public class CodingToolExecutor {
         if (message == null) {
             return "TOOL_EXECUTION_FAILED";
         }
-        if (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")) {
+        if (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")
+                || message.contains("补丁") || message.contains("hunk")) {
             return "TOOL_PATCH_FORMAT_INVALID";
         }
         if (message.contains("FILE_HASH_MISMATCH") || message.contains("hash")
@@ -287,9 +358,11 @@ public class CodingToolExecutor {
 
     private boolean isRetryable(String failureCode, String message) {
         if (failureCode != null) {
-            return "FILE_PATCH_FAILED".equals(failureCode) || "FILE_HASH_MISMATCH".equals(failureCode);
+            return "FILE_PATCH_FAILED".equals(failureCode) || "FILE_HASH_MISMATCH".equals(failureCode)
+                    || "TOOL_PATCH_REPAIR_REQUIRED".equals(failureCode);
         }
-        if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_"))) {
+        if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")
+                || message.contains("补丁") || message.contains("hunk"))) {
             return true;
         }
         return message != null && !message.contains("outside") && !message.contains("escapes")
@@ -304,10 +377,14 @@ public class CodingToolExecutor {
         if ("FILE_PATCH_FAILED".equals(failureCode)) {
             return "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file";
         }
+        if ("TOOL_PATCH_REPAIR_REQUIRED".equals(failureCode)) {
+            return "该文件已连续补丁失败；请先 read_file 获取最新内容，再调用 replace_file 提供完整文件内容";
+        }
         if ("FILE_HASH_MISMATCH".equals(failureCode)) {
             return "先重新 read_file 获取当前 sha256，再用 apply_patch";
         }
-        if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_"))) {
+        if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")
+                || message.contains("补丁") || message.contains("hunk"))) {
             return "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file";
         }
         if (message != null && (message.contains("FILE_HASH_MISMATCH") || message.contains("hash")

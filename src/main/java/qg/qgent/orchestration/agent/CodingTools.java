@@ -43,8 +43,7 @@ import java.util.UUID;
 public class CodingTools {
 
     /**
-     * apply_patch 对同一文件连续失败的阈值；达到后该文件升级为允许 write_file 整文件覆盖。
-     * 前两次失败仍提示「先 read_file 再重新生成 patch」，第三次起强制切换写路径，避免空转。
+     * apply_patch 对同一文件连续失败的阈值；达到后强制切换为带 Hash 校验的整文件替换。
      */
     static final int PATCH_FAILURE_ESCALATION_THRESHOLD = 3;
     /** 内部工具结果缓冲上限；CodingAgent 每轮 drain，正常情况下远不会触顶。 */
@@ -66,11 +65,9 @@ public class CodingTools {
     private final Set<String> modifiedDirectories = new HashSet<>();
     /**
      * apply_patch 对同一文件连续失败的次数。达到 {@link #PATCH_FAILURE_ESCALATION_THRESHOLD}
-     * 后放行 write_file 整文件覆盖，避免严格 patcher 在模型反复重放时进入死循环。
+     * 后要求模型使用 replace_file，避免严格 patcher 在模型反复重放时进入死循环。
      */
     private final Map<String, Integer> patchFailuresByPath = new HashMap<>();
-    /** 已升级为允许 write_file 整文件覆盖的路径（本次 run 内生效）。 */
-    private final Set<String> overwriteEscalatedPaths = new HashSet<>();
     /** 本次 run 内每次写工具调用的脱敏结果，供失败门禁汇总；由 CodingAgent 每轮 drain。 */
     private final List<ToolOutcome> outcomes = new ArrayList<>();
     /** 最近一次工具级失败，供最终无变更门禁保留可操作根因。 */
@@ -229,7 +226,7 @@ public class CodingTools {
 
     @Tool(name = "apply_patch", description = "对已有文本文件精确应用统一 Diff（不能用于创建新文件）；"
             + "expectedHash 可省略——省略时使用本会话已确认的最新哈希，否则先 read_file 获取；"
-            + "同一文件连续失败 " + PATCH_FAILURE_ESCALATION_THRESHOLD + " 次后升级为允许 write_file 整文件覆盖")
+            + "同一文件连续失败 " + PATCH_FAILURE_ESCALATION_THRESHOLD + " 次后必须改用 replace_file")
     public Map<String, Object> applyPatch(
             @ToolParam(description = "工作区内的相对路径") String path,
             @ToolParam(description = "可选：期望的当前文件 64 位十六进制 sha256，省略则用已确认的最新哈希") String expectedHash,
@@ -258,6 +255,7 @@ public class CodingTools {
         if (result.isOk()) {
             // 成功应用后重置该文件的连续失败计数，避免历史失败把后续成功误判为升级。
             patchFailuresByPath.remove(path);
+            lastToolError = null;
             latestSha256.put(path, result.getNewSha256());
             if (result.isChanged()) {
                 modifiedFiles.add(path);
@@ -281,16 +279,20 @@ public class CodingTools {
     }
 
     /**
-     * apply_patch 工具级失败：按文件累计连续失败次数，达到阈值后升级该文件为允许
-     * write_file 整文件覆盖，并返回带专门 nextAction 的错误；每次失败都记录脱敏结果。
+     * apply_patch 工具级失败：按文件累计连续失败次数，达到阈值后要求使用
+     * replace_file，并返回带专门 nextAction 的错误；每次失败都记录脱敏结果。
      */
     private Map<String, Object> patchFailed(String path, String failureCode, String error) {
         int failures = patchFailuresByPath.merge(path, 1, Integer::sum);
         String message;
         if (failures >= PATCH_FAILURE_ESCALATION_THRESHOLD) {
-            overwriteEscalatedPaths.add(path);
             message = "该文件已连续 " + PATCH_FAILURE_ESCALATION_THRESHOLD + " 次补丁失败（" + error
-                    + "），已放行 write_file 整文件覆盖；请改用 write_file 提供完整文件内容";
+                    + "），请停止生成 Patch，先 read_file 获取最新内容和 sha256，再调用 replace_file 提供完整文件内容";
+            recordOutcome("apply_patch", path, false, false, "TOOL_PATCH_REPAIR_REQUIRED", true, message);
+            Map<String, Object> result = error("TOOL_PATCH_REPAIR_REQUIRED", message);
+            // error(...) 会更新 lastToolError，但这里必须保留稳定码，供 Agent 终态分类使用。
+            lastToolError = "TOOL_PATCH_REPAIR_REQUIRED: " + message;
+            return result;
         } else {
             message = error;
         }
@@ -299,8 +301,57 @@ public class CodingTools {
         return error(failureCode, message);
     }
 
-    @Tool(name = "write_file", description = "创建新文件（目标文件已存在时拒绝，改用 apply_patch；"
-            + "因 apply_patch 连续失败被升级的文件允许整文件覆盖；内容不得超过 256KB）")
+    @Tool(name = "replace_file", description = "对已有 UTF-8 文本文件执行带 expectedHash 校验的整文件原子替换；仅在 apply_patch 连续失败后使用，不能创建新文件")
+    public Map<String, Object> replaceFile(
+            @ToolParam(description = "工作区内的相对路径") String path,
+            @ToolParam(description = "read_file 返回的 64 位十六进制 sha256") String expectedHash,
+            @ToolParam(description = "完整 UTF-8 文件内容") String content) {
+        if (path == null || path.isBlank()) {
+            return error("replace_file requires non-empty 'path'");
+        }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(denied);
+        }
+        if (expectedHash == null || !expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return error("replace_file requires 64-char hex 'expectedHash' from read_file");
+        }
+        if (content == null) {
+            return error("replace_file requires non-null 'content'");
+        }
+        WorkspaceWriteResult result = writer.replaceFile(workspaceId, path, expectedHash, content);
+        if (result.isOk()) {
+            patchFailuresByPath.remove(path);
+            lastToolError = null;
+            latestSha256.put(path, result.getNewSha256());
+            if (result.isChanged()) {
+                modifiedFiles.add(path);
+                notifyChange(result);
+            }
+            recordOutcome("replace_file", path, true, result.isChanged(), null, false, null);
+            Map<String, Object> ok = new LinkedHashMap<>();
+            ok.put("ok", true);
+            ok.put("path", path);
+            ok.put("changed", result.isChanged());
+            ok.put("oldSha", expectedHash);
+            ok.put("newSha", result.getNewSha256());
+            return ok;
+        }
+        if (result.isInfrastructureFailure()) {
+            throw new WorkspaceInfraException("replace_file infrastructure failure: "
+                    + (result.getError() == null ? "workspace unavailable" : result.getError()));
+        }
+        String message = result.getError() == null ? "replace failed" : result.getError();
+        recordOutcome("replace_file", path, false, false, classifyError(result.getFailureCode(), message),
+                isRetryable(result.getFailureCode(), message), message);
+        Map<String, Object> failure = error(result.getFailureCode(), message);
+        if (patchFailuresByPath.getOrDefault(path, 0) >= PATCH_FAILURE_ESCALATION_THRESHOLD) {
+            lastToolError = "TOOL_PATCH_REPAIR_REQUIRED: replace_file failed: " + message;
+        }
+        return failure;
+    }
+
+    @Tool(name = "write_file", description = "创建新文件（目标文件已存在时拒绝，改用 apply_patch 或 replace_file；内容不得超过 256KB）")
     public Map<String, Object> writeFile(
             @ToolParam(description = "工作区内的相对路径") String path,
             @ToolParam(description = "新文件完整内容") String content) {
@@ -314,15 +365,16 @@ public class CodingTools {
         if (content == null) {
             return error("write_file requires non-empty 'content'");
         }
-        if (exists(path) && !overwriteEscalatedPaths.contains(path)) {
+        if (exists(path)) {
             String message = "write_file only creates new files; '" + path
-                    + "' already exists, use apply_patch for existing files";
+                    + "' already exists, use apply_patch or replace_file";
             recordOutcome("write_file", path, false, false, classifyError(null, message),
                     isRetryable(null, message), message);
             return error(message);
         }
         WorkspaceWriteResult result = writer.writeFile(workspaceId, path, content);
         if (result.isOk()) {
+            lastToolError = null;
             latestSha256.put(path, result.getNewSha256());
             if (result.isChanged()) {
                 modifiedFiles.add(path);
@@ -415,6 +467,7 @@ public class CodingTools {
         if (failureCode != null) {
             return switch (failureCode) {
                 case "FILE_PATCH_FAILED" -> "TOOL_PATCH_FORMAT_INVALID";
+                case "TOOL_PATCH_REPAIR_REQUIRED" -> "TOOL_PATCH_REPAIR_REQUIRED";
                 case "FILE_HASH_MISMATCH" -> "TOOL_CONFLICT";
                 case "TOOL_PATH_INVALID" -> "TOOL_PATH_INVALID";
                 case "TOOL_ARGUMENT_INVALID", "COMMAND_NOT_ALLOWED" -> "TOOL_ARGUMENT_INVALID";
@@ -428,7 +481,7 @@ public class CodingTools {
             return "TOOL_CONTENT_INVALID";
         }
         if (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")
-                || message.contains("已放行 write_file 整文件覆盖")) {
+                || message.contains("补丁") || message.contains("hunk")) {
             return "TOOL_PATCH_FORMAT_INVALID";
         }
         if (message.contains("outside") || message.contains("escapes") || message.contains("invalid")) {
@@ -449,9 +502,11 @@ public class CodingTools {
 
     private boolean isRetryable(String failureCode, String message) {
         if (failureCode != null) {
-            return "FILE_PATCH_FAILED".equals(failureCode) || "FILE_HASH_MISMATCH".equals(failureCode);
+            return "FILE_PATCH_FAILED".equals(failureCode) || "FILE_HASH_MISMATCH".equals(failureCode)
+                    || "TOOL_PATCH_REPAIR_REQUIRED".equals(failureCode);
         }
-        if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_"))) {
+        if (message != null && (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")
+                || message.contains("补丁") || message.contains("hunk"))) {
             return true;
         }
         return message != null && !message.contains("outside") && !message.contains("escapes")
@@ -464,9 +519,10 @@ public class CodingTools {
     }
 
     private String nextAction(String failureCode, String message) {
-        if (message != null && message.contains("已放行 write_file 整文件覆盖")) {
+        if ("TOOL_PATCH_REPAIR_REQUIRED".equals(failureCode)
+                || (message != null && message.contains("请停止生成 Patch"))) {
             return "该文件已连续 " + PATCH_FAILURE_ESCALATION_THRESHOLD
-                    + " 次补丁失败；请先用 read_file 获取最新内容，再用 write_file 提供完整文件内容整文件覆盖（本次运行已允许覆盖）";
+                    + " 次补丁失败；请先用 read_file 获取最新内容，再调用 replace_file 提供完整文件内容";
         }
         if ("FILE_PATCH_FAILED".equals(failureCode)) {
             return "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file";
@@ -477,7 +533,8 @@ public class CodingTools {
         if (message == null) {
             return "检查工具参数和工作区状态后再试一次";
         }
-        if (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")) {
+        if (message.contains("FILE_PATCH_FAILED") || message.contains("PATCH_")
+                || message.contains("补丁") || message.contains("hunk")) {
             return "不要重复原 patch；先 read_file 获取最新内容和 sha256，再按实际内容重新生成完整 unified diff；新文件改用 write_file";
         }
         if (message.contains("FILE_HASH_MISMATCH") || message.contains("hash") || message.contains("changed since read")) {

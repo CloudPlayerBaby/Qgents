@@ -5,6 +5,10 @@ import org.springframework.stereotype.Component;
 import qg.qgent.sandboxworker.api.WorkerException;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -51,7 +55,15 @@ public class FileWriteTool implements SandboxTool {
         Path target = files.resolveForWrite(context.getLocalRepository(), relativePath);
         try {
             boolean existed = Files.exists(target);
+            if (existed && (Files.isSymbolicLink(target)
+                    || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS))) {
+                throw new WorkerException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY,
+                        "TOOL_PATH_INVALID", "目标必须是已有的普通文本文件");
+            }
             byte[] previous = existed ? Files.readAllBytes(target) : new byte[0];
+            if (existed) {
+                decodeUtf8(previous);
+            }
             String actualHash = FileReadTool.sha256(previous);
             if (!actualHash.equalsIgnoreCase(expectedHash)) {
                 throw new WorkerException(CONFLICT, "FILE_HASH_MISMATCH", "文件已经发生变化，请重新读取后再写入");
@@ -67,6 +79,13 @@ public class FileWriteTool implements SandboxTool {
         } catch (Exception exception) {
             throw new IllegalStateException("写入文件失败", exception);
         }
+    }
+
+    private static void decodeUtf8(byte[] bytes) throws CharacterCodingException {
+        CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+        decoder.decode(ByteBuffer.wrap(bytes));
     }
     /**
      * 通过临时文件 + 原子替换写入目标，并保留/修复目标文件的 POSIX 权限与沙箱用户属主；

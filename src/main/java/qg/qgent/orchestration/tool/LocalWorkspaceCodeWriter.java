@@ -142,6 +142,58 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
     }
 
     @Override
+    public WorkspaceWriteResult replaceFile(UUID workspaceId, String path, String expectedHash, String content) {
+        if (path == null || path.isBlank()) {
+            return WorkspaceWriteResult.fail(null, "path must not be blank");
+        }
+        if (expectedHash == null || !expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return WorkspaceWriteResult.fail(path, "expectedHash must be 64 hex chars");
+        }
+        if (content == null) {
+            return WorkspaceWriteResult.fail(path, "content must not be null");
+        }
+        byte[] nextBytes = content.getBytes(StandardCharsets.UTF_8);
+        if (nextBytes.length > MAX_WRITE_BYTES) {
+            return WorkspaceWriteResult.fail(path, "content exceeds 256KB limit");
+        }
+        Path root = workspaceRoot(workspaceId);
+        if (root == null) {
+            return WorkspaceWriteResult.infraFail(path, "workspace root is not available");
+        }
+        Path target;
+        try {
+            target = resolvePatchTarget(root, path);
+        } catch (InvalidPathException e) {
+            return WorkspaceWriteResult.fail(path, "path contains invalid characters");
+        }
+        if (target == null) {
+            return WorkspaceWriteResult.fail(path, "path escapes workspace root or is absolute");
+        }
+        try {
+            if (Files.isSymbolicLink(target) || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                return WorkspaceWriteResult.fail(path, "target must be an existing regular file");
+            }
+            byte[] previous = Files.readAllBytes(target);
+            if (previous.length > MAX_WRITE_BYTES) {
+                return WorkspaceWriteResult.fail(path, "file exceeds 256KB limit");
+            }
+            try {
+                decodeStrictUtf8(previous);
+            } catch (CharacterCodingException e) {
+                return WorkspaceWriteResult.fail(path, "file is not UTF-8 text");
+            }
+            if (!Sha256.hex(previous).equalsIgnoreCase(expectedHash)) {
+                return WorkspaceWriteResult.fail(path, "file has changed since read, re-read then replace");
+            }
+            atomicReplace(target, nextBytes);
+            return WorkspaceWriteResult.ok(path, Sha256.hex(nextBytes),
+                    !java.util.Arrays.equals(previous, nextBytes));
+        } catch (IOException e) {
+            return WorkspaceWriteResult.infraFail(path, "replace failed: " + e.getMessage());
+        }
+    }
+
+    @Override
     public WorkspaceWriteResult patchFile(UUID workspaceId, String path, String expectedHash, String patch) {
         if (path == null || path.isBlank()) {
             return WorkspaceWriteResult.fail(null, "path must not be blank");

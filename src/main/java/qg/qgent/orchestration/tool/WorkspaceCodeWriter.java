@@ -32,6 +32,19 @@ public interface WorkspaceCodeWriter {
     WorkspaceWriteResult writeFile(UUID workspaceId, String path, String content);
 
     /**
+     * 对 Workspace 内已有 UTF-8 文本文件执行带 expectedHash 校验的整文件原子替换。
+     * 该操作只允许替换已有普通文件，不允许借此创建新文件；通常在严格 patch 连续失败
+     * 后由 Agent 使用，避免模型反复生成无法应用的 unified diff。
+     *
+     * @param workspaceId 目标 Workspace。
+     * @param path 相对路径。
+     * @param expectedHash 目标文件当前原始字节的 SHA-256。
+     * @param content 完整 UTF-8 文件内容。
+     * @return 结构化写入结果。
+     */
+    WorkspaceWriteResult replaceFile(UUID workspaceId, String path, String expectedHash, String content);
+
+    /**
      * 对 Workspace 内已有 UTF-8 文本文件精确应用统一 Diff（unified diff）局部修改；
      * expectedHash 必须来自同一次 {@link WorkspaceCodeAccess#readFile} 返回的 sha256，
      * 与当前文件原始字节不一致时拒绝应用且不产生任何写入。

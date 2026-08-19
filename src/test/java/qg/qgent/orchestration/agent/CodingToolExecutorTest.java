@@ -57,4 +57,22 @@ class CodingToolExecutorTest {
         assertThat(mapper.readTree(raw).path("errorCode").asText()).isEqualTo("TOOL_CONFLICT");
         assertThat(mapper.readTree(raw).path("retryable").asBoolean()).isTrue();
     }
+
+    @Test
+    void replaceFileUsesExpectedHashAndReturnsSuccess() throws Exception {
+        WorkspaceCodeAccess access = mock(WorkspaceCodeAccess.class);
+        WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
+        when(writer.replaceFile(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("src/main/java/X.java"),
+                org.mockito.ArgumentMatchers.eq(HASH), org.mockito.ArgumentMatchers.eq("full content")))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", "a".repeat(64), true));
+        CodingToolExecutor executor = new CodingToolExecutor(access, writer);
+        ObjectMapper mapper = new ObjectMapper();
+
+        String raw = executor.execute(UUID.randomUUID(), mapper.readTree("""
+                {"name":"replace_file","arguments":{"path":"src/main/java/X.java","expectedHash":"%s","content":"full content"}}
+                """.formatted(HASH)));
+
+        assertThat(mapper.readTree(raw).path("ok").asBoolean()).isTrue();
+        assertThat(mapper.readTree(raw).path("result").path("changed").asBoolean()).isTrue();
+    }
 }

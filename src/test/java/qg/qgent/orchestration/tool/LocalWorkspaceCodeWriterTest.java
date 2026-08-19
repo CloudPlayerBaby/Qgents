@@ -261,6 +261,38 @@ class LocalWorkspaceCodeWriterTest {
     }
 
     @Test
+    void replaceFileAtomicallyReplacesExistingUtf8File(@TempDir Path baseDir) throws Exception {
+        Path file = baseDir.resolve("ws-1/example.txt");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "before\n");
+
+        WorkspaceWriteResult result = new LocalWorkspaceCodeWriter(service(baseDir.toString()))
+                .replaceFile(workspaceId, "example.txt", hash(file), "after\n");
+
+        assertThat(result.isOk()).isTrue();
+        assertThat(result.isChanged()).isTrue();
+        assertThat(result.getNewSha256()).isEqualTo(hash(file));
+        assertThat(Files.readString(file)).isEqualTo("after\n");
+    }
+
+    @Test
+    void replaceFileRejectsHashConflictAndMissingFile(@TempDir Path baseDir) throws Exception {
+        Path file = baseDir.resolve("ws-1/example.txt");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "current\n");
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+
+        WorkspaceWriteResult conflict = writer.replaceFile(workspaceId, "example.txt", "0".repeat(64), "changed\n");
+        WorkspaceWriteResult missing = writer.replaceFile(workspaceId, "missing.txt", "0".repeat(64), "changed\n");
+
+        assertThat(conflict.isOk()).isFalse();
+        assertThat(conflict.getError()).contains("changed since read");
+        assertThat(missing.isOk()).isFalse();
+        assertThat(missing.getError()).contains("existing regular file");
+        assertThat(Files.readString(file)).isEqualTo("current\n");
+    }
+
+    @Test
     void patchFileRejectsContextMismatchLeavingFileUnchanged(@TempDir Path baseDir) throws Exception {
         Path file = baseDir.resolve("ws-1/mismatch.txt");
         Files.createDirectories(file.getParent());

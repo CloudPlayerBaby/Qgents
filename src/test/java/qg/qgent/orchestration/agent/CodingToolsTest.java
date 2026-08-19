@@ -458,15 +458,15 @@ class CodingToolsTest {
                 .containsExactlyInAnyOrder("src/main/java/New.java", "src/main/java/Existing.java");
     }
 
-    // ---------- apply_patch 连续失败升级：放行 write_file 整文件覆盖 ----------
+    // ---------- apply_patch 连续失败升级：切换为带 Hash 校验的 replace_file ----------
 
     @Test
-    void applyPatchConsecutiveFailuresEscalateToOverwrite() {
+    void applyPatchConsecutiveFailuresRequireReplaceFile() {
         when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/X.java"));
         when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
                 .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED",
                         "hunk 声明行数与正文不一致"));
-        when(writer.writeFile(workspaceId, "src/main/java/X.java", "full content"))
+        when(writer.replaceFile(workspaceId, "src/main/java/X.java", HASH, "full content"))
                 .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", NEW_HASH, true));
         CodingTools tools = tools();
 
@@ -474,12 +474,11 @@ class CodingToolsTest {
             assertThat(tools.applyPatch("src/main/java/X.java", HASH, "patch").get("ok")).isEqualTo(false);
         }
 
-        // 升级后 write_file 允许整文件覆盖已存在文件（此前会返回 only creates new files）。
-        Map<String, Object> overwrite = tools.writeFile("src/main/java/X.java", "full content");
+        Map<String, Object> overwrite = tools.replaceFile("src/main/java/X.java", HASH, "full content");
 
         assertThat(overwrite.get("ok")).isEqualTo(true);
         assertThat(overwrite.get("changed")).isEqualTo(true);
-        verify(writer).writeFile(workspaceId, "src/main/java/X.java", "full content");
+        verify(writer).replaceFile(workspaceId, "src/main/java/X.java", HASH, "full content");
     }
 
     @Test
@@ -536,10 +535,42 @@ class CodingToolsTest {
         }
 
         assertThat(result).containsEntry("ok", false)
-                .containsEntry("errorCode", "TOOL_PATCH_FORMAT_INVALID")
+                .containsEntry("errorCode", "TOOL_PATCH_REPAIR_REQUIRED")
                 .containsEntry("retryable", true);
-        assertThat((String) result.get("error")).contains("已放行 write_file 整文件覆盖");
-        assertThat((String) result.get("nextAction")).contains("write_file").contains("整文件覆盖");
+        assertThat((String) result.get("error")).contains("replace_file");
+        assertThat((String) result.get("nextAction")).contains("replace_file").contains("完整文件内容");
+    }
+
+    @Test
+    void replaceFileHashConflictDoesNotWrite() {
+        when(writer.replaceFile(workspaceId, "src/main/java/X.java", HASH, "full content"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_HASH_MISMATCH",
+                        "file has changed since read"));
+
+        Map<String, Object> result = tools().replaceFile("src/main/java/X.java", HASH, "full content");
+
+        assertThat(result).containsEntry("ok", false)
+                .containsEntry("errorCode", "TOOL_CONFLICT")
+                .containsEntry("retryable", true);
+        verify(writer).replaceFile(workspaceId, "src/main/java/X.java", HASH, "full content");
+    }
+
+    @Test
+    void failedReplaceAfterEscalationKeepsUnrecoverableMarker() {
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED", "bad patch"));
+        when(writer.replaceFile(workspaceId, "src/main/java/X.java", HASH, "full content"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_HASH_MISMATCH",
+                        "file changed since read"));
+        CodingTools tools = tools();
+
+        for (int i = 0; i < CodingTools.PATCH_FAILURE_ESCALATION_THRESHOLD; i++) {
+            tools.applyPatch("src/main/java/X.java", HASH, "patch");
+        }
+        Map<String, Object> result = tools.replaceFile("src/main/java/X.java", HASH, "full content");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat(tools.getLastToolError()).contains("TOOL_PATCH_REPAIR_REQUIRED");
     }
 
     @Test
