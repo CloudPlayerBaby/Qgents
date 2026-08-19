@@ -229,7 +229,9 @@ public class GroupService {
      * 计算某用户在指定可见群中「@ 我」的未读消息数（排除本人消息），返回群 ID → 计数。
      */
     private Map<UUID, Long> countMentionUnread(List<UUID> groupIds, UUID actor) {
-        return messageMapper.countMentionUnreadByGroupIds(groupIds, actor).stream()
+        // userIdText：JSON 匹配必须用字符串 UUID（mentions 存的是 Jackson 字符串；UUID 参数
+        // 受全局 UuidBinaryTypeHandler 影响以 BINARY(16) 绑定，直接 CAST 成乱码匹配不上）
+        return messageMapper.countMentionUnreadByGroupIds(groupIds, actor, actor.toString()).stream()
                 .collect(Collectors.toMap(GroupUnreadRow::getGroupId, GroupUnreadRow::getUnread));
     }
 
