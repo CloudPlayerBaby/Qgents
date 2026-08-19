@@ -14,6 +14,7 @@ import java.util.UUID;
  *   <li>task.updated      → {projectId, taskId, requirementGroupId, status, workspaceId, timestamp}</li>
  *   <li>task-step.updated → {projectId, taskId, taskStepId, sequenceNo, status, timestamp}</li>
  *   <li>task-run.updated  → {projectId, taskId, taskStepId, taskRunId, status, sequence, timestamp}</li>
+ *   <li>task-run.step.progress → {projectId, taskId, taskStepId, taskRunId, node, entryType, sequence, content, timestamp}</li>
  *   <li>input-required    → {projectId, taskId, taskStepId, taskRunId, inputRequestId, kind, status, prompt, timestamp}</li>
  *   <li>approval-required → {projectId, taskId, taskStepId, taskRunId, inputRequestId, kind, status, prompt, timestamp}</li>
  *   <li>diff.created      → {projectId, taskId, diffId, repositoryId, sourceBranch, headCommit, status, timestamp}</li>
@@ -57,6 +58,22 @@ public final class TaskEventPayloads {
         p.put("status", run.getStatus());
         p.put("sequence", sequence);
         p.put("timestamp", Instant.now().toString());
+        return p;
+    }
+
+    /** TaskRun 日志实时事件；sequence 与日志接口游标使用同一运行内序号。 */
+    public static Map<String, Object> taskRunLog(TaskRunEntity run, ExecutionLogEntity log) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("projectId", run.getProjectId());
+        p.put("taskId", run.getTaskId());
+        p.put("taskStepId", run.getTaskStepId());
+        p.put("taskRunId", run.getId());
+        p.put("node", log.getNode());
+        p.put("entryType", log.getEntryType());
+        p.put("sequence", log.getSequenceNo());
+        p.put("content", log.getContent());
+        p.put("timestamp", log.getCreatedAt() == null ? Instant.now().toString()
+                : log.getCreatedAt().toInstant(java.time.ZoneOffset.UTC).toString());
         return p;
     }
 

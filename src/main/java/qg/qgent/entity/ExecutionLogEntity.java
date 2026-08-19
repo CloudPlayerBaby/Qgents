@@ -27,6 +27,10 @@ public class ExecutionLogEntity {
      */
     private Long sequenceNo;
     /**
+     * 日志来源：EXECUTION（Agent/Worker）、SYSTEM（生命周期）、TERMINAL（终态摘要）。
+     */
+    private String entryType;
+    /**
      * 产生日志的节点名，单节点运行为空。
      */
     private String node;
