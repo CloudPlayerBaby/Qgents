@@ -68,6 +68,53 @@ class TaskServiceTest {
     }
 
     @Test
+    void createUsesReadableFeatureBranchName() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID backend = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
+        when(repositories.selectByWorkspace(any(UUID.class))).thenReturn(List.of());
+
+        service.create(projectId, actor, request(groupId, List.of(backend)));
+
+        ArgumentCaptor<String> branch = ArgumentCaptor.forClass(String.class);
+        verify(repositories).insertLink(any(), any(), any(), any(), branch.capture());
+        // request() 的标题为 "login"，新分支名应为 feat/<标题slug>-<id 前缀 12 位>，而非整段 UUID
+        assertThat(branch.getValue()).startsWith("feat/login-").matches("feat/login-[0-9a-f]{12}");
+    }
+
+    @Test
+    void createDetectsFixTypeFromChineseTitle() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID backend = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
+        when(repositories.selectByWorkspace(any(UUID.class))).thenReturn(List.of());
+
+        service.create(projectId, actor, request(groupId, List.of(backend), "修复登录接口报错"));
+
+        ArgumentCaptor<String> branch = ArgumentCaptor.forClass(String.class);
+        verify(repositories).insertLink(any(), any(), any(), any(), branch.capture());
+        assertThat(branch.getValue()).startsWith("fix/修复登录接口报错-")
+                .matches("fix/修复登录接口报错-[0-9a-f]{12}");
+    }
+
+    @Test
+    void createDetectsTypeFromConventionalPrefix() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID backend = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
+        when(repositories.selectByWorkspace(any(UUID.class))).thenReturn(List.of());
+
+        service.create(projectId, actor, request(groupId, List.of(backend), "fix login bug"));
+
+        ArgumentCaptor<String> branch = ArgumentCaptor.forClass(String.class);
+        verify(repositories).insertLink(any(), any(), any(), any(), branch.capture());
+        assertThat(branch.getValue()).startsWith("fix/login-bug-").matches("fix/login-bug-[0-9a-f]{12}");
+    }
+
+    @Test
     void createPublishesTaskCreatedEvent() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
         UUID backend = UUID.randomUUID();
@@ -333,8 +380,12 @@ class TaskServiceTest {
     }
 
     private TaskCreateRequest request(UUID groupId, List<UUID> repositoryIds) {
+        return request(groupId, repositoryIds, "login");
+    }
+
+    private TaskCreateRequest request(UUID groupId, List<UUID> repositoryIds, String title) {
         TaskCreateRequest request = new TaskCreateRequest();
-        request.setRequirementGroupId(groupId); request.setTitle("login"); request.setRequirement("implement login");
+        request.setRequirementGroupId(groupId); request.setTitle(title); request.setRequirement("implement login");
         request.setRepositoryIds(repositoryIds); return request;
     }
 
