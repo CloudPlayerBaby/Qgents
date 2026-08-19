@@ -131,7 +131,7 @@ class SandboxServiceTest {
         request.setSandboxId(UUID.randomUUID());
         request.setTaskRunId(UUID.randomUUID());
         request.setWorkspaceStorageKey("workspaces/" + UUID.randomUUID());
-        request.setImageProfile("java-node");
+        request.setImageProfile("dev-tools");
         return request;
     }
 

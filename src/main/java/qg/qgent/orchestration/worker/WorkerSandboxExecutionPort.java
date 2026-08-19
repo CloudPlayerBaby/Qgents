@@ -34,11 +34,25 @@ public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implement
 
     @Override
     public ExecutionResult execute(UUID workspaceId, List<String> command, Duration timeout) {
+        return execute(workspaceId, null, command, timeout);
+    }
+
+    @Override
+    public ExecutionResult execute(UUID workspaceId, String repositoryPath, List<String> command, Duration timeout) {
         if (command == null || command.isEmpty()) {
             return new ExecutionResult(false, -1, "", "", "command must not be empty");
         }
         try {
-            UUID repositoryId = session(workspaceId).singleRepository();
+            SandboxSession current = session(workspaceId);
+            UUID repositoryId;
+            if (repositoryPath == null || repositoryPath.isBlank()) {
+                repositoryId = current.singleRepository();
+            } else {
+                repositoryId = current.repositoryByPath().get(repositoryPath);
+                if (repositoryId == null) {
+                    return new ExecutionResult(false, -1, "", "", "repository path is not part of the workspace");
+                }
+            }
             WorkerToolExecution execution = executeTool(workspaceId, repositoryId, "process.exec",
                     Map.of("command", command), timeout);
             String stdout = collectLogs(execution.getId(), "STDOUT");

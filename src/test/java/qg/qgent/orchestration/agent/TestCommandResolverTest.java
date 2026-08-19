@@ -29,4 +29,31 @@ class TestCommandResolverTest {
         assertThat(resolver.resolve(List.of("build.gradle")))
                 .containsExactly("gradle", "test");
     }
+
+    @Test
+    void treatsWindowsOnlyWrappersAsAbsentInLinuxSandbox() {
+        assertThat(resolver.resolveCommand(List.of("backend/pom.xml", "backend/mvnw.cmd")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("mvn", "test"), "backend"));
+        assertThat(resolver.resolveCommand(List.of("frontend/build.gradle", "frontend/gradlew.cmd")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("gradle", "test"), "frontend"));
+    }
+
+    @Test
+    void bindsMultiRepositoryGradleWrapperToTheMatchingRepository() {
+        TestCommandResolver.ResolvedCommand command = resolver.resolveCommand(List.of(
+                "frontend/package.json", "backend/build.gradle.kts", "backend/gradlew"));
+
+        assertThat(command.repositoryPath()).isEqualTo("backend");
+        assertThat(command.command()).containsExactly("sh", "./gradlew", "test");
+    }
+
+    @Test
+    void bindsNestedRepositoryPathWithoutTruncatingAtFirstSegment() {
+        TestCommandResolver.ResolvedCommand command = resolver.resolveCommand(List.of(
+                "services/backend/pom.xml", "services/backend/mvnw", "services/backend/src/Main.java",
+                "web/package.json"));
+
+        assertThat(command.repositoryPath()).isEqualTo("services/backend");
+        assertThat(command.command()).containsExactly("sh", "./mvnw", "test");
+    }
 }

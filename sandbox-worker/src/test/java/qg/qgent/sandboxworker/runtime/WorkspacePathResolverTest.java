@@ -50,7 +50,7 @@ class WorkspacePathResolverTest {
         Path hostRoot = temporaryDirectory.resolve("host-repos");
         WorkspacePathResolver resolver = resolver(localRoot, hostRoot);
         SandboxAllocation allocation = new SandboxAllocation(UUID.randomUUID(), UUID.randomUUID(),
-                "workspaces/" + workspaceId, "java-node", "READY", "FAKE", Instant.EPOCH,
+                "workspaces/" + workspaceId, "dev-tools", "READY", "FAKE", Instant.EPOCH,
                 Instant.EPOCH, Instant.EPOCH, Instant.EPOCH, Duration.ofMinutes(1), null,
                 Map.of(repositoryId, "backend"));
 

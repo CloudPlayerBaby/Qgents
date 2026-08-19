@@ -17,17 +17,9 @@ class SandboxCommandPolicyTest {
     @Test
     void allowsAllWhitelistedTestTemplates() {
         assertThat(policy.allows(List.of("mvn", "test"))).isTrue();
-        assertThat(policy.allows(List.of("mvnw", "test"))).isTrue();
-        assertThat(policy.allows(List.of("mvnw.cmd", "test"))).isTrue();
-        assertThat(policy.allows(List.of("./mvnw", "test"))).isTrue();
-        assertThat(policy.allows(List.of("./mvnw.cmd", "test"))).isTrue();
         assertThat(policy.allows(List.of("gradle", "test"))).isTrue();
-        assertThat(policy.allows(List.of("gradlew", "test"))).isTrue();
-        assertThat(policy.allows(List.of("gradlew.bat", "test"))).isTrue();
-        assertThat(policy.allows(List.of("gradlew.cmd", "test"))).isTrue();
-        assertThat(policy.allows(List.of("./gradlew", "test"))).isTrue();
-        assertThat(policy.allows(List.of("./gradlew.bat", "test"))).isTrue();
-        assertThat(policy.allows(List.of("./gradlew.cmd", "test"))).isTrue();
+        assertThat(policy.allows(List.of("sh", "./mvnw", "test"))).isTrue();
+        assertThat(policy.allows(List.of("sh", "./gradlew", "test"))).isTrue();
         assertThat(policy.allows(List.of("npm", "test"))).isTrue();
     }
 

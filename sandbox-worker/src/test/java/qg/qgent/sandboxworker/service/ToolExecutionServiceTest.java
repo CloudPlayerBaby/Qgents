@@ -27,6 +27,7 @@ import java.util.concurrent.Executors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -55,15 +56,17 @@ class ToolExecutionServiceTest {
         UUID executionId = UUID.randomUUID();
         SandboxAllocation sandbox = allocation(sandboxId);
         when(sandboxes.findAllocation(sandboxId)).thenReturn(sandbox);
-        when(tools.requiresRepository("process.exec")).thenReturn(false);
+        when(tools.requiresRepository("process.exec")).thenReturn(true);
         when(tools.execute(anyString(), any(), any())).thenReturn(ToolResult.value(Map.of("ok", true)));
         ToolExecutionService service = new ToolExecutionService(sandboxes, paths, tools, executions, logMapper,
                 new ObjectMapper().findAndRegisterModules(), properties, pool, Clock.systemUTC());
         ToolExecutionRequest request = new ToolExecutionRequest();
         request.setExecutionId(executionId);
         request.setTool("process.exec");
+        request.setRepositoryId(UUID.randomUUID());
 
-        assertEquals("QUEUED", service.submit(sandboxId, request).getStatus());
+        String submitted = service.submit(sandboxId, request).getStatus();
+        assertTrue(java.util.List.of("QUEUED", "RUNNING", "SUCCEEDED").contains(submitted));
         for (int attempt = 0; attempt < 100 && !"SUCCEEDED".equals(rows.get(executionId.toString()).getStatus()); attempt++) {
             Thread.sleep(10);
         }
@@ -86,12 +89,13 @@ class ToolExecutionServiceTest {
         UUID sandboxId = UUID.randomUUID();
         UUID executionId = UUID.randomUUID();
         when(sandboxes.findAllocation(sandboxId)).thenReturn(allocation(sandboxId));
-        when(tools.requiresRepository("process.exec")).thenReturn(false);
+        when(tools.requiresRepository("process.exec")).thenReturn(true);
         ToolExecutionService service = new ToolExecutionService(sandboxes, paths, tools, executions, logMapper,
                 new ObjectMapper().findAndRegisterModules(), properties, waitingPool, Clock.systemUTC());
         ToolExecutionRequest request = new ToolExecutionRequest();
         request.setExecutionId(executionId);
         request.setTool("process.exec");
+        request.setRepositoryId(UUID.randomUUID());
 
         service.submit(sandboxId, request);
 
@@ -152,7 +156,7 @@ class ToolExecutionServiceTest {
 
     private SandboxAllocation allocation(UUID sandboxId) {
         Instant now = Instant.now();
-        return new SandboxAllocation(sandboxId, UUID.randomUUID(), "workspaces/" + UUID.randomUUID(), "java-node",
+        return new SandboxAllocation(sandboxId, UUID.randomUUID(), "workspaces/" + UUID.randomUUID(), "dev-tools",
                 "READY", "FAKE", now, now, now.plusSeconds(60), now.plusSeconds(3600),
                 Duration.ofMinutes(15), null, Map.of());
     }

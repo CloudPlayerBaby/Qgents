@@ -93,7 +93,7 @@ class SandboxWorkerClientTest {
         request.setSandboxId(SANDBOX);
         request.setTaskRunId(UUID.fromString("00000000-0000-0000-0000-000000000005"));
         request.setWorkspaceStorageKey("workspaces/" + WORKSPACE);
-        request.setImageProfile("java-node");
+        request.setImageProfile("dev-tools");
         request.setRepositoryIds(List.of(REPO));
 
         WorkerSandbox sandbox = client.createSandbox(request);

@@ -194,7 +194,7 @@ class SandboxSessionManagerTest {
         assertThat(create.getWorkspaceStorageKey()).isEqualTo("workspaces/" + WORKSPACE);
         assertThat(create.getTaskRunId()).isEqualTo(TASK);
         assertThat(create.getRepositoryIds()).containsExactly(REPO);
-        assertThat(create.getImageProfile()).isEqualTo("java-node");
+        assertThat(create.getImageProfile()).isEqualTo("dev-tools");
 
         assertThat(session.sandboxId()).isNotNull();
         assertThat(session.singleRepository()).isEqualTo(REPO);
@@ -636,7 +636,7 @@ class SandboxSessionManagerTest {
         WorkerSandbox existing = new WorkerSandbox();
         existing.setTaskRunId(TASK);
         existing.setWorkspaceStorageKey("workspaces/" + WORKSPACE);
-        existing.setImageProfile("java-node");
+        existing.setImageProfile("dev-tools");
         existing.setRepositoryIds(List.of(REPO));
         when(client.getSandbox(any())).thenReturn(existing);
 
@@ -659,7 +659,7 @@ class SandboxSessionManagerTest {
         WorkerSandbox existing = new WorkerSandbox();
         existing.setTaskRunId(UUID.fromString("00000000-0000-0000-0000-000000000099"));
         existing.setWorkspaceStorageKey("workspaces/" + WORKSPACE);
-        existing.setImageProfile("java-node");
+        existing.setImageProfile("dev-tools");
         existing.setRepositoryIds(List.of(REPO));
         when(client.getSandbox(any())).thenReturn(existing);
 

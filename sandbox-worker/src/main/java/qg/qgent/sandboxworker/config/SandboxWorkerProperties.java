@@ -63,7 +63,7 @@ public class SandboxWorkerProperties {
     /**
      * 允许控制层选择的镜像配置名称。
      */
-    private Set<String> imageProfiles = Set.of("java-node");
+    private Set<String> imageProfiles = Set.of("dev-tools");
 
     /**
      * Docker Engine API 地址。
@@ -98,7 +98,7 @@ public class SandboxWorkerProperties {
     /**
      * 镜像配置名称到实际镜像引用的映射。
      */
-    private Map<String, String> images = Map.of("java-node", "qgents/sandbox-java-node:0.1.0");
+    private Map<String, String> images = Map.of("dev-tools", "qgents/sandbox-dev-tools:0.2.0");
 
     /**
      * 单个沙箱可使用的内存字节数。
@@ -130,6 +130,18 @@ public class SandboxWorkerProperties {
      * 只作为本 Sandbox 的可写 tmpfs，Sandbox 销毁后即清理，不是宿主机持久缓存，也不与其他 Sandbox 或 Project 共享。
      */
     private String mavenCacheSize = "2g";
+
+    /**
+     * 单个 Sandbox 的 Gradle 临时缓存容量上限（Docker tmpfs size，如 3g、512m 或字节数）。
+     * 只作为本 Sandbox 的可写 tmpfs，Sandbox 销毁后即清理，不是宿主机持久缓存，也不与其他 Sandbox 或 Project 共享。
+     */
+    private String gradleCacheSize = "3g";
+
+    /**
+     * 单个 Sandbox 的 npm 临时缓存容量上限（Docker tmpfs size，如 1g、512m 或字节数）。
+     * 只作为本 Sandbox 的可写 tmpfs，Sandbox 销毁后即清理，不是宿主机持久缓存，也不与其他 Sandbox 或 Project 共享。
+     */
+    private String npmCacheSize = "1g";
 
     /**
      * 主后端地址，供 Worker 访问内部接口。

@@ -137,7 +137,7 @@ public class SandboxService {
 
         allocation.setLastActiveAt(now);
         allocation.setExpiresAt(min(now.plus(ttl), allocation.getMaxExpiresAt()));
-        log.info("sandbox renewed sandboxId={} expiresAt={} requestedSeconds={}",
+        log.debug("sandbox renewed sandboxId={} expiresAt={} requestedSeconds={}",
                 sandboxId, allocation.getExpiresAt(), requestedSeconds);
         return response(allocation);
     }

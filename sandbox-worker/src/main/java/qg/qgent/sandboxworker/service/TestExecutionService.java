@@ -22,6 +22,7 @@ import qg.qgent.sandboxworker.workspace.WorkspaceResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.nio.charset.StandardCharsets;
 
@@ -31,6 +32,12 @@ import java.nio.charset.StandardCharsets;
 @Service
 @RequiredArgsConstructor
 public class TestExecutionService {
+    private static final Set<List<String>> ALLOWED_TEST_COMMANDS = Set.of(
+            List.of("mvn", "test"),
+            List.of("gradle", "test"),
+            List.of("npm", "test"),
+            List.of("sh", "./mvnw", "test"),
+            List.of("sh", "./gradlew", "test"));
     private final WorkspaceManagerService workspaces;
     private final SandboxService sandboxes;
     private final CommandExecutor commands;
@@ -73,7 +80,8 @@ public class TestExecutionService {
             create.setSandboxId(sandboxId);
             create.setTaskRunId(request.getExecutionId());
             create.setWorkspaceStorageKey(workspace.getStorageKey());
-            create.setImageProfile(properties.getImageProfiles().stream().findFirst().orElse("java-node"));
+            create.setImageProfile(properties.getImageProfiles().contains("dev-tools") ? "dev-tools"
+                    : properties.getImageProfiles().stream().findFirst().orElse("dev-tools"));
             create.setRepositoryIds(List.of(request.getRepositoryId()));
             sandboxes.create(create);
             SandboxAllocation allocation = sandboxes.findAllocation(sandboxId);
@@ -116,12 +124,20 @@ public class TestExecutionService {
                                           TestExecutionItemRequest testset) {
         long started = System.nanoTime();
         try {
-            List<String> command = splitCommand(testset.getCommand());
+            List<String> command = normalizeWrapperCommand(splitCommand(testset.getCommand()));
+            if (!ALLOWED_TEST_COMMANDS.contains(command)) {
+                throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, "TEST_COMMAND_NOT_ALLOWED",
+                        "Testset 命令不在受控测试命令白名单内");
+            }
             Duration requested = Duration.ofSeconds(testset.getTimeoutSeconds());
             Duration timeout = requested.compareTo(properties.getMaxExecutionTimeout()) <= 0
                     ? requested : properties.getMaxExecutionTimeout();
             CommandExecutionResult result = commands.execute(allocation,
                     paths.resolveRepositoryContainer(allocation, repositoryId), command, timeout);
+            if (result.getExitCode() == 126 || result.getExitCode() == 127) {
+                return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", result.getExitCode(),
+                        elapsed(started), "BUILD_ENVIRONMENT_UNAVAILABLE");
+            }
             boolean passed = result.getExitCode() == testset.getExpectedExitCode();
             return new TestExecutionItemResponse(testset.getTestsetId(), passed ? "PASSED" : "FAILED",
                     result.getExitCode(), elapsed(started), passed ? null : "UNEXPECTED_EXIT_CODE");
@@ -129,6 +145,11 @@ public class TestExecutionService {
             Thread.currentThread().interrupt();
             return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started), "TIMED_OUT");
         } catch (RuntimeException exception) {
+            if (exception instanceof WorkerException workerException
+                    && "TEST_COMMAND_NOT_ALLOWED".equals(workerException.getCode())) {
+                return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started),
+                        "TEST_COMMAND_NOT_ALLOWED");
+            }
             return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started),
                     "EXECUTION_FAILED");
         }
@@ -164,6 +185,21 @@ public class TestExecutionService {
             throw new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, "TEST_COMMAND_INVALID", "测试命令参数数量无效");
         }
         return List.copyOf(result);
+    }
+
+    /**
+     * 兼容历史 Testset 中没有 ./ 前缀的 Wrapper 命令，并通过 sh 启动 Wrapper，
+     * 规避 Git worktree 没有 executable bit 时的 126。仅转换固定 Wrapper 向量，
+     * 不接受 shell 字符串或任意 shell 选项。
+     */
+    static List<String> normalizeWrapperCommand(List<String> command) {
+        if (command.equals(List.of("gradlew", "test")) || command.equals(List.of("./gradlew", "test"))) {
+            return List.of("sh", "./gradlew", "test");
+        }
+        if (command.equals(List.of("mvnw", "test")) || command.equals(List.of("./mvnw", "test"))) {
+            return List.of("sh", "./mvnw", "test");
+        }
+        return command;
     }
 
     private long elapsed(long started) {

@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 import qg.qgent.service.WorkspaceService;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,6 +51,11 @@ public class LocalSandboxExecutionPort implements ExecutionPort {
 
     @Override
     public ExecutionResult execute(UUID workspaceId, List<String> command, Duration timeout) {
+        return execute(workspaceId, null, command, timeout);
+    }
+
+    @Override
+    public ExecutionResult execute(UUID workspaceId, String repositoryPath, List<String> command, Duration timeout) {
         if (!commandPolicy.allows(command)) {
             return new ExecutionResult(false, -1, "", "", "command not allowed by sandbox policy: " + command);
         }
@@ -58,7 +64,14 @@ public class LocalSandboxExecutionPort implements ExecutionPort {
             return new ExecutionResult(false, -1, "", "", "workspace is not ready for execution: "
                     + (resolution.reason() == null ? "unknown" : resolution.reason()));
         }
-        return processRunner.run(resolution.root(), wrapForLaunch(command), timeout);
+        Path cwd = resolution.root();
+        if (repositoryPath != null && !repositoryPath.isBlank()) {
+            cwd = cwd.resolve(repositoryPath).normalize();
+            if (!cwd.startsWith(resolution.root()) || !java.nio.file.Files.isDirectory(cwd)) {
+                return new ExecutionResult(false, -1, "", "", "repository is not a child of the workspace");
+            }
+        }
+        return processRunner.run(cwd, wrapForLaunch(cwd, command), timeout);
     }
 
     /**
@@ -66,7 +79,23 @@ public class LocalSandboxExecutionPort implements ExecutionPort {
      * 其余平台原样返回。白名单已在调用本方法前对原始命令完成校验。
      */
     static List<String> wrapForLaunch(List<String> command) {
+        return wrapForLaunch(null, command);
+    }
+
+    static List<String> wrapForLaunch(Path cwd, List<String> command) {
         if (!isWindows()) {
+            return command;
+        }
+        if (command.equals(List.of("sh", "./gradlew", "test"))) {
+            if (cwd != null && java.nio.file.Files.exists(cwd.resolve("gradlew.bat"))) {
+                return List.of("cmd.exe", "/c", "gradlew.bat", "test");
+            }
+            return command;
+        }
+        if (command.equals(List.of("sh", "./mvnw", "test"))) {
+            if (cwd != null && java.nio.file.Files.exists(cwd.resolve("mvnw.cmd"))) {
+                return List.of("cmd.exe", "/c", "mvnw.cmd", "test");
+            }
             return command;
         }
         List<String> argv = new ArrayList<>(command.size() + 2);

@@ -19,18 +19,10 @@ final class SandboxCommandPolicy {
 
     private static final Set<List<String>> ALLOWED = Set.of(
             List.of("mvn", "test"),
-            List.of("mvnw", "test"),
-            List.of("mvnw.cmd", "test"),
-            List.of("./mvnw", "test"),
-            List.of("./mvnw.cmd", "test"),
             List.of("gradle", "test"),
-            List.of("gradlew", "test"),
-            List.of("gradlew.bat", "test"),
-            List.of("gradlew.cmd", "test"),
-            List.of("./gradlew", "test"),
-            List.of("./gradlew.bat", "test"),
-            List.of("./gradlew.cmd", "test"),
-            List.of("npm", "test"));
+            List.of("sh", "./gradlew", "test"),
+            List.of("npm", "test"),
+            List.of("sh", "./mvnw", "test"));
 
     /**
      * 判断命令向量是否命中白名单模板。

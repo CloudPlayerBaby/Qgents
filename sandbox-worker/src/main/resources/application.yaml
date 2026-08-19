@@ -9,6 +9,17 @@ spring:
     password: ${SANDBOX_DB_PASSWORD:qgents}
     driver-class-name: com.mysql.cj.jdbc.Driver
 
+logging:
+  file:
+    name: ${SANDBOX_LOG_FILE:logs/sandbox-worker.log}
+  logback:
+    rollingpolicy:
+      max-file-size: ${SANDBOX_LOG_MAX_FILE_SIZE:50MB}
+      max-history: ${SANDBOX_LOG_MAX_HISTORY:30}
+      total-size-cap: ${SANDBOX_LOG_TOTAL_SIZE_CAP:2GB}
+  level:
+    qg.qgent.sandboxworker.service.ToolExecutionService: ${SANDBOX_TOOL_LOG_LEVEL:WARN}
+
 server:
   port: ${SANDBOX_WORKER_PORT:8091}
 
@@ -32,7 +43,7 @@ sandbox:
   # 执行线程数
   execution-threads: ${SANDBOX_EXECUTION_THREADS:4}
   # 镜像配置
-  image-profiles: ${SANDBOX_IMAGE_PROFILES:java-node}
+  image-profiles: ${SANDBOX_IMAGE_PROFILES:dev-tools}
   docker-host: ${SANDBOX_DOCKER_HOST:unix:///var/run/docker.sock}
   worker-id: ${SANDBOX_WORKER_ID:local}
   workspace-local-root: ${SANDBOX_WORKSPACE_LOCAL_ROOT:/var/lib/qgents/workspaces}
@@ -43,7 +54,7 @@ sandbox:
   backend-url: ${SANDBOX_BACKEND_URL:http://qgents-backend:8080}
   backend-service-token: ${SANDBOX_BACKEND_SERVICE_TOKEN:}
   images:
-    java-node: ${SANDBOX_JAVA_NODE_IMAGE:qgents/sandbox-java-node:0.1.0}
+    dev-tools: ${SANDBOX_DEV_TOOLS_IMAGE:qgents/sandbox-dev-tools:0.2.0}
   memory-bytes: ${SANDBOX_MEMORY_BYTES:4294967296}
   nano-cpus: ${SANDBOX_NANO_CPUS:2000000000}
   pids-limit: ${SANDBOX_PIDS_LIMIT:256}
@@ -52,6 +63,10 @@ sandbox:
   max-output-bytes: ${SANDBOX_MAX_OUTPUT_BYTES:1048576}
   # 单个 Sandbox 的 Maven / Maven Wrapper 临时缓存容量上限（容器内可写 tmpfs，Sandbox 销毁后清理）
   maven-cache-size: ${SANDBOX_MAVEN_CACHE_SIZE:2g}
+  # 单个 Sandbox 的 Gradle 临时缓存容量上限（容器内可写 tmpfs，Sandbox 销毁后清理）
+  gradle-cache-size: ${SANDBOX_GRADLE_CACHE_SIZE:3g}
+  # 单个 Sandbox 的 npm 临时缓存容量上限（容器内可写 tmpfs，Sandbox 销毁后清理）
+  npm-cache-size: ${SANDBOX_NPM_CACHE_SIZE:1g}
 
 management:
   endpoints:

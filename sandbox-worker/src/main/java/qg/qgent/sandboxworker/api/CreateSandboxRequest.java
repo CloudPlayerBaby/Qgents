@@ -38,7 +38,7 @@ public class CreateSandboxRequest {
     private String workspaceStorageKey;
 
     /**
-     * Worker 白名单中的镜像配置名称，例如 java-node。
+     * Worker 白名单中的镜像配置名称，例如 dev-tools。
      */
     @NotBlank
     @Size(max = 64)

@@ -1,6 +1,7 @@
 package qg.qgent.sandboxworker.workspace;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import qg.qgent.sandboxworker.api.WorkerException;
@@ -20,6 +21,7 @@ import java.util.UUID;
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class GitStoreManager {
     private static final String GITHUB_HOST = "github.com";
     private static final String BRANCH_PATTERN = "[A-Za-z0-9][A-Za-z0-9._/-]{0,255}";
@@ -35,6 +37,9 @@ public class GitStoreManager {
         String repositoryUrl = validateRepositoryUrl(request.getRepositoryUrl());
         validateBranch(request.getRemoteBranch());
         String repositoryFullName = repositoryFullName(repositoryUrl);
+        log.info("git store sync start repositoryId={} repository={} branch={} expectedHeadCommit={} grantPresent={}",
+                repositoryId, repositoryFullName, request.getRemoteBranch(), request.getExpectedHeadCommit(),
+                request.getCredentialGrantId() != null && !request.getCredentialGrantId().isBlank());
         return repositories.locked(repositoryId,
                 () -> syncLocked(repositoryId, request, repositoryUrl, repositoryFullName));
     }
@@ -65,8 +70,14 @@ public class GitStoreManager {
                 throw new WorkerException(HttpStatus.CONFLICT, "GIT_REMOTE_SHA_MISMATCH", "远程分支 HEAD 与预期提交不一致");
             }
             configureOrigin(store, repositoryUrl);
+            log.info("git store sync success repositoryId={} repository={} branch={} expectedHeadCommit={} actualHead={} storeCreated={}",
+                    repositoryId, repositoryFullName, request.getRemoteBranch(), request.getExpectedHeadCommit(), actualHead,
+                    created);
             return new GitStoreSyncResponse(repositoryId, request.getRemoteBranch(), actualHead, created);
         } catch (RuntimeException failure) {
+            log.error("git store sync failed repositoryId={} repository={} branch={} expectedHeadCommit={} exceptionType={} message={}",
+                    repositoryId, repositoryFullName, request.getRemoteBranch(), request.getExpectedHeadCommit(),
+                    failure.getClass().getSimpleName(), failure.getMessage(), failure);
             // 本次新建的 bare Store 在后续 fetch/校验失败时可能残留为空壳，删除避免下次以半成品复用；
             // 已存在的 Store 失败时保留原引用，不破坏既有内容。删除失败仅告警，不阻断异常抛回。
             if (created) {

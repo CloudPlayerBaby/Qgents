@@ -87,7 +87,7 @@ class WorkspaceManagerServiceTest {
         sandbox.setSandboxId(UUID.randomUUID());
         sandbox.setTaskRunId(UUID.randomUUID());
         sandbox.setWorkspaceStorageKey("workspaces/" + workspaceId);
-        sandbox.setImageProfile("java-node");
+        sandbox.setImageProfile("dev-tools");
         sandbox.setRepositoryIds(List.of(repositoryId));
         sandboxes.create(sandbox);
 

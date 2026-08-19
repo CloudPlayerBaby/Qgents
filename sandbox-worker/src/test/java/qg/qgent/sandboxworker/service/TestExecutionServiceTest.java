@@ -44,7 +44,7 @@ class TestExecutionServiceTest {
         WorkspacePathResolver paths = mock(WorkspacePathResolver.class);
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         properties.setRuntime("docker");
-        properties.setImageProfiles(Set.of("java-node"));
+        properties.setImageProfiles(Set.of("dev-tools"));
         properties.setMaxExecutionTimeout(Duration.ofSeconds(60));
         TestExecutionService service = new TestExecutionService(workspaces, sandboxes, commands, paths, properties);
         UUID projectId = UUID.randomUUID(), repositoryId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
@@ -55,7 +55,7 @@ class TestExecutionServiceTest {
         SandboxAllocation allocation = mock(SandboxAllocation.class);
         when(sandboxes.findAllocation(any())).thenReturn(allocation);
         when(paths.resolveRepositoryContainer(allocation, repositoryId)).thenReturn("/workspace/backend");
-        when(commands.execute(eq(allocation), eq("/workspace/backend"), eq(List.of("./mvnw", "test")),
+        when(commands.execute(eq(allocation), eq("/workspace/backend"), eq(List.of("sh", "./mvnw", "test")),
                 eq(Duration.ofSeconds(60))))
                 .thenReturn(new CommandExecutionResult(0, List.of(), List.of()));
         TestExecutionItemRequest item = new TestExecutionItemRequest();
@@ -81,5 +81,13 @@ class TestExecutionServiceTest {
         TestExecutionRequest request = new TestExecutionRequest();
         WorkerException error = assertThrows(WorkerException.class, () -> service.execute(request));
         assertEquals("REAL_SANDBOX_REQUIRED", error.getCode());
+    }
+
+    @Test
+    void normalizesHistoricalBareWrapperCommands() {
+        assertEquals(List.of("sh", "./gradlew", "test"),
+                TestExecutionService.normalizeWrapperCommand(List.of("gradlew", "test")));
+        assertEquals(List.of("sh", "./mvnw", "test"),
+                TestExecutionService.normalizeWrapperCommand(List.of("./mvnw", "test")));
     }
 }

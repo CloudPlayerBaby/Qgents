@@ -52,7 +52,7 @@ public class DockerContainerRuntime implements ContainerRuntime {
     private static final String EXECUTION_TIMEOUT_LABEL = LABEL_PREFIX + "execution-timeout-seconds";
     private static final String REPOSITORY_LABEL_PREFIX = LABEL_PREFIX + "repository.";
     /**
-     * 沙箱容器运行用户（与 sandbox-images/java-node Dockerfile 的 USER_ID 一致），
+     * 沙箱容器运行用户（与 sandbox-images/dev-tools Dockerfile 的 USER_ID 一致），
      * workspace 仓库目录属主需与之一致，非 root 沙箱才能读写 git 检出的文件。
      */
     private static final int SANDBOX_UID = 10001;
@@ -142,15 +142,18 @@ public class DockerContainerRuntime implements ContainerRuntime {
     }
 
     /**
-     * 构建容器可写 tmpfs 挂载：/tmp、/run 以及 Maven/Maven Wrapper 缓存目录。
-     * /home/developer/.m2 容量由 Worker 配置控制，仅作为本 Sandbox 的临时缓存，随容器销毁清理；
+     * 构建容器可写 tmpfs 挂载：/tmp、/run 以及 Maven、Gradle、npm 缓存目录。
+     * 各构建缓存容量由 Worker 配置控制，仅作为本 Sandbox 的临时缓存，随容器销毁清理；
      * 不挂载宿主机路径，不放开 rootfs 其他位置的只读隔离。
      */
     Map<String, String> tmpfsMounts() {
         return Map.of(
                 "/tmp", "rw,noexec,nosuid,size=512m",
                 "/run", "rw,noexec,nosuid,size=64m",
-                "/home/developer/.m2", "rw,nosuid,nodev,size=" + properties.getMavenCacheSize());
+                "/home/developer/.m2", "rw,nosuid,nodev,size=" + properties.getMavenCacheSize(),
+                "/home/developer/.gradle", "rw,nosuid,nodev,size=" + properties.getGradleCacheSize(),
+                "/home/developer/.npm", "rw,nosuid,nodev,size=" + properties.getNpmCacheSize(),
+                "/home/developer/.cache", "rw,nosuid,nodev,size=512m");
     }
 
     @Override

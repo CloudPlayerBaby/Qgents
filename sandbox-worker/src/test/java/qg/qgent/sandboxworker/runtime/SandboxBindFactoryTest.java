@@ -30,7 +30,7 @@ class SandboxBindFactoryTest {
         properties.setWorkspaceLocalRoot(localRoot.toString());
         properties.setWorkspaceDockerHostRoot(hostRoot.toString());
         SandboxAllocation allocation = new SandboxAllocation(UUID.randomUUID(), UUID.randomUUID(),
-                "workspaces/" + workspaceId, "java-node", "READY", "DOCKER", Instant.EPOCH,
+                "workspaces/" + workspaceId, "dev-tools", "READY", "DOCKER", Instant.EPOCH,
                 Instant.EPOCH, Instant.EPOCH, Instant.EPOCH, Duration.ofMinutes(1), null,
                 Map.of(repositoryId, "backend"));
 

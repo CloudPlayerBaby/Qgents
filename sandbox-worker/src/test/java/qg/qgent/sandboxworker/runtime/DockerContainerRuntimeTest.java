@@ -30,15 +30,20 @@ class DockerContainerRuntimeTest {
     @TempDir Path root;
 
     @Test
-    void tmpfsMountsIncludeMavenCacheAndUseConfiguredSize() {
+    void tmpfsMountsIncludeBuildCachesAndUseConfiguredSizes() {
         SandboxWorkerProperties properties = new SandboxWorkerProperties();
         properties.setMavenCacheSize("1g");
+        properties.setGradleCacheSize("3g");
+        properties.setNpmCacheSize("512m");
         Map<String, String> tmpfs = runtime(properties).tmpfsMounts();
 
-        assertEquals(3, tmpfs.size());
+        assertEquals(6, tmpfs.size());
         assertEquals("rw,noexec,nosuid,size=512m", tmpfs.get("/tmp"));
         assertEquals("rw,noexec,nosuid,size=64m", tmpfs.get("/run"));
         assertEquals("rw,nosuid,nodev,size=1g", tmpfs.get("/home/developer/.m2"));
+        assertEquals("rw,nosuid,nodev,size=3g", tmpfs.get("/home/developer/.gradle"));
+        assertEquals("rw,nosuid,nodev,size=512m", tmpfs.get("/home/developer/.npm"));
+        assertEquals("rw,nosuid,nodev,size=512m", tmpfs.get("/home/developer/.cache"));
     }
 
     @Test
@@ -72,7 +77,7 @@ class DockerContainerRuntimeTest {
         request.setSandboxId(UUID.randomUUID());
         request.setTaskRunId(UUID.randomUUID());
         request.setWorkspaceStorageKey("workspaces/" + workspaceId);
-        request.setImageProfile("java-node");
+        request.setImageProfile("dev-tools");
         SandboxAllocation allocation = new SandboxAllocation(request.getSandboxId(), request.getTaskRunId(),
                 request.getWorkspaceStorageKey(), request.getImageProfile(), "READY", "DOCKER",
                 Instant.EPOCH, Instant.EPOCH, Instant.EPOCH, Instant.EPOCH, Duration.ofMinutes(1), null, Map.of());
@@ -88,6 +93,9 @@ class DockerContainerRuntimeTest {
         assertEquals(properties.getNanoCpus(), hostConfig.getNanoCPUs());
         assertEquals(properties.getPidsLimit(), hostConfig.getPidsLimit());
         assertEquals("rw,nosuid,nodev,size=2g", hostConfig.getTmpFs().get("/home/developer/.m2"));
+        assertEquals("rw,nosuid,nodev,size=3g", hostConfig.getTmpFs().get("/home/developer/.gradle"));
+        assertEquals("rw,nosuid,nodev,size=1g", hostConfig.getTmpFs().get("/home/developer/.npm"));
+        assertEquals("rw,nosuid,nodev,size=512m", hostConfig.getTmpFs().get("/home/developer/.cache"));
     }
 
     private DockerContainerRuntime runtime(SandboxWorkerProperties properties) {

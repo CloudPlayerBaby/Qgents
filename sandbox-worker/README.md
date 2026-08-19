@@ -20,4 +20,50 @@ mvn -f sandbox-worker/pom.xml test
 mvn -f sandbox-worker/pom.xml package
 ```
 
-关键配置：`SANDBOX_GIT_STORE_ROOT`、`SANDBOX_WORKSPACE_LOCAL_ROOT`、`SANDBOX_WORKSPACE_DOCKER_HOST_ROOT`、`SANDBOX_WORKSPACE_METADATA_ROOT`、`SANDBOX_RUNTIME`、`SANDBOX_JAVA_NODE_IMAGE`。
+关键配置：`SANDBOX_GIT_STORE_ROOT`、`SANDBOX_WORKSPACE_LOCAL_ROOT`、`SANDBOX_WORKSPACE_DOCKER_HOST_ROOT`、`SANDBOX_WORKSPACE_METADATA_ROOT`、`SANDBOX_RUNTIME`、`SANDBOX_DEV_TOOLS_IMAGE`。
+
+## 分步构建与运行
+
+主后端：
+
+```powershell
+mvn -DskipTests package
+```
+
+Worker：
+
+```powershell
+mvn -f sandbox-worker/pom.xml clean package -DskipTests
+```
+
+开发工具镜像：
+
+```powershell
+docker build -t qgents/sandbox-dev-tools:0.2.0 sandbox-images/dev-tools
+```
+
+Worker 服务镜像：
+
+```powershell
+docker build -t qgents/sandbox-worker:0.1.0 sandbox-worker
+```
+
+Worker 本地容器模板（数据库、主后端地址和内部服务凭证由部署环境补充）：
+
+```powershell
+docker run --rm --name qgents-sandbox-worker `
+  -p 8091:8091 `
+  -v //var/run/docker.sock:/var/run/docker.sock `
+  -v qgents_worker_workspaces:/var/lib/qgents/workspaces `
+  -v qgents_worker_metadata:/var/lib/qgents/workspace-metadata `
+  -v qgents_worker_git_store:/var/lib/qgents/git-store `
+  -e SANDBOX_RUNTIME=docker `
+  -e SANDBOX_DEV_TOOLS_IMAGE=qgents/sandbox-dev-tools:0.2.0 `
+  -e SANDBOX_IMAGE_PROFILES=dev-tools `
+  -e SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock `
+  -e SANDBOX_WORKSPACE_LOCAL_ROOT=/var/lib/qgents/workspaces `
+  -e SANDBOX_WORKSPACE_DOCKER_HOST_ROOT=/var/lib/qgents/workspaces `
+  -e SANDBOX_WORKSPACE_METADATA_ROOT=/var/lib/qgents/workspace-metadata `
+  -e SANDBOX_GIT_STORE_ROOT=/var/lib/qgents/git-store `
+  qgents/sandbox-worker:0.1.0
+```

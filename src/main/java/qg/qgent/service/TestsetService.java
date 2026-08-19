@@ -161,7 +161,7 @@ public class TestsetService {
     private ValidatedDefinition validateDefinition(String name, List<String> tags, String command, Integer timeout,
                                                    TestsetPassRule rule) {
         String normalizedName = name == null ? "" : name.trim();
-        String normalizedCommand = command == null ? "" : command.trim();
+        String normalizedCommand = normalizeCommand(command);
         if (normalizedName.isEmpty() || normalizedName.length() > 255) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET_NAME", "Testset 名称不能为空且最多 255 字符");
         }
@@ -184,6 +184,16 @@ public class TestsetService {
                     "scopeTags 不能为空、重复或超过 64 字符");
         }
         return new ValidatedDefinition(normalizedName, List.copyOf(normalizedTags), normalizedCommand, timeout, rule);
+    }
+
+    /** 将历史裸 Wrapper 规范化为工作区相对命令；执行端仍会再次兼容旧数据。 */
+    private String normalizeCommand(String command) {
+        String normalized = command == null ? "" : command.trim();
+        return switch (normalized) {
+            case "gradlew test" -> "./gradlew test";
+            case "mvnw test" -> "./mvnw test";
+            default -> normalized;
+        };
     }
 
     private TestsetResponse response(TestsetEntity value) {

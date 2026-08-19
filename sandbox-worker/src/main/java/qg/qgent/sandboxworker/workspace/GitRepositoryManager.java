@@ -4,6 +4,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 import qg.qgent.sandboxworker.api.WorkerException;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
 import qg.qgent.sandboxworker.api.MergePreviewResponse;
@@ -421,6 +423,12 @@ public class GitRepositoryManager {
     }
 
     String exchangeCredential(String grantId, String headCommit, String repositoryFullName, String branchName, String purpose) {
+        long startedAt = System.nanoTime();
+        String grantFingerprint = fingerprint(grantId);
+        String backendUrl = properties.getBackendUrl();
+        log.info("git credential exchange start backendUrl={} grantFingerprint={} grantPresent={} headCommit={} repository={} branch={} purpose={}",
+                backendUrl, grantFingerprint, grantId != null && !grantId.isBlank(), headCommit,
+                repositoryFullName, branchName, purpose);
         try {
             Map<String, String> body = Map.of(
                     "credentialGrantId", grantId,
@@ -430,7 +438,7 @@ public class GitRepositoryManager {
                     "purpose", purpose
             );
 
-            String url = properties.getBackendUrl();
+            String url = backendUrl;
             if (!url.endsWith("/")) url += "/";
             url += "internal/v1/git-credentials/exchange";
 
@@ -445,12 +453,44 @@ public class GitRepositoryManager {
             if (response == null || !response.containsKey("token")) {
                 throw invalid("CREDENTIAL_EXCHANGE_FAILED", "Credential exchange did not return a token");
             }
-            return response.get("token");
+            String token = response.get("token");
+            log.info("git credential exchange success grantFingerprint={} repository={} branch={} purpose={} tokenPresent={} tokenLength={} durationMs={}",
+                    grantFingerprint, repositoryFullName, branchName, purpose, token != null && !token.isBlank(),
+                    token == null ? 0 : token.length(), elapsedMillis(startedAt));
+            return token;
         } catch (WorkerException e) {
+            log.warn("git credential exchange rejected grantFingerprint={} repository={} branch={} purpose={} code={} durationMs={}",
+                    grantFingerprint, repositoryFullName, branchName, purpose, e.getCode(), elapsedMillis(startedAt));
             throw e;
+        } catch (RestClientResponseException e) {
+            log.error("git credential exchange http failure grantFingerprint={} repository={} branch={} purpose={} status={} statusText={} responseBodyPresent={} durationMs={}",
+                    grantFingerprint, repositoryFullName, branchName, purpose, e.getStatusCode().value(),
+                    e.getStatusText(), e.getResponseBodyAsString() != null && !e.getResponseBodyAsString().isBlank(),
+                    elapsedMillis(startedAt), e);
+            throw invalid("CREDENTIAL_EXCHANGE_ERROR", "Credential exchange request failed");
+        } catch (RestClientException e) {
+            log.error("git credential exchange transport failure grantFingerprint={} backendUrl={} repository={} branch={} purpose={} exceptionType={} durationMs={} message={}",
+                    grantFingerprint, backendUrl, repositoryFullName, branchName, purpose,
+                    e.getClass().getSimpleName(), elapsedMillis(startedAt), e.getMessage(), e);
+            throw invalid("CREDENTIAL_EXCHANGE_ERROR", "Credential exchange request failed");
         } catch (Exception e) {
+            log.error("git credential exchange unexpected failure grantFingerprint={} repository={} branch={} purpose={} exceptionType={} durationMs={} message={}",
+                    grantFingerprint, repositoryFullName, branchName, purpose,
+                    e.getClass().getSimpleName(), elapsedMillis(startedAt), e.getMessage(), e);
             throw invalid("CREDENTIAL_EXCHANGE_ERROR", "Credential exchange request failed");
         }
+    }
+
+    private long elapsedMillis(long startedAt) {
+        return Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
+    }
+
+    /** 只记录一次性 Grant 的不可逆短指纹，不把可兑换凭据写入日志。 */
+    private String fingerprint(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        return sha256(value.getBytes(StandardCharsets.UTF_8)).substring(0, 23);
     }
 
     /**

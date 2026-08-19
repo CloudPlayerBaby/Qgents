@@ -6,8 +6,11 @@ ARG GROUP_ID=10001
 
 ENV DEBIAN_FRONTEND=noninteractive \
     MAVEN_VERSION=3.9.11 \
+    GRADLE_VERSION=8.10.2 \
     HOME=/home/developer \
     MAVEN_USER_HOME=/home/developer/.m2 \
+    GRADLE_USER_HOME=/home/developer/.gradle \
+    NPM_CONFIG_CACHE=/home/developer/.npm \
     PNPM_HOME=/opt/pnpm \
     PATH=/opt/pnpm:$PATH
 
@@ -20,11 +23,16 @@ RUN apt-get update \
     && curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
         | tar -xz -C /opt \
     && ln -s "/opt/apache-maven-${MAVEN_VERSION}/bin/mvn" /usr/local/bin/mvn \
+    && curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle.zip \
+    && unzip -q /tmp/gradle.zip -d /opt \
+    && ln -s "/opt/gradle-${GRADLE_VERSION}" /opt/gradle \
+    && ln -s /opt/gradle/bin/gradle /usr/local/bin/gradle \
+    && rm -f /tmp/gradle.zip \
     && corepack enable \
     && groupadd --gid ${GROUP_ID} developer \
     && useradd --uid ${USER_ID} --gid ${GROUP_ID} --create-home --shell /bin/bash developer \
-    && mkdir -p /workspace /tmp/qgents /opt/pnpm \
-    && chown -R developer:developer /workspace /tmp/qgents /opt/pnpm \
+    && mkdir -p /workspace /tmp/qgents /opt/pnpm /home/developer/.m2 /home/developer/.gradle /home/developer/.npm /home/developer/.cache \
+    && chown -R developer:developer /workspace /tmp/qgents /opt/pnpm /home/developer \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

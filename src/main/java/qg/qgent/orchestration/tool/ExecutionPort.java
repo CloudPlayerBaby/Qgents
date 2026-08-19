@@ -22,4 +22,19 @@ public interface ExecutionPort {
      * @return 执行结果（输出已脱敏）。
      */
     ExecutionResult execute(UUID workspaceId, List<String> command, Duration timeout);
+
+    /**
+     * 在 Workspace 的指定仓库目录内执行命令。默认实现保持单仓库调用兼容；
+     * 需要多仓库隔离的执行器应覆盖此方法并校验 repositoryPath。
+     *
+     * @param workspaceId 目标 Workspace。
+     * @param repositoryPath Workspace 内的仓库相对目录；空值表示 Workspace 根目录。
+     * @param command 命令与参数。
+     * @param timeout 执行超时。
+     * @return 执行结果。
+     */
+    default ExecutionResult execute(UUID workspaceId, String repositoryPath, List<String> command,
+                                    Duration timeout) {
+        return execute(workspaceId, command, timeout);
+    }
 }

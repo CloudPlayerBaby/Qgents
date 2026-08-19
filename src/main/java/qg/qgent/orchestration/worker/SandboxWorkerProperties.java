@@ -34,9 +34,9 @@ public class SandboxWorkerProperties {
     private boolean enabled = false;
 
     /**
-     * 创建 Sandbox 使用的镜像配置名，必须命中 Worker 白名单（默认 java-node）。
+     * 创建 Sandbox 使用的镜像配置名，必须命中 Worker 白名单（默认 dev-tools）。
      */
-    private String imageProfile = "java-node";
+    private String imageProfile = "dev-tools";
 
     /**
      * 「同步 Git Store + 准备 Workspace」阶段的最大尝试次数（含首次）。

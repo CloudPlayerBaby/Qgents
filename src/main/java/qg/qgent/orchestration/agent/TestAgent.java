@@ -59,19 +59,22 @@ public class TestAgent implements Agent {
     public AgentRunOutcome run(AgentInput input) {
         try {
             List<String> files = codeAccess.listFiles(input.getWorkspaceId());
-            List<String> command = commandResolver.resolve(files);
-            if (command == null) {
+            TestCommandResolver.ResolvedCommand resolved = commandResolver.resolveCommand(files);
+            if (resolved == null) {
                 return verifyFileTask(input, files);
             }
-            ExecutionResult exec = executionPort.execute(input.getWorkspaceId(), command, TEST_TIMEOUT);
+            List<String> command = resolved.command();
+            ExecutionResult exec = resolved.repositoryPath() == null
+                    ? executionPort.execute(input.getWorkspaceId(), command, TEST_TIMEOUT)
+                    : executionPort.execute(input.getWorkspaceId(), resolved.repositoryPath(), command, TEST_TIMEOUT);
             if (!exec.ok()) {
                 return infraFailure(input, exec.error() == null ? "test execution unavailable"
                         : ExecutionContentSanitizer.sanitize(exec.error()));
             }
             ExecutionResult safeExec = sanitizedAndLimited(exec);
             if (isCommandUnavailable(safeExec)) {
-                return infraFailure(input, "test command unavailable (exit code " + exec.exitCode()
-                        + "): use a workspace-relative wrapper such as ./gradlew or ./mvnw");
+                return infraFailure(input, "build environment unavailable (exit code " + exec.exitCode()
+                        + "): selected wrapper or build tool could not be launched; use a workspace-relative wrapper such as ./gradlew or ./mvnw");
             }
             TestResult test = analyze(input, command, safeExec);
             boolean passed = exec.exitCode() == 0;

@@ -28,7 +28,7 @@ public class WorkerCreateSandboxRequest {
     private String workspaceStorageKey;
 
     /**
-     * Worker 白名单中的镜像配置名，例如 java-node。
+     * Worker 白名单中的镜像配置名，例如 dev-tools。
      */
     private String imageProfile;
 
