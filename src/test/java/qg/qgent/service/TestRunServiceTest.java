@@ -1,12 +1,19 @@
 package qg.qgent.service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.DryRunCreateRequest;
 import qg.qgent.dto.DryRunResponse;
+import qg.qgent.dto.ApiPageResponse;
+import qg.qgent.dto.DryRunListItemResponse;
 import qg.qgent.dto.TestRunCreateRequest;
+import qg.qgent.dto.TestRunListItemResponse;
 import qg.qgent.dto.TestRunResponse;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
@@ -19,6 +26,7 @@ import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.mapper.*;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitResolveResponse;
+import qg.qgent.handler.UuidBinaryTypeHandler;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -47,10 +55,66 @@ class TestRunServiceTest {
     private final TestRunService service = new TestRunService(testRuns, dryRuns, repositories, testsets, branches,
             required, access, events, tasks, workspaces, executions, worker, gitStores);
 
+    @BeforeAll
+    static void initTableInfo() {
+        MybatisConfiguration configuration = new MybatisConfiguration();
+        configuration.getTypeHandlerRegistry().register(UuidBinaryTypeHandler.class);
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "");
+        TableInfoHelper.initTableInfo(assistant, TestRunEntity.class);
+        TableInfoHelper.initTableInfo(assistant, DryRunEntity.class);
+    }
+
     @BeforeEach
     void normalizeTargetBranchesInTests() {
         when(gitStores.normalizeTargetBranch(anyString()))
                 .thenAnswer(invocation -> invocation.getArgument(0, String.class).trim());
+    }
+
+    @Test
+    void listsTestRunsWithLightweightFieldsAndStableCursor() {
+        UUID projectId = UUID.randomUUID();
+        TestRunEntity first = new TestRunEntity();
+        first.setId(UUID.randomUUID());
+        first.setProjectId(projectId);
+        first.setProjectRepositoryId(UUID.randomUUID());
+        first.setTestsetIds(List.of(UUID.randomUUID().toString()));
+        first.setStatus("RUNNING");
+        first.setCreatedAt(LocalDateTime.of(2026, 8, 19, 8, 0));
+        first.setStartedAt(LocalDateTime.of(2026, 8, 19, 8, 0, 1));
+        when(testRuns.selectList(any())).thenReturn(List.of(first));
+
+        ApiPageResponse<TestRunListItemResponse> response = service.listTestRuns(
+                projectId, UUID.randomUUID(), null, null, "QUEUED,RUNNING", null, null, 20, "req-1");
+
+        assertEquals("req-1", response.requestId());
+        assertEquals(1, response.data().size());
+        assertEquals("RUNNING", response.data().getFirst().getStatus());
+        assertEquals(first.getId().toString(), response.data().getFirst().getId());
+        assertEquals(null, response.page().getNextCursor());
+        assertEquals(false, response.page().getHasMore());
+    }
+
+    @Test
+    void listsDryRunsAndRejectsUnknownStatus() {
+        UUID projectId = UUID.randomUUID();
+        DryRunEntity run = new DryRunEntity();
+        run.setId(UUID.randomUUID());
+        run.setProjectId(projectId);
+        run.setProjectRepositoryId(UUID.randomUUID());
+        run.setSourceRef("feat/login");
+        run.setTargetBranch("main");
+        run.setStatus("PASSED");
+        run.setCreatedAt(LocalDateTime.of(2026, 8, 19, 8, 0));
+        when(dryRuns.selectList(any())).thenReturn(List.of(run));
+
+        ApiPageResponse<DryRunListItemResponse> response = service.listDryRuns(
+                projectId, UUID.randomUUID(), null, null, "PASSED", "main", null, null, 20, "req-2");
+        assertEquals(1, response.data().size());
+        assertEquals("feat/login", response.data().getFirst().getSourceRef());
+
+        ApiException error = assertThrows(ApiException.class, () -> service.listDryRuns(
+                projectId, UUID.randomUUID(), null, null, "NOT_A_STATUS", null, null, null, 20, "req-3"));
+        assertEquals("INVALID_STATUS_FILTER", error.code());
     }
 
     @Test
