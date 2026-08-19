@@ -365,6 +365,38 @@ class CodingAgentTest {
     }
 
     @Test
+    void nativeZeroChangeFailureCarriesToolAttemptSummary() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", "0".repeat(64), "patch"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED",
+                        "hunk 声明行数与正文不一致"));
+        AtomicInteger round = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            if (round.getAndIncrement() == 0) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream()
+                        .filter(callback -> "apply_patch".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow()
+                        .call("{\"path\":\"src/main/java/X.java\",\"expectedHash\":\""
+                                + "0".repeat(64) + "\",\"patch\":\"patch\"}");
+                return toolTurn("apply_patch");
+            }
+            return finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop");
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        // 零改动失败消息带出具体尝试汇总（工具、次数与原因），供 requeue 上下文诊断。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+        assertThat(outcome.getMessage())
+                .contains("编码工具尝试汇总")
+                .contains("apply_patch 共 1 次（失败 1 次）")
+                .contains("hunk 声明行数与正文不一致");
+    }
+
+    @Test
     void repairedSuccessWithoutAnyModifiedFileIsRejected() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))

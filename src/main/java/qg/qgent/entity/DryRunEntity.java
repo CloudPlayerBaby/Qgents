@@ -14,7 +14,8 @@ import java.util.UUID;
 /**
  * 合并前试运行。
  * 真实报告由执行服务写入 report，客户端只能读取。
- * 状态枚举：QUEUED/RUNNING/PASSED/FAILED/CANCELLED。
+ * 状态枚举：QUEUED/RUNNING/PASSED/FAILED/CANCELLED；合并冲突以 FAILED +
+ * report.failureCode=GIT_MERGE_CONFLICT 持久化，列表查询兼容 CONFLICT 过滤值。
  */
 @Data
 @TableName(value = "dry_runs", autoResultMap = true)
@@ -57,6 +58,10 @@ public class DryRunEntity {
      * 运行状态，取值见类注释。
      */
     private String status;
+    /** 开始执行时间（UTC）；QUEUED 时为空。 */
+    private LocalDateTime startedAt;
+    /** 结束执行时间（UTC）；非终态时为空。 */
+    private LocalDateTime finishedAt;
     /**
      * 试运行报告 JSON，含冲突与测试摘要。
      */

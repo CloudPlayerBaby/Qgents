@@ -13,6 +13,10 @@ import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.method.support.ModelAndViewContainer;
 import qg.qgent.dto.DryRunReportResponse;
 import qg.qgent.dto.DryRunResponse;
+import qg.qgent.dto.ApiPageResponse;
+import qg.qgent.dto.DryRunListItemResponse;
+import qg.qgent.dto.PageMeta;
+import qg.qgent.dto.TestRunListItemResponse;
 import qg.qgent.dto.TestRunResponse;
 import qg.qgent.service.PreflightGateService;
 import qg.qgent.service.TestRunService;
@@ -22,6 +26,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -86,6 +91,35 @@ class TestRunControllerTest {
                 .andExpect(jsonPath("$.data.summary.results[0].testsetId").value(id(testsetId)))
                 .andExpect(jsonPath("$.data.summary.results[0].exitCode").value(0))
                 .andExpect(jsonPath("$.data.summary.results[0].durationMs").value(69));
+    }
+
+    @Test
+    void listEndpointsReturnLightweightCursorPages() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID dryRunId = UUID.randomUUID();
+        when(testRunService.listTestRuns(any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
+                .thenReturn(new ApiPageResponse<>(List.of(new TestRunListItemResponse(
+                        id(runId), id(projectId), id(repositoryId), List.of(id(UUID.randomUUID())), null,
+                        "feat/login", "RUNNING", id(userId), "2026-08-19T08:00:00Z", null, null)),
+                        new PageMeta("next", true), null));
+        when(testRunService.listDryRuns(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
+                .thenReturn(new ApiPageResponse<>(List.of(new DryRunListItemResponse(
+                        id(dryRunId), id(projectId), id(repositoryId), "feat/login", "main", null,
+                        "PASSED", id(userId), "2026-08-19T08:00:00Z", "2026-08-19T08:00:01Z",
+                        "2026-08-19T08:00:02Z")), new PageMeta(null, false), null));
+
+        mockMvc.perform(get("/api/v1/projects/{projectId}/test-runs", projectId)
+                        .param("status", "QUEUED,RUNNING").param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].status").value("RUNNING"))
+                .andExpect(jsonPath("$.page.nextCursor").value("next"));
+        mockMvc.perform(get("/api/v1/projects/{projectId}/dry-runs", projectId)
+                        .param("taskId", UUID.randomUUID().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].sourceRef").value("feat/login"))
+                .andExpect(jsonPath("$.data[0].finishedAt").value("2026-08-19T08:00:02Z"));
     }
 
     @Test

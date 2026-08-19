@@ -12,7 +12,8 @@ public interface TestRunMapper extends BaseMapper<TestRunEntity> {
     /**
      * 多实例下原子领取一个待执行或租约已过期的运行。
      */
-    @Update("update test_runs set status='RUNNING',claim_token=#{token},lease_expires_at=#{leaseExpiresAt},"
+    @Update("update test_runs set status='RUNNING',started_at=coalesce(started_at,UTC_TIMESTAMP(6)),"
+            + "finished_at=null,claim_token=#{token},lease_expires_at=#{leaseExpiresAt},"
             + "attempt_count=attempt_count+1 where id=#{id} and "
             + "(status='QUEUED' or (status='RUNNING' and lease_expires_at < #{now}))")
     int claim(@Param("id") java.util.UUID id, @Param("token") String token,
@@ -25,6 +26,7 @@ public interface TestRunMapper extends BaseMapper<TestRunEntity> {
                                                      @Param("limit") int limit);
 
     @Update("update test_runs set status=#{status},summary=#{summary,typeHandler=com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler},"
+            + "finished_at=UTC_TIMESTAMP(6),"
             + "claim_token=null,lease_expires_at=null where id=#{id} and claim_token=#{token}")
     int complete(@Param("id") java.util.UUID id, @Param("token") String token,
                  @Param("status") String status, @Param("summary") java.util.Map<String, Object> summary);

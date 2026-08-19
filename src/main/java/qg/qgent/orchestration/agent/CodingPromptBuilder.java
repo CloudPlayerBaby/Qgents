@@ -46,14 +46,15 @@ public class CodingPromptBuilder {
                 - search_code：检索关键字命中的文件路径，参数 {"query": "关键字"}。
                 - activate_skill：按默认上下文的 Skill 目录激活完整 Skill 正文，参数 {"skillId": "UUID"}；每个 TaskRun 最多激活 5 个不同 Skill，重复激活不会重复消耗预算。
                 - search_chat_history：仅按关键字检索当前需求群的历史消息，参数 {"query": "关键字", "limit": 10}；仅当近期消息缺少完成任务所需的讨论时调用，检索次数有限，预算耗尽后直接基于现有信息完成。
-                - apply_patch：对已有文本文件精确应用统一 Diff，参数 {"path": "相对路径", "expectedHash": "read_file 返回的 64 位十六进制 sha256", "patch": "统一 Diff 文本"}；expectedHash 必须来自同一次 read_file。
+                - apply_patch：对已有文本文件精确应用统一 Diff，参数 {"path": "相对路径", "expectedHash": "read_file 返回的 64 位十六进制 sha256", "patch": "统一 Diff 文本"}；expectedHash 必须来自同一次 read_file；同一文件连续失败 3 次后会升级为允许 write_file 整文件覆盖。
                 - create_directory：递归创建目录，参数 {"path": "相对目录路径"}；已存在目录幂等成功，不创建 .gitkeep。
-                - write_file：创建新文件，参数 {"path": "相对路径", "content": "文件内容"}；目标文件已存在时会被拒绝，改用 apply_patch。
+                - write_file：创建新文件，参数 {"path": "相对路径", "content": "文件内容"}；目标文件已存在时会被拒绝，改用 apply_patch；因 apply_patch 连续失败被升级的文件允许整文件覆盖。
 
                 工作方式：
                 - 先 list_files 或 search_code 定位，再 read_file 获取必要内容；不要为了确认一个文件读取整个工作区。
                 - 已有文件严格使用 apply_patch，且 expectedHash 必须来自最近一次 read_file；hash 冲突时重新 read_file，再生成新的 patch。
                 - 如果返回 FILE_PATCH_FAILED 或 TOOL_PATCH_FORMAT_INVALID，禁止重复原 patch：先重新 read_file 获取最新内容和 sha256，按实际行内容重新生成完整 unified diff（校验 @@ 的行数和 +/-/空格行前缀）；目标是新文件时改用 write_file。
+                - 同一文件 apply_patch 连续失败 3 次后，该文件会被升级为允许 write_file 整文件覆盖：先用 read_file 获取最新内容，再用 write_file 提供完整文件内容覆盖，不要再尝试生成 patch。
                 - 新文件使用 write_file；父目录由工具自动准备。只有需要单独创建空目录时才调用 create_directory，created=false 不算变更。
                 - 需要调用工具时只使用原生函数调用，每次调用只能使用 schema 中的工具名和完整参数；不要把工具调用 JSON 写进普通文本。
                 - 工具返回 ok=false 时先读取 errorCode、retryable、nextAction，再修正参数；禁止原样重复失败调用。路径越界、权限拒绝或未知工具不可通过重试绕过。
@@ -61,6 +62,7 @@ public class CodingPromptBuilder {
                 - 只能修改当前步骤允许路径；若工具返回 outside the current TaskStep allowed paths，说明该文件属于其他步骤，不能修改。
                 - 多仓库 Workspace 下，所有工具 path 都必须以当前仓库 workspacePath 开头（例如 repo-2/src/App.vue）；新建目录和新建文件也必须带此前缀，禁止使用无法确定仓库的裸路径（例如 src/App.vue、vue3/）。
                 - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"]}}
+                - 收到前一轮反馈或重试上下文（打回重做）时，只有真实产生 changed=true 的文件写入后才能 success=true；只读复核、重复已存在内容、确认现状或空操作不构成完成，应输出 success=false 并在 errors 中说明原因。
                 - 无法完成任务时输出 JSON：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
 
                 约束：

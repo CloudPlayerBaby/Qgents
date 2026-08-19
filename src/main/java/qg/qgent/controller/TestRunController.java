@@ -40,6 +40,23 @@ public class TestRunController {
     }
 
     /**
+     * 查询项目 Test Run 列表，按创建时间倒序游标分页。
+     */
+    @GetMapping("/test-runs")
+    public ApiPageResponse<TestRunListItemResponse> listTestRuns(
+            @PathVariable UUID projectId,
+            @RequestParam(required = false) UUID repositoryId,
+            @RequestParam(required = false) UUID taskId,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) UUID createdByUserId,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(defaultValue = "20") int limit,
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        return testRunService.listTestRuns(projectId, userId, repositoryId, taskId, status, createdByUserId,
+                cursor, limit, requestId(request));
+    }
+
+    /**
      * 契约 §12.4：获取测试运行状态、用例摘要和产物引用。
      */
     @GetMapping("/test-runs/{testRunId}")
@@ -58,6 +75,24 @@ public class TestRunController {
                                        @Valid @RequestBody DryRunCreateRequest body, HttpServletRequest request) {
         DryRunResponse data = testRunService.createDryRun(projectId, userId, body);
         return ok(data, request);
+    }
+
+    /**
+     * 查询项目 Dry Run 列表，按创建时间倒序游标分页；报告详情通过单条报告接口读取。
+     */
+    @GetMapping("/dry-runs")
+    public ApiPageResponse<DryRunListItemResponse> listDryRuns(
+            @PathVariable UUID projectId,
+            @RequestParam(required = false) UUID repositoryId,
+            @RequestParam(required = false) UUID taskId,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String targetBranch,
+            @RequestParam(required = false) UUID createdByUserId,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(defaultValue = "20") int limit,
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        return testRunService.listDryRuns(projectId, userId, repositoryId, taskId, status, targetBranch,
+                createdByUserId, cursor, limit, requestId(request));
     }
 
     /**
