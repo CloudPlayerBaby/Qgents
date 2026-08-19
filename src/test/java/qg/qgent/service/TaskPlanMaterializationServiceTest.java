@@ -91,6 +91,12 @@ class TaskPlanMaterializationServiceTest {
         assertThat(generated.get(0).getAssignedAgentId()).isEqualTo(javaAgent.getId());
         assertThat(generated.get(1).getAssignedAgentId()).isEqualTo(javaAgent.getId());
         assertThat(generated.get(0).getAllowedPaths()).containsExactly("src/App.java");
+        // Planner 声明的文件同时冻结为目标文件，供运行期“目标已满足”判定；空声明保持为空。
+        assertThat(generated.get(0).getTargetFiles()).containsExactly("src/App.java");
+        assertThat(generated.get(1).getTargetFiles()).containsExactly("README.md");
+        // 非开发步骤不声明目标文件（null 即关闭“目标已满足”判定），与 allowedPaths 语义一致。
+        assertThat(generated.get(2).getTargetFiles()).isNull();
+        assertThat(generated.get(3).getTargetFiles()).isNull();
         // 调度 Agent 收到步骤角色 + 步骤能力要求 + Plan 建议（无建议时为 null）
         verify(dispatcher, atLeast(1)).dispatch(eq(task), eq("DEVELOPER"), eq(List.of("java", "spring-boot")), any());
         verify(dependencies, times(4)).insertLink(any(), any());
@@ -164,6 +170,9 @@ class TaskPlanMaterializationServiceTest {
         verify(steps, times(4)).insert(inserted.capture());
         UUID backendStep = inserted.getAllValues().get(0).getId();
         UUID frontendStep = inserted.getAllValues().get(1).getId();
+        // 多仓库下目标文件保留 worktree 前缀的 Workspace 相对形态。
+        assertThat(inserted.getAllValues().get(0).getTargetFiles()).containsExactly("repo-1/README.md");
+        assertThat(inserted.getAllValues().get(1).getTargetFiles()).containsExactly("repo-2/README.md");
         verify(scopes).insertLink(backendStep, backend.getProjectRepositoryId(), "WRITE");
         verify(scopes).insertLink(frontendStep, frontend.getProjectRepositoryId(), "WRITE");
         verify(scopes, never()).insertLink(backendStep, frontend.getProjectRepositoryId(), "WRITE");

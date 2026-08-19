@@ -92,6 +92,7 @@ public class AgentContextAssembler {
         input.setInstruction(step.getInstruction());
         input.setExecutionMode(step.getExecutionMode());
         input.setAllowedPaths(step.getAllowedPaths());
+        input.setTargetFiles(step.getTargetFiles());
         input.setFeedback(feedback == null ? null : formatFeedback(feedback));
         input.setRetryContext(feedback == null ? null : retryContext(feedback));
         input.setPlanResult(planResult);

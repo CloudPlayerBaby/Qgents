@@ -1071,6 +1071,8 @@ merge-request.updated        -> { projectId, mergeRequestId, repositoryId, numbe
 
     - **自动触发**：发送消息时 `mentions` 含 `type=AGENT` 项（如 @AgentOrchestrator）→ 服务端自动从该消息创建 Task（`triggerMessageId` = 本次消息 ID；同一消息只建一次，幂等）。前置条件：群为 ACTIVE REQUIREMENT 且已绑定至少一个仓库（未绑仓库则跳过并记录 warn，不阻塞消息发送）；`agentId` 仅作调度偏好，不绕过后端角色/并发/项目可见性/仓库授权校验。任务创建后 Task 状态为 `PLANNING`，由编排自动推进（Planner → Developer → Tester → Reviewer）。
 
+    - **自动触发为异步执行**：消息发送接口在消息落库提交后即返回（响应体为纯 `MessageResponse`，不含 Task 字段）；建 Task 与 @ 用户通知在消息事务提交后由服务端异步执行（`MessageSentListener`，`@Async` + `AFTER_COMMIT`）。因此发送响应**不保证** Task 已创建。客户端如需立即拿到 Task：引用 DIFF 卡续作或普通 @Agent 均可显式调用 `trigger-task`（幂等：Task 已由自动触发链创建时返回 409，客户端按「已创建」处理），或订阅 `task.created`/`task.updated` SSE 事件。
+
     - Task 创建事务提交后，后端异步启动编排。客户端不调用 `orchestrate`、`start` 或任何“推进任务”的接口。
 
         Sandbox、工作流图等启动阶段发生意外失败时，Task 会置为 `FAILED`。客户端通过既有 `task.updated`、`message.created`（失败 `TASK_STATUS` 卡片）和 `notification.created`（`kind=TASK_FAILED`）获知结果；断线重连或收到乱序事件后，仍应以 Task、消息和通知查询接口返回的数据为准。
@@ -5127,3 +5129,152 @@ MR_FIRST 页面只能依赖重新查询的 Task、每仓库 Preflight、Dry Run 
 - 仅可重试错误显示重试按钮；重复点击或网络重放不会创建多个运行。
 - 验证 SSE 重复、乱序、断线重连后的重新 GET 行为。
 - Dry Run 失败时不会显示 MR 已创建；多仓库部分通过按仓库分别展示。
+
+## 36. Workspace 实时 Diff Preview（2026-08-19）
+
+实时 Preview 只反映 Coding 执行过程中的**累积工作树变更**，不代表已生成正式 Diff，不代表已 commit、push 或创建 MR。正式 Diff 仅在 Task 完成后生成，用于用户确认与后续交付。
+
+### 36.1 与正式 Diff 的区别
+
+| 类型 | 产生时机 | 是否可变 | 用途 | 是否可交付 |
+|---|---|---|---:|---|
+| Workspace Diff Preview | Coding 每次有效写入后 | 是，通过 revision 递增 | 执行过程中的实时查看 | 否 |
+| Task 正式 Diff | Task 完成后 | 否 | 用户审查、确认、交付 | 是 |
+
+实时 Preview 的统计不能写入现有 `artifactSummary.diffCount` 等正式 Diff 摘要字段，否则会让用户误以为正式 Diff 已生成。
+
+### 36.2 SSE 事件
+
+事件名：`workspace.diff-preview.updated`，广播范围使用 Task 所属需求群（PROJECT_MAIN 项目总群任务仍广播全部项目成员）。
+
+```JSON
+{
+  "eventVersion": 1,
+  "projectId": "project-uuid",
+  "taskId": "task-uuid",
+  "taskRunId": "task-run-uuid",
+  "workspaceId": "workspace-uuid",
+  "previewRevision": 3,
+  "filesChanged": 2,
+  "additions": 8,
+  "deletions": 3,
+  "updatedAt": "2026-08-19T12:00:00Z"
+}
+```
+
+约束：
+
+- Payload 只含元数据，**不含 patch、源码、Token、密码、宿主机路径、环境变量或命令原文**。
+- 事件在 revision 落库成功后才发布；可重复投递，前端收到后必须以 REST 查询结果为准，不依赖事件顺序。
+- `previewRevision` 是 Workspace 内单调递增的非负整数；`filesChanged/additions/deletions` 为非负整数。
+
+### 36.3 查询 Preview 详情
+
+|方法|路径|权限|说明|
+|---|---|---|---|
+|`GET`|`/api/v1/projects/{projectId}/tasks/{taskId}/workspace-diff-preview`|Project Member + Task 需求群成员|缺省返回最新修订|
+|`GET`|`/api/v1/projects/{projectId}/tasks/{taskId}/workspace-diff-preview?revision={revision}`|同上|返回指定修订|
+
+响应 `data`：
+
+```JSON
+{
+  "projectId": "project-uuid",
+  "taskId": "task-uuid",
+  "taskRunId": "task-run-uuid",
+  "workspaceId": "workspace-uuid",
+  "revision": 3,
+  "baseCommit": "base-sha",
+  "workingTreeHash": "sha256:...",
+  "filesChanged": 2,
+  "additions": 8,
+  "deletions": 3,
+  "patch": "diff --git ...",
+  "createdAt": "2026-08-19T12:00:00Z"
+}
+```
+
+- `patch` 从受控快照读取；快照已清理或读取失败时为 `null`，前端不得把 `null` 当作正式 Diff 缺失。
+- 非需求群成员（项目成员但未加入该群）→ `403 FORBIDDEN GROUP_MEMBER_REQUIRED`。
+- 任务不存在 / 不属于当前项目 / 指定修订不存在 → `404 WORKSPACE_DIFF_PREVIEW_NOT_FOUND`。
+
+### 36.4 查询 Preview 文件列表
+
+|方法|路径|权限|说明|
+|---|---|---|---|
+|`GET`|`/api/v1/projects/{projectId}/tasks/{taskId}/workspace-diff-preview/files`|Project Member + Task 需求群成员|缺省返回最新修订的文件列表|
+|`GET`|`/api/v1/projects/{projectId}/tasks/{taskId}/workspace-diff-preview/files?revision={revision}`|同上|返回指定修订的文件列表|
+
+文件条目至少包含：
+
+```JSON
+{
+  "path": "src/main.ts",
+  "changeType": "MODIFIED",
+  "additions": 3,
+  "deletions": 1,
+  "binary": false,
+  "repositoryPath": "repo-1"
+}
+```
+
+- `changeType` 枚举与正式 Diff 一致：`ADDED` / `MODIFIED` / `DELETED` / `RENAMED`。
+- `repositoryPath` 为该文件所属仓库在 Workspace 内的相对目录；多仓库 patch 以 `===== repositoryPath =====` 分隔行归属，单仓库或无分隔时为空。前端按 `repositoryPath` 分组展示，不得跨仓库混合同名文件。
+- 文件路径是 Workspace 相对路径，不包含宿主机绝对路径。
+
+### 36.5 权限与归属
+
+- 查询校验两级：先校验当前用户是项目成员，再校验属于 Task 所属需求群；PROJECT_MAIN 项目总群任务按项目成员可见性处理。
+- 修订行按 `projectId + taskId + workspaceId`（+ 可选 `revision`）精确匹配，Task A / Task B 复用同一 Workspace 时互不可见。
+- 身份、项目归属与仓库范围全部由服务端从认证上下文和持久化数据判断，不信任客户端提交的 `actor/projectId/workspaceId` 字段。
+
+### 36.6 失败与降级
+
+- Worker 未启用、diff 不可用、无 workingTreeHash 或快照存储失败时，本次 Preview **不产生 revision、不发事件、不影响 Coding / Task 结果**。
+- 前端在无 revision 或查询失败时展示“实时预览暂不可用”，不得把 Task 标记为失败。
+- `RUNNING` / `FAILED` / `SUCCEEDED` 状态均不能仅凭 Preview 推断正式交付状态。
+
+### 36.7 前端接入要求
+
+- 注册 `workspace.diff-preview.updated` 到 SSE 解析白名单，校验 `eventVersion == 1`、必要 ID 非空、统计字段为非负整数。
+- 收到事件后只刷新该 Task 的 Preview detail / files 查询缓存，**不刷新正式 `diffs` 查询**。
+- 任务详情“最近执行”卡片独立展示实时状态，例如：`实时预览：2 个文件 · +8 / -3 · revision 3`，与正式 Diff 摘要分开。
+- Task 完成并生成正式 Diff 后，正式交付区域优先展示正式 Diff；实时 Preview 可折叠保留。
+
+前端类型建模参考：
+
+```TypeScript
+interface WorkspaceDiffPreview {
+  projectId: string
+  taskId: string
+  taskRunId: string | null
+  workspaceId: string
+  revision: number
+  baseCommit: string | null
+  workingTreeHash: string | null
+  filesChanged: number
+  additions: number
+  deletions: number
+  patch: string | null
+  createdAt: string
+}
+
+interface WorkspaceDiffPreviewFile {
+  path: string
+  changeType: 'ADDED' | 'MODIFIED' | 'DELETED' | 'RENAMED'
+  additions: number
+  deletions: number
+  binary: boolean
+  repositoryPath: string | null
+}
+```
+
+### 36.8 验收清单
+
+- 单仓库：Coding 写入 `a.txt` 产生 revision 1，再写 `b.txt` 产生 revision 2，前端累计显示 2 个文件。
+- 多仓库：`/files` 按 `repositoryPath` 正确分组，同名文件不混淆。
+- 复用 Workspace 的 Task 之间互不可见 Preview。
+- 需求群外项目成员不能读取其他群 Task 的 Preview。
+- Worker 停止时 Task 不因 Preview 失败而失败，前端显示“实时预览暂不可用”。
+- 正式 Diff 仍只在 Task 完成后生成；确认前不 commit/push/MR。
+- SSE 断线重连后按游标恢复并重新查询最新 Preview。

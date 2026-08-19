@@ -334,6 +334,37 @@ class CodingAgentTest {
     }
 
     @Test
+    void nativeSuccessWithoutWritesIsSatisfiedWhenAllTargetsExist() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
+        AgentInput input = codingInput();
+        input.setTargetFiles(List.of("src/main/java/X.java"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input);
+
+        // 目标已被前序步骤满足：无实际写入也按 SUCCEEDED 收敛，且不把模型声称的路径回填为本次写入。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
+        assertThat(outcome.getCodingResult().getModifiedDirectories()).isEmpty();
+    }
+
+    @Test
+    void nativeSuccessWithoutWritesStillRejectedWhenTargetMissing() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
+        AgentInput input = codingInput();
+        input.setTargetFiles(List.of("src/main/java/X.java"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input);
+
+        // 目标未在 Workspace 出现且零写入：仍判为真正的语义失败，不得放行。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+    }
+
+    @Test
     void repairedSuccessWithoutAnyModifiedFileIsRejected() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
