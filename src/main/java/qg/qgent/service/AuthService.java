@@ -217,17 +217,17 @@ public class AuthService {
         if (user == null || !"ACTIVE".equals(user.getStatus())) {
             return;
         }
-        // 生成一个随机的token
-        String raw = tokens.opaque();
-        // 插入到数据库
+        // 生成 6 位数字验证码（与注册验证码一致，用户输入到「邮箱中的验证码」字段）
+        String code = String.format(Locale.ROOT, "%06d", new Random().nextInt(1_000_000));
+        // 插入到数据库：token_hash 存验证码 SHA-256 哈希，禁止明文
         PasswordResetTokenEntity reset = new PasswordResetTokenEntity();
         reset.setId(UuidV7.next());
         reset.setUserId(user.getId());
-        reset.setTokenHash(tokens.hash(raw));
+        reset.setTokenHash(tokens.hash(code));
         reset.setExpiresAt(utc(tokens.resetExpiry()));
         resetTokenMapper.insert(reset);
-        // 发送邮件
-        mailer.send(user.getEmail(), raw);
+        // 发送验证码邮件
+        mailer.send(user.getEmail(), code);
     }
 
     @Transactional
