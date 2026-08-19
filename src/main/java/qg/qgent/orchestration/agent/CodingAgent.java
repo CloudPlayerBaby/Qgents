@@ -159,7 +159,7 @@ public class CodingAgent implements Agent {
         List<Message> history = new ArrayList<>();
         history.add(new UserMessage(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem(true);
-        CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer);
+        CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer, input.getAllowedPaths());
         tools.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId());
         ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
@@ -261,7 +261,7 @@ public class CodingAgent implements Agent {
         List<LlmMessage> history = new ArrayList<>();
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem(false);
-        CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer);
+        CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer, input.getAllowedPaths());
         toolExecutor.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId(), input.getWorkspaceId());
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {

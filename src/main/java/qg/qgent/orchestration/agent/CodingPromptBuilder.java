@@ -55,6 +55,7 @@ public class CodingPromptBuilder {
                 - 已有文件的修改优先使用 apply_patch 做精确局部修改；只有新建文件时才使用 write_file。
                 - 需要调用工具时使用原生函数调用，每次调用的参数必须完整、类型正确。
                 - 工具返回 ok=false 时根据 error 修正后重试，不要重复同样的失败调用；hash 冲突时重新 read_file 再 apply_patch。
+                - 只能修改当前步骤允许路径；若工具返回 outside the current TaskStep allowed paths，说明该文件属于其他步骤，不能修改。
                 - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出 JSON：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
 
@@ -101,6 +102,9 @@ public class CodingPromptBuilder {
         sb.append("任务标题：").append(nullToBlank(input.getTaskTitle()));
         sb.append("\n任务描述：").append(nullToBlank(input.getRequirement()));
         sb.append("\n计划指令：").append(nullToBlank(input.getInstruction()));
+        if (input.getAllowedPaths() != null && !input.getAllowedPaths().isEmpty()) {
+            sb.append("\n当前步骤允许写入路径：").append(String.join(", ", input.getAllowedPaths()));
+        }
         if (input.getFeedback() != null && !input.getFeedback().isBlank()) {
             sb.append("\n前一轮反馈：").append(input.getFeedback());
         }
