@@ -6,7 +6,7 @@ import lombok.Data;
 /**
  * 任务运行等待/阻塞/失败原因摘要（TaskRun 详情与列表统一提供）。
  * <p>
- * code 枚举：INPUT_REQUIRED/APPROVAL_REQUIRED/BLOCKED/EXECUTION_FAILED/CANCELLED；
+ * code 枚举：INPUT_REQUIRED/APPROVAL_REQUIRED/BLOCKED/EXECUTION_FAILED/STARTUP_FAILED/CANCELLED；
  * summary 仅含脱敏用户可见文本，技术堆栈、内部命令、凭据不得进入；retryable 由后端按状态机判断。
  * occurredAt 为原因发生时间（UTC），可为 null。
  */

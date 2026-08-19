@@ -444,6 +444,30 @@ class TaskDisplayServiceTest {
     }
 
     @Test
+    void detailExposesTaskStartupFailureWithoutTaskRun() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, actor, workspaceId, "FAILED");
+        task.setFailureCode("GIT_STORE_FETCH_FAILED");
+        task.setFailureReason("代码仓库同步失败");
+        task.setFailureRetryable(true);
+        task.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
+        when(tasks.selectById(task.getId())).thenReturn(task);
+        when(workspaces.selectById(workspaceId)).thenReturn(workspace(workspaceId));
+        when(steps.selectList(any())).thenReturn(List.of());
+        when(runs.selectList(any())).thenReturn(List.of());
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+
+        TaskDetailResponse detail = service.detail(projectId, task.getId(), actor);
+
+        assertThat(detail.getStatusReason()).isNotNull();
+        assertThat(detail.getStatusReason().getCode()).isEqualTo("STARTUP_FAILED");
+        assertThat(detail.getStatusReason().getFailureCode()).isEqualTo("GIT_STORE_FETCH_FAILED");
+        assertThat(detail.getStatusReason().getSummary()).isEqualTo("代码仓库同步失败");
+        assertThat(detail.getStatusReason().isRetryable()).isTrue();
+    }
+
+    @Test
     void listAppliesKeywordToSqlWrapperAcrossContractFields() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
         UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();

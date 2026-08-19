@@ -319,9 +319,34 @@ public class TaskOrchestrator {
                     task.getId(), latest == null ? "MISSING" : latest.getStatus());
             return;
         }
+        StartupFailure failure = startupFailure(cause);
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        latest.setFailureCode(failure.code());
+        latest.setFailureReason(failure.reason());
+        latest.setFailureRetryable(failure.retryable());
+        latest.setFailureOccurredAt(now);
         updateTaskStatus(latest, "FAILED");
         sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null,
-                "任务启动失败：执行环境暂不可用，请稍后重试或联系管理员");
+                "任务启动失败：" + failure.title() + "。" + failure.reason()
+                        + (failure.retryable() ? "，可以稍后重试" : "，请先修复配置后重试"));
+    }
+
+    /**
+     * 将内部启动异常收敛为稳定码和用户安全文案。原始异常只进入服务端日志，
+     * 不把堆栈、Worker 地址、命令参数或凭据写入 Task/API/SSE。
+     */
+    private StartupFailure startupFailure(RuntimeException cause) {
+        String rawCode = cause instanceof ApiException api ? api.code() : null;
+        String code = ExecutionContentSanitizer.stableInfrastructureCode(rawCode);
+        String reason = ExecutionContentSanitizer.infrastructureDescription(code);
+        String title = switch (code) {
+            case "GIT_STORE_FETCH_FAILED", "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH" -> "代码仓库同步失败";
+            case "GIT_BASE_REF_NOT_FOUND", "GIT_REF_NOT_FOUND" -> "代码仓库基线不可用";
+            case "SANDBOX_WORKER_UNAVAILABLE", "SANDBOX_WORKER_ERROR" -> "执行环境不可用";
+            case "GITHUB_API_UNAVAILABLE" -> "GitHub 服务不可用";
+            default -> "任务启动失败";
+        };
+        return new StartupFailure(code, title, reason, true);
     }
 
     /**
@@ -1050,6 +1075,9 @@ public class TaskOrchestrator {
         eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated",
                 task.getId().toString(), TaskEventPayloads.taskUpdated(task));
         notifyTaskTerminal(task, status);
+    }
+
+    private record StartupFailure(String code, String title, String reason, boolean retryable) {
     }
 
     /**

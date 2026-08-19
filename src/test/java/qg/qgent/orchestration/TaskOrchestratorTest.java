@@ -279,6 +279,23 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void startupFailurePersistsStableUserVisibleReason() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        doThrow(new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                "SANDBOX_WORKER_ERROR", "502 Bad Gateway: internal worker url"))
+                .when(fixture.sessions).acquire(any(), any(), any());
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess()))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(task.getFailureCode()).isEqualTo("SANDBOX_WORKER_ERROR");
+        assertThat(task.getFailureReason()).isEqualTo("Sandbox Worker 当前不可用");
+        assertThat(task.getFailureReason()).doesNotContain("internal worker url");
+        assertThat(task.getFailureRetryable()).isTrue();
+    }
+
+    @Test
     void initializationFailureDoesNotFakeTaskRun() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();

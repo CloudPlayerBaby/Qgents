@@ -72,6 +72,22 @@ public class TaskEntity {
      */
     private String deliveryReason;
     /**
+     * Task 级启动/编排失败稳定码；仅失败任务设置，供详情页和重试提示使用。
+     */
+    private String failureCode;
+    /**
+     * Task 级脱敏失败说明，不包含堆栈、命令、凭据或 Worker 地址。
+     */
+    private String failureReason;
+    /**
+     * 当前失败是否允许用户重试。
+     */
+    private Boolean failureRetryable;
+    /**
+     * Task 级失败发生时间（UTC）。
+     */
+    private LocalDateTime failureOccurredAt;
+    /**
      * Planner 计划已原子物化为正式执行步骤的时间；非空后不得由自动编排重写步骤清单。
      */
     private LocalDateTime planMaterializedAt;
