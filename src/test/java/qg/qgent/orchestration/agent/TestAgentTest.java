@@ -24,6 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -360,6 +361,65 @@ class TestAgentTest {
         assertThat(outcome.getTestResult().isSuccess()).isTrue();
         assertThat(outcome.getTestResult().getVerificationMode()).isEqualTo("FILE_ASSERTION");
         assertThat(outcome.getTestResult().getCommand()).isEqualTo("file assertions");
+        verify(executionPort, never()).execute(any(), anyList(), any());
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void gitkeepTaskSkipsBuildTestAndReadsHiddenTarget() {
+        // LocalWorkspaceCodeAccess deliberately omits dot-files from listFiles; verification
+        // must still read the trusted CodingResult target directly.
+        when(codeAccess.listFiles(any()))
+                .thenReturn(List.of("build.gradle", "gradlew"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("repo-1/empty/.gitkeep", "", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+
+        AgentInput fileInput = input();
+        fileInput.setRequirement("创建一个空白文件夹");
+        fileInput.getCodingResult().setModifiedFiles(List.of("repo-1/empty/.gitkeep"));
+        fileInput.getCodingResult().setModifiedDirectories(List.of("repo-1/empty"));
+
+        AgentRunOutcome outcome = agent().run(fileInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().getVerificationMode()).isEqualTo("FILE_ASSERTION");
+        assertThat(outcome.getTestResult().getCommand()).isEqualTo("file assertions");
+        verify(executionPort, never()).execute(any(), anyList(), any());
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void directoryOnlyChangeDoesNotRunBuildTest() {
+        when(codeAccess.listFiles(any()))
+                .thenReturn(List.of("build.gradle", "gradlew"));
+
+        AgentInput directoryInput = input();
+        directoryInput.setRequirement("创建一个目录");
+        directoryInput.getCodingResult().setModifiedFiles(List.of());
+        directoryInput.getCodingResult().setModifiedDirectories(List.of("repo-1/empty"));
+
+        AgentRunOutcome outcome = agent().run(directoryInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().getVerificationMode()).isEqualTo("FILE_ASSERTION");
+        verify(executionPort, never()).execute(any(), anyList(), any());
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void nestedHiddenFileIsReadEvenWhenFileListingOmitsIt() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("build.gradle", "gradlew"));
+        when(codeAccess.readFile(any(), eq("repo-1/.config/app.yml")))
+                .thenReturn(WorkspaceFileReadResult.ok("repo-1/.config/app.yml", "enabled: true", "hash"));
+
+        AgentInput fileInput = input();
+        fileInput.setRequirement("修改隐藏配置文件");
+        fileInput.getCodingResult().setModifiedFiles(List.of("./repo-1\\.config\\app.yml"));
+
+        AgentRunOutcome outcome = agent().run(fileInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().getVerificationMode()).isEqualTo("FILE_ASSERTION");
         verify(executionPort, never()).execute(any(), anyList(), any());
         verify(llm, never()).complete(anyString(), anyList());
     }

@@ -59,7 +59,7 @@ public class TestAgent implements Agent {
             "zip", "tar", "gz", "jar",
             "css", "scss", "less", "html", "htm",
             "sh", "bash", "zsh", "bat", "cmd", "ps1",
-            "gradle", "kts", "pom", "lock", "gitignore", "dockerfile", "env", "editorconfig");
+            "gradle", "kts", "pom", "lock", "gitignore", "gitkeep", "dockerfile", "env", "editorconfig");
 
     /** 无扩展名的文件（如 README、LICENSE、Makefile、Dockerfile）同样视为非代码文件。 */
     private static final Set<String> NON_CODE_BASENAMES = Set.of(
@@ -196,19 +196,25 @@ public class TestAgent implements Agent {
      */
     private AgentRunOutcome verifyFileTask(AgentInput input, List<String> files) {
         List<String> targets = fileTargets(input);
-        if (targets.isEmpty()) {
+        List<String> directories = directoryTargets(input);
+        if (targets.isEmpty() && directories.isEmpty()) {
             if (isManualVerification(input)) {
                 return manualVerification(input);
             }
             return noTestCommand(input);
         }
 
-        Set<String> available = new LinkedHashSet<>(files == null ? List.of() : files);
+        Set<String> available = (files == null ? List.<String>of() : files).stream()
+                .map(this::normalizePath)
+                .filter(path -> !path.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         boolean requireEmpty = requiresEmptyFile(input);
         List<TestResult.Failure> failures = new ArrayList<>();
         List<String> checks = new ArrayList<>();
         for (String target : targets) {
-            if (!available.contains(target)) {
+            // listFiles intentionally omits dot-files from the normal context tree. Read
+            // hidden targets directly, but retain the fast existence guard for ordinary files.
+            if (!available.contains(target) && !isHiddenFile(target)) {
                 failures.add(failure(target, "目标文件不存在", "ERROR"));
                 continue;
             }
@@ -224,6 +230,18 @@ public class TestAgent implements Agent {
                 continue;
             }
             checks.add(requireEmpty ? target + "(0 bytes)" : target + "(exists/readable)");
+        }
+        for (String directory : directories) {
+            boolean representedByFile = available.stream().anyMatch(path -> isUnderDirectory(path, directory))
+                    || targets.stream().anyMatch(path -> isUnderDirectory(path, directory));
+            if (representedByFile) {
+                checks.add(directory + "(exists)");
+            } else {
+                // create_directory has already returned changed=true and the path was
+                // recorded by CodingAgent's server-side write ledger. Empty directories
+                // are intentionally absent from Git/file.list, so there is no file to read.
+                checks.add(directory + "(created)");
+            }
         }
 
         TestResult test = new TestResult();
@@ -285,7 +303,8 @@ public class TestAgent implements Agent {
      */
     private boolean isPureFileTask(AgentInput input) {
         List<String> targets = fileTargets(input);
-        if (targets.isEmpty()) {
+        List<String> directories = directoryTargets(input);
+        if (targets.isEmpty() && directories.isEmpty()) {
             return false;
         }
         return targets.stream().allMatch(this::isNonCodeFile);
@@ -316,9 +335,56 @@ public class TestAgent implements Agent {
         }
         return input.getCodingResult().getModifiedFiles().stream()
                 .filter(path -> path != null && !path.isBlank())
-                .map(path -> path.replace('\\', '/').trim())
+                .map(this::normalizePath)
+                .filter(path -> !path.isBlank())
                 .distinct()
                 .toList();
+    }
+
+    /** Coding 产生的真实新建目录；目录本身没有文件扩展名，始终按纯文件变更处理。 */
+    private List<String> directoryTargets(AgentInput input) {
+        if (input.getCodingResult() == null || input.getCodingResult().getModifiedDirectories() == null) {
+            return List.of();
+        }
+        return input.getCodingResult().getModifiedDirectories().stream()
+                .filter(path -> path != null && !path.isBlank())
+                .map(this::normalizePath)
+                .filter(path -> !path.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    private boolean isUnderDirectory(String path, String directory) {
+        if (path == null || directory == null || path.isBlank() || directory.isBlank()) {
+            return false;
+        }
+        String normalizedPath = normalizePath(path);
+        String normalizedDirectory = normalizePath(directory);
+        return normalizedPath.equals(normalizedDirectory)
+                || normalizedPath.startsWith(normalizedDirectory + "/");
+    }
+
+    private boolean isHiddenFile(String path) {
+        String normalized = normalizePath(path);
+        for (String segment : normalized.split("/")) {
+            if (!segment.isBlank() && !segment.equals(".") && !segment.equals("..")
+                    && segment.startsWith(".")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 统一 Worker/local 实现返回的相对路径，避免 ./ 与反斜杠导致验证误判。 */
+    private String normalizePath(String path) {
+        if (path == null || path.isBlank()) {
+            return "";
+        }
+        String normalized = path.replace('\\', '/').trim();
+        while (normalized.startsWith("./")) {
+            normalized = normalized.substring(2);
+        }
+        return normalized.replaceFirst("/+$", "");
     }
 
     /** 只对明确表达“清空/置空/零字节”的需求执行内容为空断言。 */
