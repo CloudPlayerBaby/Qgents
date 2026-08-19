@@ -661,6 +661,9 @@ CREATE TABLE IF NOT EXISTS
         role VARCHAR(32) NOT NULL COMMENT '执行角色枚举：ORCHESTRATOR/PLANNER/DEVELOPER/TESTER/REVIEWER/GENERAL',
         status VARCHAR(32) NOT NULL DEFAULT 'QUEUED' COMMENT '运行状态枚举：QUEUED/RUNNING/SUCCEEDED/FAILED/WAITING_INPUT/WAITING_APPROVAL/BLOCKED/CANCELLING/CANCELLED',
         retry_of_task_run_id BINARY(16) NULL COMMENT '重试来源的任务运行ID，为空表示首次运行',
+        failure_code VARCHAR(64) NULL COMMENT '本次运行失败稳定码，仅FAILED时非空',
+        failure_reason VARCHAR(1024) NULL COMMENT '本次运行脱敏失败说明，仅FAILED时非空',
+        failure_occurred_at DATETIME(6) NULL COMMENT '失败发生时间（UTC）',
         started_at DATETIME (6) NULL COMMENT '开始执行时间（UTC）',
         finished_at DATETIME (6) NULL COMMENT '结束时间（UTC）',
         created_by BINARY(16) NOT NULL COMMENT '发起用户ID',
@@ -676,6 +679,29 @@ CREATE TABLE IF NOT EXISTS
         CONSTRAINT fk_task_run_creator FOREIGN KEY (created_by) REFERENCES users (id),
         CONSTRAINT fk_task_run_retry FOREIGN KEY (retry_of_task_run_id) REFERENCES task_runs (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'One controlled execution attempt of a TaskStep';
+
+CREATE TABLE IF NOT EXISTS task_run_worker_executions (
+    execution_id BINARY(16) PRIMARY KEY COMMENT 'Worker 工具执行ID',
+    project_id BINARY(16) NOT NULL COMMENT '所属项目ID，用于隔离查询',
+    task_id BINARY(16) NOT NULL COMMENT '所属任务ID',
+    task_run_id BINARY(16) NOT NULL COMMENT '所属任务运行ID',
+    sandbox_id BINARY(16) NULL COMMENT 'Worker Sandbox ID',
+    repository_id BINARY(16) NULL COMMENT '目标项目仓库ID',
+    tool_name VARCHAR(64) NULL COMMENT 'Worker 工具名称',
+    status VARCHAR(24) NULL COMMENT 'Worker 工具状态',
+    exit_code INT NULL COMMENT '进程类工具退出码',
+    failure_code VARCHAR(64) NULL COMMENT 'Worker 稳定失败码',
+    failure_reason VARCHAR(1024) NULL COMMENT 'Worker 脱敏失败摘要',
+    created_at DATETIME(6) NOT NULL COMMENT 'Worker 接收执行时间（UTC）',
+    started_at DATETIME(6) NULL COMMENT 'Worker 开始执行时间（UTC）',
+    finished_at DATETIME(6) NULL COMMENT 'Worker 完成时间（UTC）',
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    KEY idx_run_worker_execution_run (project_id, task_run_id, created_at),
+    KEY idx_run_worker_execution_task (task_id, created_at),
+    CONSTRAINT fk_run_worker_execution_project FOREIGN KEY (project_id) REFERENCES projects (id),
+    CONSTRAINT fk_run_worker_execution_task FOREIGN KEY (task_id) REFERENCES tasks (id),
+    CONSTRAINT fk_run_worker_execution_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TaskRun 与 Worker 工具执行的脱敏诊断关联';
 
 CREATE TABLE IF NOT EXISTS
     execution_logs (

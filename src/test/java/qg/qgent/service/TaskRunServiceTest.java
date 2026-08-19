@@ -13,8 +13,10 @@ import qg.qgent.dto.ExecutionContextResponse;
 import qg.qgent.dto.InputRequestResponse;
 import qg.qgent.dto.LogEntryResponse;
 import qg.qgent.dto.TaskRunDetailResponse;
+import qg.qgent.dto.TaskRunDiagnosticsResponse;
 import qg.qgent.dto.TaskRunListItemResponse;
 import qg.qgent.dto.TaskRunSummaryResponse;
+import qg.qgent.dto.TaskDiagnosticsResponse;
 import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.ExecutionLogEntity;
@@ -24,6 +26,7 @@ import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskExecutionArtifactEntity;
 import qg.qgent.entity.TaskRunEntity;
+import qg.qgent.entity.TaskRunWorkerExecutionEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
@@ -36,6 +39,7 @@ import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.TaskExecutionArtifactMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskRunMapper;
+import qg.qgent.mapper.TaskRunWorkerExecutionMapper;
 import qg.qgent.mapper.TaskStepMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 
@@ -191,6 +195,65 @@ class TaskRunServiceTest {
         assertNull(response.getStatusReason().getFailureCode());
         assertEquals("任务执行失败，请查看执行记录", response.getStatusReason().getSummary());
         assertFalse(response.getStatusReason().isRetryable());
+    }
+
+    @Test
+    void diagnosticsReturnsMainFailureAndStructuredWorkerExecutions() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID(), executionId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("FAILED");
+        run.setFailureCode("FILE_PATCH_FAILED");
+        run.setFailureReason("补丁上下文与文件不一致");
+        run.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+        TaskRunWorkerExecutionMapper workerExecutions = mock(TaskRunWorkerExecutionMapper.class);
+        TaskRunWorkerExecutionEntity worker = new TaskRunWorkerExecutionEntity();
+        worker.setExecutionId(executionId);
+        worker.setProjectId(projectId);
+        worker.setTaskId(run.getTaskId());
+        worker.setTaskRunId(runId);
+        worker.setToolName("file.patch");
+        worker.setStatus("FAILED");
+        worker.setFailureCode("FILE_PATCH_FAILED");
+        worker.setFailureReason("补丁上下文与文件不一致");
+        worker.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
+        when(workerExecutions.selectList(any())).thenReturn(List.of(worker));
+        TaskRunService diagnosticService = new TaskRunService(runs, logs, inputRequests, diffs, steps, agents,
+                artifacts, tasks, groups, projectRepositories, workspaceRepositories, access, groupService, events,
+                mock(NotificationService.class), eventPublisher,
+                new TaskRunLogService(logs, tasks, runs, events), workerExecutions);
+
+        TaskRunDiagnosticsResponse response = diagnosticService.diagnostics(projectId, runId, UUID.randomUUID());
+
+        assertEquals("CODING", response.getStage());
+        assertEquals("FILE_PATCH_FAILED", response.getFailure().getFailureCode());
+        assertEquals("补丁上下文与文件不一致", response.getFailure().getSummary());
+        assertEquals(executionId.toString(), response.getWorkerExecutions().getFirst().getExecutionId());
+    }
+
+    @Test
+    void taskDiagnosticsWorksWhenFailureHappensBeforeTaskRunExists() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity failedTask = new TaskEntity();
+        failedTask.setId(taskId);
+        failedTask.setProjectId(projectId);
+        failedTask.setStatus("FAILED");
+        failedTask.setFailureCode("SANDBOX_WORKER_UNAVAILABLE");
+        failedTask.setFailureReason("执行环境暂时不可用");
+        failedTask.setFailureRetryable(true);
+        failedTask.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
+        when(tasks.selectById(taskId)).thenReturn(failedTask);
+        when(runs.selectList(any())).thenReturn(List.of());
+
+        TaskDiagnosticsResponse response = service.taskDiagnostics(projectId, taskId, UUID.randomUUID());
+
+        assertEquals(taskId.toString(), response.getTaskId());
+        assertEquals("PLANNING", response.getStage());
+        assertNull(response.getLatestFailedRun());
+        assertEquals("SANDBOX_WORKER_UNAVAILABLE", response.getFailure().getFailureCode());
+        assertEquals("执行环境暂时不可用", response.getFailure().getSummary());
     }
 
     @Test

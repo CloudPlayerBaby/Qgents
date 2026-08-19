@@ -60,6 +60,7 @@ public class TaskRunService {
     private final NotificationService notificationService;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
     private final TaskRunLogService taskRunLogService;
+    private final TaskRunWorkerExecutionMapper workerExecutionMapper;
 
     public TaskRunService(TaskRunMapper taskRunMapper,
                           ExecutionLogMapper logMapper, InputRequestMapper inputRequestMapper, DiffMapper diffMapper,
@@ -72,7 +73,7 @@ public class TaskRunService {
         this(taskRunMapper, logMapper, inputRequestMapper, diffMapper, taskStepMapper, agentMapper, artifactMapper,
                 taskMapper, requirementGroupMapper, projectRepositoryMapper, workspaceRepositoryMapper, projectAccess,
                 groupService, eventService, notificationService, eventPublisher,
-                new TaskRunLogService(logMapper, taskMapper, taskRunMapper, eventService));
+                new TaskRunLogService(logMapper, taskMapper, taskRunMapper, eventService), null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -84,7 +85,8 @@ public class TaskRunService {
                           ProjectAccessService projectAccess, GroupService groupService, EventService eventService,
                           NotificationService notificationService,
                           org.springframework.context.ApplicationEventPublisher eventPublisher,
-                          TaskRunLogService taskRunLogService) {
+                          TaskRunLogService taskRunLogService,
+                          TaskRunWorkerExecutionMapper workerExecutionMapper) {
         this.taskRunMapper = taskRunMapper;
         this.logMapper = logMapper;
         this.inputRequestMapper = inputRequestMapper;
@@ -102,6 +104,7 @@ public class TaskRunService {
         this.notificationService = notificationService;
         this.eventPublisher = eventPublisher;
         this.taskRunLogService = taskRunLogService;
+        this.workerExecutionMapper = workerExecutionMapper;
     }
 
     /**
@@ -147,6 +150,91 @@ public class TaskRunService {
                 artifactSummary(run.getId()), stepsFromArtifact(latestArtifact), iso(run.getStartedAt()), iso(run.getFinishedAt()),
                 durationMs(run.getStartedAt(), run.getFinishedAt()), iso(run.getCreatedAt()),
                 iso(run.getUpdatedAt()));
+    }
+
+    /**
+     * 返回一个 TaskRun 的统一脱敏诊断。运行失败在调用 Worker 前发生时，仍会返回主后端失败
+     * 原因和空 Worker 执行列表；空列表不是接口失败，也不代表调用者没有权限。
+     */
+    public TaskRunDiagnosticsResponse diagnostics(UUID projectId, UUID taskRunId, UUID userId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        TaskRunEntity run = requireRun(projectId, taskRunId);
+        requireTaskVisible(projectId, run.getTaskId(), userId);
+        return diagnosticsForRun(run);
+    }
+
+    /** 供同一编排链路读取刚完成运行的脱敏失败字段，不对外暴露绕过项目权限的接口。 */
+    public TaskRunEntity findById(UUID taskRunId) {
+        return taskRunId == null ? null : taskRunMapper.selectById(taskRunId);
+    }
+
+    /**
+     * 以 Task 为入口查询失败诊断。前端不需要先拿 executionId；服务端按项目和群成员权限
+     * 找出最近失败的 TaskRun，并在 Planner/编排尚未创建 TaskRun 时返回 Task 级失败原因。
+     */
+    public TaskDiagnosticsResponse taskDiagnostics(UUID projectId, UUID taskId, UUID userId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        TaskEntity task = requireTaskVisible(projectId, taskId, userId);
+        List<TaskRunEntity> failedRuns = taskRunMapper.selectList(Wrappers.<TaskRunEntity>lambdaQuery()
+                .eq(TaskRunEntity::getProjectId, projectId)
+                .eq(TaskRunEntity::getTaskId, taskId)
+                .eq(TaskRunEntity::getStatus, "FAILED")
+                .eq(task.getFailureCode() != null && !task.getFailureCode().isBlank()
+                        && !task.getFailureCode().startsWith("TASK_FINALIZATION"),
+                        TaskRunEntity::getFailureCode, task.getFailureCode())
+                .orderByDesc(TaskRunEntity::getFinishedAt)
+                .orderByDesc(TaskRunEntity::getCreatedAt)
+                .last("LIMIT 1"));
+        TaskRunDiagnosticsResponse latestFailedRun = failedRuns == null || failedRuns.isEmpty()
+                ? null : diagnosticsForRun(failedRuns.get(0));
+        TaskStatusReason failure = taskFailureReason(task, latestFailedRun);
+        String stage = latestFailedRun == null ? taskFailureStage(task) : latestFailedRun.getStage();
+        return new TaskDiagnosticsResponse(id(task.getId()), task.getStatus(), stage, failure, latestFailedRun);
+    }
+
+    private String taskFailureStage(TaskEntity task) {
+        if (task.getFailureCode() != null && (task.getFailureCode().startsWith("TASK_FINALIZATION")
+                || task.getFailureCode().startsWith("FINAL_")
+                || task.getFailureCode().contains("DIFF")
+                || task.getFailureCode().contains("DELIVERY"))) {
+            return "DELIVERY";
+        }
+        return "PLANNING";
+    }
+
+    private TaskRunDiagnosticsResponse diagnosticsForRun(TaskRunEntity run) {
+        TaskExecutionArtifactEntity latestArtifact = latestRunArtifact(run.getId());
+        Map<String, Object> artifactSummary = latestArtifact == null ? null : latestArtifact.getSummary();
+        List<WorkerExecutionDiagnosticResponse> workerExecutions = workerExecutionMapper == null ? List.of()
+                : Optional.ofNullable(workerExecutionMapper.selectList(
+                        Wrappers.<TaskRunWorkerExecutionEntity>lambdaQuery()
+                                .eq(TaskRunWorkerExecutionEntity::getProjectId, run.getProjectId())
+                                .eq(TaskRunWorkerExecutionEntity::getTaskRunId, run.getId())
+                                .orderByAsc(TaskRunWorkerExecutionEntity::getCreatedAt)))
+                .orElse(List.of()).stream().map(this::toWorkerDiagnostic).toList();
+        return new TaskRunDiagnosticsResponse(id(run.getId()), id(run.getTaskId()), run.getStatus(),
+                diagnosticStage(run.getRole()), statusReason(run, List.of(), artifactSummary), workerExecutions);
+    }
+
+    private TaskStatusReason taskFailureReason(TaskEntity task, TaskRunDiagnosticsResponse latestFailedRun) {
+        boolean failedTask = "FAILED".equals(task.getStatus()) || "DELIVERY_FAILED".equals(task.getStatus());
+        if (!failedTask && (task.getFailureCode() == null || task.getFailureCode().isBlank())
+                && latestFailedRun == null) {
+            return null;
+        }
+        if (task.getFailureCode() != null && !task.getFailureCode().isBlank()) {
+            String code = "DELIVERY".equals(taskFailureStage(task)) ? "DELIVERY_FAILED"
+                    : latestFailedRun == null ? "STARTUP_FAILED" : "EXECUTION_FAILED";
+            return new TaskStatusReason(code, task.getFailureCode(), "任务执行失败",
+                    task.getFailureReason() == null || task.getFailureReason().isBlank()
+                            ? "任务执行失败，可查看失败运行" : task.getFailureReason(),
+                    !Boolean.FALSE.equals(task.getFailureRetryable()), iso(task.getFailureOccurredAt()));
+        }
+        if (latestFailedRun != null && latestFailedRun.getFailure() != null) {
+            return latestFailedRun.getFailure();
+        }
+        return new TaskStatusReason("EXECUTION_FAILED", "EXECUTION_FAILED", "任务执行失败",
+                "任务执行失败，可查看失败运行", true, iso(task.getUpdatedAt()));
     }
 
     /**
@@ -465,6 +553,15 @@ public class TaskRunService {
         run.setStatus(terminalStatus);
         run.setFinishedAt(now);
         run.setUpdatedAt(now);
+        if ("FAILED".equals(terminalStatus)) {
+            run.setFailureCode(safeFailureCode(failureCode));
+            run.setFailureReason(safeFailureReason(detail));
+            run.setFailureOccurredAt(now);
+        } else {
+            run.setFailureCode(null);
+            run.setFailureReason(null);
+            run.setFailureOccurredAt(null);
+        }
         taskRunMapper.updateById(run);
         String message = switch (terminalStatus) {
             case "SUCCEEDED" -> "执行成功";
@@ -854,10 +951,53 @@ public class TaskRunService {
     }
 
     private TaskStatusReason failedReason(TaskRunEntity run, Map<String, Object> failureSummary) {
+        // 诊断链路把脱敏后的失败码/原因持久化到 run 字段（safeFailureCode/safeFailureReason），优先读取；
+        // 历史数据或未持久化时回退到 artifact summary，经 ExecutionContentSanitizer 归一化后才对外展示。
+        String persistedCode = run.getFailureCode();
+        if (persistedCode != null && !persistedCode.isBlank()) {
+            String persistedMessage = run.getFailureReason();
+            return new TaskStatusReason("EXECUTION_FAILED", persistedCode, "执行失败",
+                    persistedMessage == null || persistedMessage.isBlank()
+                            ? "任务运行执行失败，可查看执行记录" : persistedMessage,
+                    ExecutionContentSanitizer.userFailureRetryable(persistedCode),
+                    iso(run.getFailureOccurredAt() == null ? run.getUpdatedAt() : run.getFailureOccurredAt()));
+        }
         String failureCode = ExecutionContentSanitizer.publicFailureCode(text(failureSummary, "failureCode"));
         String message = ExecutionContentSanitizer.userFailureDescription(failureCode);
         return new TaskStatusReason("EXECUTION_FAILED", failureCode, "执行失败", message,
                 ExecutionContentSanitizer.userFailureRetryable(failureCode), iso(run.getUpdatedAt()));
+    }
+
+    private WorkerExecutionDiagnosticResponse toWorkerDiagnostic(TaskRunWorkerExecutionEntity execution) {
+        return new WorkerExecutionDiagnosticResponse(id(execution.getExecutionId()), execution.getToolName(),
+                execution.getStatus(), execution.getExitCode(), execution.getFailureCode(),
+                execution.getFailureReason(), iso(execution.getCreatedAt()), iso(execution.getFinishedAt()));
+    }
+
+    private String diagnosticStage(String role) {
+        return switch (role == null ? "" : role) {
+            case "PLANNER" -> "PLANNING";
+            case "DEVELOPER" -> "CODING";
+            case "TESTER" -> "TESTING";
+            case "REVIEWER" -> "REVIEWING";
+            default -> role == null || role.isBlank() ? "UNKNOWN" : role;
+        };
+    }
+
+    private String safeFailureCode(String code) {
+        if (code == null || code.isBlank()) {
+            return "EXECUTION_FAILED";
+        }
+        String normalized = code.strip().toUpperCase(Locale.ROOT);
+        return normalized.matches("[A-Z][A-Z0-9_]{0,63}") ? normalized : "EXECUTION_FAILED";
+    }
+
+    private String safeFailureReason(String detail) {
+        if (detail == null || detail.isBlank()) {
+            return "任务运行执行失败，可查看执行记录";
+        }
+        String value = ExecutionContentSanitizer.sanitize(detail).strip();
+        return value.length() <= 1024 ? value : value.substring(0, 1024) + "…";
     }
 
     private String text(Map<String, Object> values, String key) {

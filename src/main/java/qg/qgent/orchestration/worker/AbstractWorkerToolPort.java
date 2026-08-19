@@ -1,6 +1,7 @@
 package qg.qgent.orchestration.worker;
 
 import qg.qgent.auth.UuidV7;
+import qg.qgent.service.TaskRunWorkerExecutionService;
 
 import java.time.Duration;
 import java.util.Map;
@@ -17,19 +18,32 @@ abstract class AbstractWorkerToolPort {
     protected final SandboxWorkerClient client;
     protected final SandboxSessionManager sessions;
     protected final SandboxWorkerProperties properties;
+    private final TaskRunWorkerExecutionService workerExecutionService;
 
     private final java.util.function.Supplier<Long> nanoTimeSupplier;
 
     AbstractWorkerToolPort(SandboxWorkerClient client, SandboxSessionManager sessions,
                            SandboxWorkerProperties properties) {
-        this(client, sessions, properties, System::nanoTime);
+        this(client, sessions, properties, null, System::nanoTime);
     }
 
     AbstractWorkerToolPort(SandboxWorkerClient client, SandboxSessionManager sessions,
                            SandboxWorkerProperties properties, java.util.function.Supplier<Long> nanoTimeSupplier) {
+        this(client, sessions, properties, null, nanoTimeSupplier);
+    }
+
+    AbstractWorkerToolPort(SandboxWorkerClient client, SandboxSessionManager sessions,
+                           SandboxWorkerProperties properties, TaskRunWorkerExecutionService workerExecutionService) {
+        this(client, sessions, properties, workerExecutionService, System::nanoTime);
+    }
+
+    AbstractWorkerToolPort(SandboxWorkerClient client, SandboxSessionManager sessions,
+                           SandboxWorkerProperties properties, TaskRunWorkerExecutionService workerExecutionService,
+                           java.util.function.Supplier<Long> nanoTimeSupplier) {
         this.client = client;
         this.sessions = sessions;
         this.properties = properties;
+        this.workerExecutionService = workerExecutionService;
         this.nanoTimeSupplier = nanoTimeSupplier == null ? System::nanoTime : nanoTimeSupplier;
     }
 
@@ -61,10 +75,19 @@ abstract class AbstractWorkerToolPort {
         WorkerToolExecution submitted = client.submitToolExecution(sandboxId, request);
         // 提交成功后立即记录 ID：即使后续轮询超时或线程被取消，运维仍可定位 Worker 日志。
         WorkerExecutionTraceContext.record(submitted);
+        persistDiagnostic(submitted);
         WorkerToolExecution execution = pollUntilTerminal(sandboxId, submitted.getId());
         // 同一 ID 的终态会覆盖 QUEUED/RUNNING 摘要。
         WorkerExecutionTraceContext.record(execution);
+        persistDiagnostic(execution);
         return execution;
+    }
+
+    private void persistDiagnostic(WorkerToolExecution execution) {
+        UUID taskRunId = WorkerExecutionTraceContext.currentTaskRunId();
+        if (workerExecutionService != null && taskRunId != null) {
+            workerExecutionService.record(taskRunId, execution);
+        }
     }
 
     private WorkerToolExecution pollUntilTerminal(UUID sandboxId, UUID executionId) {

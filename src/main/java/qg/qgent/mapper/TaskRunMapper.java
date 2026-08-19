@@ -30,7 +30,9 @@ public interface TaskRunMapper extends BaseMapper<TaskRunEntity> {
      * 返回 1 表示本执行者抢到回收权；0 表示已被他人回收/已进入终态。翻出 RUNNING 后，
      * 旧线程晚回写终态会被完成逻辑以 RUNNING 守卫拒绝，从而不影响新的重试结果。
      */
-    @Update("update task_runs set status='FAILED', finished_at=UTC_TIMESTAMP(6), updated_at=UTC_TIMESTAMP(6) "
+    @Update("update task_runs set status='FAILED', failure_code='TASK_RUN_TIMEOUT', "
+            + "failure_reason='运行超时，执行器未在规定时间内返回', failure_occurred_at=UTC_TIMESTAMP(6), "
+            + "finished_at=UTC_TIMESTAMP(6), updated_at=UTC_TIMESTAMP(6) "
             + "where id=#{runId} and status in ('QUEUED','RUNNING') and updated_at < #{staleBefore}")
     int reclaimStaleRun(@Param("runId") UUID runId, @Param("staleBefore") java.time.LocalDateTime staleBefore);
 }

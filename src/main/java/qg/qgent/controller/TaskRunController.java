@@ -63,6 +63,17 @@ public class TaskRunController {
     }
 
     /**
+     * 统一查看本次运行的失败阶段、脱敏主后端失败原因和关联 Worker 工具执行摘要。
+     * 该接口不会返回 Worker 原始 stdout/stderr、工具参数或服务令牌。
+     */
+    @GetMapping("/task-runs/{taskRunId}/diagnostics")
+    public ApiResponse<?> diagnostics(@PathVariable UUID projectId, @PathVariable UUID taskRunId,
+                                      @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        TaskRunDiagnosticsResponse data = taskRunService.diagnostics(projectId, taskRunId, userId);
+        return ok(data, request);
+    }
+
+    /**
      * 契约 §12.2：为失败或已取消的运行创建新的 TaskRun。
      */
     @PostMapping("/task-runs/{taskRunId}/retry")

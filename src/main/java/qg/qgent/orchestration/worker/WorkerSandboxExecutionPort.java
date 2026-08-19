@@ -3,9 +3,11 @@ package qg.qgent.orchestration.worker;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import lombok.extern.slf4j.Slf4j;
 import qg.qgent.orchestration.tool.ExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionResult;
+import qg.qgent.service.TaskRunWorkerExecutionService;
 
 import java.time.Duration;
 import java.util.List;
@@ -29,9 +31,17 @@ import java.util.UUID;
 @ConditionalOnProperty(name = "app.worker.enabled", havingValue = "true")
 public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implements ExecutionPort {
 
+    /** 兼容无 Spring 容器的端口单元测试；生产装配使用带诊断持久化服务的构造器。 */
     public WorkerSandboxExecutionPort(SandboxWorkerClient client, SandboxSessionManager sessions,
                                       SandboxWorkerProperties properties) {
         super(client, sessions, properties);
+    }
+
+    @Autowired
+    public WorkerSandboxExecutionPort(SandboxWorkerClient client, SandboxSessionManager sessions,
+                                      SandboxWorkerProperties properties,
+                                      TaskRunWorkerExecutionService workerExecutionService) {
+        super(client, sessions, properties, workerExecutionService);
     }
 
     @Override

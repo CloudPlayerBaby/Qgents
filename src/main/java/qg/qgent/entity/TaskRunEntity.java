@@ -56,6 +56,18 @@ public class TaskRunEntity {
      * 发起用户ID。
      */
     private UUID createdBy;
+    /**
+     * 本次运行失败的稳定分类码；仅 FAILED 时非空。
+     */
+    private String failureCode;
+    /**
+     * 脱敏、限长的失败说明；仅 FAILED 时非空。
+     */
+    private String failureReason;
+    /**
+     * 失败发生时间（UTC）。
+     */
+    private LocalDateTime failureOccurredAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

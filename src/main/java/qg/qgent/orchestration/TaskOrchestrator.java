@@ -785,6 +785,25 @@ public class TaskOrchestrator {
             case COMPLETE_CANCELLED -> new FinishingStatus("CANCELLED", null, null);
             default -> new FinishingStatus("FAILED", null, null);
         };
+        if ("FAILED".equals(finishing.status())) {
+            TaskRunEntity failedRun = ctx.lastRunId == null ? null : taskRunService.findById(ctx.lastRunId);
+            String code = finishing.failureCode();
+            String reason = finishing.failureReason();
+            if ((code == null || code.isBlank()) && failedRun != null && failedRun.getFailureCode() != null) {
+                code = failedRun.getFailureCode();
+                reason = failedRun.getFailureReason();
+            }
+            task.setFailureCode(code == null || code.isBlank() ? "TASK_FINALIZATION_FAILED" : code);
+            task.setFailureReason(reason == null || reason.isBlank()
+                    ? "任务在执行完成阶段失败，可查看任务诊断" : ExecutionContentSanitizer.sanitize(reason));
+            task.setFailureRetryable(true);
+            task.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
+        } else if ("SUCCEEDED".equals(finishing.status()) || "DELIVERING".equals(finishing.status())) {
+            task.setFailureCode(null);
+            task.setFailureReason(null);
+            task.setFailureRetryable(null);
+            task.setFailureOccurredAt(null);
+        }
         updateTaskStatus(task, finishing.status());
         if (finishing.reviewBatchId() != null) {
             sendDiffCard(task, finishing.reviewBatchId());
@@ -834,11 +853,11 @@ public class TaskOrchestrator {
             }
             log.warn("mr-first batch creation failed, task finishes FAILED, taskId={}, code={}: {}",
                     task.getId(), e.code(), e.getMessage());
-            return new FinishingStatus("FAILED", null, null);
+            return new FinishingStatus("FAILED", null, null, e.code(), e.getMessage());
         } catch (RuntimeException e) {
             log.error("mr-first batch creation failed, task finishes FAILED, taskId={}: {}",
                     task.getId(), e.getMessage(), e);
-            return new FinishingStatus("FAILED", null, null);
+            return new FinishingStatus("FAILED", null, null, "TASK_FINALIZATION_FAILED", "任务交付准备失败");
         }
     }
 
@@ -868,11 +887,11 @@ public class TaskOrchestrator {
             }
             log.warn("final diff batch creation failed, task finishes FAILED, taskId={}, code={}: {}",
                     task.getId(), e.code(), e.getMessage());
-            return new FinishingStatus("FAILED", null, null);
+            return new FinishingStatus("FAILED", null, null, e.code(), e.getMessage());
         } catch (RuntimeException e) {
             log.error("final diff batch creation failed, task finishes FAILED, taskId={}: {}",
                     task.getId(), e.getMessage(), e);
-            return new FinishingStatus("FAILED", null, null);
+            return new FinishingStatus("FAILED", null, null, "TASK_FINALIZATION_FAILED", "任务交付准备失败");
         }
     }
 
@@ -1153,7 +1172,11 @@ public class TaskOrchestrator {
      * 终态判定结果：终态状态码、仅 WAITING_DIFF_CONFIRMATION 时的 Diff 批次号，以及只用于本次
      * TASK_STATUS 卡片的结果文案。文案不持久化，避免无代码变更结果泄漏到其他异步任务。
      */
-    private record FinishingStatus(String status, UUID reviewBatchId, String message) {
+    private record FinishingStatus(String status, UUID reviewBatchId, String message,
+                                   String failureCode, String failureReason) {
+        private FinishingStatus(String status, UUID reviewBatchId, String message) {
+            this(status, reviewBatchId, message, null, null);
+        }
     }
 
     /**

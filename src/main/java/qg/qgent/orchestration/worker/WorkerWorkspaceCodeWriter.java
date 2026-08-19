@@ -2,9 +2,11 @@ package qg.qgent.orchestration.worker;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
+import qg.qgent.service.TaskRunWorkerExecutionService;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -44,9 +46,17 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             "FILE_HASH_MISMATCH", "FILE_PATCH_FAILED", "TOOL_ARGUMENT_INVALID", "TOOL_PATH_INVALID",
             "TOOL_NOT_SUPPORTED", "COMMAND_NOT_ALLOWED");
 
+    /** 兼容无 Spring 容器的端口单元测试；生产装配使用带诊断持久化服务的构造器。 */
     public WorkerWorkspaceCodeWriter(SandboxWorkerClient client, SandboxSessionManager sessions,
                                      SandboxWorkerProperties properties) {
         super(client, sessions, properties);
+    }
+
+    @Autowired
+    public WorkerWorkspaceCodeWriter(SandboxWorkerClient client, SandboxSessionManager sessions,
+                                     SandboxWorkerProperties properties,
+                                     TaskRunWorkerExecutionService workerExecutionService) {
+        super(client, sessions, properties, workerExecutionService);
     }
 
     @Override

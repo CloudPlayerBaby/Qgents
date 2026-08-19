@@ -702,6 +702,10 @@ public class DiffReviewBatchService {
                 diffs.updateById(diff);
             }
             task.setStatus("DELIVERY_FAILED");
+            task.setFailureCode("DIFF_SNAPSHOT_STALE");
+            task.setFailureReason("交付快照已失效，请重新生成 Diff 后重试");
+            task.setFailureRetryable(true);
+            task.setFailureOccurredAt(now);
             task.setUpdatedAt(now);
             tasks.updateById(task);
             events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated", task.getId().toString(),
@@ -745,6 +749,10 @@ public class DiffReviewBatchService {
                 diffs.updateById(current);
             }
             task.setStatus("DELIVERY_FAILED");
+            task.setFailureCode("DIFF_SNAPSHOT_STALE");
+            task.setFailureReason("交付快照已失效，请重新生成 Diff 后重试");
+            task.setFailureRetryable(true);
+            task.setFailureOccurredAt(now);
             task.setUpdatedAt(now);
             tasks.updateById(task);
             events.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated", task.getId().toString(),

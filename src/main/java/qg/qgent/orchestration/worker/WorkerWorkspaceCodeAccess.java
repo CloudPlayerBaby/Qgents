@@ -2,8 +2,10 @@ package qg.qgent.orchestration.worker;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
+import qg.qgent.service.TaskRunWorkerExecutionService;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -37,9 +39,17 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
      */
     private static final Duration TOOL_TIMEOUT = Duration.ofSeconds(30);
 
+    /** 兼容无 Spring 容器的端口单元测试；生产装配使用带诊断持久化服务的构造器。 */
     public WorkerWorkspaceCodeAccess(SandboxWorkerClient client, SandboxSessionManager sessions,
                                      SandboxWorkerProperties properties) {
         super(client, sessions, properties);
+    }
+
+    @Autowired
+    public WorkerWorkspaceCodeAccess(SandboxWorkerClient client, SandboxSessionManager sessions,
+                                     SandboxWorkerProperties properties,
+                                     TaskRunWorkerExecutionService workerExecutionService) {
+        super(client, sessions, properties, workerExecutionService);
     }
 
     @Override

@@ -64,7 +64,9 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
      * 将因陈旧 TaskRun 被恢复器回收的任务收敛为 FAILED。
      * 只允许覆盖仍处于编排启动态的任务，避免覆盖用户取消、交付或其他终态。
      */
-    @Update("update tasks set status='FAILED', updated_at=UTC_TIMESTAMP(6) where id=#{taskId} "
+    @Update("update tasks set status='FAILED', failure_code='TASK_RUN_TIMEOUT', "
+            + "failure_reason='任务运行超时，执行器未在规定时间内返回', failure_retryable=1, "
+            + "failure_occurred_at=UTC_TIMESTAMP(6), updated_at=UTC_TIMESTAMP(6) where id=#{taskId} "
             + "and project_id=#{projectId} and status in ('PLANNING','PENDING','RUNNING') "
             + "and not exists (select 1 from task_runs r where r.task_id=#{taskId} "
             + "and r.status in ('QUEUED','RUNNING','WAITING_INPUT','WAITING_APPROVAL'))")

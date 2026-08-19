@@ -548,7 +548,83 @@ PRIVATE（默认，仅创建者）──publish──▶ PENDING（待审核）
 项目权限范围内的 TaskRun 脱敏日志，后端运维或受控诊断程序才能读取 Worker 的完整详情、
 `SYSTEM`、`STDOUT` 和 `STDERR`。
 
-### 15.1 前端可调用接口：TaskRun 脱敏日志
+### 15.1 前端可调用接口：TaskRun 统一失败诊断
+
+```http
+GET /api/v1/projects/{projectId}/task-runs/{taskRunId}/diagnostics
+Authorization: Bearer <user-access-token>
+```
+
+该接口是任务失败后的统一查询入口。无论失败发生在调用 Worker 之前、Agent 协议阶段、
+Worker 工具执行阶段还是测试阶段，均返回 `taskRunId/status/stage/failure/workerExecutions`。
+`failure` 为脱敏主后端失败归因；没有调用 Worker 时 `workerExecutions` 返回空数组，不会因为
+不存在 `executionId` 而返回空诊断或 404。
+
+```json
+{
+  "data": {
+    "taskRunId": "01...",
+    "taskId": "01...",
+    "status": "FAILED",
+    "stage": "CODING",
+    "failure": {
+      "code": "EXECUTION_FAILED",
+      "failureCode": "CODING_NO_ACTUAL_CHANGE",
+      "title": "执行失败",
+      "summary": "Coding Agent 未产生实际文件修改",
+      "retryable": true,
+      "occurredAt": "2026-08-19T12:22:52Z"
+    },
+    "workerExecutions": []
+  }
+}
+```
+
+`workerExecutions` 中的每项只返回 `executionId/tool/status/exitCode/failureCode/failureSummary`
+及时间字段。该关联在主后端收到 Worker 入队回执后立即持久化，不能依赖解析日志文本，因而
+即使后续轮询超时或主后端线程中断，也能按 `taskRunId` 找到已经创建的 Worker 执行。
+
+### 15.1.1 Task 级统一失败诊断入口（前端首选）
+
+```http
+GET /api/v1/projects/{projectId}/tasks/{taskId}/diagnostics
+Authorization: Bearer <user-access-token>
+```
+
+该接口是任务失败后的首选查询入口。前端只需已登录的 `projectId` 和 `taskId`，不需要先查询
+`taskRunId` 或 `executionId`。响应中的 `failure` 是主后端持久化的脱敏失败原因，`stage` 表示失败阶段：
+
+```json
+{
+  "data": {
+    "taskId": "01...",
+    "status": "FAILED",
+    "stage": "CODING",
+    "failure": {
+      "code": "EXECUTION_FAILED",
+      "failureCode": "FILE_PATCH_FAILED",
+      "title": "执行失败",
+      "summary": "补丁上下文与文件不一致",
+      "retryable": true,
+      "occurredAt": "2026-08-19T12:22:52Z"
+    },
+    "latestFailedRun": {
+      "taskRunId": "01...",
+      "stage": "CODING",
+      "workerExecutions": [
+        { "executionId": "01...", "tool": "file.patch", "status": "FAILED" }
+      ]
+    }
+  }
+}
+```
+
+失败发生在 TaskRun 创建前时，`latestFailedRun` 为 `null`，但 `failure` 和 `stage` 仍然返回；这覆盖
+Planner、编排启动、交付准备和超时回收失败。前端进入
+`/app/projects/{projectId}/tasks/{taskId}` 后自动请求本接口，在失败卡片中展示阶段、稳定失败码和摘要；
+只有用户需要查看具体运行时，才调用上一节的 TaskRun 级诊断接口。
+
+### 15.2 前端可调用接口：TaskRun 脱敏日志
 
 ```http
 GET /api/v1/projects/{projectId}/task-runs/{taskRunId}/logs?cursor=0&limit=100
@@ -566,7 +642,7 @@ executionId=<uuid>，tool=<tool>，status=<status>，exitCode=<number>，failure
 stdout/stderr、Token、密码、私钥或宿主机路径。历史版本可能写过 `WORKER/STDOUT`、
 `WORKER/STDERR`，接口层同样过滤，不向项目成员返回。
 
-### 15.2 受控运维接口：Worker 执行详情与完整日志
+### 15.3 受控运维接口：Worker 执行详情与完整日志
 
 以下接口只在 Worker 内网暴露，并且必须携带部署时配置的独立服务令牌：
 
@@ -591,7 +667,7 @@ Authorization: Bearer <SANDBOX_BACKEND_SERVICE_TOKEN>
 `INTERNAL_AUTH_NOT_CONFIGURED`，不得降级为匿名访问。运维审计应记录 `taskRunId`、`executionId`、
 操作者和时间，不记录令牌或完整日志正文。
 
-### 15.3 Worker 数据库与启动前置条件
+### 15.4 Worker 数据库与启动前置条件
 
 Worker 使用独立数据库 `qgents_sandbox_worker`，不是主后端业务库。执行详情和日志分别保存于：
 
@@ -611,9 +687,10 @@ mysql --protocol=tcp -h <mysql-host> -u <admin-user> -p \
 `sandbox-worker/src/main/resources/db/sandbox_worker_schema.sql` 建表；应用账户不需要全局
 `CREATE DATABASE` 权限。若未先创建数据库，Worker 无法启动并不能提供执行日志查询。
 
-### 15.4 前端和运维职责
+### 15.5 前端和运维职责
 
-前端收到 `task-run.step.progress` 或查询 TaskRun 日志后，只显示脱敏状态、错误码和失败摘要；
-不把 `executionId` 当作可直接访问的公网 URL。需要完整日志时，前端将 `projectId/taskRunId` 提交
-给后端支持或运维流程，由受控程序完成 `executionId -> Worker` 的定位。Worker 数据库日志不走
-`docker logs`，容器销毁不会删除已落库的执行记录。
+前端进入 `/app/projects/{projectId}/tasks/{taskId}` 后，由请求客户端自动携带用户 Token 调用
+上述 `/api/v1` 契约接口；不能把 `/api/v1` 地址当成页面地址粘贴到浏览器地址栏。失败时先显示
+`diagnostics` 返回的主后端失败阶段和摘要；如果 `workerExecutions` 非空，后端支持/运维再使用
+其中的 `executionId` 调用 Worker 内网接口。不把 `executionId` 当作可直接访问的公网 URL，
+也不把 Worker 服务令牌放入前端。Worker 数据库日志不走 `docker logs`，容器销毁不会删除已落库的执行记录。

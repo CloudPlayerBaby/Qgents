@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class WorkerExecutionTraceContext {
     private static final ConcurrentHashMap<UUID, Trace> TRACES = new ConcurrentHashMap<>();
     private static final ThreadLocal<Trace> CURRENT = new ThreadLocal<>();
+    private static final ThreadLocal<UUID> CURRENT_RUN_ID = new ThreadLocal<>();
 
     private WorkerExecutionTraceContext() {
     }
@@ -29,6 +30,7 @@ public final class WorkerExecutionTraceContext {
         Trace trace = new Trace();
         TRACES.put(taskRunId, trace);
         CURRENT.set(trace);
+        CURRENT_RUN_ID.set(taskRunId);
     }
 
     /** 记录一次 Worker 工具执行；同一 ID 的后续终态会替换入队摘要。 */
@@ -42,6 +44,12 @@ public final class WorkerExecutionTraceContext {
     /** 清理 Agent 执行线程绑定；摘要仍保留到编排线程按 TaskRun ID 取走。 */
     public static void detach() {
         CURRENT.remove();
+        CURRENT_RUN_ID.remove();
+    }
+
+    /** 当前 Agent 线程所属的 TaskRun；Worker 接收执行后立即落库关联时使用。 */
+    public static UUID currentTaskRunId() {
+        return CURRENT_RUN_ID.get();
     }
 
     /** 取出并移除一个 TaskRun 的 Worker 摘要。 */

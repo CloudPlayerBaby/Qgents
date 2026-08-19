@@ -15,6 +15,7 @@ import qg.qgent.dto.TaskListItemResponse;
 import qg.qgent.dto.TaskStepCreateRequest;
 import qg.qgent.dto.TaskStepListItemResponse;
 import qg.qgent.service.TaskDisplayService;
+import qg.qgent.service.TaskRunService;
 import qg.qgent.service.TaskService;
 
 import java.util.List;
@@ -29,10 +30,12 @@ import java.util.UUID;
 public class TaskController {
     private final TaskService service;
     private final TaskDisplayService display;
+    private final TaskRunService taskRuns;
 
-    public TaskController(TaskService service, TaskDisplayService display) {
+    public TaskController(TaskService service, TaskDisplayService display, TaskRunService taskRuns) {
         this.service = service;
         this.display = display;
+        this.taskRuns = taskRuns;
     }
 
     /**
@@ -71,6 +74,18 @@ public class TaskController {
     public ApiResponse<?> get(@PathVariable UUID projectId, @PathVariable UUID taskId,
                               @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
         return ok(display.detail(projectId, taskId, actor), request);
+    }
+
+    /**
+     * 以 Task ID 查询统一失败诊断。该入口不要求前端预先取得 executionId 或 taskRunId。
+     */
+    @Operation(summary = "查询 Task 失败诊断")
+    @GetMapping("/{taskId}/diagnostics")
+    public ApiResponse<?> diagnostics(@PathVariable UUID projectId,
+                                      @PathVariable UUID taskId,
+                                      @AuthenticationPrincipal UUID actor,
+                                      HttpServletRequest request) {
+        return ok(taskRuns.taskDiagnostics(projectId, taskId, actor), request);
     }
 
     /**
