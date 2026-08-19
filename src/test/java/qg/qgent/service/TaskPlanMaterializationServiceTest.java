@@ -8,6 +8,7 @@ import qg.qgent.entity.AgentEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
+import qg.qgent.api.ApiException;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskStepDependencyMapper;
 import qg.qgent.mapper.TaskStepMapper;
@@ -25,6 +26,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -169,6 +171,31 @@ class TaskPlanMaterializationServiceTest {
     }
 
     @Test
+    void rejectsBarePathBeforeMaterializingMultiRepositoryPlan() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        WorkspaceRepositoryEntity backend = repository();
+        backend.setWorkspacePath("repo-1");
+        WorkspaceRepositoryEntity frontend = repository();
+        frontend.setWorkspacePath("repo-2");
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(backend, frontend));
+
+        assertThatThrownBy(() -> service(tasks, steps, mock(TaskStepDependencyMapper.class),
+                mock(TaskStepRepositoryMapper.class), worktrees, mock(TaskExecutionArtifactService.class),
+                mock(EventService.class), mock(AgentDispatcher.class)).materialize(task, plan()))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("无法映射到多仓库 Workspace")
+                .extracting(error -> ((ApiException) error).code())
+                .isEqualTo("TASK_PLAN_PATH_INVALID");
+        verify(steps, never()).insert(any(TaskStepEntity.class));
+    }
+
+    @Test
     void materializedTaskIsIdempotent() {
         TaskMapper tasks = mock(TaskMapper.class);
         TaskStepMapper steps = mock(TaskStepMapper.class);
@@ -276,13 +303,20 @@ class TaskPlanMaterializationServiceTest {
         TaskStepEntity planner = planner(task);
         when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
         when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
-        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository(), repository()));
+        WorkspaceRepositoryEntity first = repository();
+        first.setWorkspacePath("repo-1");
+        WorkspaceRepositoryEntity second = repository();
+        second.setWorkspacePath("repo-2");
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(first, second));
         TaskPlanMaterializationService service = service(tasks, steps, mock(TaskStepDependencyMapper.class),
                 mock(TaskStepRepositoryMapper.class), worktrees,
                 mock(TaskExecutionArtifactService.class), mock(EventService.class), mock(AgentDispatcher.class));
         TransactionSynchronizationManager.initSynchronization();
 
-        service.materialize(task, plan());
+        PlanResult plan = plan();
+        plan.getImplementationSteps().get(0).setFiles(List.of("repo-1/src/App.java"));
+        plan.getImplementationSteps().get(1).setFiles(List.of("repo-2/README.md"));
+        service.materialize(task, plan);
 
         ArgumentCaptor<TaskEntity> updated = ArgumentCaptor.forClass(TaskEntity.class);
         verify(tasks).updateById(updated.capture());

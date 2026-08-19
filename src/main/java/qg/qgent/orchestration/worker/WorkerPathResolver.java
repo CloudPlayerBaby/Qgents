@@ -17,16 +17,16 @@ final class WorkerPathResolver {
         if (path == null || path.isBlank()) {
             return null;
         }
-        int slash = path.indexOf('/');
-        if (slash > 0) {
-            String first = path.substring(0, slash);
-            UUID repositoryId = session.repositoryByPath().get(first);
-            if (repositoryId != null) {
-                return new Target(repositoryId, path.substring(slash + 1));
-            }
+        String normalized = path.replace('\\', '/');
+        int slash = normalized.indexOf('/');
+        String first = slash > 0 ? normalized.substring(0, slash) : normalized;
+        UUID repositoryId = session.repositoryByPath().get(first);
+        if (repositoryId != null) {
+            // 仓库根目录本身也可以作为目录工具的目标；具体文件类型由 Worker 校验。
+            return new Target(repositoryId, slash > 0 ? normalized.substring(slash + 1) : ".");
         }
         UUID single = session.singleRepository();
-        return single == null ? null : new Target(single, path);
+        return single == null ? null : new Target(single, normalized);
     }
 
     /**
