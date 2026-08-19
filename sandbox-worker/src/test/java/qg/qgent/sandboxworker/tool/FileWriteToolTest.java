@@ -48,6 +48,36 @@ class FileWriteToolTest {
     }
 
     @Test
+    void createsMissingParentDirectories() throws Exception {
+        FileWriteTool tool = new FileWriteTool(new RepositoryFileResolver());
+
+        ToolResult result = tool.execute(context(), Map.of("path", "src/main/App.java",
+                "expectedHash", FileReadTool.sha256(new byte[0]), "content", "class App {}"));
+
+        assertEquals("class App {}", Files.readString(repository.resolve("src/main/App.java")));
+        assertEquals(true, result.getResult().get("changed"));
+    }
+
+    @Test
+    void rejectsParentDirectorySymlinkEscapeWhenSupported() throws Exception {
+        Path outside = Files.createDirectory(repository.resolve("outside"));
+        try {
+            Files.createSymbolicLink(repository.resolve("linked"), outside);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException exception) {
+            return;
+        }
+
+        FileWriteTool tool = new FileWriteTool(new RepositoryFileResolver());
+        WorkerException error = assertThrows(WorkerException.class, () -> tool.execute(context(), Map.of(
+                "path", "linked/escape.txt",
+                "expectedHash", FileReadTool.sha256(new byte[0]),
+                "content", "must not escape")));
+
+        assertEquals("TOOL_PATH_INVALID", error.getCode());
+        org.junit.jupiter.api.Assertions.assertFalse(Files.exists(outside.resolve("escape.txt")));
+    }
+
+    @Test
     void rejectsWriteWhenFileChanged() throws Exception {
         Files.writeString(repository.resolve("example.txt"), "已经变化", StandardCharsets.UTF_8);
         FileWriteTool tool = new FileWriteTool(new RepositoryFileResolver());

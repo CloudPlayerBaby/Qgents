@@ -215,29 +215,17 @@ class AgentServiceLifecycleTest {
     }
 
     @Test
-    void publishPromotesPrivateToTeam() {
+    void publishSubmitsForReviewNotDirectlyTeam() {
         member(teamId, creator);
         AgentEntity agent = agent(agentId(), teamId, creator, "PRIVATE", "ACTIVE", false);
         when(agents.selectById(agent.getId())).thenReturn(agent);
 
         AgentResponse response = service.publish(creator, teamId, agent.getId());
 
-        assertEquals("TEAM", response.getVisibility());
+        // v2.0.6 审核化：发布只到 PENDING（待审核），不再直接 TEAM
+        assertEquals("PENDING", response.getVisibility());
         assertEquals("ACTIVE", response.getStatus());
         verify(agents).updateById(any(AgentEntity.class));
-    }
-
-    @Test
-    void publishRejectsNonCreator() {
-        member(teamId, other);
-        AgentEntity agent = agent(agentId(), teamId, creator, "TEAM", "ACTIVE", false);
-        when(agents.selectById(agent.getId())).thenReturn(agent);
-
-        ApiException error = assertThrows(ApiException.class,
-                () -> service.publish(other, teamId, agent.getId()));
-
-        assertEquals("AGENT_FORBIDDEN", error.code());
-        verify(agents, never()).updateById(any(AgentEntity.class));
     }
 
     @Test
@@ -249,6 +237,7 @@ class AgentServiceLifecycleTest {
         ApiException error = assertThrows(ApiException.class,
                 () -> service.publish(other, teamId, agent.getId()));
 
+        // 他人 PRIVATE Agent 对非创建者不可见 → 404（与 get/list 一致）
         assertEquals("AGENT_NOT_FOUND", error.code());
         verify(agents, never()).updateById(any(AgentEntity.class));
     }
@@ -267,59 +256,78 @@ class AgentServiceLifecycleTest {
     }
 
     @Test
-    void publishRejectsAlreadyTeamAgent() {
+    void publishRejectsAlreadyPendingOrTeamAgent() {
         member(teamId, creator);
-        AgentEntity agent = agent(agentId(), teamId, creator, "TEAM", "ACTIVE", false);
-        when(agents.selectById(agent.getId())).thenReturn(agent);
+        AgentEntity pending = agent(agentId(), teamId, creator, "PENDING", "ACTIVE", false);
+        when(agents.selectById(pending.getId())).thenReturn(pending);
 
         ApiException error = assertThrows(ApiException.class,
-                () -> service.publish(creator, teamId, agent.getId()));
+                () -> service.publish(creator, teamId, pending.getId()));
 
         assertEquals("AGENT_STATE_CONFLICT", error.code());
     }
 
     @Test
-    void unpublishDemotesTeamToPrivateForCreator() {
-        member(teamId, creator);
-        AgentEntity agent = agent(agentId(), teamId, creator, "TEAM", "ACTIVE", false);
+    void approvePromotesPendingToTeamForOwner() {
+        member(teamId, owner);
+        TeamEntity team = team(teamId, owner);
+        when(teams.selectById(teamId)).thenReturn(team);
+        AgentEntity agent = agent(agentId(), teamId, creator, "PENDING", "ACTIVE", false);
         when(agents.selectById(agent.getId())).thenReturn(agent);
 
-        AgentResponse response = service.unpublish(creator, teamId, agent.getId());
+        AgentResponse response = service.approve(owner, teamId, agent.getId());
 
-        assertEquals("PRIVATE", response.getVisibility());
+        assertEquals("TEAM", response.getVisibility());
+        assertEquals(owner.toString(), response.getReviewedBy());
         verify(agents).updateById(any(AgentEntity.class));
     }
 
     @Test
-    void unpublishAllowsTeamOwner() {
-        member(teamId, owner);
-        TeamEntity team = team(teamId, owner);
-        when(teams.selectById(teamId)).thenReturn(team);
-        AgentEntity agent = agent(agentId(), teamId, creator, "TEAM", "ACTIVE", false);
-        when(agents.selectById(agent.getId())).thenReturn(agent);
-
-        AgentResponse response = service.unpublish(owner, teamId, agent.getId());
-
-        assertEquals("PRIVATE", response.getVisibility());
-    }
-
-    @Test
-    void unpublishRejectsMemberWithoutPermission() {
+    void approveRejectsNonOwner() {
         member(teamId, other);
         TeamEntity team = team(teamId, owner);
         when(teams.selectById(teamId)).thenReturn(team);
-        AgentEntity agent = agent(agentId(), teamId, creator, "TEAM", "ACTIVE", false);
+        AgentEntity agent = agent(agentId(), teamId, creator, "PENDING", "ACTIVE", false);
         when(agents.selectById(agent.getId())).thenReturn(agent);
 
         ApiException error = assertThrows(ApiException.class,
-                () -> service.unpublish(other, teamId, agent.getId()));
+                () -> service.approve(other, teamId, agent.getId()));
 
-        assertEquals("AGENT_FORBIDDEN", error.code());
+        assertEquals("TEAM_OWNER_REQUIRED", error.code());
         verify(agents, never()).updateById(any(AgentEntity.class));
     }
 
     @Test
-    void unpublishRejectsPrivateAgent() {
+    void rejectReturnsPendingToPrivateWithReason() {
+        member(teamId, owner);
+        TeamEntity team = team(teamId, owner);
+        when(teams.selectById(teamId)).thenReturn(team);
+        AgentEntity agent = agent(agentId(), teamId, creator, "PENDING", "ACTIVE", false);
+        when(agents.selectById(agent.getId())).thenReturn(agent);
+
+        AgentResponse response = service.reject(owner, teamId, agent.getId(), "prompt 包含敏感信息");
+
+        assertEquals("PRIVATE", response.getVisibility());
+        assertEquals("prompt 包含敏感信息", response.getReviewReason());
+        verify(agents).updateById(any(AgentEntity.class));
+    }
+
+    @Test
+    void unpublishIsDisallowedForPublishedTeamAgent() {
+        member(teamId, creator);
+        AgentEntity agent = agent(agentId(), teamId, creator, "TEAM", "ACTIVE", false);
+        when(agents.selectById(agent.getId())).thenReturn(agent);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.unpublish(creator, teamId, agent.getId()));
+
+        // v2.0.6：已发布（TEAM）不可收回为私有，只能归档
+        assertEquals("AGENT_UNPUBLISH_DISALLOWED", error.code());
+        verify(agents, never()).updateById(any(AgentEntity.class));
+    }
+
+    @Test
+    void unpublishIsDisallowedForPrivateAgent() {
         member(teamId, creator);
         AgentEntity agent = agent(agentId(), teamId, creator, "PRIVATE", "ACTIVE", false);
         when(agents.selectById(agent.getId())).thenReturn(agent);
@@ -327,7 +335,8 @@ class AgentServiceLifecycleTest {
         ApiException error = assertThrows(ApiException.class,
                 () -> service.unpublish(creator, teamId, agent.getId()));
 
-        assertEquals("AGENT_STATE_CONFLICT", error.code());
+        // v2.0.6：unpublish 整体废弃（TEAM 不可回私有），任何可见性都返回 409
+        assertEquals("AGENT_UNPUBLISH_DISALLOWED", error.code());
     }
 
     @Test

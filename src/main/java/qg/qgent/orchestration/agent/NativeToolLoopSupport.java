@@ -56,11 +56,16 @@ public final class NativeToolLoopSupport {
     }
 
     static List<Message> prepareToolRound(List<Message> history, int round, List<String> changedPaths) {
+        return prepareToolRound(history, round, changedPaths, List.of());
+    }
+
+    static List<Message> prepareToolRound(List<Message> history, int round, List<String> changedPaths,
+                                          List<String> changedDirectories) {
         List<Message> compacted = new ArrayList<>(compactHistory(history));
         if (round >= CONVERGENCE_START_ROUND) {
             compacted.add(new UserMessage("工具轮次即将达到上限，请立即收敛：仅在仍缺少关键证据时调用一个必要工具；"
                     + "证据充分时停止调用工具并输出契约要求的 finalResult JSON。"
-                    + renderChangedWriteFacts(changedPaths)));
+                    + renderChangedWriteFacts(changedPaths, changedDirectories)));
         }
         return List.copyOf(compacted);
     }
@@ -82,20 +87,43 @@ public final class NativeToolLoopSupport {
     }
 
     static String finalizationInstruction(String schema, List<String> changedPaths) {
+        return finalizationInstruction(schema, changedPaths, List.of());
+    }
+
+    static String finalizationInstruction(String schema, List<String> changedPaths,
+                                          List<String> changedDirectories) {
         return "停止调用工具。仅依据以上任务上下文、已有工具结果和已发生的真实操作，执行一次最终归纳。"
                 + "不得声称未实际发生的写入、测试或审查结论；信息不足时按契约返回失败。"
-                + renderChangedWriteFacts(changedPaths)
+                + renderChangedWriteFacts(changedPaths, changedDirectories)
                 + "只输出一个 JSON 对象，不要代码围栏或说明文字。结构：" + schema;
     }
 
     private static String renderChangedWriteFacts(List<String> changedPaths) {
-        if (changedPaths == null || changedPaths.isEmpty()) {
-            return "\n服务端可信写入事实：本次运行尚未观测到 changed=true 的写操作。\n";
-        }
-        List<String> bounded = changedPaths.stream()
+        return renderChangedWriteFacts(changedPaths, List.of());
+    }
+
+    private static String renderChangedWriteFacts(List<String> changedPaths, List<String> changedDirectories) {
+        List<String> files = changedPaths == null ? List.of() : changedPaths.stream()
                 .filter(path -> path != null && !path.isBlank())
                 .limit(ChangedWriteFactLedger.MAX_CHANGED_PATHS)
                 .toList();
-        return "\n服务端可信写入事实（只能据此声称已修改文件）：" + String.join("、", bounded) + "。\n";
+        List<String> directories = changedDirectories == null ? List.of() : changedDirectories.stream()
+                .filter(path -> path != null && !path.isBlank())
+                .limit(ChangedWriteFactLedger.MAX_CHANGED_PATHS)
+                .toList();
+        if (files.isEmpty() && directories.isEmpty()) {
+            return "\n服务端可信写入事实：本次运行尚未观测到 changed=true 的写操作。\n";
+        }
+        StringBuilder facts = new StringBuilder("\n服务端可信写入事实：");
+        if (!files.isEmpty()) {
+            facts.append("已修改文件=").append(String.join("、", files));
+        }
+        if (!directories.isEmpty()) {
+            if (!files.isEmpty()) {
+                facts.append("；");
+            }
+            facts.append("已新建目录=").append(String.join("、", directories));
+        }
+        return facts.append("。\n").toString();
     }
 }

@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
+import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 
 /**
  * {@link WorkerWorkspaceCodeWriter} 单测：read-then-write 的 expectedHash 流程、
@@ -61,6 +62,27 @@ class WorkerWorkspaceCodeWriterTest {
     }
 
     @Test
+    void createDirectorySubmitsDirectoryToolWithWorkspaceRelativePath() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> {
+            WorkerToolExecution execution = new WorkerToolExecution();
+            execution.setStatus("SUCCEEDED");
+            execution.setResult(Map.of("path", request.getArguments().get("path"), "created", true));
+            return execution;
+        });
+
+        WorkspaceDirectoryResult result = writer.createDirectory(WORKSPACE, "repo-1/src/main");
+
+        assertThat(result.isOk()).isTrue();
+        assertThat(result.isCreated()).isTrue();
+        ArgumentCaptor<WorkerToolExecutionRequest> captor =
+                ArgumentCaptor.forClass(WorkerToolExecutionRequest.class);
+        verify(client).submitToolExecution(any(), captor.capture());
+        assertThat(captor.getValue().getTool()).isEqualTo("directory.create");
+        assertThat(captor.getValue().getArguments().get("path")).isEqualTo("src/main");
+    }
+
+    @Test
     void writeFileReadsCurrentHashThenWritesWithExpectedHash() {
         when(sessions.require(WORKSPACE)).thenReturn(session());
         stubToolExecution(request -> {
@@ -83,8 +105,8 @@ class WorkerWorkspaceCodeWriterTest {
         assertThat(result.isChanged()).isTrue();
         ArgumentCaptor<WorkerToolExecutionRequest> captor =
                 ArgumentCaptor.forClass(WorkerToolExecutionRequest.class);
-        verify(client, times(2)).submitToolExecution(any(), captor.capture());
-        WorkerToolExecutionRequest write = captor.getAllValues().get(1);
+        verify(client, times(3)).submitToolExecution(any(), captor.capture());
+        WorkerToolExecutionRequest write = captor.getAllValues().get(2);
         assertThat(write.getTool()).isEqualTo("file.write");
         assertThat(write.getArguments().get("expectedHash")).isEqualTo("current-hash");
         assertThat(write.getArguments().get("content")).isEqualTo("hello");
@@ -139,7 +161,7 @@ class WorkerWorkspaceCodeWriterTest {
                 execution.setResult(Map.of("path", request.getArguments().get("path"), "sha256", "hash"));
             } else {
                 execution.setStatus("FAILED");
-                execution.setFailureReason("文件已经发生变化，请重新读取后再写入");
+                execution.setFailureReason("FILE_HASH_MISMATCH: 文件已经发生变化，请重新读取后再写入");
             }
             return execution;
         });
@@ -184,7 +206,7 @@ class WorkerWorkspaceCodeWriterTest {
         stubToolExecution(request -> {
             WorkerToolExecution execution = new WorkerToolExecution();
             execution.setStatus("FAILED");
-            execution.setFailureReason("FILE_HASH_MISMATCH 文件已经发生变化");
+            execution.setFailureReason("FILE_HASH_MISMATCH: 文件已经发生变化");
             return execution;
         });
 
@@ -218,5 +240,36 @@ class WorkerWorkspaceCodeWriterTest {
         assertThat(writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH, "  ").isOk()).isFalse();
         assertThat(writer.patchFile(WORKSPACE, "  ", HASH, "@@ -1,1 +1,1 @@\n-a\n+b\n").isOk()).isFalse();
         verify(client, never()).submitToolExecution(any(), any());
+    }
+
+    @Test
+    void createDirectoryMapsPathFailureToToolFailure() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> failed("TOOL_PATH_INVALID: 目录路径不能包含符号链接"));
+
+        WorkspaceDirectoryResult result = writer.createDirectory(WORKSPACE, "repo-1/linked/child");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isFalse();
+        assertThat(result.getError()).contains("TOOL_PATH_INVALID");
+    }
+
+    @Test
+    void createDirectoryMapsUnclassifiedWorkerFailureToInfrastructure() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> failed("DIRECTORY_CREATE_FAILED: 创建目录失败"));
+
+        WorkspaceDirectoryResult result = writer.createDirectory(WORKSPACE, "repo-1/src/main");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isTrue();
+        assertThat(result.getError()).contains("DIRECTORY_CREATE_FAILED");
+    }
+
+    private static WorkerToolExecution failed(String reason) {
+        WorkerToolExecution execution = new WorkerToolExecution();
+        execution.setStatus("FAILED");
+        execution.setFailureReason(reason);
+        return execution;
     }
 }

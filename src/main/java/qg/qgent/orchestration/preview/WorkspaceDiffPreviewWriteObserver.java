@@ -3,7 +3,8 @@ package qg.qgent.orchestration.preview;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import qg.qgent.orchestration.agent.CodingWriteObserver;
-import qg.qgent.orchestration.tool.WorkspaceWriteResult;
+import qg.qgent.orchestration.tool.WorkspaceChangeResult;
+import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 
 import java.util.UUID;
 
@@ -27,8 +28,11 @@ public class WorkspaceDiffPreviewWriteObserver implements CodingWriteObserver {
 
     @Override
     public void onWrite(UUID projectId, UUID taskId, UUID taskRunId, UUID workspaceId,
-                        WorkspaceWriteResult result) {
+                        WorkspaceChangeResult result) {
         if (result == null || !result.isOk()) {
+            return;
+        }
+        if (result instanceof WorkspaceDirectoryResult) {
             return;
         }
         try {

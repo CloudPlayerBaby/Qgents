@@ -34,8 +34,36 @@ class PlanResultParserTest {
         assertThat(plan.getImplementationSteps().get(0).getFiles()).containsExactly("a.java", "b.java");
         assertThat(plan.getImplementationSteps().get(0).getDescription()).isEqualTo("do it");
         assertThat(plan.getImplementationSteps().get(0).getRequiredCapabilities()).containsExactly("java", "spring-boot");
+        assertThat(plan.getImplementationSteps().get(0).getExecutionMode()).isEqualTo("MUTATE");
         assertThat(plan.getTestPlan()).isEqualTo("run tests");
         assertThat(plan.getRisks()).containsExactly("risk1");
+    }
+
+    @Test void parsesExplicitVerifyExecutionMode() {
+        String json = VALID_JSON.replace("\"description\":\"do it\"", "\"description\":\"inspect existing files\",\"executionMode\":\"VERIFY\"");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getImplementationSteps().get(0).getExecutionMode()).isEqualTo("VERIFY");
+    }
+
+    @Test void infersVerifyModeForLegacyInspectionStep() {
+        String json = VALID_JSON.replace("\"title\":\"impl\"", "\"title\":\"验证新增文件及现有检查脚本\"")
+                .replace("\"description\":\"do it\"", "\"description\":\"检查文件内容，不修改文件\"");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getImplementationSteps().get(0).getExecutionMode()).isEqualTo("VERIFY");
+    }
+
+    @Test void infersVerifyModeWhenInspectionTitleMentionsNewFileAsTarget() {
+        String json = VALID_JSON.replace("\"title\":\"impl\"", "\"title\":\"验证新增文件及现有检查脚本\"")
+                .replace(",\"description\":\"do it\"", "");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getImplementationSteps().get(0).getExecutionMode()).isEqualTo("VERIFY");
+    }
+
+    @Test void keepsMutationModeForExplicitRepairAfterVerification() {
+        String json = VALID_JSON.replace("\"title\":\"impl\"", "\"title\":\"验证并修复配置文件\"")
+                .replace("\"description\":\"do it\"", "\"description\":\"检查后修复不符合项\"");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getImplementationSteps().get(0).getExecutionMode()).isEqualTo("MUTATE");
     }
 
     @Test void acceptsJsonFencedInMarkdown() {

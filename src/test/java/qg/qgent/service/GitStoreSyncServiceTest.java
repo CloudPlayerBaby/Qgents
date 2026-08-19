@@ -5,10 +5,12 @@ import qg.qgent.api.ApiException;
 import qg.qgent.entity.GitHubInstallationEntity;
 import qg.qgent.entity.GitHubRepositoryEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
+import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.github.GitHubAppClient;
 import qg.qgent.github.GitHubBranchDetails;
 import qg.qgent.mapper.GitHubInstallationMapper;
 import qg.qgent.mapper.GitHubRepositoryMapper;
+import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitResolveResponse;
 import qg.qgent.orchestration.worker.WorkerGitStoreSyncResponse;
@@ -16,11 +18,13 @@ import qg.qgent.orchestration.worker.WorkerGitStoreSyncResponse;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -59,6 +63,66 @@ class GitStoreSyncServiceTest {
         assertEquals("GIT_BASE_REF_NOT_SYNCED", error.code());
     }
 
+    @Test
+    void refreshSourceHeadPersistsHeadWhenRemoteAdvanced() {
+        Fixture fixture = new Fixture();
+        String oldHead = "a".repeat(40);
+        String remote = "b".repeat(40);
+        UUID workspaceId = UUID.randomUUID();
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setSourceBranch("feat/login"); worktree.setHeadCommit(oldHead);
+        when(fixture.github.getBranch(eq(123L), eq("owner"), eq("repo"), eq("feat/login")))
+                .thenReturn(new GitHubBranchDetails("feat/login", remote));
+        when(fixture.credentials.generateGrant(any(), any(), any(), any(), any(), any(), any())).thenReturn("grant");
+        when(fixture.worker.syncGitStore(eq(fixture.repository.getId()), any()))
+                .thenReturn(new WorkerGitStoreSyncResponse().setHeadCommit(remote));
+        WorkerGitResolveResponse resolved = new WorkerGitResolveResponse();
+        resolved.setCommitSha(remote);
+        when(fixture.worker.resolveGitRef(any())).thenReturn(resolved);
+
+        assertEquals(remote, fixture.service.refreshSourceHead(fixture.projectId, worktree, fixture.repository, workspaceId));
+        verify(fixture.workspaces).updateHeadCommit(eq(workspaceId), eq(fixture.repository.getRepositoryId()), eq(remote));
+        verify(fixture.worker).syncGitStore(eq(fixture.repository.getId()), any());
+    }
+
+    @Test
+    void refreshSourceHeadIsNoopWhenRemoteMatchesLocalHead() {
+        Fixture fixture = new Fixture();
+        String head = "a".repeat(40);
+        UUID workspaceId = UUID.randomUUID();
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setSourceBranch("feat/login"); worktree.setHeadCommit(head);
+        when(fixture.github.getBranch(eq(123L), eq("owner"), eq("repo"), eq("feat/login")))
+                .thenReturn(new GitHubBranchDetails("feat/login", head));
+
+        assertNull(fixture.service.refreshSourceHead(fixture.projectId, worktree, fixture.repository, workspaceId));
+        verify(fixture.worker, never()).syncGitStore(any(), any());
+        verify(fixture.workspaces, never()).updateHeadCommit(any(), any(), any());
+    }
+
+    @Test
+    void refreshSourceHeadThrottlesRepeatedRefreshForSameHead() {
+        Fixture fixture = new Fixture();
+        String oldHead = "a".repeat(40);
+        String remote = "b".repeat(40);
+        UUID workspaceId = UUID.randomUUID();
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setSourceBranch("feat/login"); worktree.setHeadCommit(oldHead);
+        when(fixture.github.getBranch(eq(123L), eq("owner"), eq("repo"), eq("feat/login")))
+                .thenReturn(new GitHubBranchDetails("feat/login", remote));
+        when(fixture.credentials.generateGrant(any(), any(), any(), any(), any(), any(), any())).thenReturn("grant");
+        when(fixture.worker.syncGitStore(eq(fixture.repository.getId()), any()))
+                .thenReturn(new WorkerGitStoreSyncResponse().setHeadCommit(remote));
+        WorkerGitResolveResponse resolved = new WorkerGitResolveResponse();
+        resolved.setCommitSha(remote);
+        when(fixture.worker.resolveGitRef(any())).thenReturn(resolved);
+
+        assertEquals(remote, fixture.service.refreshSourceHead(fixture.projectId, worktree, fixture.repository, workspaceId));
+        // 同一 source 分支 + 同一旧 head 在节流窗口内再次刷新直接返回 null，不再打 Worker。
+        assertNull(fixture.service.refreshSourceHead(fixture.projectId, worktree, fixture.repository, workspaceId));
+        verify(fixture.worker, org.mockito.Mockito.times(1)).syncGitStore(any(), any());
+    }
+
     private static final class Fixture {
         private final UUID projectId = UUID.randomUUID();
         private final GitHubRepositoryMapper githubRepositories = mock(GitHubRepositoryMapper.class);
@@ -66,6 +130,7 @@ class GitStoreSyncServiceTest {
         private final GitHubAppClient github = mock(GitHubAppClient.class);
         private final GitCredentialService credentials = mock(GitCredentialService.class);
         private final SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
+        private final WorkspaceRepositoryMapper workspaces = mock(WorkspaceRepositoryMapper.class);
         private final ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
         private final GitHubInstallationEntity installation = new GitHubInstallationEntity();
         private final GitStoreSyncService service;
@@ -80,7 +145,7 @@ class GitStoreSyncServiceTest {
             installation.setProviderInstallationId(123L); installation.setStatus("ACTIVE");
             when(githubRepositories.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
             when(installations.selectById(githubRepository.getInstallationId())).thenReturn(installation);
-            service = new GitStoreSyncService(githubRepositories, installations, github, credentials, worker);
+            service = new GitStoreSyncService(githubRepositories, installations, github, credentials, worker, workspaces);
         }
     }
 }

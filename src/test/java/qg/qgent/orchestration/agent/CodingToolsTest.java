@@ -3,6 +3,7 @@ package qg.qgent.orchestration.agent;
 import org.junit.jupiter.api.Test;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.orchestration.tool.WorkspaceInfraException;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
@@ -38,6 +39,10 @@ class CodingToolsTest {
 
     private CodingTools tools() {
         return new CodingTools(workspaceId, codeAccess, writer);
+    }
+
+    private CodingTools scopedTools(String... allowedPaths) {
+        return new CodingTools(workspaceId, codeAccess, writer, List.of(allowedPaths));
     }
 
     @Test
@@ -199,6 +204,45 @@ class CodingToolsTest {
     }
 
     @Test
+    void scopedStepRejectsWriteToAnotherStepFile() {
+        CodingTools tools = scopedTools("repo-2/what the fox said.txt");
+
+        Map<String, Object> result = tools.writeFile("repo-3/holy shit.txt", "wrong step");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat((String) result.get("error")).contains("outside the current TaskStep allowed paths");
+        verify(writer, never()).writeFile(any(), any(), any());
+    }
+
+    @Test
+    void scopedStepAllowsDeclaredFileAndRejectsTraversal() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "repo-2/what the fox said.txt", "ok"))
+                .thenReturn(WorkspaceWriteResult.ok("repo-2/what the fox said.txt", NEW_HASH, true));
+        CodingTools tools = scopedTools("repo-2/what the fox said.txt");
+
+        Map<String, Object> allowed = tools.writeFile("repo-2/what the fox said.txt", "ok");
+        Map<String, Object> traversal = tools.writeFile("repo-2/../repo-3/holy shit.txt", "wrong");
+
+        assertThat(allowed.get("ok")).isEqualTo(true);
+        assertThat(traversal.get("ok")).isEqualTo(false);
+        verify(writer).writeFile(workspaceId, "repo-2/what the fox said.txt", "ok");
+        verify(writer, never()).writeFile(workspaceId, "repo-3/holy shit.txt", "wrong");
+    }
+
+    @Test
+    void legacyEmptyPolicyRemainsCompatible() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "legacy.txt", "ok"))
+                .thenReturn(WorkspaceWriteResult.ok("legacy.txt", NEW_HASH, true));
+
+        Map<String, Object> result = tools().writeFile("legacy.txt", "ok");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        verify(writer).writeFile(workspaceId, "legacy.txt", "ok");
+    }
+
+    @Test
     void writeFileRejectsExistingFileAsToolError() {
         when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/Y.java"));
 
@@ -218,6 +262,64 @@ class CodingToolsTest {
         assertThatThrownBy(() -> tools().writeFile("src/main/java/Y.java", "code"))
                 .isInstanceOf(WorkspaceInfraException.class)
                 .hasMessageContaining("write_file infrastructure failure");
+    }
+
+    @Test
+    void createDirectoryRecordsOnlyActualCreation() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/main/java", true));
+        CodingTools tools = tools();
+
+        Map<String, Object> result = tools.createDirectory("src/main/java");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("created")).isEqualTo(true);
+        assertThat(tools.getModifiedDirectories()).containsExactly("src/main/java");
+        assertThat(tools.getModifiedFiles()).isEmpty();
+    }
+
+    @Test
+    void createDirectoryIdempotentResultDoesNotRecordChange() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/main/java", false));
+        CodingTools tools = tools();
+
+        Map<String, Object> result = tools.createDirectory("src/main/java");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("created")).isEqualTo(false);
+        assertThat(tools.getModifiedDirectories()).isEmpty();
+    }
+
+    @Test
+    void createDirectoryInfraFailureThrowsInfraException() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.infraFail("src/main/java", "workspace unavailable"));
+
+        assertThatThrownBy(() -> tools().createDirectory("src/main/java"))
+                .isInstanceOf(WorkspaceInfraException.class)
+                .hasMessageContaining("create_directory infrastructure failure");
+    }
+
+    @Test
+    void writeObserverFiresOnActualDirectoryCreation() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/main/java", true));
+
+        toolsWithObserver().createDirectory("src/main/java");
+
+        verify(observer).onWrite(eq(PROJECT_ID), eq(TASK_ID), eq(TASK_RUN_ID), eq(workspaceId),
+                any(WorkspaceDirectoryResult.class));
+    }
+
+    @Test
+    void writeObserverDoesNotFireForExistingDirectory() {
+        when(writer.createDirectory(workspaceId, "src/main/java"))
+                .thenReturn(WorkspaceDirectoryResult.ok("src/main/java", false));
+
+        toolsWithObserver().createDirectory("src/main/java");
+
+        verify(observer, never()).onWrite(any(), any(), any(), any(), any());
     }
 
     // ---- 阶段 D：成功写后的 Preview 回调（CodingWriteObserver） ----

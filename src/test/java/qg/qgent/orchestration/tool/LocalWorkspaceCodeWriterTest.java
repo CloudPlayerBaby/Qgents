@@ -39,6 +39,35 @@ class LocalWorkspaceCodeWriterTest {
     }
 
     @Test
+    void createDirectoryRecursivelyAndIdempotently(@TempDir Path baseDir) {
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+
+        WorkspaceDirectoryResult created = writer.createDirectory(workspaceId, "src/main/java");
+        WorkspaceDirectoryResult existing = writer.createDirectory(workspaceId, "src/main/java");
+
+        assertThat(created.isOk()).isTrue();
+        assertThat(created.isCreated()).isTrue();
+        assertThat(existing.isOk()).isTrue();
+        assertThat(existing.isCreated()).isFalse();
+        assertThat(Files.isDirectory(baseDir.resolve("ws-1/src/main/java"))).isTrue();
+    }
+
+    @Test
+    void createDirectoryRejectsFileAndTraversal(@TempDir Path baseDir) throws Exception {
+        Files.createDirectories(baseDir.resolve("ws-1"));
+        Files.writeString(baseDir.resolve("ws-1/file.txt"), "content");
+        LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
+
+        WorkspaceDirectoryResult file = writer.createDirectory(workspaceId, "file.txt");
+        WorkspaceDirectoryResult traversal = writer.createDirectory(workspaceId, "../outside");
+
+        assertThat(file.isOk()).isFalse();
+        assertThat(file.isInfrastructureFailure()).isFalse();
+        assertThat(traversal.isOk()).isFalse();
+        assertThat(traversal.isInfrastructureFailure()).isFalse();
+    }
+
+    @Test
     void writeFilePersistsContentAndCreatesParentDirs(@TempDir Path baseDir) throws Exception {
         WorkspaceWriteResult result = new LocalWorkspaceCodeWriter(service(baseDir.toString()))
                 .writeFile(workspaceId, "src/main/java/Y.java", "new code");
@@ -72,6 +101,26 @@ class LocalWorkspaceCodeWriterTest {
         // 路径越界是工具级错误，不是基础设施失败。
         assertThat(result.isInfrastructureFailure()).isFalse();
         assertThat(Files.exists(baseDir.resolve("escape.txt"))).isFalse();
+    }
+
+    @Test
+    void writeFileRejectsParentDirectorySymlinkEscape(@TempDir Path baseDir) throws Exception {
+        Files.createDirectories(baseDir.resolve("ws-1"));
+        Path outsideDir = Files.createDirectories(baseDir.resolve("outside"));
+        Path victim = outsideDir.resolve("victim.txt");
+        try {
+            Files.createSymbolicLink(baseDir.resolve("ws-1/sub"), outsideDir);
+        } catch (UnsupportedOperationException | IOException | SecurityException e) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlink not supported on this platform");
+        }
+
+        WorkspaceWriteResult result = new LocalWorkspaceCodeWriter(service(baseDir.toString()))
+                .writeFile(workspaceId, "sub/victim.txt", "changed");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isFalse();
+        assertThat(result.getError()).contains("escape");
+        assertThat(Files.exists(victim)).isFalse();
     }
 
     @Test

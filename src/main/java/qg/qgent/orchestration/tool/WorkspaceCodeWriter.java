@@ -13,6 +13,15 @@ import java.util.UUID;
 public interface WorkspaceCodeWriter {
 
     /**
+     * 递归创建 Workspace 内目录；目标目录已存在时幂等成功。
+     *
+     * @param workspaceId 目标 Workspace。
+     * @param path Workspace 相对目录路径。
+     * @return 目录创建结果；不生成 .gitkeep。
+     */
+    WorkspaceDirectoryResult createDirectory(UUID workspaceId, String path);
+
+    /**
      * 覆盖写入 Workspace 内的一个文件；父目录不存在时按实现约定自动创建。
      *
      * @param workspaceId 目标 Workspace。

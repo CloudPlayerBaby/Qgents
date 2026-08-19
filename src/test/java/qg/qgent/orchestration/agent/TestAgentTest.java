@@ -250,6 +250,19 @@ class TestAgentTest {
     }
 
     @Test
+    void nodeTargetDoesNotRunUnrelatedGradleWrapper() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("build.gradle", "gradlew", "hello.js"));
+        AgentInput nodeInput = input();
+        nodeInput.getCodingResult().setModifiedFiles(List.of("hello.js"));
+
+        AgentRunOutcome outcome = agent().run(nodeInput);
+
+        assertThat(outcome.getTestResult().getVerificationMode()).isEqualTo("FILE_ASSERTION");
+        verify(executionPort, never()).execute(any(), anyList(), any());
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
     void manualReviewSucceedsWithoutBuildToolWhenDeveloperProducedReport() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("README.md", "notes.txt"));
         AgentInput manualInput = input();

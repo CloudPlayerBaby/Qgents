@@ -31,6 +31,7 @@ import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.UserMapper;
 import qg.qgent.service.event.DeliveryStartedDomainEvent;
+import qg.qgent.service.event.DryRunConflictCandidateDomainEvent;
 import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
 import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 import qg.qgent.websocket.RealtimeFrame;
@@ -243,6 +244,12 @@ public class EventService {
                 && "APPROVED".equals(String.valueOf(payload.get("decision")))
                 && resourceId != null) {
             publisher.publishEvent(new PreflightCqApprovedDomainEvent(projectId, UUID.fromString(resourceId)));
+        }
+        if ("dry-run.updated".equals(eventType) && payload != null
+                && "FAILED".equals(String.valueOf(payload.get("status")))
+                && resourceId != null && payload.get("taskId") != null) {
+            publisher.publishEvent(new DryRunConflictCandidateDomainEvent(projectId,
+                    UUID.fromString(resourceId), UUID.fromString(String.valueOf(payload.get("taskId")))));
         }
     }
 

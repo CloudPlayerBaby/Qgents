@@ -55,6 +55,10 @@ public class AgentInput {
      * 步骤指令或 PLAN 输入。
      */
     private String instruction;
+    /** 当前步骤的执行语义，优先于 Agent 角色决定写权限和成功条件。 */
+    private String executionMode;
+    /** 当前 TaskStep 的冻结可写路径；空值表示迁移前历史步骤兼容模式。 */
+    private List<String> allowedPaths;
     /**
      * 前一轮重试反馈：质量循环携带 Test/Review finding；基础设施重试只携带稳定失败码与受控描述。
      */

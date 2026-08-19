@@ -54,6 +54,47 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
     }
 
     @Override
+    public WorkspaceDirectoryResult createDirectory(UUID workspaceId, String path) {
+        if (path == null || path.isBlank()) {
+            return WorkspaceDirectoryResult.fail(path, "path must not be blank");
+        }
+        Path root = workspaceRoot(workspaceId);
+        if (root == null) {
+            return WorkspaceDirectoryResult.infraFail(path, "workspace root is not available");
+        }
+        Path target;
+        try {
+            target = resolveDirectoryTarget(root, path);
+        } catch (InvalidPathException e) {
+            return WorkspaceDirectoryResult.fail(path, "path contains invalid characters");
+        } catch (IOException e) {
+            return WorkspaceDirectoryResult.infraFail(path, "directory path is unavailable");
+        }
+        if (target == null) {
+            return WorkspaceDirectoryResult.fail(path, "path escapes workspace root or is absolute");
+        }
+        try {
+            if (Files.isSymbolicLink(target)) {
+                return WorkspaceDirectoryResult.fail(path, "directory target must not be a symbolic link");
+            }
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                if (!Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
+                    return WorkspaceDirectoryResult.fail(path, "target is not a directory");
+                }
+                return WorkspaceDirectoryResult.ok(path, false);
+            }
+            Files.createDirectories(target);
+            if (!isWithinWorkspaceAfterCreate(root, target)) {
+                return WorkspaceDirectoryResult.fail(path,
+                        "path escapes workspace root or uses a symbolic link");
+            }
+            return WorkspaceDirectoryResult.ok(path, true);
+        } catch (IOException e) {
+            return WorkspaceDirectoryResult.infraFail(path, "directory creation failed: " + e.getMessage());
+        }
+    }
+
+    @Override
     public WorkspaceWriteResult writeFile(UUID workspaceId, String path, String content) {
         if (path == null || path.isBlank()) {
             return WorkspaceWriteResult.fail(null, "path must not be blank");
@@ -65,7 +106,14 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
         if (root == null) {
             return WorkspaceWriteResult.infraFail(path, "workspace root is not available");
         }
-        Path target = resolveSafe(root, path);
+        Path target;
+        try {
+            target = resolveWriteTarget(root, path);
+        } catch (InvalidPathException e) {
+            return WorkspaceWriteResult.fail(path, "path contains invalid characters");
+        } catch (IOException e) {
+            return WorkspaceWriteResult.infraFail(path, "write path is unavailable");
+        }
         if (target == null) {
             return WorkspaceWriteResult.fail(path, "path escapes workspace root or is absolute");
         }
@@ -76,9 +124,17 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
             if (target.getParent() != null) {
                 Files.createDirectories(target.getParent());
             }
-            Files.writeString(target, content, StandardCharsets.UTF_8);
+            if (Files.isSymbolicLink(target)
+                    || !isWithinWorkspaceAfterCreate(root, target.getParent())) {
+                return WorkspaceWriteResult.fail(path,
+                        "path escapes workspace root or uses a symbolic link");
+            }
             byte[] written = content.getBytes(StandardCharsets.UTF_8);
-            return WorkspaceWriteResult.ok(path, Sha256.hex(written), true);
+            byte[] previous = Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+                    ? Files.readAllBytes(target) : new byte[0];
+            Files.write(target, written);
+            return WorkspaceWriteResult.ok(path, Sha256.hex(written),
+                    !java.util.Arrays.equals(previous, written));
         } catch (IOException e) {
             return WorkspaceWriteResult.infraFail(path, "write failed: " + e.getMessage());
         }
@@ -215,10 +271,122 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
      */
     private Path resolveSafe(Path root, String path) {
         Path candidate = Path.of(path);
-        if (candidate.isAbsolute()) {
+        if (candidate.isAbsolute() || containsParentTraversal(candidate)) {
             return null;
         }
         Path resolved = root.resolve(path).normalize();
         return resolved.startsWith(root) ? resolved : null;
+    }
+
+    private static boolean containsParentTraversal(Path path) {
+        for (Path segment : path) {
+            if ("..".equals(segment.toString())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 解析写入目标并检查已经存在的路径段，避免自动创建父目录时跟随 Workspace 内的符号链接。
+     * Workspace 根目录可以尚未创建，因此先从最近存在的祖先目录建立真实路径锚点，创建后再做一次
+     * 真实路径校验。
+     */
+    private Path resolveWriteTarget(Path root, String path) throws IOException {
+        Path target = resolveSafe(root, path);
+        if (target == null) {
+            return null;
+        }
+        Path parent = target.getParent();
+        if (parent == null) {
+            return null;
+        }
+        Path anchor = root;
+        while (!Files.exists(anchor, LinkOption.NOFOLLOW_LINKS) && anchor.getParent() != null) {
+            anchor = anchor.getParent();
+        }
+        if (Files.isSymbolicLink(anchor) || !parent.startsWith(anchor)) {
+            return null;
+        }
+        Path realAnchor = anchor.toRealPath();
+        Path current = anchor;
+        for (Path segment : relativeSegments(anchor, parent)) {
+            current = current.resolve(segment);
+            if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
+                if (Files.isSymbolicLink(current)
+                        || !current.toRealPath().startsWith(realAnchor)) {
+                    return null;
+                }
+            }
+        }
+        return target;
+    }
+
+    private static java.util.List<Path> relativeSegments(Path anchor, Path target) {
+        if (anchor.equals(target)) {
+            return java.util.List.of();
+        }
+        Path relative = anchor.relativize(target);
+        java.util.List<Path> segments = new java.util.ArrayList<>();
+        for (Path segment : relative) {
+            segments.add(segment);
+        }
+        return segments;
+    }
+
+    private boolean isWithinWorkspaceAfterCreate(Path root, Path parent) throws IOException {
+        if (parent == null) {
+            return false;
+        }
+        Path anchor = root;
+        while (!Files.exists(anchor, LinkOption.NOFOLLOW_LINKS) && anchor.getParent() != null) {
+            anchor = anchor.getParent();
+        }
+        if (Files.isSymbolicLink(anchor) || !parent.startsWith(anchor)) {
+            return false;
+        }
+        Path realAnchor = anchor.toRealPath();
+        Path current = anchor;
+        for (Path segment : relativeSegments(anchor, parent)) {
+            current = current.resolve(segment);
+            if (Files.isSymbolicLink(current)
+                    || !current.toRealPath().startsWith(realAnchor)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 解析目录创建目标，并验证当前存在的父路径没有通过符号链接越出 Workspace。
+     */
+    private Path resolveDirectoryTarget(Path root, String path) throws IOException {
+        Path target = resolveSafe(root, path);
+        if (target == null) {
+            return null;
+        }
+        Path anchor = root;
+        while (!Files.exists(anchor, LinkOption.NOFOLLOW_LINKS) && anchor.getParent() != null) {
+            anchor = anchor.getParent();
+        }
+        if (Files.isSymbolicLink(anchor)) {
+            return null;
+        }
+        Path realAnchor = anchor.toRealPath();
+        if (!target.startsWith(anchor)) {
+            return null;
+        }
+        Path current = anchor;
+        for (Path segment : relativeSegments(anchor, target)) {
+            current = current.resolve(segment);
+            if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
+                if (Files.isSymbolicLink(current)
+                        || !Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS)
+                        || !current.toRealPath().startsWith(realAnchor)) {
+                    return null;
+                }
+            }
+        }
+        return target;
     }
 }

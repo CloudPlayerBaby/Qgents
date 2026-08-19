@@ -58,6 +58,9 @@ public class TestPromptBuilder {
             if (coding.getModifiedFiles() != null && !coding.getModifiedFiles().isEmpty()) {
                 sb.append("\n修改文件：").append(String.join(",", coding.getModifiedFiles()));
             }
+            if (coding.getModifiedDirectories() != null && !coding.getModifiedDirectories().isEmpty()) {
+                sb.append("\n新建目录：").append(String.join(",", coding.getModifiedDirectories()));
+            }
         }
         sb.append("\n\n实际执行命令：").append(String.join(" ", command));
         sb.append("\n真实 exit code：").append(exec.exitCode());

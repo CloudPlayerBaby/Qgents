@@ -40,10 +40,10 @@ class DockerContainerRuntimeTest {
         assertEquals(6, tmpfs.size());
         assertEquals("rw,noexec,nosuid,size=512m", tmpfs.get("/tmp"));
         assertEquals("rw,noexec,nosuid,size=64m", tmpfs.get("/run"));
-        assertEquals("rw,nosuid,nodev,size=1g", tmpfs.get("/home/developer/.m2"));
-        assertEquals("rw,nosuid,nodev,size=3g", tmpfs.get("/home/developer/.gradle"));
-        assertEquals("rw,nosuid,nodev,size=512m", tmpfs.get("/home/developer/.npm"));
-        assertEquals("rw,nosuid,nodev,size=512m", tmpfs.get("/home/developer/.cache"));
+        assertEquals("rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=1g", tmpfs.get("/home/developer/.m2"));
+        assertEquals("rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=3g", tmpfs.get("/home/developer/.gradle"));
+        assertEquals("rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=512m", tmpfs.get("/home/developer/.npm"));
+        assertEquals("rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=512m", tmpfs.get("/home/developer/.cache"));
     }
 
     @Test
@@ -92,10 +92,10 @@ class DockerContainerRuntimeTest {
         assertEquals(properties.getMemoryBytes(), hostConfig.getMemory());
         assertEquals(properties.getNanoCpus(), hostConfig.getNanoCPUs());
         assertEquals(properties.getPidsLimit(), hostConfig.getPidsLimit());
-        assertEquals("rw,nosuid,nodev,size=2g", hostConfig.getTmpFs().get("/home/developer/.m2"));
-        assertEquals("rw,nosuid,nodev,size=3g", hostConfig.getTmpFs().get("/home/developer/.gradle"));
-        assertEquals("rw,nosuid,nodev,size=1g", hostConfig.getTmpFs().get("/home/developer/.npm"));
-        assertEquals("rw,nosuid,nodev,size=512m", hostConfig.getTmpFs().get("/home/developer/.cache"));
+        assertEquals("rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=2g", hostConfig.getTmpFs().get("/home/developer/.m2"));
+        assertEquals("rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=3g", hostConfig.getTmpFs().get("/home/developer/.gradle"));
+        assertEquals("rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=1g", hostConfig.getTmpFs().get("/home/developer/.npm"));
+        assertEquals("rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=512m", hostConfig.getTmpFs().get("/home/developer/.cache"));
     }
 
     private DockerContainerRuntime runtime(SandboxWorkerProperties properties) {

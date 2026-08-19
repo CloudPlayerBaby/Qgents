@@ -13,7 +13,7 @@ import lombok.Data;
  * error 不得包含宿主机绝对路径或 Secret；newSha256 为内容哈希，不泄露文件内容本身。
  */
 @Data
-public class WorkspaceWriteResult {
+public class WorkspaceWriteResult implements WorkspaceChangeResult {
 
     /**
      * 是否写入成功。

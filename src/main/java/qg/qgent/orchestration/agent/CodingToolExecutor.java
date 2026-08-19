@@ -8,9 +8,13 @@ import lombok.extern.slf4j.Slf4j;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
+import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
+import qg.qgent.orchestration.tool.WorkspaceChangeResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 
 import java.util.UUID;
+import java.util.Collection;
+import java.util.List;
 
 /**
  * 执行 Coding Agent 的白名单工具调用，并把结果格式化为可回灌给 LLM 的 JSON 字符串。
@@ -36,10 +40,17 @@ public class CodingToolExecutor {
     private UUID taskId;
     private UUID taskRunId;
     private UUID workspaceId;
+    private final TaskStepPathPolicy pathPolicy;
 
     public CodingToolExecutor(WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer) {
+        this(codeAccess, writer, List.of());
+    }
+
+    public CodingToolExecutor(WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
+                              Collection<String> allowedPaths) {
         this.codeAccess = codeAccess;
         this.writer = writer;
+        this.pathPolicy = TaskStepPathPolicy.of(allowedPaths);
     }
 
     /**
@@ -72,6 +83,7 @@ public class CodingToolExecutor {
             case "list_files" -> listFiles(workspaceId, name);
             case "read_file" -> readFile(workspaceId, name, args);
             case "search_code" -> searchCode(workspaceId, name, args);
+            case "create_directory" -> createDirectory(workspaceId, name, args);
             case "write_file" -> writeFile(workspaceId, name, args);
             case "apply_patch" -> applyPatch(workspaceId, name, args);
             default -> error(name, "unknown tool '" + name + "'");
@@ -125,11 +137,18 @@ public class CodingToolExecutor {
         if (path.isBlank()) {
             return error(name, "write_file requires non-empty 'path'");
         }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(name, denied);
+        }
         WorkspaceWriteResult result = writer.writeFile(workspaceId, path, content);
         if (result.isOk()) {
-            notifyWrite(result);
+            if (result.isChanged()) {
+                notifyChange(result);
+            }
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("path", result.getPath());
+            resultNode.put("changed", result.isChanged());
             return ok(name, resultNode);
         }
         if (result.isInfrastructureFailure()) {
@@ -139,12 +158,42 @@ public class CodingToolExecutor {
         return error(name, result.getError() == null ? "write failed" : result.getError());
     }
 
+    private String createDirectory(UUID workspaceId, String name, JsonNode args) {
+        String path = args.path("path").asText("").trim();
+        if (path.isBlank()) {
+            return error(name, "create_directory requires non-empty 'path'");
+        }
+        String denied = ensureDirectoryPath(path);
+        if (denied != null) {
+            return error(name, denied);
+        }
+        WorkspaceDirectoryResult result = writer.createDirectory(workspaceId, path);
+        if (result.isOk()) {
+            if (result.isChanged()) {
+                notifyChange(result);
+            }
+            ObjectNode resultNode = objectMapper.createObjectNode();
+            resultNode.put("path", result.getPath());
+            resultNode.put("created", result.isCreated());
+            return ok(name, resultNode);
+        }
+        if (result.isInfrastructureFailure()) {
+            throw new IllegalStateException("create_directory infrastructure failure: "
+                    + (result.getError() == null ? "workspace unavailable" : result.getError()));
+        }
+        return error(name, result.getError() == null ? "directory creation failed" : result.getError());
+    }
+
     private String applyPatch(UUID workspaceId, String name, JsonNode args) {
         String path = args.path("path").asText("").trim();
         String expectedHash = args.path("expectedHash").asText("").trim();
         String patch = args.path("patch").asText("");
         if (path.isBlank()) {
             return error(name, "apply_patch requires non-empty 'path'");
+        }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(name, denied);
         }
         if (!expectedHash.matches("[0-9a-fA-F]{64}")) {
             return error(name, "apply_patch requires 64-char hex 'expectedHash' from read_file");
@@ -154,9 +203,12 @@ public class CodingToolExecutor {
         }
         WorkspaceWriteResult result = writer.patchFile(workspaceId, path, expectedHash, patch);
         if (result.isOk()) {
-            notifyWrite(result);
+            if (result.isChanged()) {
+                notifyChange(result);
+            }
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("path", result.getPath());
+            resultNode.put("changed", result.isChanged());
             return ok(name, resultNode);
         }
         if (result.isInfrastructureFailure()) {
@@ -182,10 +234,30 @@ public class CodingToolExecutor {
         return node.toString();
     }
 
+    private String ensureWritablePath(String path) {
+        if (TaskStepPathPolicy.normalize(path) == null) {
+            return "path is invalid or escapes the workspace";
+        }
+        if (!pathPolicy.allows(path)) {
+            return "path is outside the current TaskStep allowed paths";
+        }
+        return null;
+    }
+
+    private String ensureDirectoryPath(String path) {
+        if (TaskStepPathPolicy.normalize(path) == null) {
+            return "path is invalid or escapes the workspace";
+        }
+        if (!pathPolicy.allowsDirectory(path)) {
+            return "path is outside the current TaskStep allowed paths";
+        }
+        return null;
+    }
+
     /**
      * 成功写后通知预览回调；回调失败只记日志，绝不破坏 Coding 主循环。
      */
-    private void notifyWrite(WorkspaceWriteResult result) {
+    private void notifyChange(WorkspaceChangeResult result) {
         if (writeObserver == null || projectId == null) {
             return;
         }

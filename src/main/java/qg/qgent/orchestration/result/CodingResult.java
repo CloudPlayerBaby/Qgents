@@ -19,6 +19,8 @@ public class CodingResult {
      * 实际写入 Workspace 的修改文件相对路径列表。
      */
     private List<String> modifiedFiles = new ArrayList<>();
+    /** 实际新建的 Workspace 相对目录列表；不代表 Git 文件 Diff。 */
+    private List<String> modifiedDirectories = new ArrayList<>();
     /**
      * 指向 DiffService 产出的真实 Diff 引用，Phase 1 为占位。
      */

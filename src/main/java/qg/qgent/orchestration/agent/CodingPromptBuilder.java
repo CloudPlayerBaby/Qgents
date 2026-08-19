@@ -47,6 +47,7 @@ public class CodingPromptBuilder {
                 - activate_skill：按默认上下文的 Skill 目录激活完整 Skill 正文，参数 {"skillId": "UUID"}；每个 TaskRun 最多激活 5 个不同 Skill，重复激活不会重复消耗预算。
                 - search_chat_history：仅按关键字检索当前需求群的历史消息，参数 {"query": "关键字", "limit": 10}；仅当近期消息缺少完成任务所需的讨论时调用，检索次数有限，预算耗尽后直接基于现有信息完成。
                 - apply_patch：对已有文本文件精确应用统一 Diff，参数 {"path": "相对路径", "expectedHash": "read_file 返回的 64 位十六进制 sha256", "patch": "统一 Diff 文本"}；expectedHash 必须来自同一次 read_file。
+                - create_directory：递归创建目录，参数 {"path": "相对目录路径"}；已存在目录幂等成功，不创建 .gitkeep。
                 - write_file：创建新文件，参数 {"path": "相对路径", "content": "文件内容"}；目标文件已存在时会被拒绝，改用 apply_patch。
 
                 工作方式：
@@ -54,7 +55,8 @@ public class CodingPromptBuilder {
                 - 已有文件的修改优先使用 apply_patch 做精确局部修改；只有新建文件时才使用 write_file。
                 - 需要调用工具时使用原生函数调用，每次调用的参数必须完整、类型正确。
                 - 工具返回 ok=false 时根据 error 修正后重试，不要重复同样的失败调用；hash 冲突时重新 read_file 再 apply_patch。
-                - 只有至少一次 write_file/apply_patch 实际改变了文件后才能 success=true；修改完成并确认无误后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "changes": ["变更说明"]}}
+                - 只能修改当前步骤允许路径；若工具返回 outside the current TaskStep allowed paths，说明该文件属于其他步骤，不能修改。
+                - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出 JSON：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
 
                 约束：
@@ -74,6 +76,7 @@ public class CodingPromptBuilder {
                 - read_file：读取文件，参数 {"path": "相对路径"}；返回文件内容与当前 sha256。
                 - search_code：在代码中检索关键字，参数 {"query": "关键字"}。
                 - apply_patch：对已有文本文件精确应用统一 Diff，参数 {"path": "相对路径", "expectedHash": "read_file 返回的 64 位十六进制 sha256", "patch": "统一 Diff 文本"}；expectedHash 必须来自同一次 read_file。
+                - create_directory：递归创建目录，参数 {"path": "相对目录路径"}；已存在目录幂等成功，不创建 .gitkeep。
                 - write_file：覆盖写入或新建文件，参数 {"path": "相对路径", "content": "文件内容"}；父目录不存在时自动创建。
 
                 工作方式：
@@ -81,7 +84,7 @@ public class CodingPromptBuilder {
                 - 已有文件的修改优先使用 apply_patch 做精确局部修改；只有新建文件或需要整文件替换时才使用 write_file。
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
                 - 需要调用工具时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
-                - 只有至少一次 write_file/apply_patch 实际改变了文件后才能 success=true；修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "changes": ["变更说明"]}}
+                - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"]}}
                 - 无法完成任务时输出：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
 
                 约束：
@@ -99,6 +102,9 @@ public class CodingPromptBuilder {
         sb.append("任务标题：").append(nullToBlank(input.getTaskTitle()));
         sb.append("\n任务描述：").append(nullToBlank(input.getRequirement()));
         sb.append("\n计划指令：").append(nullToBlank(input.getInstruction()));
+        if (input.getAllowedPaths() != null && !input.getAllowedPaths().isEmpty()) {
+            sb.append("\n当前步骤允许写入路径：").append(String.join(", ", input.getAllowedPaths()));
+        }
         if (input.getFeedback() != null && !input.getFeedback().isBlank()) {
             sb.append("\n前一轮反馈：").append(input.getFeedback());
         }
@@ -129,6 +135,7 @@ public class CodingPromptBuilder {
             sb.append("\n- 摘要：").append(result.getSummary());
         }
         appendList(sb, "已修改文件", result.getModifiedFiles());
+        appendList(sb, "已新建目录", result.getModifiedDirectories());
         appendList(sb, "变更说明", result.getChanges());
         appendList(sb, "错误", result.getErrors());
     }

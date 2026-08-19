@@ -147,13 +147,14 @@ public class DockerContainerRuntime implements ContainerRuntime {
      * 不挂载宿主机路径，不放开 rootfs 其他位置的只读隔离。
      */
     Map<String, String> tmpfsMounts() {
+        String developerCacheOptions = "rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=";
         return Map.of(
                 "/tmp", "rw,noexec,nosuid,size=512m",
                 "/run", "rw,noexec,nosuid,size=64m",
-                "/home/developer/.m2", "rw,nosuid,nodev,size=" + properties.getMavenCacheSize(),
-                "/home/developer/.gradle", "rw,nosuid,nodev,size=" + properties.getGradleCacheSize(),
-                "/home/developer/.npm", "rw,nosuid,nodev,size=" + properties.getNpmCacheSize(),
-                "/home/developer/.cache", "rw,nosuid,nodev,size=512m");
+                "/home/developer/.m2", developerCacheOptions + properties.getMavenCacheSize(),
+                "/home/developer/.gradle", developerCacheOptions + properties.getGradleCacheSize(),
+                "/home/developer/.npm", developerCacheOptions + properties.getNpmCacheSize(),
+                "/home/developer/.cache", developerCacheOptions + "512m");
     }
 
     @Override

@@ -346,6 +346,7 @@ class SandboxSessionManagerTest {
         binding.setDefaultBranch("develop");
         when(githubAppClient.getBranch(eq(12345L), eq("owner"), eq("repo"), eq("main")))
                 .thenReturn(new qg.qgent.github.GitHubBranchDetails("main", "c".repeat(40)));
+        when(client.syncGitStore(any(), any())).thenReturn(syncResponse(REPO, "main", "c".repeat(40)));
         WorkerWorkspace provisioned = new WorkerWorkspace();
         provisioned.setStorageKey("workspaces/" + WORKSPACE);
         when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
@@ -377,6 +378,7 @@ class SandboxSessionManagerTest {
         provisioned.setBaseRef("main");
         provisioned.setBaseCommit("f".repeat(40));
         when(repositoryMapper.selectByWorkspace(WORKSPACE)).thenReturn(List.of(provisioned));
+        when(client.syncGitStore(any(), any())).thenReturn(syncResponse(REPO, "main", "f".repeat(40)));
         WorkerWorkspace workspaceResult = new WorkerWorkspace();
         workspaceResult.setStorageKey("workspaces/" + WORKSPACE);
         when(client.provisionWorkspace(any(), any())).thenReturn(workspaceResult);
@@ -416,6 +418,7 @@ class SandboxSessionManagerTest {
         persistedRepo.setBaseRef("main");
         metadata.setRepositories(List.of(persistedRepo));
         when(client.getWorkspace(WORKSPACE)).thenReturn(metadata);
+        when(client.syncGitStore(any(), any())).thenReturn(syncResponse(REPO, "main", "f".repeat(40)));
         WorkerWorkspace provisioned = new WorkerWorkspace();
         provisioned.setStorageKey("workspaces/" + WORKSPACE);
         when(client.provisionWorkspace(any(), any())).thenReturn(provisioned);
