@@ -44,6 +44,10 @@ public class TestRunEntity {
      */
     private UUID executionWorkspaceId;
     private String status;
+    /** 开始执行时间（UTC）；QUEUED 时为空。 */
+    private LocalDateTime startedAt;
+    /** 结束执行时间（UTC）；非终态时为空。 */
+    private LocalDateTime finishedAt;
     @TableField(typeHandler = JacksonTypeHandler.class)
     private Map<String, Object> summary;
     private String claimToken;

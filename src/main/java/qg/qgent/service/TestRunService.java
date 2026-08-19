@@ -31,6 +31,12 @@ import java.util.*;
  */
 @Service
 public class TestRunService {
+    private static final int LIST_DEFAULT_LIMIT = 20;
+    private static final int LIST_MAX_LIMIT = 100;
+    private static final Set<String> TEST_RUN_LIST_STATUSES = Set.of(
+            "QUEUED", "RUNNING", "PASSED", "FAILED", "CANCELLED");
+    private static final Set<String> DRY_RUN_LIST_STATUSES = Set.of(
+            "QUEUED", "RUNNING", "PASSED", "FAILED", "CONFLICT", "CANCELLED");
     private static final Set<String> TESTABLE_TASK_STATUSES = Set.of(
             "WAITING_DIFF_CONFIRMATION", "WAITING_PREFLIGHT", "SUCCEEDED", "DELIVERY_FAILED",
             "FAILED", "CANCELLED", "DIFF_REJECTED");
@@ -68,6 +74,70 @@ public class TestRunService {
         this.executionDispatcher = executionDispatcher;
         this.worker = worker;
         this.gitStores = gitStores;
+    }
+
+    /**
+     * 查询项目 Test Run 历史。列表只返回轻量生命周期摘要，详情仍通过单条接口读取。
+     * 游标绑定 createdAt 与 id，避免同一时间创建的运行在翻页时重复或丢失。
+     */
+    public ApiPageResponse<TestRunListItemResponse> listTestRuns(UUID projectId, UUID userId,
+                                                                  UUID repositoryId, UUID taskId,
+                                                                  String status, UUID createdByUserId,
+                                                                  String cursor, int limit, String requestId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        int size = clampListLimit(limit);
+        Set<String> statuses = parseStatuses(status, TEST_RUN_LIST_STATUSES);
+        ListCursor position = decodeListCursor(cursor);
+        List<TestRunEntity> rows = testRunMapper.selectList(Wrappers.<TestRunEntity>lambdaQuery()
+                .eq(TestRunEntity::getProjectId, projectId)
+                .eq(repositoryId != null, TestRunEntity::getProjectRepositoryId, repositoryId)
+                .eq(taskId != null, TestRunEntity::getTaskId, taskId)
+                .eq(createdByUserId != null, TestRunEntity::getCreatedBy, createdByUserId)
+                .in(!statuses.isEmpty(), TestRunEntity::getStatus, statuses)
+                .and(position != null, q -> q.lt(TestRunEntity::getCreatedAt, position.createdAt())
+                        .or(x -> x.eq(TestRunEntity::getCreatedAt, position.createdAt())
+                                .lt(TestRunEntity::getId, position.id())))
+                .orderByDesc(TestRunEntity::getCreatedAt)
+                .orderByDesc(TestRunEntity::getId)
+                .last("LIMIT " + (size + 1)));
+        boolean hasMore = rows.size() > size;
+        List<TestRunEntity> page = hasMore ? rows.subList(0, size) : rows;
+        List<TestRunListItemResponse> items = page.stream().map(this::toTestRunListItem).toList();
+        String next = hasMore && !page.isEmpty() ? encodeListCursor(page.getLast().getCreatedAt(), page.getLast().getId()) : null;
+        return new ApiPageResponse<>(items, new PageMeta(next, hasMore), requestId);
+    }
+
+    /**
+     * 查询项目 Dry Run 历史。列表不携带 report 或测试结果，详情通过报告接口读取。
+     */
+    public ApiPageResponse<DryRunListItemResponse> listDryRuns(UUID projectId, UUID userId,
+                                                                UUID repositoryId, UUID taskId,
+                                                                String status, String targetBranch,
+                                                                UUID createdByUserId, String cursor,
+                                                                int limit, String requestId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        int size = clampListLimit(limit);
+        Set<String> statuses = parseStatuses(status, DRY_RUN_LIST_STATUSES);
+        ListCursor position = decodeListCursor(cursor);
+        List<DryRunEntity> rows = dryRunMapper.selectList(Wrappers.<DryRunEntity>lambdaQuery()
+                .eq(DryRunEntity::getProjectId, projectId)
+                .eq(repositoryId != null, DryRunEntity::getProjectRepositoryId, repositoryId)
+                .eq(taskId != null, DryRunEntity::getTaskId, taskId)
+                .eq(targetBranch != null && !targetBranch.isBlank(), DryRunEntity::getTargetBranch,
+                        targetBranch == null ? null : targetBranch.trim())
+                .eq(createdByUserId != null, DryRunEntity::getCreatedBy, createdByUserId)
+                .in(!statuses.isEmpty(), DryRunEntity::getStatus, statuses)
+                .and(position != null, q -> q.lt(DryRunEntity::getCreatedAt, position.createdAt())
+                        .or(x -> x.eq(DryRunEntity::getCreatedAt, position.createdAt())
+                                .lt(DryRunEntity::getId, position.id())))
+                .orderByDesc(DryRunEntity::getCreatedAt)
+                .orderByDesc(DryRunEntity::getId)
+                .last("LIMIT " + (size + 1)));
+        boolean hasMore = rows.size() > size;
+        List<DryRunEntity> page = hasMore ? rows.subList(0, size) : rows;
+        List<DryRunListItemResponse> items = page.stream().map(this::toDryRunListItem).toList();
+        String next = hasMore && !page.isEmpty() ? encodeListCursor(page.getLast().getCreatedAt(), page.getLast().getId()) : null;
+        return new ApiPageResponse<>(items, new PageMeta(next, hasMore), requestId);
     }
 
     /**
@@ -560,6 +630,70 @@ public class TestRunService {
         return new DryRunResponse(id(run.getId()), id(run.getProjectId()), id(run.getProjectRepositoryId()),
                 run.getHeadCommit(), run.getTargetBranch(), run.getResolvedTargetCommit(), run.getStatus(),
                 run.getReport(), id(run.getCreatedBy()), iso(run.getCreatedAt()));
+    }
+
+    private TestRunListItemResponse toTestRunListItem(TestRunEntity run) {
+        return new TestRunListItemResponse(id(run.getId()), id(run.getProjectId()),
+                id(run.getProjectRepositoryId()), run.getTestsetIds() == null ? List.of() : run.getTestsetIds(),
+                id(run.getTaskId()), run.getRef() == null ? run.getExecutionSourceRef() : run.getRef(),
+                run.getStatus(), id(run.getCreatedBy()), iso(run.getCreatedAt()), iso(run.getStartedAt()),
+                iso(run.getFinishedAt()));
+    }
+
+    private DryRunListItemResponse toDryRunListItem(DryRunEntity run) {
+        return new DryRunListItemResponse(id(run.getId()), id(run.getProjectId()),
+                id(run.getProjectRepositoryId()), run.getSourceRef(), run.getTargetBranch(), id(run.getTaskId()),
+                run.getStatus(), id(run.getCreatedBy()), iso(run.getCreatedAt()), iso(run.getStartedAt()),
+                iso(run.getFinishedAt()));
+    }
+
+    private int clampListLimit(int limit) {
+        return limit <= 0 ? LIST_DEFAULT_LIMIT : Math.min(limit, LIST_MAX_LIMIT);
+    }
+
+    private Set<String> parseStatuses(String raw, Set<String> allowed) {
+        if (raw == null || raw.isBlank()) {
+            return Set.of();
+        }
+        Set<String> values = new LinkedHashSet<>();
+        for (String item : raw.split(",")) {
+            String value = item.trim().toUpperCase(Locale.ROOT);
+            if (value.isBlank() || !allowed.contains(value)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_STATUS_FILTER",
+                        "status 包含不支持的状态值");
+            }
+            values.add(value);
+        }
+        return Set.copyOf(values);
+    }
+
+    private String encodeListCursor(LocalDateTime createdAt, UUID id) {
+        if (createdAt == null || id == null) {
+            return null;
+        }
+        String raw = "createdAt:" + createdAt + "|id:" + id;
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private ListCursor decodeListCursor(String cursor) {
+        if (cursor == null || cursor.isBlank()) {
+            return null;
+        }
+        try {
+            String raw = new String(Base64.getUrlDecoder().decode(cursor), java.nio.charset.StandardCharsets.UTF_8);
+            String[] fields = raw.split("\\|", -1);
+            if (fields.length != 2 || !fields[0].startsWith("createdAt:") || !fields[1].startsWith("id:")) {
+                throw new IllegalArgumentException();
+            }
+            LocalDateTime createdAt = LocalDateTime.parse(fields[0].substring("createdAt:".length()));
+            UUID id = UUID.fromString(fields[1].substring("id:".length()));
+            return new ListCursor(createdAt, id);
+        } catch (RuntimeException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", "游标格式不合法");
+        }
+    }
+
+    private record ListCursor(LocalDateTime createdAt, UUID id) {
     }
 
     private static final int MAX_DRY_RUN_RETRIES = 3;
