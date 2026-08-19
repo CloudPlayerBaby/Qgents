@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -48,13 +49,14 @@ public class MessageService {
     private final EventService eventService;
     private final NotificationService notificationService;
     private final AttachmentService attachmentService;
+    private final ApplicationEventPublisher eventPublisher;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                           GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
                           ProjectMapper projectMapper, ProjectAccessService access, GroupService groupService,
                           TaskTriggerService taskTriggerService, ObjectMapper mapper,
                           EventService eventService, NotificationService notificationService,
-                          AttachmentService attachmentService) {
+                          AttachmentService attachmentService, ApplicationEventPublisher eventPublisher) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupAgentMapper = groupAgentMapper;
@@ -68,6 +70,7 @@ public class MessageService {
         this.eventService = eventService;
         this.notificationService = notificationService;
         this.attachmentService = attachmentService;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -92,47 +95,51 @@ public class MessageService {
         }
         MessageResponse response = doSend(projectId, groupId, actor, null, body);
         enrichAttachmentPreview(response, projectId);
-        // @ 用户：对被提及的成员（排除发送者自己）生成通知；@Agent 走自动触发任务
-        notifyMentionedUsers(actor, projectId, groupId, body, response.getId());
-        triggerTaskOnAgentMention(actor, projectId, groupId, response.getId() == null ? null : UUID.fromString(response.getId()),
-                body.getMentions());
+        // @Agent 建任务 / @ 用户通知从发送事务移出：消息落库提交后由 MessageSentListener 异步执行，
+        // 缩短群行锁持有时间，消息发出与卡片回群不再等待建任务/写通知。
+        if (body.getMentions() != null && !body.getMentions().isEmpty()) {
+            eventPublisher.publishEvent(new MessageSentEvent(actor, projectId, groupId,
+                    response.getId() == null ? null : UUID.fromString(response.getId()), body.getMentions()));
+        }
         return response;
     }
 
     /**
      * 对被 @ 的用户生成站内通知（MESSAGE_MENTION）：发送者、群名与消息文本摘要进通知内容；
      * 排除发送者本人；@Agent 不在此处理（走任务触发）。通知失败不影响消息发送（日志兜底）。
+     * <p>
+     * 由 {@link MessageSentListener} 在消息事务提交后异步调用，不再占用发送事务与群行锁。
      *
-     * @param messageId 被 @ 的那条消息 ID，作为通知 resourceId 供前端跳转后精确定位（契约 §五）
+     * @param event      消息发送事件（含 actor/projectId/groupId/messageId/mentions）
+     * @param groupName  来源群名（已查好，避免再查一次）
+     * @param textPreview 消息文本摘要（由监听器从已落库消息提取；为空则通知不含摘要）
      */
-    private void notifyMentionedUsers(UUID actor, UUID projectId, UUID groupId, MessageSendRequest body,
-                                      String messageId) {
-        if (body.getMentions() == null || body.getMentions().isEmpty()) {
+    public void notifyMentionedUsersAfterCommit(MessageSentEvent event, String groupName, String textPreview) {
+        List<Mention> mentions = event.mentions();
+        if (mentions == null || mentions.isEmpty()) {
             return;
         }
         try {
-            List<UUID> users = body.getMentions().stream()
+            List<UUID> users = mentions.stream()
                     .filter(m -> "USER".equals(m.getType()))
-                    .filter(m -> m.getId() != null && !m.getId().equals(actor))
+                    .filter(m -> m.getId() != null && !m.getId().equals(event.actor()))
                     .map(Mention::getId)
                     .distinct()
                     .toList();
             if (users.isEmpty()) {
                 return;
             }
-            RequirementGroupEntity group = groupMapper.selectById(groupId);
-            String groupName = group == null ? "群聊" : group.getName();
-            String senderName = senderDisplayName(actor);
-            String preview = messageText(body.getContent());
+            String senderName = senderDisplayName(event.actor());
             String title = "有人在群聊中提到了你";
             String description = senderName + " 在群「" + groupName + "」中提到了你"
-                    + (preview.isBlank() ? "" : "：" + preview);
+                    + (textPreview == null || textPreview.isBlank() ? "" : "：" + textPreview);
             for (UUID userId : users) {
-                notificationService.notify(userId, projectId, groupId, "MESSAGE_MENTION", title, description, messageId);
+                notificationService.notify(userId, event.projectId(), event.groupId(), "MESSAGE_MENTION",
+                        title, description, event.messageId() == null ? null : event.messageId().toString());
             }
         } catch (RuntimeException e) {
             log.warn("mention notification skipped, projectId={}, groupId={}, actor={}: {}",
-                    projectId, groupId, actor, e.getMessage());
+                    event.projectId(), event.groupId(), event.actor(), e.getMessage());
         }
     }
 
@@ -161,6 +168,30 @@ public class MessageService {
             return truncate(s);
         }
         return "";
+    }
+
+    /**
+     * 提取已落库消息的文本摘要（最长 60 字符），供 {@link MessageSentListener} 在事务提交后生成 @ 通知内容。
+     * <p>
+     * 解析失败返回空串而非抛异常：通知失败不阻塞、摘要缺失只影响通知文案。
+     *
+     * @param message 已落库消息
+     * @return 文本摘要（可能为空串）
+     */
+    public String extractTextPreview(MessageEntity message) {
+        if (message == null || message.getContent() == null || message.getContent().isBlank()) {
+            return "";
+        }
+        try {
+            Map<String, Object> content = readJson(message.getContent(),
+                    new TypeReference<Map<String, Object>>() {
+                    });
+            return messageText(content);
+        } catch (RuntimeException e) {
+            log.warn("message text preview extract failed, messageId={}: {}", message == null ? null : message.getId(),
+                    e.getMessage());
+            return "";
+        }
     }
 
     private String truncate(String value) {
@@ -225,27 +256,6 @@ public class MessageService {
         int end = slash >= 0 ? slash : (q >= 0 ? q : rest.length());
         String id = rest.substring(0, end);
         return id.isBlank() ? null : id;
-    }
-
-    /**
-     * 若消息提及了 Agent（@agent），自动从该消息创建 Task（点7：聊天消息到 Agent Task 转换）。
-     * <p>
-     * 自动触发失败不阻塞消息发送（日志 warn）；幂等由 TaskTriggerService 保证（同消息只建一次）。
-     */
-    private void triggerTaskOnAgentMention(UUID actor, UUID projectId, UUID groupId, UUID messageId,
-                                           List<Mention> mentions) {
-        if (mentions == null || mentions.stream().noneMatch(m -> "AGENT".equals(m.getType()))) {
-            return;
-        }
-        MessageEntity message = messageMapper.selectById(messageId);
-        if (message == null) {
-            return;
-        }
-        try {
-            taskTriggerService.triggerFromMention(actor, projectId, groupId, message, mentions);
-        } catch (RuntimeException e) {
-            log.warn("task auto-trigger skipped, messageId={}: {}", messageId, e.getMessage());
-        }
     }
 
     /**
