@@ -457,4 +457,106 @@ class CodingToolsTest {
         assertThat(tools.getModifiedFiles())
                 .containsExactlyInAnyOrder("src/main/java/New.java", "src/main/java/Existing.java");
     }
+
+    // ---------- apply_patch 连续失败升级：放行 write_file 整文件覆盖 ----------
+
+    @Test
+    void applyPatchConsecutiveFailuresEscalateToOverwrite() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/X.java"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED",
+                        "hunk 声明行数与正文不一致"));
+        when(writer.writeFile(workspaceId, "src/main/java/X.java", "full content"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", NEW_HASH, true));
+        CodingTools tools = tools();
+
+        for (int i = 0; i < CodingTools.PATCH_FAILURE_ESCALATION_THRESHOLD; i++) {
+            assertThat(tools.applyPatch("src/main/java/X.java", HASH, "patch").get("ok")).isEqualTo(false);
+        }
+
+        // 升级后 write_file 允许整文件覆盖已存在文件（此前会返回 only creates new files）。
+        Map<String, Object> overwrite = tools.writeFile("src/main/java/X.java", "full content");
+
+        assertThat(overwrite.get("ok")).isEqualTo(true);
+        assertThat(overwrite.get("changed")).isEqualTo(true);
+        verify(writer).writeFile(workspaceId, "src/main/java/X.java", "full content");
+    }
+
+    @Test
+    void applyPatchFailuresBelowThresholdKeepWriteFileRejected() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/X.java"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED",
+                        "hunk 声明行数与正文不一致"));
+        CodingTools tools = tools();
+
+        for (int i = 0; i < CodingTools.PATCH_FAILURE_ESCALATION_THRESHOLD - 1; i++) {
+            tools.applyPatch("src/main/java/X.java", HASH, "patch");
+        }
+
+        Map<String, Object> result = tools.writeFile("src/main/java/X.java", "overwrite");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat((String) result.get("error")).contains("only creates new files");
+        verify(writer, never()).writeFile(any(), any(), any());
+    }
+
+    @Test
+    void applyPatchSuccessResetsConsecutiveFailureCounter() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/X.java"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "bad"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED",
+                        "hunk 声明行数与正文不一致"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "good"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", NEW_HASH, true));
+        CodingTools tools = tools();
+
+        tools.applyPatch("src/main/java/X.java", HASH, "bad");
+        tools.applyPatch("src/main/java/X.java", HASH, "bad");
+        tools.applyPatch("src/main/java/X.java", HASH, "good"); // 成功，重置连续失败计数
+        tools.applyPatch("src/main/java/X.java", HASH, "bad");
+        tools.applyPatch("src/main/java/X.java", HASH, "bad"); // 成功后又失败 2 次 < 3
+
+        Map<String, Object> result = tools.writeFile("src/main/java/X.java", "overwrite");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        verify(writer, never()).writeFile(any(), any(), any());
+    }
+
+    @Test
+    void applyPatchEscalationMessageDirectsFullFileRewrite() {
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
+                .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED",
+                        "hunk 声明行数与正文不一致"));
+        CodingTools tools = tools();
+
+        Map<String, Object> result = null;
+        for (int i = 0; i < CodingTools.PATCH_FAILURE_ESCALATION_THRESHOLD; i++) {
+            result = tools.applyPatch("src/main/java/X.java", HASH, "patch");
+        }
+
+        assertThat(result).containsEntry("ok", false)
+                .containsEntry("errorCode", "TOOL_PATCH_FORMAT_INVALID")
+                .containsEntry("retryable", true);
+        assertThat((String) result.get("error")).contains("已放行 write_file 整文件覆盖");
+        assertThat((String) result.get("nextAction")).contains("write_file").contains("整文件覆盖");
+    }
+
+    @Test
+    void drainOutcomesCapturesEveryWriteToolResult() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "src/main/java/New.java", "code"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/New.java", NEW_HASH, true));
+        CodingTools tools = tools();
+
+        tools.writeFile("src/main/java/New.java", "code");
+        List<ToolOutcome> drained = tools.drainOutcomes();
+        List<ToolOutcome> again = tools.drainOutcomes();
+
+        assertThat(drained).hasSize(1);
+        assertThat(drained.get(0).toolName()).isEqualTo("write_file");
+        assertThat(drained.get(0).ok()).isTrue();
+        assertThat(drained.get(0).changed()).isTrue();
+        assertThat(again).isEmpty();
+    }
 }

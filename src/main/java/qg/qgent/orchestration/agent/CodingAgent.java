@@ -183,6 +183,7 @@ public class CodingAgent implements Agent {
             Instant turnStartedAt = Instant.now();
             ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
             observedWrites.recordToolFailure(tools.getLastToolError());
+            observedWrites.recordToolOutcomes(tools.drainOutcomes());
             observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
                     turnStartedAt, Instant.now()));
             if (turn.isInfraAbort()) {
@@ -364,8 +365,15 @@ public class CodingAgent implements Agent {
                 coding.setModifiedDirectories(List.of());
                 return;
             }
+            StringBuilder detail = new StringBuilder();
+            String summary = observedWrites.toolOutcomeSummary();
+            if (!summary.isEmpty()) {
+                detail.append("；").append(summary);
+            }
             String cause = observedWrites.lastToolError();
-            String detail = cause == null ? "" : "；上一次工具失败：" + cause + observedWrites.recoveryHint();
+            if (cause != null) {
+                detail.append("；上一次工具失败：").append(cause).append(observedWrites.recoveryHint());
+            }
             throw new CodingParseException(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE,
                     "coding success requires at least one actual file or directory modification" + detail);
         }
