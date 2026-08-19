@@ -45,6 +45,16 @@ public class DiffController {
     }
 
     /**
+     * 群聊 Diff 卡按需展开最终 Diff 预览；普通或中间 Diff 不可通过此接口展开。
+     */
+    @GetMapping("/{diffId}/preview")
+    public ApiResponse<?> preview(@PathVariable UUID projectId, @PathVariable UUID diffId,
+                                  @RequestParam(required = false) UUID fileId,
+                                  @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
+        return ok(service.finalPreview(projectId, diffId, fileId, actor), request);
+    }
+
+    /**
      * 契约 §12.3：游标读取 Diff 文件、hunk 与二进制摘要。
      */
     @GetMapping("/{diffId}/files")
