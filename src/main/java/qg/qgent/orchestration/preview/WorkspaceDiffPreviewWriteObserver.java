@@ -29,7 +29,9 @@ public class WorkspaceDiffPreviewWriteObserver implements CodingWriteObserver {
     @Override
     public void onWrite(UUID projectId, UUID taskId, UUID taskRunId, UUID workspaceId,
                         WorkspaceChangeResult result) {
-        if (result == null || !result.isOk()) {
+        // 只对 ok 且真正改变工作树内容的写触发预览：未变更写（如重复写入相同内容）
+        // 不产生新的累积 diff；目录是持久事实但没有可提交的 Git 文件 Diff，也不触发。
+        if (result == null || !result.isOk() || !result.isChanged()) {
             return;
         }
         if (result instanceof WorkspaceDirectoryResult) {
