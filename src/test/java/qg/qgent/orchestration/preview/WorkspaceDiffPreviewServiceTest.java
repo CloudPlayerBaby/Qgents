@@ -1,5 +1,10 @@
 package qg.qgent.orchestration.preview;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
@@ -9,6 +14,7 @@ import qg.qgent.dto.WorkspaceDiffPreviewResponse;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.WorkspaceDiffPreviewEntity;
 import qg.qgent.entity.WorkspaceDiffPreviewRevisionEntity;
+import qg.qgent.handler.UuidBinaryTypeHandler;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.WorkspaceDiffPreviewMapper;
 import qg.qgent.mapper.WorkspaceDiffPreviewRevisionMapper;
@@ -16,6 +22,7 @@ import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 import qg.qgent.service.DiffSnapshotStorage;
 import qg.qgent.service.EventService;
+import qg.qgent.service.GroupService;
 import qg.qgent.service.ProjectAccessService;
 
 import java.time.LocalDateTime;
@@ -30,6 +37,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -47,6 +55,7 @@ class WorkspaceDiffPreviewServiceTest {
     private static final UUID TASK_ID = UUID.randomUUID();
     private static final UUID TASK_RUN_ID = UUID.randomUUID();
     private static final UUID WORKSPACE_ID = UUID.randomUUID();
+    private static final UUID GROUP_ID = UUID.randomUUID();
     private static final UUID ACTOR = UUID.randomUUID();
     private static final String PATCH = "diff --git a/A.java b/A.java\n@@ -1 +1 @@\n+new line\n";
     private static final String TREE_HASH =
@@ -59,16 +68,30 @@ class WorkspaceDiffPreviewServiceTest {
     private final WorkspaceDiffPreviewMapper previewMapper = mock(WorkspaceDiffPreviewMapper.class);
     private final WorkspaceDiffPreviewRevisionMapper revisionMapper = mock(WorkspaceDiffPreviewRevisionMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
+    private final GroupService groups = mock(GroupService.class);
     private final TaskMapper tasks = mock(TaskMapper.class);
+
+    /**
+     * 纯单元测试未启动 MyBatis/Spring，{@code getSqlSegment()} 解析 lambda 列名需要实体 TableInfo；
+     * 显式注册涉及实体，避免裸 JVM 下懒初始化列缓存的行为差异导致测试偶发失败。
+     */
+    @BeforeAll
+    static void initTableInfo() {
+        MybatisConfiguration configuration = new MybatisConfiguration();
+        configuration.getTypeHandlerRegistry().register(UuidBinaryTypeHandler.class);
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "");
+        TableInfoHelper.initTableInfo(assistant, TaskEntity.class);
+        TableInfoHelper.initTableInfo(assistant, WorkspaceDiffPreviewRevisionEntity.class);
+    }
 
     private WorkspaceDiffPreviewService enabled() {
         return new WorkspaceDiffPreviewService(diffAccess, eventService, snapshots, previewMapper, revisionMapper,
-                access, tasks, true);
+                access, groups, tasks, true);
     }
 
     private WorkspaceDiffPreviewService disabled() {
         return new WorkspaceDiffPreviewService(diffAccess, eventService, snapshots, previewMapper, revisionMapper,
-                access, tasks, false);
+                access, groups, tasks, false);
     }
 
     private TaskEntity task() {
@@ -76,6 +99,7 @@ class WorkspaceDiffPreviewServiceTest {
         task.setId(TASK_ID);
         task.setProjectId(PROJECT_ID);
         task.setWorkspaceId(WORKSPACE_ID);
+        task.setRequirementGroupId(GROUP_ID);
         return task;
     }
 
@@ -241,6 +265,22 @@ class WorkspaceDiffPreviewServiceTest {
     }
 
     @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void publishUsesRequirementGroupIdForSseScope() {
+        when(diffAccess.diff(WORKSPACE_ID))
+                .thenReturn(GitDiffResult.ok(PATCH, "base", "head", TREE_HASH, 3, 10, 2));
+        when(snapshots.store(any(UUID.class), eq(PATCH))).thenReturn(SNAPSHOT_KEY);
+        when(tasks.selectById(TASK_ID)).thenReturn(task());
+
+        enabled().record(PROJECT_ID, TASK_ID, TASK_RUN_ID, WORKSPACE_ID);
+
+        // SSE 广播范围使用 Task 所属需求群，遵循需求群隔离，而不是空 groupId 广播全项目。
+        ArgumentCaptor<Map<String, Object>> payloadCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(eventService).publish(eq(PROJECT_ID), eq(GROUP_ID), eq("workspace.diff-preview.updated"),
+                eq(WORKSPACE_ID.toString()), payloadCaptor.capture());
+    }
+
+    @Test
     void purgeExpiredDeletesOldRevisionsAndHeaders() {
         enabled().purgeExpired();
 
@@ -325,6 +365,35 @@ class WorkspaceDiffPreviewServiceTest {
         assertThat(thrown).isInstanceOf(ApiException.class);
         assertThat(((ApiException) thrown).code()).isEqualTo("PROJECT_NOT_FOUND");
         verify(tasks, never()).selectById(any());
+    }
+
+    @Test
+    void previewRejectsNonRequirementGroupMember() {
+        when(tasks.selectById(TASK_ID)).thenReturn(task());
+        doThrow(new ApiException(HttpStatus.FORBIDDEN, "GROUP_MEMBER_REQUIRED", "你不是该需求群成员"))
+                .when(groups).requireGroupMember(PROJECT_ID, GROUP_ID, ACTOR);
+
+        Throwable thrown = catchThrowable(() -> enabled().preview(PROJECT_ID, TASK_ID, ACTOR, null));
+
+        assertThat(thrown).isInstanceOf(ApiException.class);
+        assertThat(((ApiException) thrown).code()).isEqualTo("GROUP_MEMBER_REQUIRED");
+        verify(revisionMapper, never()).selectOne(any());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void revisionQueryIsScopedToProjectTaskAndWorkspace() {
+        when(tasks.selectById(TASK_ID)).thenReturn(task());
+        when(revisionMapper.selectOne(any())).thenReturn(revision(1, SNAPSHOT_KEY));
+        when(snapshots.load(SNAPSHOT_KEY)).thenReturn(QUERY_PATCH);
+
+        enabled().preview(PROJECT_ID, TASK_ID, ACTOR, null);
+
+        // 复用 Workspace 时不能读到其他 Task 的预览：查询必须同时约束 projectId + taskId + workspaceId。
+        ArgumentCaptor<AbstractWrapper> captor = ArgumentCaptor.forClass(AbstractWrapper.class);
+        verify(revisionMapper).selectOne(captor.capture());
+        assertThat(captor.getValue().getSqlSegment())
+                .contains("project_id =").contains("task_id =").contains("workspace_id =");
     }
 
     @Test

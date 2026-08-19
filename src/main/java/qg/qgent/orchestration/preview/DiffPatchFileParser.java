@@ -24,14 +24,16 @@ public final class DiffPatchFileParser {
             return files;
         }
         FileCursor current = null;
+        String repositoryPath = null;
         for (String raw : patch.split("\n")) {
             String line = raw.replace("\r", "");
             if (line.startsWith("diff --git ")) {
-                close(current, files);
+                close(current, files, repositoryPath);
                 current = new FileCursor(pathOf(line));
             } else if (line.startsWith("=====")) {
-                close(current, files);
+                close(current, files, repositoryPath);
                 current = null;
+                repositoryPath = repositoryPathOf(line);
             } else if (current != null) {
                 if (line.startsWith("new file mode")) {
                     current.changeType = "ADDED";
@@ -50,8 +52,20 @@ public final class DiffPatchFileParser {
                 }
             }
         }
-        close(current, files);
+        close(current, files, repositoryPath);
         return files;
+    }
+
+    /**
+     * 从 {@code ===== repositoryPath =====} 分隔行提取仓库相对目录；格式不符返回 null。
+     */
+    private static String repositoryPathOf(String line) {
+        String inner = line.trim();
+        if (inner.length() >= 10 && inner.startsWith("=====") && inner.endsWith("=====")) {
+            String value = inner.substring(5, inner.length() - 5).trim();
+            return value.isEmpty() ? null : value;
+        }
+        return null;
     }
 
     /**
@@ -79,12 +93,13 @@ public final class DiffPatchFileParser {
         return path;
     }
 
-    private static void close(FileCursor current, List<WorkspaceDiffPreviewFileResponse> files) {
+    private static void close(FileCursor current, List<WorkspaceDiffPreviewFileResponse> files,
+                              String repositoryPath) {
         if (current == null || current.path == null || current.path.isBlank()) {
             return;
         }
         files.add(new WorkspaceDiffPreviewFileResponse(current.path, current.changeType,
-                current.additions, current.deletions, current.binary));
+                current.additions, current.deletions, current.binary, repositoryPath));
     }
 
     private static final class FileCursor {

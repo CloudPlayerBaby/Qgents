@@ -55,14 +55,17 @@ class DiffPatchFileParserTest {
         assertThat(files.get(0).getChangeType()).isEqualTo("MODIFIED");
         assertThat(files.get(0).getAdditions()).isEqualTo(2);
         assertThat(files.get(0).getDeletions()).isEqualTo(1);
+        assertThat(files.get(0).getRepositoryPath()).isEqualTo("repo-a");
         assertThat(files.get(1).getPath()).isEqualTo("B.java");
         assertThat(files.get(1).getChangeType()).isEqualTo("ADDED");
         assertThat(files.get(1).getAdditions()).isEqualTo(1);
         assertThat(files.get(1).getDeletions()).isZero();
+        assertThat(files.get(1).getRepositoryPath()).isEqualTo("repo-b");
         assertThat(files.get(2).getPath()).isEqualTo("C.java");
         assertThat(files.get(2).getChangeType()).isEqualTo("DELETED");
         assertThat(files.get(2).getAdditions()).isZero();
         assertThat(files.get(2).getDeletions()).isEqualTo(2);
+        assertThat(files.get(2).getRepositoryPath()).isEqualTo("repo-b");
     }
 
     @Test
