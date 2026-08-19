@@ -13,6 +13,8 @@ import qg.qgent.orchestration.tool.WorkspaceChangeResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 
 import java.util.UUID;
+import java.util.Collection;
+import java.util.List;
 
 /**
  * 执行 Coding Agent 的白名单工具调用，并把结果格式化为可回灌给 LLM 的 JSON 字符串。
@@ -38,10 +40,17 @@ public class CodingToolExecutor {
     private UUID taskId;
     private UUID taskRunId;
     private UUID workspaceId;
+    private final TaskStepPathPolicy pathPolicy;
 
     public CodingToolExecutor(WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer) {
+        this(codeAccess, writer, List.of());
+    }
+
+    public CodingToolExecutor(WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
+                              Collection<String> allowedPaths) {
         this.codeAccess = codeAccess;
         this.writer = writer;
+        this.pathPolicy = TaskStepPathPolicy.of(allowedPaths);
     }
 
     /**
@@ -128,6 +137,10 @@ public class CodingToolExecutor {
         if (path.isBlank()) {
             return error(name, "write_file requires non-empty 'path'");
         }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(name, denied);
+        }
         WorkspaceWriteResult result = writer.writeFile(workspaceId, path, content);
         if (result.isOk()) {
             if (result.isChanged()) {
@@ -149,6 +162,10 @@ public class CodingToolExecutor {
         String path = args.path("path").asText("").trim();
         if (path.isBlank()) {
             return error(name, "create_directory requires non-empty 'path'");
+        }
+        String denied = ensureDirectoryPath(path);
+        if (denied != null) {
+            return error(name, denied);
         }
         WorkspaceDirectoryResult result = writer.createDirectory(workspaceId, path);
         if (result.isOk()) {
@@ -173,6 +190,10 @@ public class CodingToolExecutor {
         String patch = args.path("patch").asText("");
         if (path.isBlank()) {
             return error(name, "apply_patch requires non-empty 'path'");
+        }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(name, denied);
         }
         if (!expectedHash.matches("[0-9a-fA-F]{64}")) {
             return error(name, "apply_patch requires 64-char hex 'expectedHash' from read_file");
@@ -211,6 +232,26 @@ public class CodingToolExecutor {
         node.put("ok", false);
         node.put("error", message);
         return node.toString();
+    }
+
+    private String ensureWritablePath(String path) {
+        if (TaskStepPathPolicy.normalize(path) == null) {
+            return "path is invalid or escapes the workspace";
+        }
+        if (!pathPolicy.allows(path)) {
+            return "path is outside the current TaskStep allowed paths";
+        }
+        return null;
+    }
+
+    private String ensureDirectoryPath(String path) {
+        if (TaskStepPathPolicy.normalize(path) == null) {
+            return "path is invalid or escapes the workspace";
+        }
+        if (!pathPolicy.allowsDirectory(path)) {
+            return "path is outside the current TaskStep allowed paths";
+        }
+        return null;
     }
 
     /**

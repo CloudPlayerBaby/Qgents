@@ -38,6 +38,12 @@ public class ProjectResponse {
     @Schema(description = "项目最后活跃时间（ISO8601 UTC）")
     private String lastActivityAt;
 
+    /**
+     * 项目头像 URL（OSS 公共读长期地址，可为空）。
+     */
+    @Schema(description = "项目头像 URL")
+    private String avatarUrl;
+
     public ProjectResponse(String id, String teamId, String name, String description, String role, String status,
                            Long memberCount, Long repositoryCount) {
         this.id = id;

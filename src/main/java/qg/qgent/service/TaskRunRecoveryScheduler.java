@@ -45,6 +45,7 @@ public class TaskRunRecoveryScheduler {
     private final TaskExecutionArtifactService artifactService;
     private final EventService eventService;
     private final ApplicationEventPublisher eventPublisher;
+    private final TaskRunLogService taskRunLogService;
 
     /**
      * 无进行中 Run 的崩溃任务的陈旧阈值；可配置，默认 15 分钟。
@@ -56,6 +57,16 @@ public class TaskRunRecoveryScheduler {
                                     EventService eventService,
                                     ApplicationEventPublisher eventPublisher,
                                     @Value("${qgents.task-recovery.stale-run-threshold:20m}") Duration staleRunThreshold) {
+        this(tasks, steps, runMapper, artifactService, eventService, eventPublisher, staleRunThreshold, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TaskRunRecoveryScheduler(TaskMapper tasks, TaskStepMapper steps, TaskRunMapper runMapper,
+                                    TaskExecutionArtifactService artifactService,
+                                    EventService eventService,
+                                    ApplicationEventPublisher eventPublisher,
+                                    @Value("${qgents.task-recovery.stale-run-threshold:20m}") Duration staleRunThreshold,
+                                    TaskRunLogService taskRunLogService) {
         this.tasks = tasks;
         this.steps = steps;
         this.runMapper = runMapper;
@@ -63,6 +74,7 @@ public class TaskRunRecoveryScheduler {
         this.eventService = eventService;
         this.eventPublisher = eventPublisher;
         this.staleRunThreshold = staleRunThreshold;
+        this.taskRunLogService = taskRunLogService;
     }
 
     /**
@@ -100,6 +112,10 @@ public class TaskRunRecoveryScheduler {
                 if (tasks.failAfterStaleRun(task.getProjectId(), task.getId()) == 1) {
                     task.setStatus("FAILED");
                     run.setStatus("FAILED");
+                    if (taskRunLogService != null) {
+                        taskRunLogService.append(run, "TERMINAL", run.getRole(),
+                                "ORPHANED_RUN_TIMEOUT：运行超过陈旧阈值未返回，已被恢复器回收");
+                    }
                     eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task.updated",
                             task.getId().toString(), TaskEventPayloads.taskUpdated(task));
                     eventService.publish(task.getProjectId(), task.getRequirementGroupId(), "task-run.updated",

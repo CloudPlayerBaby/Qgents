@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.DryRunCreateRequest;
+import qg.qgent.dto.DryRunResponse;
 import qg.qgent.dto.TestRunCreateRequest;
 import qg.qgent.dto.TestRunResponse;
 import qg.qgent.entity.ProjectRepositoryEntity;
@@ -19,6 +20,8 @@ import qg.qgent.mapper.*;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitResolveResponse;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -247,6 +250,117 @@ class TestRunServiceTest {
 
         assertEquals("TEST_RUN_TASK_WORKSPACE_UNSTABLE", failure.code());
         verify(testRuns, never()).insert(any(TestRunEntity.class));
+    }
+
+    @Test
+    void automaticDryRunReusesDeterministicConflictWithoutRecreating() {
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        String oldHead = "1111111111111111111111111111111111111111";
+        String targetCommit = "2222222222222222222222222222222222222222";
+        repository(projectId, repositoryId);
+        TaskEntity task = task(projectId, taskId, workspaceId);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        WorkspaceRepositoryEntity worktree = worktree(workspaceId, repositoryId, "feat/login", oldHead);
+        when(workspaces.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree));
+        when(gitStores.refreshTargetBranch(eq(projectId), any(ProjectRepositoryEntity.class), eq("main")))
+                .thenReturn(targetCommit);
+        DryRunEntity conflict = conflictDryRun(projectId, taskId, repositoryId, oldHead, targetCommit);
+        when(dryRuns.selectOne(any())).thenReturn(conflict);
+        // 远端 head 未推进：冲突未解决，无条件复用旧 FAILED，不再新建。
+        when(gitStores.refreshSourceHead(eq(projectId), any(), any(), eq(workspaceId))).thenReturn(null);
+
+        DryRunResponse response = service.createAutomaticDryRun(projectId, taskId, repositoryId, "main");
+
+        assertEquals("FAILED", response.getStatus());
+        verify(dryRuns, never()).insert(any(DryRunEntity.class));
+        verify(gitStores).refreshSourceHead(eq(projectId), any(), any(), eq(workspaceId));
+    }
+
+    @Test
+    void automaticDryRunCreatesFreshRunWhenConflictHeadAdvancedRemotely() {
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        String oldHead = "1111111111111111111111111111111111111111";
+        String newHead = "3333333333333333333333333333333333333333";
+        String targetCommit = "2222222222222222222222222222222222222222";
+        repository(projectId, repositoryId);
+        TaskEntity task = task(projectId, taskId, workspaceId);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        WorkspaceRepositoryEntity worktree = worktree(workspaceId, repositoryId, "feat/login", oldHead);
+        when(workspaces.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree));
+        when(gitStores.refreshTargetBranch(eq(projectId), any(ProjectRepositoryEntity.class), eq("main")))
+                .thenReturn(targetCommit);
+        DryRunEntity conflict = conflictDryRun(projectId, taskId, repositoryId, oldHead, targetCommit);
+        WorkerGitResolveResponse source = new WorkerGitResolveResponse();
+        source.setCommitSha(newHead);
+        when(worker.resolveGitRef(any())).thenReturn(source);
+        // 第一次查询返回旧 head 的冲突，刷新后第二次查询新 head 无记录 → 为推进后的 head 新建 dry-run。
+        when(dryRuns.selectOne(any())).thenReturn(conflict, null);
+        when(gitStores.refreshSourceHead(eq(projectId), any(), any(), eq(workspaceId))).thenReturn(newHead);
+
+        DryRunResponse response = service.createAutomaticDryRun(projectId, taskId, repositoryId, "main");
+
+        assertEquals("QUEUED", response.getStatus());
+        verify(dryRuns).insert(org.mockito.ArgumentMatchers.<DryRunEntity>argThat(
+                run -> newHead.equalsIgnoreCase(run.getHeadCommit())));
+    }
+
+    @Test
+    void automaticDryRunStillRetriesTransientFailuresAfterWindow() {
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        String head = "1111111111111111111111111111111111111111";
+        String targetCommit = "2222222222222222222222222222222222222222";
+        repository(projectId, repositoryId);
+        TaskEntity task = task(projectId, taskId, workspaceId);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        WorkspaceRepositoryEntity worktree = worktree(workspaceId, repositoryId, "feat/login", head);
+        when(workspaces.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree));
+        when(gitStores.refreshTargetBranch(eq(projectId), any(ProjectRepositoryEntity.class), eq("main")))
+                .thenReturn(targetCommit);
+        DryRunEntity transientFailure = conflictDryRun(projectId, taskId, repositoryId, head, targetCommit);
+        transientFailure.setReport(Map.of("failureCode", "EXECUTION_FAILED", "message", "worker unavailable"));
+        transientFailure.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1));
+        when(dryRuns.selectOne(any())).thenReturn(transientFailure);
+        WorkerGitResolveResponse source = new WorkerGitResolveResponse();
+        source.setCommitSha(head);
+        when(worker.resolveGitRef(any())).thenReturn(source);
+
+        DryRunResponse response = service.createAutomaticDryRun(projectId, taskId, repositoryId, "main");
+
+        assertEquals("QUEUED", response.getStatus());
+        verify(dryRuns).insert(any(DryRunEntity.class));
+        // 瞬时失败不是确定性冲突，不触发 source 分支 head 刷新。
+        verify(gitStores, never()).refreshSourceHead(any(), any(), any(), any());
+    }
+
+    private TaskEntity task(UUID projectId, UUID taskId, UUID workspaceId) {
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        task.setStatus("WAITING_PREFLIGHT"); task.setDeliveryMode("MR_FIRST");
+        task.setCreatedBy(UUID.randomUUID());
+        return task;
+    }
+
+    private WorkspaceRepositoryEntity worktree(UUID workspaceId, UUID repositoryId, String sourceBranch, String head) {
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setWorkspaceId(workspaceId); worktree.setProjectRepositoryId(repositoryId);
+        worktree.setSourceBranch(sourceBranch); worktree.setHeadCommit(head);
+        worktree.setBaseRef("main");
+        return worktree;
+    }
+
+    private DryRunEntity conflictDryRun(UUID projectId, UUID taskId, UUID repositoryId, String head, String target) {
+        DryRunEntity run = new DryRunEntity();
+        run.setId(UUID.randomUUID()); run.setProjectId(projectId); run.setTaskId(taskId);
+        run.setProjectRepositoryId(repositoryId); run.setHeadCommit(head); run.setResolvedTargetCommit(target);
+        run.setTargetBranch("main"); run.setStatus("FAILED");
+        run.setReport(Map.of("mergeable", false, "conflicts", List.of("src/a.java"),
+                "tests", Map.of("status", "SKIPPED", "reason", "MERGE_CONFLICT")));
+        run.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
+        run.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+        return run;
     }
 
     private void repository(UUID projectId, UUID repositoryId) {

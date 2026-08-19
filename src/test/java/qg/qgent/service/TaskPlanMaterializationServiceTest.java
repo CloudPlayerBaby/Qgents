@@ -88,6 +88,7 @@ class TaskPlanMaterializationServiceTest {
         assertThat(generated.get(0).getRequiredCapabilities()).containsExactly("java", "spring-boot");
         assertThat(generated.get(0).getAssignedAgentId()).isEqualTo(javaAgent.getId());
         assertThat(generated.get(1).getAssignedAgentId()).isEqualTo(javaAgent.getId());
+        assertThat(generated.get(0).getAllowedPaths()).containsExactly("src/App.java");
         // 调度 Agent 收到步骤角色 + 步骤能力要求 + Plan 建议（无建议时为 null）
         verify(dispatcher, atLeast(1)).dispatch(eq(task), eq("DEVELOPER"), eq(List.of("java", "spring-boot")), any());
         verify(dependencies, times(4)).insertLink(any(), any());

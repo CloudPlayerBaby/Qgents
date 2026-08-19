@@ -1,5 +1,6 @@
 package qg.qgent.orchestration.agent;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import qg.qgent.entity.AgentEntity;
@@ -40,7 +41,14 @@ class PlanAgentTest {
     private final LlmClient llm = mock(LlmClient.class);
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
     private final AgentDispatcher dispatcher = mock(AgentDispatcher.class);
-    private final PlanAgent agent = new PlanAgent(llm, codeAccess, dispatcher);
+    private final AttachmentMediaLoader attachmentMediaLoader = mock(AttachmentMediaLoader.class);
+    private final PlanAgent agent = new PlanAgent(llm, codeAccess, dispatcher, attachmentMediaLoader);
+
+    @BeforeEach
+    void stubEmptyAttachments() {
+        when(attachmentMediaLoader.load(any(), any(), any()))
+                .thenReturn(new AttachmentMediaLoader.Result(List.of(), ""));
+    }
 
     private static final String PLAN_JSON = """
             {

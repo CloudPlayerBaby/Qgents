@@ -11,6 +11,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.content.Media;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
@@ -60,6 +61,42 @@ public class SpringAiChatLlmClient implements LlmClient {
     @Override
     public String complete(String systemPrompt, String userPrompt) {
         return complete(systemPrompt, List.of(LlmMessage.user(userPrompt)));
+    }
+
+    @Override
+    public String complete(String systemPrompt, String userPrompt, List<Media> media) {
+        if (media == null || media.isEmpty()) {
+            return complete(systemPrompt, userPrompt);
+        }
+        List<Message> springMessages = new ArrayList<>();
+        springMessages.add(new SystemMessage(systemPrompt));
+        UserMessage.Builder user = UserMessage.builder().text(userPrompt);
+        user.media(media);
+        springMessages.add(user.build());
+        int promptChars = systemPrompt.length() + userPrompt.length();
+        long started = System.nanoTime();
+        String text;
+        String finishReason;
+        try {
+            ChatResponse response = chatModel.call(new Prompt(springMessages, jsonOptions()));
+            text = response.getResult().getOutput().getText();
+            finishReason = finishReasonOf(response);
+            String responseSha256 = text == null ? null
+                    : Sha256.hex(text.getBytes(StandardCharsets.UTF_8));
+            log.info("llm complete messages={} promptChars={} media={} responseChars={} durationMs={} finish={} responseSha256={}",
+                    springMessages.size(), promptChars, media.size(), text == null ? 0 : text.length(),
+                    Duration.ofNanos(System.nanoTime() - started).toMillis(),
+                    finishReason, responseSha256);
+        } catch (RuntimeException exception) {
+            log.error("LLM_CALL_FAILED messages={} promptChars={} media={} category={} durationMs={}",
+                    springMessages.size(), promptChars, media.size(), exception.getClass().getSimpleName(),
+                    Duration.ofNanos(System.nanoTime() - started).toMillis(), exception);
+            throw exception;
+        }
+        if ("length".equalsIgnoreCase(finishReason)) {
+            throw new LlmOutputTruncatedException(text == null ? 0 : text.length());
+        }
+        return text;
     }
 
     @Override

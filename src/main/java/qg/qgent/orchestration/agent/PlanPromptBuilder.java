@@ -56,7 +56,7 @@ public class PlanPromptBuilder {
                 {
                   "taskUnderstanding": "对需求的完整理解",
                   "implementationGoals": ["目标1", "目标2"],
-                  "steps": [{"title": "步骤标题", "files": ["相对路径1", "相对路径2"], "description": "该步骤做什么", "requiredCapabilities": ["java", "spring-boot"], "suggestedAgentId": "可选，团队可用 Agent 的 id"}],
+                  "steps": [{"title": "步骤标题", "files": ["相对路径1", "相对路径2"], "description": "该步骤做什么", "executionMode": "MUTATE", "requiredCapabilities": ["java", "spring-boot"], "suggestedAgentId": "可选，团队可用 Agent 的 id"}],
                   "testPlan": "如何验证实现符合需求",
                   "verificationMode": "AUTOMATED",
                   "risks": ["风险1"],
@@ -66,6 +66,7 @@ public class PlanPromptBuilder {
                 - taskUnderstanding、implementationGoals、testPlan 不得为空；steps 至少一项、至多 12 项，每项必须有 title 和至少一个 files；risks 可为空数组。
                 - verificationMode 必须是 AUTOMATED 或 MANUAL：需要执行构建/测试/检查脚本时使用 AUTOMATED；纯审查、报告核验、文件存在性/内容核验且不需要自动化命令时使用 MANUAL。
                 - 每一项 steps 必须是一次 Coding Agent 调用可以独立完成的原子实现单元，不能重复整项需求。
+                - executionMode 必须是 MUTATE 或 VERIFY：需要创建/修改文件时使用 MUTATE；只检查文件、验证现状或运行只读检查时使用 VERIFY。VERIFY 步骤不得要求 Agent 修改文件。
                 - requiredCapabilities 是可选的小写 kebab-case 能力标签数组；只填写该步骤实际需要的专项能力。
                 - suggestedAgentId 是可选的建议执行 Agent id：必须来自用户消息中「可用 Agent 清单」列出的 id；每个步骤尽量指派职责匹配的候选 Agent，让不同专长的 Agent 各司其职；无法确定或无需指定时省略该字段。
                 - files 必须是无 .. 的相对路径；只能引用给出的文件树中已有的文件，或明确需要新建的文件（在 description 说明）。

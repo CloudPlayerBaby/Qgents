@@ -1,10 +1,12 @@
 package qg.qgent.orchestration.agent;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.tool.ToolCallback;
+import qg.qgent.dto.ContextMessage;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.OrchestrationPhase;
@@ -47,16 +49,23 @@ class CodingAgentTest {
     private final LlmClient llm = mock(LlmClient.class);
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
     private final WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
+    private final AttachmentMediaLoader attachmentMediaLoader = mock(AttachmentMediaLoader.class);
     private final UUID workspaceId = UUID.randomUUID();
+
+    @BeforeEach
+    void stubDefaultEmptyAttachments() {
+        when(attachmentMediaLoader.load(any(), any(), any()))
+                .thenReturn(new AttachmentMediaLoader.Result(List.of(), ""));
+    }
 
     private CodingAgent nativeAgent() {
         return new CodingAgent(llm, codeAccess, writer, AgentProtocol.nativeDefault(),
-                mock(ContextService.class), new ContextSearchProperties(10));
+                mock(ContextService.class), new ContextSearchProperties(10), attachmentMediaLoader);
     }
 
     private CodingAgent legacyAgent() {
         return new CodingAgent(llm, codeAccess, writer, new AgentProtocol("legacy"),
-                mock(ContextService.class), new ContextSearchProperties(10));
+                mock(ContextService.class), new ContextSearchProperties(10), attachmentMediaLoader);
     }
 
     // ---------- 原生 Tool Calling（默认协议） ----------
@@ -351,6 +360,131 @@ class CodingAgentTest {
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
         assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED.name());
         assertThat(outcome.getObservations()).hasSize(2);
+    }
+
+    // ---------- 多模态输入（IMAGE 媒体 + FILE 文本块） ----------
+
+    @Test
+    void nativeImageAttachmentAddsMediaToInitialUserMessage() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", "0".repeat(64), "patch"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", "new-hash", true));
+        UUID actorId = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        AgentInput input = codingInput();
+        input.setActorId(actorId);
+        input.setConversation(List.of(new ContextMessage(1L, "IMAGE", "USER", actorId.toString(), "",
+                attachmentId.toString(), "design.png", "image/png")));
+        when(attachmentMediaLoader.load(any(), any(), anyList()))
+                .thenReturn(new AttachmentMediaLoader.Result(
+                        List.of(new org.springframework.ai.content.Media(
+                                org.springframework.util.MimeType.valueOf("image/png"),
+                                java.net.URI.create("data:image/png;base64,AQID"))), ""));
+        AtomicInteger round = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            int current = round.getAndIncrement();
+            if (current == 0) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream()
+                        .filter(callback -> "apply_patch".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow()
+                        .call("{\"path\":\"src/main/java/X.java\",\"expectedHash\":\""
+                                + "0".repeat(64) + "\",\"patch\":\"patch\"}");
+                return toolTurn("apply_patch");
+            }
+            return finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop");
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Message>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm, times(2)).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
+        UserMessage first = (UserMessage) historyCaptor.getAllValues().get(0).get(0);
+        assertThat(first.getMedia()).hasSize(1);
+        assertThat(first.getMedia().get(0).getMimeType().toString()).isEqualTo("image/png");
+    }
+
+    @Test
+    void nativeImageAttachmentUnavailableDegradesToTextReference() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", "0".repeat(64), "patch"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", "new-hash", true));
+        UUID actorId = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        AgentInput input = codingInput();
+        input.setActorId(actorId);
+        input.setConversation(List.of(new ContextMessage(1L, "IMAGE", "USER", actorId.toString(), "",
+                attachmentId.toString(), "design.png", "image/png")));
+        when(attachmentMediaLoader.load(any(), any(), anyList()))
+                .thenReturn(new AttachmentMediaLoader.Result(List.of(), ""));
+        AtomicInteger round = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            int current = round.getAndIncrement();
+            if (current == 0) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream()
+                        .filter(callback -> "apply_patch".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow()
+                        .call("{\"path\":\"src/main/java/X.java\",\"expectedHash\":\""
+                                + "0".repeat(64) + "\",\"patch\":\"patch\"}");
+                return toolTurn("apply_patch");
+            }
+            return finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop");
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Message>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm, times(2)).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
+        UserMessage first = (UserMessage) historyCaptor.getAllValues().get(0).get(0);
+        assertThat(first.getMedia()).isEmpty();
+    }
+
+    @Test
+    void nativeFileTextContentIsAppendedToUserMessage() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(writer.patchFile(workspaceId, "src/main/java/X.java", "0".repeat(64), "patch"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", "new-hash", true));
+        UUID actorId = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        AgentInput input = codingInput();
+        input.setActorId(actorId);
+        input.setConversation(List.of(new ContextMessage(1L, "FILE", "USER", actorId.toString(), "",
+                attachmentId.toString(), "requirements.txt", "text/plain")));
+        when(attachmentMediaLoader.load(any(), any(), anyList()))
+                .thenReturn(new AttachmentMediaLoader.Result(List.of(),
+                        "\n\n[附件内容: requirements.txt]\n需要支持历史导出"));
+        AtomicInteger round = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            int current = round.getAndIncrement();
+            if (current == 0) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream()
+                        .filter(callback -> "apply_patch".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow()
+                        .call("{\"path\":\"src/main/java/X.java\",\"expectedHash\":\""
+                                + "0".repeat(64) + "\",\"patch\":\"patch\"}");
+                return toolTurn("apply_patch");
+            }
+            return finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop");
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Message>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm, times(2)).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
+        UserMessage first = (UserMessage) historyCaptor.getAllValues().get(0).get(0);
+        assertThat(first.getMedia()).isEmpty();
+        assertThat(first.getText()).contains("[附件内容: requirements.txt]").contains("需要支持历史导出");
     }
 
     // ---------- legacy 手写 JSON 协议（灰度期回归） ----------

@@ -73,7 +73,7 @@ class MessageServiceTest {
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class), mock(ProjectAccessService.class),
                 mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class),
-                mock(NotificationService.class));
+                mock(NotificationService.class), mock(AttachmentService.class));
         MessageSendRequest request = new MessageSendRequest();
         UUID diffId = UUID.randomUUID();
         request.setType("DIFF");
@@ -102,7 +102,7 @@ class MessageServiceTest {
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class), mock(ProjectAccessService.class),
                 mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class),
-                mock(NotificationService.class));
+                mock(NotificationService.class), mock(AttachmentService.class));
         MessageSendRequest request = new MessageSendRequest();
         request.setType("TEXT");
         request.setContent(Map.of("text", "cannot impersonate a system card"));
@@ -134,7 +134,7 @@ class MessageServiceTest {
         when(projects.selectById(projectId)).thenReturn(project);
         MessageService service = new MessageService(messages, groups, groupAgents, mock(UserMapper.class), agents,
                 projects, mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
-                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class));
         MessageSendRequest request = new MessageSendRequest();
         request.setType("TEXT");
         request.setContent(Map.of("text", "任务更新"));
@@ -196,7 +196,7 @@ class MessageServiceTest {
         when(groupAgents.insertAgent(groupId, agentId)).thenReturn(1);
         MessageService service = new MessageService(messages, groups, groupAgents, mock(UserMapper.class), agents,
                 projects, mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
-                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class));
         MessageSendRequest request = new MessageSendRequest();
         request.setType("TEXT");
         request.setContent(Map.of("text", "任务更新"));
@@ -230,7 +230,7 @@ class MessageServiceTest {
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
                 mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
-                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class));
 
         MessageSendRequest initial = new MessageSendRequest();
         initial.setType("TASK_STATUS");
@@ -290,7 +290,7 @@ class MessageServiceTest {
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), agents, projects,
                 mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
-                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class));
 
         MessageSendRequest request = new MessageSendRequest();
         request.setType("QUOTE");
@@ -348,7 +348,7 @@ class MessageServiceTest {
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), agents, projects,
                 mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
-                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class));
 
         MessageSendRequest request = new MessageSendRequest();
         request.setType("QUOTE");
@@ -382,7 +382,7 @@ class MessageServiceTest {
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
                 mock(ProjectAccessService.class), groupService, mock(TaskTriggerService.class),
-                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class));
 
         var page = service.listAfterSequence(actor, projectId, groupId, 10L, 2);
 
@@ -405,7 +405,7 @@ class MessageServiceTest {
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
                 mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
-                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class));
+                new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class));
 
         assertThatThrownBy(() -> service.listAfterSequence(UUID.randomUUID(), projectId, groupId, -1, 100))
                 .isInstanceOfSatisfying(ApiException.class,

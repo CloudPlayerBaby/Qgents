@@ -27,8 +27,6 @@ public class TestCommandResolver {
     public List<String> resolve(List<String> files) {
         ResolvedCommand resolved = resolveCommand(files);
         if (resolved == null) return null;
-        if (resolved.command().equals(List.of("sh", "./gradlew", "test"))) return List.of("./gradlew", "test");
-        if (resolved.command().equals(List.of("sh", "./mvnw", "test"))) return List.of("./mvnw", "test");
         return resolved.command();
     }
 

@@ -203,8 +203,9 @@ public class ProjectService {
         ProjectEntity project = requireProjectForUpdate(projectId);
         access.requireProjectAdminAnyState(project, actor);
         requireActive(project);
-        if (request.getName() == null && request.getDescription() == null) {
-            throw invalid("至少需要提供 name 或 description");
+        // PATCH 语义：name/description/avatarUrl 均可单独更新；全 null 时拒绝空更新
+        if (request.getName() == null && request.getDescription() == null && request.getAvatarUrl() == null) {
+            throw invalid("至少需要提供 name、description 或 avatarUrl");
         }
         if (request.getName() != null) {
             if (request.getName().isBlank()) {
@@ -214,6 +215,10 @@ public class ProjectService {
         }
         if (request.getDescription() != null) {
             project.setDescription(request.getDescription());
+        }
+        // avatarUrl：null 保留原值；非 null（含空串清空）覆盖保存
+        if (request.getAvatarUrl() != null) {
+            project.setAvatarUrl(blankToNull(request.getAvatarUrl()));
         }
         projectMapper.updateById(project);
         return response(project, "PROJECT_ADMIN");
@@ -400,13 +405,17 @@ public class ProjectService {
     }
 
     private ProjectResponse response(ProjectEntity project, String role) {
-        return response(new ProjectResponse(project.getId().toString(), project.getTeamId().toString(),
-                project.getName(), project.getDescription(), role, project.getStatus(), null, null));
+        ProjectResponse r = new ProjectResponse(project.getId().toString(), project.getTeamId().toString(),
+                project.getName(), project.getDescription(), role, project.getStatus(), null, null);
+        r.setAvatarUrl(project.getAvatarUrl());
+        return response(r);
     }
 
     private ProjectResponse response(ProjectMembershipView row) {
-        return response(new ProjectResponse(row.getId().toString(), row.getTeamId().toString(), row.getName(),
-                row.getDescription(), row.getRole(), row.getStatus(), null, null));
+        ProjectResponse r = new ProjectResponse(row.getId().toString(), row.getTeamId().toString(), row.getName(),
+                row.getDescription(), row.getRole(), row.getStatus(), null, null);
+        r.setAvatarUrl(row.getAvatarUrl());
+        return response(r);
     }
 
     private ProjectResponse response(ProjectResponse r) {
@@ -456,6 +465,10 @@ public class ProjectService {
 
     private ApiException invalid(String message) {
         return new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_PROJECT_OPERATION", message);
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private ApiException conflict(String code, String message) {

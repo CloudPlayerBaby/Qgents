@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -44,6 +45,26 @@ public class TestAgent implements Agent {
     private static final String EMPTY_FILE_SHA256 =
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
+    /**
+     * 视为“非代码文件”的文件扩展名集合：这些文件的修改不涉及可构建/可测试的源码，
+     * 因此无需运行 gradle/mvn/npm 测试，直接做文件断言即可。
+     * 判断时按小写扩展名匹配（含常见文档、配置、资源、数据与目录占位文件）。
+     */
+    private static final Set<String> NON_CODE_EXTENSIONS = Set.of(
+            "md", "markdown", "txt", "log", "rst", "adoc",
+            "json", "yaml", "yml", "toml", "xml", "properties", "ini", "conf", "cfg",
+            "csv", "tsv", "sql",
+            "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp",
+            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+            "zip", "tar", "gz", "jar",
+            "css", "scss", "less", "html", "htm",
+            "sh", "bash", "zsh", "bat", "cmd", "ps1",
+            "gradle", "kts", "pom", "lock", "gitignore", "dockerfile", "env", "editorconfig");
+
+    /** 无扩展名的文件（如 README、LICENSE、Makefile、Dockerfile）同样视为非代码文件。 */
+    private static final Set<String> NON_CODE_BASENAMES = Set.of(
+            "readme", "license", "makefile", "dockerfile", "gemfile", "rakefile");
+
     private final LlmClient llm;
     private final WorkspaceCodeAccess codeAccess;
     private final ExecutionPort executionPort;
@@ -63,6 +84,9 @@ public class TestAgent implements Agent {
             List<String> files = codeAccess.listFiles(input.getWorkspaceId());
             if (isManualVerification(input)) {
                 return manualVerification(input);
+            }
+            if (isPureFileTask(input)) {
+                return verifyFileTask(input, files);
             }
             TestCommandResolver.ResolvedCommand resolved = commandResolver.resolveCommand(files, fileTargets(input));
             if (resolved == null) {
@@ -252,6 +276,37 @@ public class TestAgent implements Agent {
         outcome.setOutcome(hasReport ? RunOutcome.SUCCEEDED : RunOutcome.FAILED_QUALITY);
         outcome.setMessage(test.getSummary());
         return outcome;
+    }
+
+    /**
+     * 判断是否为纯文件任务：Coding 修改的所有文件都是非代码文件（文档/配置/资源/目录等）。
+     * 此时无需运行 gradle/mvn/npm 测试，直接做文件断言即可完成验证；
+     * 避免“往 README 写一行字”这种简单任务被迫跑整个项目的构建测试而失败。
+     */
+    private boolean isPureFileTask(AgentInput input) {
+        List<String> targets = fileTargets(input);
+        if (targets.isEmpty()) {
+            return false;
+        }
+        return targets.stream().allMatch(this::isNonCodeFile);
+    }
+
+    /**
+     * 判断路径是否指向非代码文件：按扩展名或 basename 匹配，忽略目录分隔符与大小写。
+     */
+    private boolean isNonCodeFile(String path) {
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+        String normalized = path.replace('\\', '/').trim();
+        int slash = normalized.lastIndexOf('/');
+        String basename = slash < 0 ? normalized : normalized.substring(slash + 1);
+        int dot = basename.lastIndexOf('.');
+        if (dot < 0) {
+            return NON_CODE_BASENAMES.contains(basename.toLowerCase(Locale.ROOT));
+        }
+        String extension = basename.substring(dot + 1).toLowerCase(Locale.ROOT);
+        return NON_CODE_EXTENSIONS.contains(extension);
     }
 
     /** Coding 结果是纯文件验证的可信目标来源；不从聊天历史猜测文件路径。 */

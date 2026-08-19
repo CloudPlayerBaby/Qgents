@@ -210,21 +210,31 @@ public class TestRunService {
         // 先刷新目标分支，再按固定 targetCommit 判断是否已有可复用的运行；否则目标分支推进后
         // 旧 QUEUED Dry Run 会被错误复用，后续门禁只能在最后一步才发现上下文过期。
         String currentTarget = gitStores.refreshTargetBranch(projectId, repository, branch);
-        DryRunEntity latest = dryRunMapper.selectOne(Wrappers.<DryRunEntity>lambdaQuery()
-                .eq(DryRunEntity::getProjectId, projectId)
-                .eq(DryRunEntity::getTaskId, taskId)
-                .eq(DryRunEntity::getProjectRepositoryId, repositoryId)
-                .eq(DryRunEntity::getHeadCommit, worktree.getHeadCommit())
-                .eq(DryRunEntity::getTargetBranch, branch)
-                .orderByDesc(DryRunEntity::getCreatedAt).last("LIMIT 1"));
+        DryRunEntity latest = latestDryRun(projectId, taskId, repositoryId, worktree.getHeadCommit(), branch);
+        // 当前 head 被确定性合并冲突阻塞时，探测远端 source 分支是否已推进（用户在 GitHub
+        // 手工解决冲突不会经过 Worker push）。推进则回填 worktree head，为新的 head 建立 dry-run。
+        if (latest != null && "FAILED".equals(latest.getStatus()) && isDeterministicConflict(latest)
+                && worktree.getSourceBranch() != null && !worktree.getSourceBranch().isBlank()) {
+            String newHead = gitStores.refreshSourceHead(projectId, worktree, repository, task.getWorkspaceId());
+            if (newHead != null) {
+                worktree.setHeadCommit(newHead);
+                latest = latestDryRun(projectId, taskId, repositoryId, worktree.getHeadCommit(), branch);
+            }
+        }
         if (latest != null && currentTarget.equalsIgnoreCase(latest.getResolvedTargetCommit())
                 && List.of("QUEUED", "RUNNING", "PASSED").contains(latest.getStatus())) {
             return toDryRun(latest);
         }
-        if (latest != null && "FAILED".equals(latest.getStatus()) && latest.getUpdatedAt() != null
-                && latest.getUpdatedAt().isAfter(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(30))) {
-            // 短暂 Worker/GitHub 故障交给下一轮恢复，避免同一错误被调度器高频放大。
-            return toDryRun(latest);
+        if (latest != null && "FAILED".equals(latest.getStatus())) {
+            if (isDeterministicConflict(latest)) {
+                // 确定性冲突：head/target 未变前无条件复用，避免同键 FAILED 被调度器反复新建堆积。
+                return toDryRun(latest);
+            }
+            if (latest.getUpdatedAt() != null
+                    && latest.getUpdatedAt().isAfter(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(30))) {
+                // 短暂 Worker/GitHub 故障交给下一轮恢复，避免同一错误被调度器高频放大。
+                return toDryRun(latest);
+            }
         }
         DryRunCreateRequest request = new DryRunCreateRequest();
         request.setRepositoryId(repositoryId);
@@ -233,6 +243,39 @@ public class TestRunService {
         request.setTargetBranch(branch);
         // Task 发起人只是持久化 createdBy 的审计主体；该内部入口不依赖其当前登录会话。
         return createDryRunWithoutAccessCheck(projectId, task.getCreatedBy(), request);
+    }
+
+    /**
+     * 按 Task/仓库/head/targetBranch 查询最新的一条 Dry Run，供自动预检复用判断。
+     */
+    private DryRunEntity latestDryRun(UUID projectId, UUID taskId, UUID repositoryId, String headCommit,
+                                      String targetBranch) {
+        return dryRunMapper.selectOne(Wrappers.<DryRunEntity>lambdaQuery()
+                .eq(DryRunEntity::getProjectId, projectId)
+                .eq(DryRunEntity::getTaskId, taskId)
+                .eq(DryRunEntity::getProjectRepositoryId, repositoryId)
+                .eq(DryRunEntity::getHeadCommit, headCommit)
+                .eq(DryRunEntity::getTargetBranch, targetBranch)
+                .orderByDesc(DryRunEntity::getCreatedAt).last("LIMIT 1"));
+    }
+
+    /**
+     * 判断一条 FAILED Dry Run 是否为确定性合并冲突（head/target 未变则不会自愈）。
+     * <p>
+     * 区分两种冲突表示：冲突预演路径在 report.tests.reason 标记 MERGE_CONFLICT；
+     * 合并测试路径在 report.failureCode 返回 GIT_MERGE_CONFLICT。这类失败不能通过重试解决，
+     * 只能等 head 或 target 变化后重新预检，因此自动调度应无条件复用而非反复新建。
+     */
+    static boolean isDeterministicConflict(DryRunEntity run) {
+        Map<String, Object> report = run.getReport();
+        if (report == null) {
+            return false;
+        }
+        if ("GIT_MERGE_CONFLICT".equals(report.get("failureCode"))) {
+            return true;
+        }
+        Object tests = report.get("tests");
+        return tests instanceof Map<?, ?> map && "MERGE_CONFLICT".equals(map.get("reason"));
     }
 
     /**

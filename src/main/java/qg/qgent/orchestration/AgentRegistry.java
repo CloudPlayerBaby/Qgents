@@ -93,8 +93,16 @@ public class AgentRegistry {
      * @param role    step 声明的角色（PLANNER/DEVELOPER/TESTER/REVIEWER 或自定义标签）。
      */
     public Optional<Agent> resolve(UUID agentId, String role) {
+        return resolve(agentId, role, null);
+    }
+
+    /**
+     * 解析步骤 Agent。执行模式可覆盖默认角色映射，避免 DEVELOPER 角色的 VERIFY
+     * 步骤拿到 Coding Agent 的写权限。
+     */
+    public Optional<Agent> resolve(UUID agentId, String role, String executionMode) {
         if (agentId == null) {
-            Agent builtin = builtin(role);
+            Agent builtin = builtin(role, executionMode);
             return builtin == null ? Optional.empty() : Optional.of(builtin);
         }
         AgentEntity entity = agentMapper.selectById(agentId);
@@ -106,7 +114,7 @@ public class AgentRegistry {
         // 内置 Agent 为无状态单例，可变数据全在 run() 方法内局部创建）。仅当角色不在内置映射内
         // （防御路径，理论上不出现）时回退通用自定义运行时，避免缺 Agent 挂起。
         if (Boolean.TRUE.equals(entity.getIsDefault())) {
-            Agent builtin = builtin(entity.getRole());
+            Agent builtin = builtin(entity.getRole(), executionMode);
             if (builtin != null) {
                 return Optional.of(builtin);
             }
@@ -119,8 +127,28 @@ public class AgentRegistry {
      * 内置兜底：仅模板角色映射到内置 Agent，自定义角色无内置实现。
      */
     private Agent builtin(String role) {
+        return builtin(role, null);
+    }
+
+    private Agent builtin(String role, String executionMode) {
         if (role == null) {
             return null;
+        }
+        // 未知 role 不得因为 TaskStepExecutionMode 的安全默认 VERIFY 被误映射成
+        // TestAgent；未知内置角色应继续走原有“无 Agent”路径，避免静默跳过自定义配置。
+        boolean knownRole = switch (role) {
+            case "PLANNER", "DEVELOPER", "TESTER", "REVIEWER" -> true;
+            default -> false;
+        };
+        if (!knownRole) {
+            return null;
+        }
+        TaskStepExecutionMode mode = TaskStepExecutionMode.resolve(executionMode, role);
+        if (mode == TaskStepExecutionMode.VERIFY || mode == TaskStepExecutionMode.TEST) {
+            return testAgent;
+        }
+        if (mode == TaskStepExecutionMode.REVIEW) {
+            return reviewAgent;
         }
         return switch (role) {
             case "PLANNER" -> planAgent;

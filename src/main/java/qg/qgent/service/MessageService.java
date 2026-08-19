@@ -47,12 +47,14 @@ public class MessageService {
     private final ObjectMapper mapper;
     private final EventService eventService;
     private final NotificationService notificationService;
+    private final AttachmentService attachmentService;
 
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                           GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
                           ProjectMapper projectMapper, ProjectAccessService access, GroupService groupService,
                           TaskTriggerService taskTriggerService, ObjectMapper mapper,
-                          EventService eventService, NotificationService notificationService) {
+                          EventService eventService, NotificationService notificationService,
+                          AttachmentService attachmentService) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupAgentMapper = groupAgentMapper;
@@ -65,6 +67,7 @@ public class MessageService {
         this.mapper = mapper;
         this.eventService = eventService;
         this.notificationService = notificationService;
+        this.attachmentService = attachmentService;
     }
 
     /**
@@ -88,6 +91,7 @@ public class MessageService {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "群不存在或无权访问");
         }
         MessageResponse response = doSend(projectId, groupId, actor, null, body);
+        enrichAttachmentPreview(response, projectId);
         // @ 用户：对被提及的成员（排除发送者自己）生成通知；@Agent 走自动触发任务
         notifyMentionedUsers(actor, projectId, groupId, body, response.getId());
         triggerTaskOnAgentMention(actor, projectId, groupId, response.getId() == null ? null : UUID.fromString(response.getId()),
@@ -164,6 +168,66 @@ public class MessageService {
     }
 
     /**
+     * 回显 IMAGE/FILE 消息时回填附件预览字段（增量契约 §7：previewable / previewType）。
+     * <p>
+     * 不回填带 token 的 previewUrl：消息内容里的 URL 无法随 token 过期续期，前端拿到过期地址后
+     * 没有回退，会再次出现「无法预览」。previewable/previewType 无时效性，前端据此提示「点击预览」
+     * 并调 preview-url 接口重新签发。附件缺失/未就绪时保持原样回显，不阻断消息列表。
+     */
+    private void enrichAttachmentPreview(MessageResponse response, UUID projectId) {
+        if (response == null || projectId == null) {
+            return;
+        }
+        String type = response.getType();
+        if (!"IMAGE".equals(type) && !"FILE".equals(type)) {
+            return;
+        }
+        Map<String, Object> content = response.getContent();
+        if (content == null || content.isEmpty()) {
+            return;
+        }
+        String attachmentId = stringField(content, "attachmentId");
+        if (attachmentId == null) {
+            attachmentId = attachmentIdFromUrl(stringField(content, "url"));
+        }
+        if (attachmentId == null) {
+            return;
+        }
+        AttachmentService.MessageAttachmentPreview preview = attachmentService.messagePreview(projectId, attachmentId);
+        if (preview == null) {
+            return;
+        }
+        content.put("previewable", preview.isPreviewable());
+        content.put("previewType", preview.getPreviewType());
+    }
+
+    private String stringField(Map<String, Object> content, String key) {
+        Object value = content.get(key);
+        return value instanceof String s ? s : null;
+    }
+
+    /**
+     * 从附件 content URL 中反解附件 ID。URL 形如
+     * {@code /api/v1/projects/{projectId}/attachments/{attachmentId}/content}
+     * 或 {@code http://host:port/api/v1/projects/{projectId}/attachments/{attachmentId}/content}。
+     */
+    private String attachmentIdFromUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return null;
+        }
+        int idx = url.indexOf("/attachments/");
+        if (idx < 0) {
+            return null;
+        }
+        String rest = url.substring(idx + "/attachments/".length());
+        int slash = rest.indexOf('/');
+        int q = rest.indexOf('?');
+        int end = slash >= 0 ? slash : (q >= 0 ? q : rest.length());
+        String id = rest.substring(0, end);
+        return id.isBlank() ? null : id;
+    }
+
+    /**
      * 若消息提及了 Agent（@agent），自动从该消息创建 Task（点7：聊天消息到 Agent Task 转换）。
      * <p>
      * 自动触发失败不阻塞消息发送（日志 warn）；幂等由 TaskTriggerService 保证（同消息只建一次）。
@@ -216,7 +280,9 @@ public class MessageService {
         if (!"ACTIVE".equals(agent.getStatus())) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "AGENT_NOT_ACTIVE", "Agent 未启用");
         }
-        return doSend(group.getProjectId(), groupId, null, agentId, body);
+        MessageResponse response = doSend(group.getProjectId(), groupId, null, agentId, body);
+        enrichAttachmentPreview(response, group.getProjectId());
+        return response;
     }
 
     /**
@@ -468,6 +534,7 @@ public class MessageService {
         Map<UUID, String> userNames = loadUserNames(pageRows);
         Map<UUID, String> agentNames = loadAgentNames(pageRows);
         List<MessageResponse> views = pageRows.stream().map(m -> toResponse(m, userNames, agentNames)).toList();
+        views.forEach(v -> enrichAttachmentPreview(v, projectId));
         String nextCursor = hasMore && !views.isEmpty()
                 ? encodeCursor(views.get(views.size() - 1).getSequence())
                 : null;
@@ -495,6 +562,7 @@ public class MessageService {
         Map<UUID, String> userNames = loadUserNames(pageRows);
         Map<UUID, String> agentNames = loadAgentNames(pageRows);
         List<MessageResponse> views = pageRows.stream().map(m -> toResponse(m, userNames, agentNames)).toList();
+        views.forEach(v -> enrichAttachmentPreview(v, projectId));
         String nextCursor = hasMore && !views.isEmpty()
                 ? String.valueOf(views.get(views.size() - 1).getSequence()) : null;
         return new PageSlice<>(views, new PageInfo(nextCursor, hasMore));
@@ -523,7 +591,9 @@ public class MessageService {
         if (message == null || !groupId.equals(message.getRequirementGroupId())) {
             throw new ApiException(HttpStatus.NOT_FOUND, "MESSAGE_NOT_FOUND", "消息不存在或不属于该群");
         }
-        return toResponse(message);
+        MessageResponse response = toResponse(message);
+        enrichAttachmentPreview(response, projectId);
+        return response;
     }
 
     private MessageEntity findByClientMessageId(UUID groupId, String clientMessageId) {

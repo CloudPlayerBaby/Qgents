@@ -75,8 +75,7 @@ public class ContextService {
                 .last("limit " + messageLimit));
         Collections.reverse(newest);
         List<ContextMessage> conversation = newest.stream()
-                .map(m -> new ContextMessage(m.getSequenceNo(), m.getMessageType(),
-                        senderType(m), senderId(m), messageText(m.getContent())))
+                .map(this::toContextMessage)
                 .toList();
 
         // 默认提示只提供可激活 Skill 的目录，禁止把未显式选择的正文提前读入模型上下文。
@@ -107,8 +106,7 @@ public class ContextService {
         }
         List<ContextMessage> conversation = new ArrayList<>(context.getConversation());
         if (conversation.stream().noneMatch(message -> trigger.getSequenceNo().equals(message.getSequence()))) {
-            conversation.add(new ContextMessage(trigger.getSequenceNo(), trigger.getMessageType(), senderType(trigger),
-                    senderId(trigger), messageText(trigger.getContent())));
+            conversation.add(toContextMessage(trigger));
             conversation.sort(java.util.Comparator.comparing(ContextMessage::getSequence));
         }
         return new GroupContext(context.getGroupId(), context.getProjectId(), context.getRequirementTitle(),
@@ -127,8 +125,7 @@ public class ContextService {
         }
         int messageLimit = Math.min(Math.max(limit == null ? 10 : limit, 1), 50);
         return messageMapper.searchByQuery(projectId, List.of(groupId), query.trim(), messageLimit).stream()
-                .map(m -> new ContextMessage(m.getSequenceNo(), m.getMessageType(),
-                        senderType(m), senderId(m), messageText(m.getContent())))
+                .map(this::toContextMessage)
                 .toList();
     }
 
@@ -159,18 +156,83 @@ public class ContextService {
     }
 
     /**
-     * 从结构化 content 提取可读文本（TEXT 取 text；其余类型返回原始 JSON）。
+     * 把消息实体转换为上下文消息：TEXT 取 content.text；IMAGE/FILE 提取 attachmentId/name/mediaType
+     * 供多模态输入链路使用，正文为空串（由渲染层生成附件引用，不再把原始 JSON 退化成 prompt 文本）。
+     * 存量无 attachmentId 的 IMAGE/FILE 消息同样渲染为附件占位引用。
+     * <p>
+     * attachmentId 优先取 content.attachmentId；部分客户端只写 content.url（形如
+     * .../attachments/{uuid}/content），此时从 url 反解，保证多模态链路能读到图片/文件字节。
      */
-    private String messageText(String contentJson) {
-        if (contentJson == null || contentJson.isBlank()) {
-            return "";
+    private ContextMessage toContextMessage(MessageEntity m) {
+        Map<?, ?> content = parseContent(m.getContent());
+        String type = m.getMessageType();
+        String text = "IMAGE".equals(type) || "FILE".equals(type)
+                ? ""
+                : extractText(content, m.getContent());
+        String attachmentId = stringField(content, "attachmentId");
+        if (attachmentId == null && ("IMAGE".equals(type) || "FILE".equals(type))) {
+            attachmentId = attachmentIdFromUrl(stringField(content, "url"));
+        }
+        return new ContextMessage(m.getSequenceNo(), type, senderType(m), senderId(m), text,
+                attachmentId, stringField(content, "name"),
+                stringField(content, "mediaType"));
+    }
+
+    /**
+     * 从附件 content URL 中反解附件 ID。URL 形如
+     * {@code /api/v1/projects/{projectId}/attachments/{attachmentId}/content}
+     * 或 {@code http://host:port/api/v1/projects/{projectId}/attachments/{attachmentId}/content}；
+     * 无法解析时返回 null。
+     */
+    private String attachmentIdFromUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return null;
         }
         try {
-            Map<?, ?> map = mapper.readValue(contentJson, Map.class);
-            Object text = map.get("text");
-            return text == null ? contentJson : text.toString();
-        } catch (Exception e) {
-            return contentJson;
+            java.net.URI uri = java.net.URI.create(url.trim());
+            String path = uri.getPath();
+            int marker = path.lastIndexOf("/attachments/");
+            if (marker < 0) {
+                return null;
+            }
+            String tail = path.substring(marker + "/attachments/".length());
+            int slash = tail.indexOf('/');
+            String id = slash < 0 ? tail : tail.substring(0, slash);
+            return id.isBlank() ? null : id;
+        } catch (RuntimeException e) {
+            return null;
         }
+    }
+
+    /**
+     * 解析 content JSON 为字段映射；空/非法时返回空映射，不抛异常。
+     */
+    @SuppressWarnings("unchecked")
+    private Map<?, ?> parseContent(String contentJson) {
+        if (contentJson == null || contentJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            Object parsed = mapper.readValue(contentJson, Map.class);
+            return parsed instanceof Map<?, ?> map ? map : Map.of();
+        } catch (Exception e) {
+            return Map.of();
+        }
+    }
+
+    /**
+     * 提取 content.text 可读文本；无 text 键时返回原始 JSON（非 IMAGE/FILE 类型的兼容兜底）。
+     */
+    private String extractText(Map<?, ?> content, String contentJson) {
+        Object text = content.get("text");
+        return text == null ? contentJson : text.toString();
+    }
+
+    /**
+     * 取 content 字段的字符串值；缺失返回 null。
+     */
+    private String stringField(Map<?, ?> content, String key) {
+        Object value = content.get(key);
+        return value == null ? null : value.toString();
     }
 }

@@ -41,6 +41,10 @@ class CodingToolsTest {
         return new CodingTools(workspaceId, codeAccess, writer);
     }
 
+    private CodingTools scopedTools(String... allowedPaths) {
+        return new CodingTools(workspaceId, codeAccess, writer, List.of(allowedPaths));
+    }
+
     @Test
     void listFilesReturnsOkWithPaths() {
         when(codeAccess.listFiles(workspaceId)).thenReturn(List.of("src/main/java/X.java"));
@@ -197,6 +201,45 @@ class CodingToolsTest {
         assertThat(result.get("newSha")).isEqualTo("new-hash");
         assertThat(result).doesNotContainKey("content");
         verify(writer).writeFile(workspaceId, "src/main/java/Y.java", "new code");
+    }
+
+    @Test
+    void scopedStepRejectsWriteToAnotherStepFile() {
+        CodingTools tools = scopedTools("repo-2/what the fox said.txt");
+
+        Map<String, Object> result = tools.writeFile("repo-3/holy shit.txt", "wrong step");
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat((String) result.get("error")).contains("outside the current TaskStep allowed paths");
+        verify(writer, never()).writeFile(any(), any(), any());
+    }
+
+    @Test
+    void scopedStepAllowsDeclaredFileAndRejectsTraversal() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "repo-2/what the fox said.txt", "ok"))
+                .thenReturn(WorkspaceWriteResult.ok("repo-2/what the fox said.txt", NEW_HASH, true));
+        CodingTools tools = scopedTools("repo-2/what the fox said.txt");
+
+        Map<String, Object> allowed = tools.writeFile("repo-2/what the fox said.txt", "ok");
+        Map<String, Object> traversal = tools.writeFile("repo-2/../repo-3/holy shit.txt", "wrong");
+
+        assertThat(allowed.get("ok")).isEqualTo(true);
+        assertThat(traversal.get("ok")).isEqualTo(false);
+        verify(writer).writeFile(workspaceId, "repo-2/what the fox said.txt", "ok");
+        verify(writer, never()).writeFile(workspaceId, "repo-3/holy shit.txt", "wrong");
+    }
+
+    @Test
+    void legacyEmptyPolicyRemainsCompatible() {
+        when(codeAccess.listFiles(workspaceId)).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "legacy.txt", "ok"))
+                .thenReturn(WorkspaceWriteResult.ok("legacy.txt", NEW_HASH, true));
+
+        Map<String, Object> result = tools().writeFile("legacy.txt", "ok");
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        verify(writer).writeFile(workspaceId, "legacy.txt", "ok");
     }
 
     @Test

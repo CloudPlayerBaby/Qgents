@@ -34,8 +34,9 @@ public class TestPromptBuilder {
                   "needsCodingFix": true
                 }
                 - summary 不得为空；failures 可为空数组；needsCodingFix 表示该失败是否可由 Coding Agent 修复（默认 true）。
-                - 如果 stderr/stdout 表明命令不存在、找不到 PATH、Wrapper 无法启动、权限不足或 exit code 为 126/127，必须将其归类为测试环境/基础设施问题：needsCodingFix 必须为 false，失败原因中明确写出原始命令和建议使用工作区相对路径（例如 ./gradlew test、./mvnw test），不得要求 Coding Agent 修改业务代码。
+                - 如果 stderr/stdout 表明命令不存在、找不到 PATH、Wrapper 无法启动、权限不足或 exit code 为 126/127，必须将其归类为测试环境/基础设施问题：needsCodingFix 必须为 false，失败原因中明确写出原始命令和建议使用工作区相对路径（例如 sh ./gradlew test、sh ./mvnw test），不得要求 Coding Agent 修改业务代码。
                 - 当验证方式为 FILE_ASSERTION 时，必须以文件存在性、可读性和明确的内容/大小断言为准，不得因为没有 Maven/Gradle/npm 命令就判定失败。
+                - 当任务只修改了非代码文件（README/markdown/txt/json/yaml/资源/目录等文档或配置文件）时，不应运行 gradle/mvn/npm 测试，直接以文件断言结果为准。
                 """;
     }
 

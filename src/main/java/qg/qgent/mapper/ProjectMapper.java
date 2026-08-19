@@ -20,7 +20,7 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
     ProjectEntity selectByIdForUpdate(@Param("projectId") UUID projectId);
 
     @Select({"<script>",
-            "SELECT p.id, p.team_id, p.name, p.description, p.status,",
+            "SELECT p.id, p.team_id, p.name, p.description, p.avatar_url, p.status,",
             "CASE WHEN #{teamOwner} THEN 'PROJECT_ADMIN' ELSE pm.role END AS role",
             "FROM projects p LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = #{userId}",
             "WHERE p.team_id = #{teamId}",
@@ -30,7 +30,8 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
             "</script>"})
     @Results({
             @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
-            @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class)
+            @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "avatar_url", property = "avatarUrl")
     })
     List<ProjectMembershipView> selectAccessiblePage(@Param("teamId") UUID teamId,
                                                      @Param("userId") UUID userId, @Param("teamOwner") boolean teamOwner,
@@ -45,7 +46,7 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
     })
     List<ProjectEntity> selectByTeamForUpdate(@Param("teamId") UUID teamId);
 
-    @Select("SELECT DISTINCT p.id, p.team_id, p.name, p.description, p.status, "
+    @Select("SELECT DISTINCT p.id, p.team_id, p.name, p.description, p.avatar_url, p.status, "
             + "CASE WHEN t.owner_user_id = #{userId} AND tom.role = 'TEAM_OWNER' "
             + "THEN 'PROJECT_ADMIN' ELSE pm.role END AS role "
             + "FROM projects p INNER JOIN teams t ON t.id = p.team_id "
@@ -56,7 +57,8 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
             + "OR pm.user_id IS NOT NULL) ORDER BY p.id")
     @Results({
             @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
-            @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class)
+            @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "avatar_url", property = "avatarUrl")
     })
     List<ProjectMembershipView> selectAccessibleByUser(@Param("userId") UUID userId);
 
@@ -71,7 +73,7 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
      * @return 项目视图列表（含 lastActivityAt），按最后活跃倒序
      */
     @Select({"<script>",
-            "SELECT p.id, p.team_id, p.name, p.description, p.status, ",
+            "SELECT p.id, p.team_id, p.name, p.description, p.avatar_url, p.status, ",
             "CASE WHEN #{teamOwner} THEN 'PROJECT_ADMIN' ELSE pm.role END AS role, ",
             "(SELECT MAX(rg.last_message_at) FROM requirement_groups rg ",
             "  WHERE rg.project_id = p.id) AS last_activity_at ",
@@ -83,6 +85,7 @@ public interface ProjectMapper extends BaseMapper<ProjectEntity> {
     @Results({
             @Result(column = "id", property = "id", typeHandler = UuidBinaryTypeHandler.class),
             @Result(column = "team_id", property = "teamId", typeHandler = UuidBinaryTypeHandler.class),
+            @Result(column = "avatar_url", property = "avatarUrl"),
             @Result(column = "last_activity_at", property = "lastActivityAt")
     })
     List<ProjectMembershipView> selectAccessibleByActivity(@Param("teamId") UUID teamId,

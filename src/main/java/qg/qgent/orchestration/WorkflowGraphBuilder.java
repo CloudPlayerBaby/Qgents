@@ -23,7 +23,7 @@ import java.util.Map;
  * <ul>
  *   <li>{@code next} → 按序下一节点（末节点 → END）；</li>
  *   <li>{@code retry} → 自身（同相位基础设施重试）；</li>
- *   <li>{@code requeue} → DEVELOPER 节点（Test/Review/专项检查质量失败回 Coding 修复）；</li>
+ *   <li>{@code requeue} → 最后一个 MUTATE 节点（Test/Review/专项检查质量失败回可写步骤修复）；</li>
  *   <li>{@code END} → 终态。</li>
  * </ul>
  * 每次 orchestrate 按该任务的步骤现建图；步骤即节点，为后续 checkpoint / Agent 打断 / 重试
@@ -51,7 +51,7 @@ public class WorkflowGraphBuilder {
      *
      * @param steps         按执行顺序排列的任务步骤（至少一个；PLANNER 恒在首位）。
      * @param runner        每个节点的执行体（TaskOrchestrator.runStepNode）。
-     * @param requeueNodeId 质量失败回 Coding 的目标节点名（DEVELOPER step 的 stepId）。
+     * @param requeueNodeId 质量失败回可写 MUTATE 步骤的目标节点名。
      */
     public CompiledGraph<TaskOrchestrationState> build(List<TaskStepEntity> steps, NodeRunner runner,
                                                        String requeueNodeId) {
@@ -67,7 +67,7 @@ public class WorkflowGraphBuilder {
      *
      * @param steps         按执行顺序排列的任务步骤（至少一个）。
      * @param runner        每个节点的执行体（TaskOrchestrator.runStepNode）。
-     * @param requeueNodeId 质量失败回 Coding 的目标节点名（DEVELOPER step 的 stepId）。
+     * @param requeueNodeId 质量失败回可写 MUTATE 步骤的目标节点名。
      * @param startStepId   起始步骤 ID；null 表示从第一个步骤开始（全量）。
      */
     public CompiledGraph<TaskOrchestrationState> build(List<TaskStepEntity> steps, NodeRunner runner,

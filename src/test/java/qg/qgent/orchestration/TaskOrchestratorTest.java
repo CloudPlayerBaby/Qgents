@@ -175,6 +175,61 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void verifyDeveloperStepUsesTestingPhaseAndQualityFailureReturnsToLastMutableStep() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        developer.setExecutionMode("MUTATE");
+        TaskStepEntity verification = fixture.step(task, "DEVELOPER", 3);
+        verification.setExecutionMode("VERIFY");
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, verification, reviewer);
+        fixture.stubPlan(task, planner, all);
+        Agent agent = fixture.sequenceAgent(
+                fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING),
+                fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY),
+                fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING));
+
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        // VERIFY 虽然保留 DEVELOPER role，但应按 TESTING 进入质量闭环；失败后回到
+        // 真正可写的 MUTATE developer，而不能回到同一个只读 VERIFY step。
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(verification.getId()), anyString(), any(), any(), any());
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(reviewer.getId()), anyString(), any(), any(), any());
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.TESTING)).hasSize(2);
+    }
+
+    @Test
+    void qualityFailureInReadOnlyTaskDoesNotLoopBackToAnotherReadOnlyStep() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity verification = fixture.step(task, "DEVELOPER", 2);
+        verification.setExecutionMode("VERIFY");
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 3);
+        List<TaskStepEntity> all = List.of(planner, verification, reviewer);
+        fixture.stubPlan(task, planner, all);
+        fixture.orchestrator(fixture.sequenceAgent(
+                fixture.planSuccess(),
+                fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(verification.getId()), anyString(), any(), any(), any());
+        verify(fixture.taskRuns, never()).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(reviewer.getId()), anyString(), any(), any(), any());
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+    }
+
+    @Test
     void failedPlannerDoesNotEnterFormalGraphOrCreateTaskRun() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
@@ -593,6 +648,7 @@ class TaskOrchestratorTest {
             when(steps.selectById(any())).thenAnswer(invocation -> all.stream()
                     .filter(step -> step.getId().equals(invocation.getArgument(0))).findFirst().orElse(null));
             when(registry.resolve(any(), any())).thenAnswer(invocation -> Optional.of(currentAgent.get()));
+            when(registry.resolve(any(), any(), any())).thenAnswer(invocation -> Optional.of(currentAgent.get()));
             when(context.buildGroupContext(task)).thenReturn(mock(GroupContext.class));
             when(taskRuns.createForStep(any(), any(), any(), any(), any(), any(), any())).thenAnswer(invocation -> {
                 TaskRunEntity run = new TaskRunEntity();

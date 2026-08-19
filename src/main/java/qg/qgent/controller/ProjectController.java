@@ -10,6 +10,8 @@ import qg.qgent.api.PagedApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.*;
 import qg.qgent.service.IdempotencyService;
+import qg.qgent.service.ProjectAccessService;
+import qg.qgent.service.ProjectAvatarStorageService;
 import qg.qgent.service.ProjectService;
 
 import java.util.List;
@@ -25,10 +27,15 @@ import java.util.UUID;
 public class ProjectController {
     private final ProjectService projects;
     private final IdempotencyService idempotency;
+    private final ProjectAccessService access;
+    private final ProjectAvatarStorageService avatarStorage;
 
-    public ProjectController(ProjectService projects, IdempotencyService idempotency) {
+    public ProjectController(ProjectService projects, IdempotencyService idempotency, ProjectAccessService access,
+                             ProjectAvatarStorageService avatarStorage) {
         this.projects = projects;
         this.idempotency = idempotency;
+        this.access = access;
+        this.avatarStorage = avatarStorage;
     }
 
     /**
@@ -87,6 +94,37 @@ public class ProjectController {
                 Map.of("projectId", projectId, "body", body), 200, ProjectResponse.class,
                 () -> projects.update(actor, projectId, body));
         return ok(value, request);
+    }
+
+    /**
+     * 契约 v2.0.6 补充：签发项目头像直传凭证（项目成员；对象键 projects/{projectId}/{uuid}.{ext}）。
+     */
+    @PostMapping("/projects/{projectId}/avatar/credential")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<AvatarCredentialResponse> avatarCredential(@PathVariable UUID projectId,
+                                                                  @AuthenticationPrincipal UUID actor,
+                                                                  @Valid @RequestBody AvatarCredentialRequest body,
+                                                                  HttpServletRequest request) {
+        access.requireProjectMember(projectId, actor);
+        ProjectAvatarStorageService.ProjectAvatarCredential credential =
+                avatarStorage.createCredential(projectId, body.getMediaType(), body.getSizeBytes());
+        return ok(new AvatarCredentialResponse(credential.objectKey(),
+                credential.credential().getUploadUrl(), credential.credential().getMethod(),
+                credential.credential().getHeaders(), credential.credential().getExpiresAt()), request);
+    }
+
+    /**
+     * 契约 v2.0.6 补充：确认项目头像上传并返回公共读 URL（不写任何字段；
+     * 前端把 avatarUrl 随 PATCH /projects/{projectId} 提交）。
+     */
+    @PostMapping("/projects/{projectId}/avatar/confirm")
+    public ApiResponse<AvatarConfirmResponse> avatarConfirm(@PathVariable UUID projectId,
+                                                            @AuthenticationPrincipal UUID actor,
+                                                            @Valid @RequestBody AvatarConfirmRequest body,
+                                                            HttpServletRequest request) {
+        access.requireProjectMember(projectId, actor);
+        String avatarUrl = avatarStorage.confirmAvatar(projectId, body.getObjectKey());
+        return ok(new AvatarConfirmResponse(avatarUrl), request);
     }
 
     /**

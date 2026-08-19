@@ -25,6 +25,7 @@ import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.service.ContextService;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -70,16 +71,22 @@ public class CodingAgent implements Agent {
      * 未配置时 Coding 工具静默跳过，不影响编码流程。
      */
     private CodingWriteObserver writeObserver;
+    /**
+     * 群聊图片/文件附件加载器：IMAGE 转 base64 媒体、文本文件内联，供多模态编码。
+     */
+    private final AttachmentMediaLoader attachmentMediaLoader;
 
     public CodingAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
                        AgentProtocol protocol, ContextService contextService,
-                       ContextSearchProperties contextSearchProperties) {
+                       ContextSearchProperties contextSearchProperties,
+                       AttachmentMediaLoader attachmentMediaLoader) {
         this.llm = llm;
         this.codeAccess = codeAccess;
         this.writer = writer;
         this.protocol = protocol;
         this.contextService = contextService;
         this.contextSearchProperties = contextSearchProperties;
+        this.attachmentMediaLoader = attachmentMediaLoader;
     }
 
     /**
@@ -157,9 +164,9 @@ public class CodingAgent implements Agent {
         log.info("coding agent workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
         List<Message> history = new ArrayList<>();
-        history.add(new UserMessage(promptBuilder.buildUser(input, files)));
+        history.add(buildUserMessage(input, files));
         String system = promptBuilder.buildSystem(true);
-        CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer);
+        CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer, input.getAllowedPaths());
         tools.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId());
         ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
@@ -170,8 +177,10 @@ public class CodingAgent implements Agent {
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round,
                     observedWrites.changedPaths(), observedWrites.changedDirectories());
+            Instant turnStartedAt = Instant.now();
             ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
-            observations.add(LlmObservation.of(input.getPhase().name(), round, turn));
+            observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
+                    turnStartedAt, Instant.now()));
             if (turn.isInfraAbort()) {
                 log.error("CODING_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
                         input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
@@ -211,10 +220,31 @@ public class CodingAgent implements Agent {
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
     }
 
+    /**
+     * 构建 Coding 首轮 UserMessage：正文（promptBuilder）+ 群聊中的图片媒体（IMAGE 附件，
+     * base64 data URI）+ 文本/代码附件内容块（FILE，TEXT/CODE 且 ≤64KB）。
+     * <p>
+     * 按 {@link AttachmentMediaLoader} 先裁剪类型与大小，避免把超大附件读入内存。
+     * 读取失败、越权、越预算或类型不支持的附件降级为文本引用（ContextPromptRenderer 已渲染
+     * [图片附件]/[文件附件]），不影响编码主流程与成功收敛。
+     */
+    private UserMessage buildUserMessage(AgentInput input, List<String> files) {
+        String text = promptBuilder.buildUser(input, files);
+        AttachmentMediaLoader.Result attachments =
+                attachmentMediaLoader.load(input.getActorId(), input.getProjectId(), input.getConversation());
+        String finalText = attachments.extraText().isEmpty() ? text : text + attachments.extraText();
+        UserMessage.Builder builder = UserMessage.builder().text(finalText);
+        if (!attachments.media().isEmpty()) {
+            builder.media(attachments.media());
+        }
+        return builder.build();
+    }
+
     private CodingResult finalizeCoding(String system, List<Message> requestHistory, ToolTurnResult trigger,
                                         List<LlmObservation> observations, int round,
                                         String phase, ProtocolFailureCode triggerCode,
                                         ChangedWriteFactLedger observedWrites) {
+        Instant finalizationStartedAt = Instant.now();
         ToolTurnResult finalization = llm.finalizeToolTurn(system,
                 NativeToolLoopSupport.prepareFinalization(requestHistory, trigger),
                 NativeToolLoopSupport.finalizationInstruction(
@@ -222,7 +252,8 @@ public class CodingAgent implements Agent {
                                 + "\"modifiedFiles\":[\"相对路径\"],\"modifiedDirectories\":[\"相对目录\"],\"changes\":[\"变更说明\"],"
                                 + "\"errors\":[\"错误说明\"]}}", observedWrites.changedPaths(),
                         observedWrites.changedDirectories()));
-        observations.add(LlmObservation.of(phase, round + 1, finalization));
+        observations.add(LlmObservation.of(phase, round + 1, finalization,
+                finalizationStartedAt, Instant.now()));
         if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
             throw new CodingParseException(triggerCode, "bounded coding finalization did not produce complete JSON");
         }
@@ -261,7 +292,7 @@ public class CodingAgent implements Agent {
         List<LlmMessage> history = new ArrayList<>();
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem(false);
-        CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer);
+        CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer, input.getAllowedPaths());
         toolExecutor.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId(), input.getWorkspaceId());
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {

@@ -390,7 +390,11 @@ public class TaskOrchestrator {
             return routeState(state, "next");
         }
         OrchestrationPhase phase = stepPhase(step, ctx.steps);
-        Optional<Agent> agent = agentRegistry.resolve(step.getAssignedAgentId(), step.getRole());
+        // 旧数据库中的步骤可能还没有 executionMode；保留两参数解析路径，避免把旧步骤
+        // 或外部测试中的默认 Agent 解析误判为“缺少 Agent”。新步骤使用冻结的三参数路径。
+        Optional<Agent> agent = step.getExecutionMode() == null || step.getExecutionMode().isBlank()
+                ? agentRegistry.resolve(step.getAssignedAgentId(), step.getRole())
+                : agentRegistry.resolve(step.getAssignedAgentId(), step.getRole(), step.getExecutionMode());
         if (agent.isEmpty()) {
             log.warn("NO_AGENT step skipped taskId={} stepId={} role={} agentId={}", task.getId(), step.getId(),
                     step.getRole(), step.getAssignedAgentId());
@@ -415,12 +419,26 @@ public class TaskOrchestrator {
         } else if (phase == OrchestrationPhase.TESTING && outcome.getTestResult() != null) {
             ctx.testResult = outcome.getTestResult();
         }
+        // TestAgent 的 Worker stdout/stderr 已经过执行端长度限制；再次经统一日志入口脱敏、分行
+        // 持久化，再写入 Run 产物和终态事件，保证前端既能实时看日志，也能按 cursor 补拉。
+        if (outcome.getTestResult() != null) {
+            taskRunService.appendWorkerOutput(run, "STDOUT", outcome.getTestResult().getStdout());
+            taskRunService.appendWorkerOutput(run, "STDERR", outcome.getTestResult().getStderr());
+        }
+        taskRunService.appendAgentObservations(run, outcome.getObservations());
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
         // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
         artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
-        taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()));
+        taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
+                outcome.getMessage());
         markStepSettled(task, step, outcome.getOutcome());
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
+        // 只读任务可能没有任何可修复的 MUTATE 步骤。此时质量失败不能沿用
+        // requeue 路由回到一个 VERIFY/TEST 节点，否则会重复验证同一事实直到耗尽循环。
+        if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
+                && !hasMutableStep(ctx.steps)) {
+            decision = StateMachineDecision.failed();
+        }
         if (decision.getAction() == StateMachineDecision.Action.COMPLETE_SUCCESS
                 && hasFollowingStep(step, ctx.steps)) {
             decision = StateMachineDecision.advance(phase);
@@ -458,6 +476,18 @@ public class TaskOrchestrator {
      * 之后/无 REVIEWER → REVIEWING（专项检查的失败语义挂测试或审查环节）。
      */
     private OrchestrationPhase stepPhase(TaskStepEntity step, List<TaskStepEntity> orderedSteps) {
+        TaskStepExecutionMode mode = TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole());
+        // 执行模式是步骤的真实语义，优先于历史 role。尤其是 DEVELOPER/VERIFY：
+        // 它是只读质量核验，失败时应进入 TESTING 的质量回路，而不是按 CODING 失败直接终止任务。
+        if (mode == TaskStepExecutionMode.PLAN) {
+            return OrchestrationPhase.PLAN;
+        }
+        if (mode == TaskStepExecutionMode.TEST || mode == TaskStepExecutionMode.VERIFY) {
+            return OrchestrationPhase.TESTING;
+        }
+        if (mode == TaskStepExecutionMode.REVIEW) {
+            return OrchestrationPhase.REVIEWING;
+        }
         String role = step.getRole();
         return switch (role == null ? "" : role) {
             case "PLANNER" -> OrchestrationPhase.PLAN;
@@ -556,13 +586,16 @@ public class TaskOrchestrator {
     }
 
     /**
-     * Run 级执行产物的脱敏摘要：角色、终态、Agent 反馈消息与每轮 LLM 观测。观测经
+     * Run 级执行产物的脱敏摘要：角色、执行模式、终态、Agent 反馈消息与每轮 LLM 观测。观测经
      * {@link LlmObservation#toSummary()} 序列化为脱敏 Map（仅 phase/round/字符数/结束原因/
      * 工具名/错误码/sha256），路径与敏感键由服务端 sanitize 兜底。
      */
     private Map<String, Object> runArtifactSummary(TaskStepEntity step, AgentRunOutcome outcome) {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("role", step.getRole());
+        // role 是 Agent 选择标签，executionMode 才是本次节点的权限/成功语义；两者同时
+        // 持久化，便于定位“DEVELOPER 但实际是 VERIFY”的历史流程问题。
+        summary.put("executionMode", TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole()).name());
         // 供 ArtifactService 判断是否需要把内部异常归一化为稳定的基础设施错误说明。
         summary.put("outcome", outcome.getOutcome() == null ? null : outcome.getOutcome().name());
         summary.put("status", terminalStatus(outcome.getOutcome()));
@@ -625,11 +658,20 @@ public class TaskOrchestrator {
 
     private String lastDeveloperNodeId(List<TaskStepEntity> steps) {
         for (int index = steps.size() - 1; index >= 0; index--) {
-            if ("DEVELOPER".equals(steps.get(index).getRole())) {
-                return steps.get(index).getId().toString();
+            TaskStepEntity step = steps.get(index);
+            TaskStepExecutionMode mode = TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole());
+            // 质量失败只能回到真正允许修改的 MUTATE 节点。历史实现只看 role，
+            // 会把 DEVELOPER/VERIFY 误选为修复节点，导致质量循环再次执行只读核验。
+            if (mode == TaskStepExecutionMode.MUTATE) {
+                return step.getId().toString();
             }
         }
         return steps.get(0).getId().toString();
+    }
+
+    private boolean hasMutableStep(List<TaskStepEntity> steps) {
+        return steps.stream().anyMatch(step -> TaskStepExecutionMode
+                .resolve(step.getExecutionMode(), step.getRole()) == TaskStepExecutionMode.MUTATE);
     }
 
     private void markStepRunning(TaskEntity task, TaskStepEntity step) {

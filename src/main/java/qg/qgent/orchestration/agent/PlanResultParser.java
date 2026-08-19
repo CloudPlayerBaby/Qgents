@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
  * {
  *   "taskUnderstanding": "...",
  *   "implementationGoals": ["..."],
- *   "steps": [{"title":"...", "files":["..."], "description":"...", "requiredCapabilities":["java"], "suggestedAgentId":"..."}],
+ *   "steps": [{"title":"...", "files":["..."], "description":"...", "executionMode":"MUTATE|VERIFY", "requiredCapabilities":["java"], "suggestedAgentId":"..."}],
  *   "testPlan": "...",
  *   "risks": ["..."],
  *   "deliveryMode": "DIFF_FIRST",
@@ -91,11 +91,38 @@ public class PlanResultParser {
             step.setTitle(requireStepText(stepNode, "title"));
             step.setFiles(requireStepFiles(stepNode));
             step.setDescription(optionalText(stepNode, "description"));
+            step.setExecutionMode(optionalExecutionMode(stepNode, step.getTitle(), step.getDescription()));
             step.setRequiredCapabilities(optionalCapabilities(stepNode));
             step.setSuggestedAgentId(optionalStepAgentId(stepNode));
             steps.add(step);
         }
         return steps;
+    }
+
+    private String optionalExecutionMode(JsonNode stepNode, String title, String description) {
+        String value = optionalText(stepNode, "executionMode");
+        if (value != null && !value.isBlank()) {
+            String normalized = value.toUpperCase(Locale.ROOT);
+            if (!normalized.equals("MUTATE") && !normalized.equals("VERIFY")) {
+                throw new PlanParseException("plan step executionMode must be MUTATE or VERIFY");
+            }
+            return normalized;
+        }
+        String text = ((title == null ? "" : title) + " " + (description == null ? "" : description))
+                .replaceAll("\\s+", " ")
+                .trim()
+                .toLowerCase(Locale.ROOT);
+        boolean verificationWord = text.matches(".*(verify|verification|check|validate|test|inspect|review|验证|检查|核验|测试|审查).*");
+        boolean mutationWord = text.matches(".*(create|add|modify|change|implement|write|update|fix|新建|创建|新增|修改|实现|编写|更新|修复).*");
+        boolean explicitlyReadOnly = text.matches(".*(不|无需|不要|不得).{0,5}(修改|创建|写入|变更|落地).*");
+        // “验证新增文件”中的“新增”是被核验对象，不是当前步骤的写动作；只有
+        // 明确出现“验证并修复/检查后创建”等串联动作时，才把验证词推断为 MUTATE。
+        boolean verificationFirst = text.matches("^(verify|verification|check|validate|test|inspect|review|验证|检查|核验|测试|审查).*");
+        boolean mutationAfterVerification = text.matches(".*(verify|verification|check|validate|test|inspect|review|验证|检查|核验|测试|审查).*(and|then|并|然后|同时|后).*(create|add|modify|change|implement|write|update|fix|新建|创建|新增|修改|实现|编写|更新|修复).*");
+        if (explicitlyReadOnly || (verificationFirst && !mutationAfterVerification)) {
+            return "VERIFY";
+        }
+        return mutationWord ? "MUTATE" : (verificationWord ? "VERIFY" : "MUTATE");
     }
 
     private String requireText(JsonNode node, String field) {

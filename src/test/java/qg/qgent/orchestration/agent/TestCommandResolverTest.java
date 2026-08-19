@@ -13,13 +13,13 @@ class TestCommandResolverTest {
     @Test
     void usesWorkspaceRelativeMavenWrapper() {
         assertThat(resolver.resolve(List.of("pom.xml", "mvnw")))
-                .containsExactly("./mvnw", "test");
+                .containsExactly("sh", "./mvnw", "test");
     }
 
     @Test
     void usesWorkspaceRelativeGradleWrapper() {
         assertThat(resolver.resolve(List.of("build.gradle", "gradlew")))
-                .containsExactly("./gradlew", "test");
+                .containsExactly("sh", "./gradlew", "test");
     }
 
     @Test
