@@ -19,7 +19,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -50,7 +50,7 @@ class DockerContainerRuntimeTest {
     }
 
     @Test
-    void createPreservesReadonlyRootfsUserAndResourceLimits() throws Exception {
+    void createUsesWritableRootfsAndPreservesUserAndResourceLimits() throws Exception {
         Path localRoot = Files.createDirectory(root.resolve("local"));
         UUID workspaceId = UUID.randomUUID();
         Files.createDirectory(localRoot.resolve(workspaceId.toString()));
@@ -91,7 +91,7 @@ class DockerContainerRuntimeTest {
         ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
         verify(createCmd).withHostConfig(hostConfigCaptor.capture());
         HostConfig hostConfig = hostConfigCaptor.getValue();
-        assertTrue(hostConfig.getReadonlyRootfs());
+        assertFalse(hostConfig.getReadonlyRootfs());
         assertEquals(properties.getMemoryBytes(), hostConfig.getMemory());
         assertEquals(properties.getNanoCpus(), hostConfig.getNanoCPUs());
         assertEquals(properties.getPidsLimit(), hostConfig.getPidsLimit());

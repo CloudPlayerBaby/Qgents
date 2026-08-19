@@ -334,8 +334,18 @@ components:
         executionId: {type: string, format: uuid}
         repositoryId: {type: string, format: uuid}
         tool: {type: string, enum: [process.exec, file.read, file.list, file.search, file.write, file.patch, directory.create]}
-        arguments: {type: object, maxProperties: 64, description: 各工具的结构化参数（如 FilePatchArguments）}
+        arguments: {type: object, maxProperties: 64, description: 各工具的结构化参数（如 ProcessExecArguments、FilePatchArguments）}
         timeoutSeconds: {type: integer, minimum: 1, maximum: 3600}
+    ProcessExecArguments:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: array
+          minItems: 1
+          maxItems: 64
+          description: 参数向量；允许常规构建工具和 sh ./gradlew 或 sh ./mvnw Wrapper，不允许 sh -c、bash -c 或任意脚本路径
+          items: {type: string, minLength: 1, maxLength: 4096}
     # file.patch 只对已有 UTF-8 文本文件做精确局部修改，严格按声明行号应用统一 Diff，
     # 禁止模糊匹配/自动偏移/冲突覆盖；失败保证原文件不变。参数与结果见 FilePatchArguments/FilePatchResult。
     FilePatchArguments:

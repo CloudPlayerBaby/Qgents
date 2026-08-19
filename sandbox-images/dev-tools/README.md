@@ -4,7 +4,7 @@
 
 全部 Git 操作由 Sandbox 外的 Workspace Manager 执行；容器只接收当前 TaskRun 获得授权的仓库 worktree bind mount。
 
-镜像使用非 root 用户 `developer`（uid/gid 10001）。Worker 以容器级 tmpfs 挂载开发用户 HOME（默认 `8g`）、pnpm 全局目录（`1g`）以及 Maven、Gradle、npm 和通用缓存目录（默认分别为 `2g`、`3g`、`1g`、`512m`），并开放 `/tmp`、`/var/tmp` 和 `/run` 的临时空间，用于覆盖 Gradle/Java/Kotlin/Android 等工具的隐藏状态目录；rootfs 其余位置保持只读。项目自带 Wrapper 优先，Wrapper 没有 executable bit 时使用 `sh ./gradlew` 或 `sh ./mvnw` 启动。
+镜像使用非 root 用户 `developer`（uid/gid 10001）。Worker 默认使用可写 rootfs，并以容器级 tmpfs 挂载开发用户 HOME（默认 `8g`）、pnpm 全局目录（`1g`）以及 Maven、Gradle、npm 和通用缓存目录（默认分别为 `2g`、`3g`、`1g`、`512m`），同时开放 `/tmp`、`/var/tmp` 和 `/run` 的临时空间。Workspace 仍只通过 Worker 挂载当前任务授权的 Repository。项目自带 Wrapper 优先，Wrapper 没有 executable bit 时使用 `sh ./gradlew` 或 `sh ./mvnw` 启动。
 
 ```powershell
 docker build -t qgents/sandbox-dev-tools:0.2.0 sandbox-images/dev-tools
@@ -13,7 +13,7 @@ docker build -t qgents/sandbox-dev-tools:0.2.0 sandbox-images/dev-tools
 验证 Maven 缓存可写（应与 Worker 的 tmpfs 配置一致）：
 
 ```bash
-docker run --rm --read-only \
+docker run --rm \
   --tmpfs /tmp:rw,noexec,nosuid,size=512m \
   --tmpfs /var/tmp:rw,noexec,nosuid,size=512m \
   --tmpfs /run:rw,noexec,nosuid,size=64m \
