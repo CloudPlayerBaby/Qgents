@@ -43,6 +43,7 @@ public final class ExecutionContentSanitizer {
                     "SANDBOX_NOT_FOUND", "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT",
                     "BUILD_ENVIRONMENT_UNAVAILABLE" ->
                     code.toUpperCase(Locale.ROOT);
+            case "DRY_RUN_TIMEOUT" -> "DRY_RUN_TIMEOUT";
             default -> "FAILED_INFRASTRUCTURE";
         };
     }
@@ -65,6 +66,7 @@ public final class ExecutionContentSanitizer {
             case "GIT_STORE_FETCH_FAILED", "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH" ->
                     "代码仓库同步失败";
             case "GITHUB_API_UNAVAILABLE" -> "GitHub 服务当前不可用";
+            case "DRY_RUN_TIMEOUT" -> "Dry Run 执行超时";
             case "WORKER_PUSH_FAILED" -> "代码推送到仓库失败";
             default -> "执行基础设施暂不可用";
         };

@@ -554,12 +554,12 @@ public class GitRepositoryManager {
     /**
      * 使用 git merge-tree 做只读预演，并只返回结构化冲突路径。
      */
-    public MergePreviewResponse mergePreview(UUID repositoryId, String sourceRef, String targetBranch) {
+    public MergePreviewResponse mergePreview(UUID repositoryId, String sourceRef, String targetCommit) {
         return locked(repositoryId, () -> {
             Path store = gitStore(repositoryId);
             requireStore(store);
             String source = resolveCommit(store, sourceRef);
-            String target = resolveCommit(store, targetBranch);
+            String target = resolveCommit(store, targetCommit);
             if (source == null) throw invalid("GIT_SOURCE_REF_NOT_FOUND", "Source ref was not found");
             if (target == null) throw invalid("GIT_TARGET_REF_NOT_FOUND", "Target branch was not found");
             CommandResult result = run(List.of("git", "--git-dir", store.toString(), "merge-tree", "--write-tree",
@@ -574,6 +574,7 @@ public class GitRepositoryManager {
             return new MergePreviewResponse(source, target, mergeable, conflicts);
         });
     }
+
 
     /**
      * 在共享 Git Store 中解析引用并固定为 commit SHA。

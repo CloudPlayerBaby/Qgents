@@ -40,11 +40,12 @@ public class MrFirstAutomationService {
     private final MergeRequestMapper mergeRequests;
     private final TestRunService testRuns;
     private final MergeRequestService mrService;
+    private final PreflightGateService preflightGates;
 
     public MrFirstAutomationService(TaskMapper tasks, WorkspaceRepositoryMapper worktrees,
                                     ProjectRepositoryMapper repositories, DryRunMapper dryRuns,
                                     MergeRequestMapper mergeRequests, TestRunService testRuns,
-                                    MergeRequestService mrService) {
+                                    MergeRequestService mrService, PreflightGateService preflightGates) {
         this.tasks = tasks;
         this.worktrees = worktrees;
         this.repositories = repositories;
@@ -52,6 +53,7 @@ public class MrFirstAutomationService {
         this.mergeRequests = mergeRequests;
         this.testRuns = testRuns;
         this.mrService = mrService;
+        this.preflightGates = preflightGates;
     }
 
     /** 交付批次进入 WAITING_PREFLIGHT 后，为 Workspace 中每个仓库启动 Dry Run。 */
@@ -133,6 +135,20 @@ public class MrFirstAutomationService {
         if (task == null || !projectId.equals(task.getProjectId()) || !"MR_FIRST".equals(task.getDeliveryMode())
                 || !"WAITING_PREFLIGHT".equals(task.getStatus()) || task.getCreatedBy() == null) {
             return;
+        }
+        // 多仓库交付必须先确认所有仓库的当前 source/target、Dry Run 和独立 CQ+1，
+        // 任一仓库未完成时只保留 WAITING_PREFLIGHT，不提前创建局部 MR。
+        for (WorkspaceRepositoryEntity worktree : worktrees.selectByWorkspace(task.getWorkspaceId())) {
+            ProjectRepositoryEntity repository = repositories.selectById(worktree.getProjectRepositoryId());
+            String branch = worktree.getBaseRef();
+            if (branch == null || branch.isBlank()) branch = repository == null ? null : repository.getDefaultBranch();
+            if (branch == null || branch.isBlank()) return;
+            try {
+                if (!"PASSED".equals(preflightGates.get(projectId, task.getId(), worktree.getProjectRepositoryId(),
+                        branch, task.getCreatedBy()).getStatus())) return;
+            } catch (RuntimeException ignored) {
+                return;
+            }
         }
         MergeRequestCreateRequest request = new MergeRequestCreateRequest();
         request.setTaskId(task.getId());

@@ -130,11 +130,12 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
                         "path escapes workspace root or uses a symbolic link");
             }
             byte[] written = content.getBytes(StandardCharsets.UTF_8);
-            byte[] previous = Files.exists(target, LinkOption.NOFOLLOW_LINKS)
-                    ? Files.readAllBytes(target) : new byte[0];
+            boolean existed = Files.exists(target, LinkOption.NOFOLLOW_LINKS);
+            byte[] previous = existed ? Files.readAllBytes(target) : new byte[0];
             Files.write(target, written);
+            // 新建空文件时 previous 与 written 都为空字节数组，内容相等但存在性已变化，必须记为变更
             return WorkspaceWriteResult.ok(path, Sha256.hex(written),
-                    !java.util.Arrays.equals(previous, written));
+                    !existed || !java.util.Arrays.equals(previous, written));
         } catch (IOException e) {
             return WorkspaceWriteResult.infraFail(path, "write failed: " + e.getMessage());
         }

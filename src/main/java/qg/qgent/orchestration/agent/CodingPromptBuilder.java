@@ -115,6 +115,18 @@ public class CodingPromptBuilder {
         if (input.getFeedback() != null && !input.getFeedback().isBlank()) {
             sb.append("\n前一轮反馈：").append(input.getFeedback());
         }
+        if (input.getRetryContext() != null) {
+            sb.append("\n重试上下文（受控摘要）：")
+                    .append("\n- failureCode：").append(input.getRetryContext().getFailureCode())
+                    .append("\n- failureSummary：").append(input.getRetryContext().getFailureSummary())
+                    .append("\n- instruction：").append(input.getRetryContext().getInstruction());
+            if (input.getRetryContext().getFailures() != null && !input.getRetryContext().getFailures().isEmpty()) {
+                sb.append("\n- failures：").append(input.getRetryContext().getFailures());
+            }
+            if (input.getRetryContext().getModifiedFiles() != null && !input.getRetryContext().getModifiedFiles().isEmpty()) {
+                sb.append("\n- modifiedFiles：").append(input.getRetryContext().getModifiedFiles());
+            }
+        }
         appendPreviousCodingResult(sb, input.getCodingResult());
         PlanResult plan = input.getPlanResult();
         if (plan != null) {

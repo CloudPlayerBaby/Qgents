@@ -83,6 +83,19 @@ class LocalWorkspaceCodeWriterTest {
     }
 
     @Test
+    void writeFileEmptyNewFileReportsChanged(@TempDir Path baseDir) throws Exception {
+        WorkspaceWriteResult result = new LocalWorkspaceCodeWriter(service(baseDir.toString()))
+                .writeFile(workspaceId, "empty.txt", "");
+
+        // 新建空文件：previous 与 written 都为空字节数组，但存在性已变化，必须记为真实变更
+        assertThat(result.isOk()).isTrue();
+        assertThat(result.isChanged()).isTrue();
+        Path written = baseDir.resolve("ws-1/empty.txt");
+        assertThat(Files.exists(written)).isTrue();
+        assertThat(Files.size(written)).isZero();
+    }
+
+    @Test
     void writeFileRejectsBlankPathAndNullContent(@TempDir Path baseDir) {
         LocalWorkspaceCodeWriter writer = new LocalWorkspaceCodeWriter(service(baseDir.toString()));
 

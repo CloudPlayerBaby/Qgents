@@ -233,14 +233,15 @@ class TestRunExecutionServiceTest {
         preview.setMergeable(true); preview.setResolvedHeadCommit("head"); preview.setResolvedTargetCommit("target");
         when(worker.mergePreview(any())).thenReturn(preview);
         WorkerTestExecutionResponse tests = new WorkerTestExecutionResponse();
-        tests.setStatus("PASSED"); tests.setResolvedHeadCommit("target"); tests.setResults(List.of());
+        tests.setStatus("PASSED"); tests.setResolvedHeadCommit("target");
+        tests.setResolvedSourceCommit("head"); tests.setResolvedTargetCommit("target"); tests.setResults(List.of());
         when(worker.executeTests(any())).thenReturn(tests);
         when(dryRuns.complete(eq(runId), anyString(), eq("PASSED"), any(), eq("head"))).thenReturn(1);
 
         service.executeDryRun(runId);
 
         verify(worker).mergePreview(argThat(request -> "head".equals(request.getSourceRef())
-                && "target".equals(request.getTargetBranch())));
+                && "target".equals(request.getTargetCommit())));
         verify(worker).executeTests(argThat(request -> "target".equals(request.getRef())
                 && "head".equals(request.getMergeSourceRef())));
     }
@@ -358,7 +359,8 @@ class TestRunExecutionServiceTest {
         item.setTestsetId(testsetId); item.setStatus("PASSED"); item.setExitCode(0);
         item.setDurationMs(69); item.setFailureCode(null);
         WorkerTestExecutionResponse tests = new WorkerTestExecutionResponse();
-        tests.setStatus("PASSED"); tests.setResolvedHeadCommit("target"); tests.setResults(List.of(item));
+        tests.setStatus("PASSED"); tests.setResolvedHeadCommit("target");
+        tests.setResolvedSourceCommit("head"); tests.setResolvedTargetCommit("target"); tests.setResults(List.of(item));
         when(worker.executeTests(any())).thenReturn(tests);
         when(dryRuns.complete(eq(runId), anyString(), eq("PASSED"), any(), eq("head"))).thenReturn(1);
 
@@ -376,7 +378,8 @@ class TestRunExecutionServiceTest {
                             && "PASSED".equals(row.get("status"))
                             && Integer.valueOf(0).equals(row.get("exitCode"))
                             && Long.valueOf(69L).equals(row.get("durationMs"))
-                            && row.get("failureCode") == null;
+                            && row.get("failureCode") == null
+                            && row.get("message") == null;
                 }), eq("head"));
     }
 }

@@ -93,6 +93,7 @@ public class AgentContextAssembler {
         input.setExecutionMode(step.getExecutionMode());
         input.setAllowedPaths(step.getAllowedPaths());
         input.setFeedback(feedback == null ? null : formatFeedback(feedback));
+        input.setRetryContext(feedback == null ? null : retryContext(feedback));
         input.setPlanResult(planResult);
         input.setCodingResult(codingResult);
         input.setTestResult(testResult);
@@ -278,6 +279,41 @@ public class AgentContextAssembler {
             return sb.toString();
         }
         return feedback.getMessage();
+    }
+
+    private RetryContext retryContext(AgentRunOutcome outcome) {
+        RetryContext context = new RetryContext();
+        String code = outcome.getFailureCode();
+        if (code == null || code.isBlank()) {
+            code = outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE ? "INFRASTRUCTURE_FAILURE"
+                    : outcome.getOutcome() == RunOutcome.FAILED_QUALITY ? "QUALITY_GATE_FAILED" : "AGENT_RETRY";
+        }
+        context.setFailureCode(limit(code, 128));
+        context.setFailureSummary(limit(formatFeedback(outcome), 2000));
+        TestResult test = outcome.getTestResult();
+        if (test != null && test.getFailures() != null) {
+            context.setFailures(test.getFailures().stream().map(value -> limit(
+                    String.valueOf(value.getName()) + ": " + String.valueOf(value.getReason()), 500)).limit(20).toList());
+        }
+        ReviewResult review = outcome.getReviewResult();
+        if (review != null && review.getFindings() != null) {
+            context.setFailures(review.getFindings().stream().map(value -> limit(
+                    String.valueOf(value.getSeverity()) + " " + String.valueOf(value.getFile()) + ": " + String.valueOf(value.getIssue()), 500)).limit(20).toList());
+        }
+        CodingResult coding = outcome.getCodingResult();
+        if (coding != null && coding.getModifiedFiles() != null) {
+            context.setModifiedFiles(coding.getModifiedFiles().stream().map(value -> limit(value, 300)).limit(100).toList());
+        }
+        context.setInstruction(outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE
+                ? "先检查并恢复基础设施，再在相同上下文重试；不要修改业务代码绕过门禁。"
+                : "根据失败项修复代码并重新执行验证，不得绕过质量门禁。");
+        return context;
+    }
+
+    private String limit(String value, int max) {
+        if (value == null) return "";
+        String sanitized = ExecutionContentSanitizer.sanitize(value);
+        return sanitized.length() <= max ? sanitized : sanitized.substring(0, max);
     }
 
 }

@@ -190,8 +190,8 @@ public class WorkspaceManagerService {
     /**
      * 对共享 Git Store 中两个受控引用执行只读合并预演。
      */
-    public MergePreviewResponse mergePreview(UUID repositoryId, String sourceRef, String targetBranch) {
-        return repositories.mergePreview(repositoryId, sourceRef, targetBranch);
+    public MergePreviewResponse mergePreview(UUID repositoryId, String sourceRef, String targetCommit) {
+        return repositories.mergePreview(repositoryId, sourceRef, targetCommit);
     }
 
     /**
@@ -204,11 +204,10 @@ public class WorkspaceManagerService {
     /**
      * 仅供临时测试 Workspace 使用：把源引用合并进当前 worktree。
      */
-    public void mergeForTest(UUID workspaceId, UUID repositoryId, String sourceRef) {
-        workspaceLock.execute(storageKey(workspaceId), () -> {
+    public String mergeForTest(UUID workspaceId, UUID repositoryId, String sourceRef) {
+        return workspaceLock.execute(storageKey(workspaceId), () -> {
             WorkspaceRepositoryResponse repository = requireRepository(get(workspaceId), repositoryId);
-            repositories.mergeForTest(repositoryId, repositoryPath(workspaceId, repository), sourceRef);
-            return null;
+            return repositories.mergeForTest(repositoryId, repositoryPath(workspaceId, repository), sourceRef);
         });
     }
 

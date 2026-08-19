@@ -230,6 +230,35 @@ class TestRunServiceTest {
     }
 
     @Test
+    void retryCreatesNewImmutableAttemptForTransientWorkerFailure() {
+        UUID projectId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        DryRunEntity source = new DryRunEntity();
+        source.setId(UUID.randomUUID());
+        source.setProjectId(projectId);
+        source.setProjectRepositoryId(UUID.randomUUID());
+        source.setSourceRef("feat/login");
+        source.setHeadCommit("head");
+        source.setResolvedTargetCommit("target");
+        source.setTargetBranch("main");
+        source.setStatus("FAILED");
+        source.setAttemptCount(1);
+        source.setTestsetSnapshot(List.of());
+        source.setReport(Map.of("failureCode", "SANDBOX_WORKER_UNAVAILABLE"));
+        when(dryRuns.selectByIdForUpdate(source.getId())).thenReturn(source);
+        when(dryRuns.selectCount(any())).thenReturn(0L);
+
+        DryRunResponse retry = service.retryDryRun(projectId, source.getId(), actor);
+
+        assertEquals("QUEUED", retry.getStatus());
+        verify(dryRuns).insert(argThat((DryRunEntity value) -> source.getId().equals(value.getRetryOfDryRunId())
+                && "SANDBOX_WORKER_UNAVAILABLE".equals(value.getRetryReasonCode())
+                && "head".equals(value.getHeadCommit())
+                && "target".equals(value.getResolvedTargetCommit())));
+        verify(executions).dispatchDryRun(any(UUID.class));
+    }
+
+    @Test
     void taskScopedTestRunRejectsAWorkspaceThatAnAgentMayStillModify() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), repositoryId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID(), testsetId = UUID.randomUUID();
@@ -296,7 +325,14 @@ class TestRunServiceTest {
         source.setCommitSha(newHead);
         when(worker.resolveGitRef(any())).thenReturn(source);
         // 第一次查询返回旧 head 的冲突，刷新后第二次查询新 head 无记录 → 为推进后的 head 新建 dry-run。
-        when(dryRuns.selectOne(any())).thenReturn(conflict, null);
+        when(dryRuns.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class)))
+                .thenAnswer(new org.mockito.stubbing.Answer<>() {
+                    private int calls;
+                    @Override
+                    public DryRunEntity answer(org.mockito.invocation.InvocationOnMock ignored) {
+                        return calls++ == 0 ? conflict : null;
+                    }
+                });
         when(gitStores.refreshSourceHead(eq(projectId), any(), any(), eq(workspaceId))).thenReturn(newHead);
 
         DryRunResponse response = service.createAutomaticDryRun(projectId, taskId, repositoryId, "main");
@@ -320,7 +356,7 @@ class TestRunServiceTest {
         when(gitStores.refreshTargetBranch(eq(projectId), any(ProjectRepositoryEntity.class), eq("main")))
                 .thenReturn(targetCommit);
         DryRunEntity transientFailure = conflictDryRun(projectId, taskId, repositoryId, head, targetCommit);
-        transientFailure.setReport(Map.of("failureCode", "EXECUTION_FAILED", "message", "worker unavailable"));
+        transientFailure.setReport(Map.of("failureCode", "SANDBOX_WORKER_UNAVAILABLE", "message", "worker unavailable"));
         transientFailure.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1));
         when(dryRuns.selectOne(any())).thenReturn(transientFailure);
         WorkerGitResolveResponse source = new WorkerGitResolveResponse();

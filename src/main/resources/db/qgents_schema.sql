@@ -871,6 +871,9 @@ CREATE TABLE IF NOT EXISTS
         claim_token VARCHAR(64) NULL COMMENT '多实例原子领取令牌',
         lease_expires_at DATETIME(6) NULL COMMENT '执行租约到期时间UTC',
         attempt_count INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '执行领取次数',
+        retry_of_dry_run_id BINARY(16) NULL COMMENT '不可变重试的来源Dry Run',
+        retry_reason_code VARCHAR(128) NULL COMMENT '创建重试时的稳定失败码',
+        active_claim_key VARCHAR(1500) NULL COMMENT 'QUEUED/RUNNING 上下文并发声明',
         created_by BINARY(16) NOT NULL COMMENT '发起用户ID',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
@@ -910,10 +913,13 @@ CREATE TABLE IF NOT EXISTS
         KEY idx_dry_run_task (task_id, task_step_id),
         KEY idx_dry_run_repository (project_repository_id),
         KEY idx_dry_run_recovery (status, lease_expires_at, created_at),
+        KEY idx_dry_run_retry_source (retry_of_dry_run_id, created_at),
+        UNIQUE KEY uk_dry_run_active_claim (active_claim_key(255)),
         CONSTRAINT fk_dry_run_project FOREIGN KEY (project_id) REFERENCES projects (id),
         CONSTRAINT fk_dry_run_task FOREIGN KEY (task_id) REFERENCES tasks (id),
         CONSTRAINT fk_dry_run_task_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id),
         CONSTRAINT fk_dry_run_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
+        CONSTRAINT fk_dry_run_retry_source FOREIGN KEY (retry_of_dry_run_id) REFERENCES dry_runs (id),
         CONSTRAINT fk_dry_run_creator FOREIGN KEY (created_by) REFERENCES users (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '合并前试运行，真实报告由执行服务写入';
 

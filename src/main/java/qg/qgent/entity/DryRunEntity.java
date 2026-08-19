@@ -70,6 +70,12 @@ public class DryRunEntity {
     private String claimToken;
     private LocalDateTime leaseExpiresAt;
     private Integer attemptCount;
+    /** 受控重试来源；原 Dry Run 永不被覆盖。 */
+    private UUID retryOfDryRunId;
+    /** 创建重试时记录的稳定原因码。 */
+    private String retryReasonCode;
+    /** 当前 QUEUED/RUNNING 上下文的并发声明；终态完成时清空。 */
+    private String activeClaimKey;
     /**
      * 发起用户ID。
      */

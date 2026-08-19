@@ -10,6 +10,8 @@ import qg.qgent.dto.*;
 import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
 import qg.qgent.orchestration.llm.LlmObservation;
+import qg.qgent.orchestration.worker.WorkerToolExecution;
+import qg.qgent.orchestration.result.TestResult;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -232,6 +234,10 @@ public class TaskRunService {
         List<ExecutionLogEntity> rows = logMapper.selectList(Wrappers.<ExecutionLogEntity>lambdaQuery()
                 .eq(ExecutionLogEntity::getTaskRunId, taskRunId)
                 .gt(ExecutionLogEntity::getSequenceNo, after)
+                // 兼容隐藏历史版本曾写入的完整 Worker 输出；原记录保留供受控审计，
+                // 但项目成员日志接口不得再返回 stdout/stderr。
+                .and(query -> query.isNull(ExecutionLogEntity::getNode)
+                        .or().notIn(ExecutionLogEntity::getNode, "WORKER/STDOUT", "WORKER/STDERR"))
                 .orderByAsc(ExecutionLogEntity::getSequenceNo)
                 .last("LIMIT " + (size + 1)));
         if (rows == null) {
@@ -944,9 +950,35 @@ public class TaskRunService {
                 iso(l.getCreatedAt()));
     }
 
+    /**
+     * 将 Worker 工具执行摘要写入 TaskRun 脱敏日志，供受控诊断定位完整 Worker 日志。
+     * 不写入工具参数、文件内容、stdout 或 stderr；完整日志仍只通过 Worker 内网接口读取。
+     */
+    public void appendWorkerToolExecution(TaskRunEntity run, WorkerToolExecution execution) {
+        if (execution == null || execution.getId() == null) {
+            return;
+        }
+        StringBuilder content = new StringBuilder("executionId=").append(execution.getId())
+                .append("，tool=").append(execution.getTool())
+                .append("，status=").append(execution.getStatus());
+        if (execution.getExitCode() != null) {
+            content.append("，exitCode=").append(execution.getExitCode());
+        }
+        if (execution.getFailureReason() != null && !execution.getFailureReason().isBlank()) {
+            content.append("，failureReason=").append(execution.getFailureReason());
+        }
+        taskRunLogService.append(run, "EXECUTION", "WORKER/" + (execution.getTool() == null
+                ? "TOOL" : execution.getTool()), content.toString());
+    }
+
     /** 将 TestAgent 收集的 Worker stdout/stderr 接入统一日志入口。 */
     public void appendWorkerOutput(TaskRunEntity run, String stream, String output) {
         taskRunLogService.appendWorkerOutput(run, stream, output);
+    }
+
+    /** 将 Verify 的命令、退出码、摘要和失败项投影到统一运行日志。 */
+    public void appendVerificationResult(TaskRunEntity run, TestResult result) {
+        taskRunLogService.appendVerificationResult(run, result);
     }
 
     /** 将 Agent 每轮脱敏观测投影为可游标读取的执行日志；完整原文仍只留在结构化摘要中。 */

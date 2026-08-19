@@ -8,6 +8,12 @@ spring:
     username: ${SANDBOX_DB_USERNAME:qgents}
     password: ${SANDBOX_DB_PASSWORD:qgents}
     driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      # Worker 库由部署管理员先创建；应用启动仅幂等创建自身的执行记录和日志表。
+      mode: always
+      schema-locations: classpath:db/sandbox_worker_schema.sql
+      encoding: UTF-8
 
 logging:
   file:

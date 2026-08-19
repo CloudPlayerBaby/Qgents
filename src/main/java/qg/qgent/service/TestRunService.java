@@ -3,6 +3,8 @@ package qg.qgent.service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import qg.qgent.api.ApiException;
@@ -139,6 +141,12 @@ public class TestRunService {
 
     private DryRunResponse createDryRunWithoutAccessCheck(UUID projectId, UUID userId,
                                                            DryRunCreateRequest request) {
+        return createDryRunWithoutAccessCheck(projectId, userId, request, null, null);
+    }
+
+    private DryRunResponse createDryRunWithoutAccessCheck(UUID projectId, UUID userId,
+                                                           DryRunCreateRequest request,
+                                                           UUID retryOfDryRunId, String retryReasonCode) {
         ProjectRepositoryEntity repository = requireRepository(projectId, request.getRepositoryId());
         String sourceRef = request.getSourceRef().trim();
         // 门禁查询、Worker 同步和预检匹配必须使用同一个规范化后的分支名。
@@ -176,6 +184,10 @@ public class TestRunService {
         run.setStatus("QUEUED");
         run.setTestsetSnapshot(requiredTestsets.stream().map(this::snapshot).toList());
         run.setAttemptCount(0);
+        run.setRetryOfDryRunId(retryOfDryRunId);
+        run.setRetryReasonCode(retryReasonCode);
+        run.setActiveClaimKey(activeClaimKey(projectId, request.getTaskId(), request.getRepositoryId(),
+                resolvedHead, targetBranch, resolvedTarget));
         run.setCreatedBy(userId);
         run.setCreatedAt(now);
         run.setUpdatedAt(now);
@@ -236,13 +248,33 @@ public class TestRunService {
                 return toDryRun(latest);
             }
         }
+        UUID retrySource = null;
+        String retryReason = null;
+        if (latest != null && "FAILED".equals(latest.getStatus())) {
+            String failureCode = reportFailureCode(latest);
+            if (failureCode == null || !AUTOMATIC_RETRYABLE_DRY_RUN_CODES.contains(failureCode)) {
+                return toDryRun(latest);
+            }
+            retrySource = latest.getId();
+            retryReason = failureCode;
+        }
         DryRunCreateRequest request = new DryRunCreateRequest();
         request.setRepositoryId(repositoryId);
         request.setTaskId(taskId);
         request.setSourceRef(worktree.getHeadCommit());
         request.setTargetBranch(branch);
         // Task 发起人只是持久化 createdBy 的审计主体；该内部入口不依赖其当前登录会话。
-        return createDryRunWithoutAccessCheck(projectId, task.getCreatedBy(), request);
+        try {
+            return createDryRunWithoutAccessCheck(projectId, task.getCreatedBy(), request, retrySource, retryReason);
+        } catch (DuplicateKeyException duplicate) {
+            DryRunEntity claimed = dryRunMapper.selectOne(Wrappers.<DryRunEntity>lambdaQuery()
+                    .eq(DryRunEntity::getProjectId, projectId).eq(DryRunEntity::getTaskId, taskId)
+                    .eq(DryRunEntity::getProjectRepositoryId, repositoryId)
+                    .eq(DryRunEntity::getHeadCommit, worktree.getHeadCommit())
+                    .eq(DryRunEntity::getTargetBranch, branch)
+                    .orderByDesc(DryRunEntity::getCreatedAt).last("LIMIT 1"));
+            return claimed == null ? null : toDryRun(claimed);
+        }
     }
 
     /**
@@ -287,7 +319,64 @@ public class TestRunService {
         if (run == null || !run.getProjectId().equals(projectId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "DRY_RUN_NOT_FOUND", "试运行不存在或不可见");
         }
-        return new DryRunReportResponse(id(run.getId()), run.getStatus(), run.getReport(), iso(run.getCreatedAt()));
+        return new DryRunReportResponse(id(run.getId()), run.getStatus(), run.getReport(), run.getHeadCommit(),
+                run.getTargetBranch(), run.getResolvedTargetCommit(), run.getAttemptCount(), iso(run.getCreatedAt()),
+                iso(run.getUpdatedAt()));
+    }
+
+    /**
+     * 仅复制已经失败且可重试的基础设施 Dry Run。整个过程不调用 Worker 或 GitHub；数据库锁只用于
+     * 阻止同一来源并发创建多个续跑事实，真正执行仍在提交后异步触发。
+     */
+    @Transactional
+    public DryRunResponse retryDryRun(UUID projectId, UUID dryRunId, UUID userId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        DryRunEntity source = dryRunMapper.selectByIdForUpdate(dryRunId);
+        if (source == null || !projectId.equals(source.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "DRY_RUN_NOT_FOUND", "试运行不存在或不可见");
+        }
+        if (!"FAILED".equals(source.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "DRY_RUN_RETRY_NOT_ALLOWED", "只有失败的 Dry Run 可以重试");
+        }
+        String code = reportFailureCode(source);
+        if (code == null || !RETRYABLE_DRY_RUN_CODES.contains(code)) {
+            throw new ApiException(HttpStatus.CONFLICT, "DRY_RUN_RETRY_NOT_ALLOWED",
+                    "该 Dry Run 失败类型不能通过基础设施重试解决");
+        }
+        if (retryDepth(source) >= MAX_DRY_RUN_RETRIES) {
+            throw new ApiException(HttpStatus.CONFLICT, "DRY_RUN_RETRY_EXHAUSTED", "Dry Run 已达到最大重试次数");
+        }
+        if (dryRunMapper.selectCount(Wrappers.<DryRunEntity>query()
+                .eq("retry_of_dry_run_id", source.getId())) > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "DRY_RUN_RETRY_IN_PROGRESS", "该 Dry Run 已有进行中的重试");
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        DryRunEntity retry = new DryRunEntity();
+        retry.setId(UuidV7.next());
+        retry.setProjectId(source.getProjectId());
+        retry.setTaskId(source.getTaskId());
+        retry.setTaskStepId(source.getTaskStepId());
+        retry.setProjectRepositoryId(source.getProjectRepositoryId());
+        retry.setSourceRef(source.getSourceRef());
+        retry.setHeadCommit(source.getHeadCommit());
+        retry.setResolvedTargetCommit(source.getResolvedTargetCommit());
+        retry.setTargetBranch(source.getTargetBranch());
+        retry.setStatus("QUEUED");
+        retry.setTestsetSnapshot(source.getTestsetSnapshot() == null ? List.of() : List.copyOf(source.getTestsetSnapshot()));
+        retry.setAttemptCount(0);
+        retry.setRetryOfDryRunId(source.getId());
+        retry.setRetryReasonCode(code);
+        retry.setActiveClaimKey(activeClaimKey(source.getProjectId(), source.getTaskId(), source.getProjectRepositoryId(),
+                source.getHeadCommit(), source.getTargetBranch(), source.getResolvedTargetCommit()));
+        retry.setCreatedBy(userId);
+        retry.setCreatedAt(now);
+        retry.setUpdatedAt(now);
+        dryRunMapper.insert(retry);
+        afterCommit(() -> {
+            publishDryRunUpdated(retry);
+            executionDispatcher.dispatchDryRun(retry.getId());
+        });
+        return toDryRun(retry);
     }
 
     // ---------- 私有辅助 ----------
@@ -454,6 +543,7 @@ public class TestRunService {
         }
         p.put("headCommit", run.getHeadCommit());
         p.put("targetBranch", run.getTargetBranch());
+        p.put("targetCommit", run.getResolvedTargetCommit());
         p.put("status", run.getStatus());
         p.put("sequence", 0);
         p.put("timestamp", Instant.now().toString());
@@ -468,8 +558,44 @@ public class TestRunService {
 
     private DryRunResponse toDryRun(DryRunEntity run) {
         return new DryRunResponse(id(run.getId()), id(run.getProjectId()), id(run.getProjectRepositoryId()),
-                run.getHeadCommit(), run.getTargetBranch(), run.getStatus(),
+                run.getHeadCommit(), run.getTargetBranch(), run.getResolvedTargetCommit(), run.getStatus(),
                 run.getReport(), id(run.getCreatedBy()), iso(run.getCreatedAt()));
+    }
+
+    private static final int MAX_DRY_RUN_RETRIES = 3;
+    private static final Set<String> RETRYABLE_DRY_RUN_CODES = Set.of(
+            "SANDBOX_WORKER_UNAVAILABLE", "SANDBOX_WORKER_ERROR", "GITHUB_API_UNAVAILABLE",
+            "GIT_STORE_FETCH_FAILED", "DRY_RUN_TIMEOUT");
+    private static final Set<String> AUTOMATIC_RETRYABLE_DRY_RUN_CODES = Set.of(
+            "SANDBOX_WORKER_UNAVAILABLE", "SANDBOX_WORKER_ERROR", "GITHUB_API_UNAVAILABLE",
+            "GIT_STORE_FETCH_FAILED", "DRY_RUN_TIMEOUT");
+
+    private String reportFailureCode(DryRunEntity run) {
+        Object value = run.getReport() == null ? null : run.getReport().get("failureCode");
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private String activeClaimKey(UUID projectId, UUID taskId, UUID repositoryId, String headCommit,
+                                  String targetBranch, String targetCommit) {
+        String raw = String.join(":", String.valueOf(projectId), String.valueOf(taskId), String.valueOf(repositoryId),
+                headCommit, targetBranch, targetCommit);
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        }
+    }
+
+    private int retryDepth(DryRunEntity run) {
+        int depth = 0;
+        UUID parent = run.getRetryOfDryRunId();
+        while (parent != null && ++depth <= MAX_DRY_RUN_RETRIES) {
+            DryRunEntity ancestor = dryRunMapper.selectById(parent);
+            parent = ancestor == null ? null : ancestor.getRetryOfDryRunId();
+        }
+        return depth;
     }
 
     private String iso(LocalDateTime time) {

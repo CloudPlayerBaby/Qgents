@@ -64,6 +64,8 @@ public class AgentInput {
      * 前一轮重试反馈：质量循环携带 Test/Review finding；基础设施重试只携带稳定失败码与受控描述。
      */
     private String feedback;
+    /** 结构化、限长、脱敏的重试失败上下文。 */
+    private RetryContext retryContext;
     /**
      * Workspace 只读摘要。
      */

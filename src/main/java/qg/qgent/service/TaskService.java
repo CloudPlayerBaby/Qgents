@@ -17,6 +17,8 @@ import qg.qgent.orchestration.TaskStepExecutionMode;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -213,7 +215,7 @@ public class TaskService {
             int index = 1;
             for (UUID repositoryId : repositoryIds) {
                 repositories.insertLink(workspace.getId(), repositoryId, "repo-" + index++, body.getBaseRef(),
-                        "feat/task-" + task.getId());
+                        featureBranch(task.getId(), body.getTitle()));
             }
         }
         eventPublisher.publishEvent(new TaskCreatedEvent(projectId, task.getId()));
@@ -452,6 +454,88 @@ public class TaskService {
         response.setRepositoryId(entity.getProjectRepositoryId());
         response.setAccessMode(entity.getAccessMode());
         return response;
+    }
+
+    /**
+     * 新 Workspace 各仓库共享的功能分支名：&lt;type&gt;/&lt;标题slug&gt;-&lt;id前缀&gt;。
+     * type 不固定 feat，按标题内容识别 conventional 类型（"fix: 登录报错"/"修复…"/"fix login bug" → fix，
+     * "实现…"/"新增…" → feat），识别不到兜底 feat；标题转小写短横线段（保留中文等 Unicode 字母/数字，
+     * 其余符号折叠为 '-', 截断 24 个码点），id 前缀取 UUIDv7 去横线后的前 12 位
+     * （48 位毫秒时间戳，毫秒级唯一；避免整段 UUID 使分支名过长且像乱码）。
+     */
+    private static String featureBranch(UUID taskId, String title) {
+        String[] typeAndName = detectType(title);
+        return typeAndName[0] + "/" + slugify(typeAndName[1]) + "-"
+                + taskId.toString().replace("-", "").substring(0, 12);
+    }
+
+    /** 分支类型前缀（conventional 命名规范）。 */
+    private static final List<String> BRANCH_TYPES =
+            List.of("feat", "fix", "chore", "docs", "refactor", "test", "perf", "style", "build", "ci", "revert");
+
+    /** conventional 风格 "type: 标题" 或 "type(scope): 标题"，type 必须位于 BRANCH_TYPES。 */
+    private static final Pattern BRANCH_TYPE_COLON =
+            Pattern.compile("^([a-z][a-z0-9]*)(?:\\([^)]*\\))?:\\s*(.+)$");
+
+    /**
+     * 按优先级排列的中文类型关键字（小写，命中即采用该类型，先出现者优先）。
+     * 英文类型关键字只通过标题开头识别（colon/前缀两种），不在此做包含式匹配，避免 "prefix" 等误命中 "fix"。
+     */
+    private static final List<String[]> BRANCH_TYPE_KEYWORDS = List.of(
+            new String[]{"fix", "修复", "缺陷", "打补丁"},
+            new String[]{"docs", "文档", "注释", "说明"},
+            new String[]{"refactor", "重构", "清理", "重命名"},
+            new String[]{"test", "测试", "用例"},
+            new String[]{"perf", "性能", "优化", "提速"},
+            new String[]{"revert", "回滚", "撤销"},
+            new String[]{"chore", "维护", "杂项"},
+            new String[]{"style", "样式", "格式化"},
+            new String[]{"feat", "实现", "新增", "添加", "开发", "接入"}
+    );
+
+    /**
+     * 从标题识别 [type, 名称]。识别顺序：conventional colon 风格 &gt; 英文类型词开头 &gt; 中文关键字包含式 &gt; 兜底 feat。
+     */
+    private static String[] detectType(String title) {
+        if (title == null || title.isBlank()) {
+            return new String[]{"feat", "task"};
+        }
+        String trimmed = title.trim();
+        Matcher colon = BRANCH_TYPE_COLON.matcher(trimmed);
+        if (colon.matches() && BRANCH_TYPES.contains(colon.group(1))) {
+            return new String[]{colon.group(1), colon.group(2)};
+        }
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        for (String type : BRANCH_TYPES) {
+            if (lower.startsWith(type + " ") || lower.startsWith(type + "(")) {
+                return new String[]{type, trimmed.substring(type.length()).trim()};
+            }
+        }
+        for (String[] keywords : BRANCH_TYPE_KEYWORDS) {
+            for (int i = 1; i < keywords.length; i++) {
+                if (lower.contains(keywords[i])) {
+                    return new String[]{keywords[0], trimmed};
+                }
+            }
+        }
+        return new String[]{"feat", trimmed};
+    }
+
+    private static String slugify(String title) {
+        if (title == null) {
+            return "task";
+        }
+        String slug = title.trim().toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{L}\\p{N}]+", "-")
+                .replaceAll("-{2,}", "-")
+                .replaceAll("^-|-$", "");
+        if (slug.isEmpty()) {
+            return "task";
+        }
+        if (slug.codePointCount(0, slug.length()) > 24) {
+            slug = slug.substring(0, slug.offsetByCodePoints(0, 24)).replaceAll("-+$", "");
+        }
+        return slug;
     }
 
     /**

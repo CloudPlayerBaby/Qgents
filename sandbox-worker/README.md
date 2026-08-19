@@ -27,7 +27,24 @@ mvn -f sandbox-worker/pom.xml test
 mvn -f sandbox-worker/pom.xml package
 ```
 
-关键配置：`SANDBOX_GIT_STORE_ROOT`、`SANDBOX_WORKSPACE_LOCAL_ROOT`、`SANDBOX_WORKSPACE_DOCKER_HOST_ROOT`、`SANDBOX_WORKSPACE_METADATA_ROOT`、`SANDBOX_RUNTIME`、`SANDBOX_DEV_TOOLS_IMAGE`、`SANDBOX_DEVELOPER_HOME_SIZE`。沙箱 rootfs 默认可写，开发用户 HOME 默认以 `8g` tmpfs 挂载；Workspace 仍只逐仓库挂载授权目录。
+关键配置：`SANDBOX_DB_URL`、`SANDBOX_DB_USERNAME`、`SANDBOX_DB_PASSWORD`、`SANDBOX_GIT_STORE_ROOT`、`SANDBOX_WORKSPACE_LOCAL_ROOT`、`SANDBOX_WORKSPACE_DOCKER_HOST_ROOT`、`SANDBOX_WORKSPACE_METADATA_ROOT`、`SANDBOX_RUNTIME`、`SANDBOX_DEV_TOOLS_IMAGE`、`SANDBOX_DEVELOPER_HOME_SIZE`。沙箱 rootfs 默认可写，开发用户 HOME 默认以 `8g` tmpfs 挂载；Workspace 仍只逐仓库挂载授权目录。
+
+## Worker 数据库初始化
+
+Worker 的工具执行详情与完整日志存入独立 MySQL 库 `qgents_sandbox_worker`，表为
+`tool_executions` 和 `tool_execution_logs`。它们不写入主后端的 `qgents` 库，也不依赖
+`docker logs`。
+
+部署管理员必须在首次启动 Worker 前创建数据库：
+
+```bash
+mysql --protocol=tcp -h <mysql-host> -u <admin-user> -p \
+  < sandbox-worker/src/main/resources/db/sandbox_worker_database.sql
+```
+
+随后为 `SANDBOX_DB_USERNAME` 配置的应用账户授予该库所需权限。Worker 启动时通过
+`spring.sql.init` 自动执行幂等脚本 `db/sandbox_worker_schema.sql`，因此会创建缺失的两张表；
+应用账户不需要 `CREATE DATABASE` 全局权限。生产环境应把这两个 SQL 文件纳入部署发布步骤。
 
 ## 分步构建与运行
 
@@ -65,6 +82,9 @@ docker run --rm --name qgents-sandbox-worker `
   -v qgents_worker_metadata:/var/lib/qgents/workspace-metadata `
   -v qgents_worker_git_store:/var/lib/qgents/git-store `
   -e SANDBOX_RUNTIME=docker `
+  -e SANDBOX_DB_URL='jdbc:mysql://<mysql-host>:3306/qgents_sandbox_worker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC' `
+  -e SANDBOX_DB_USERNAME='<worker-db-user>' `
+  -e SANDBOX_DB_PASSWORD='<worker-db-password>' `
   -e SANDBOX_DEV_TOOLS_IMAGE=qgents/sandbox-dev-tools:0.2.0 `
   -e SANDBOX_IMAGE_PROFILES=dev-tools `
   -e SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock `

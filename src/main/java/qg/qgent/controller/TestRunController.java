@@ -71,6 +71,16 @@ public class TestRunController {
     }
 
     /**
+     * 仅对瞬时基础设施失败创建新的不可变 Dry Run 尝试。
+     */
+    @PostMapping("/dry-runs/{dryRunId}/retries")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ApiResponse<?> retryDryRun(@PathVariable UUID projectId, @PathVariable UUID dryRunId,
+                                      @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        return ok(testRunService.retryDryRun(projectId, dryRunId, userId), request);
+    }
+
+    /**
      * 查询当前 Task 仓库提交创建 MR 前的真实门禁快照。
      */
     @GetMapping("/tasks/{taskId}/repositories/{repositoryId}/preflight")

@@ -50,13 +50,15 @@ public class FileWriteTool implements SandboxTool {
         String content = ToolArguments.optionalString(arguments, "content", "", 2 * 1024 * 1024);
         Path target = files.resolveForWrite(context.getLocalRepository(), relativePath);
         try {
-            byte[] previous = Files.exists(target) ? Files.readAllBytes(target) : new byte[0];
+            boolean existed = Files.exists(target);
+            byte[] previous = existed ? Files.readAllBytes(target) : new byte[0];
             String actualHash = FileReadTool.sha256(previous);
             if (!actualHash.equalsIgnoreCase(expectedHash)) {
                 throw new WorkerException(CONFLICT, "FILE_HASH_MISMATCH", "文件已经发生变化，请重新读取后再写入");
             }
             byte[] next = content.getBytes(StandardCharsets.UTF_8);
-            boolean changed = !java.util.Arrays.equals(previous, next);
+            // 新建空文件时 previous 与 next 都为空字节数组，内容相等但存在性已变化，必须记为变更
+            boolean changed = !existed || !java.util.Arrays.equals(previous, next);
             atomicReplace(target, next);
             return ToolResult.value(Map.of("path", relativePath, "sha256", FileReadTool.sha256(next),
                     "bytes", next.length, "changed", changed));

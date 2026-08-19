@@ -17,5 +17,7 @@ public class TestExecutionResponse {
     private UUID executionId;
     private String status;
     private String resolvedHeadCommit;
+    private String resolvedSourceCommit;
+    private String resolvedTargetCommit;
     private List<TestExecutionItemResponse> results;
 }

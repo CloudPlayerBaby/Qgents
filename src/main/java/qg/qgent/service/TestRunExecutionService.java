@@ -100,11 +100,12 @@ public class TestRunExecutionService {
             WorkerMergePreviewRequest previewRequest = new WorkerMergePreviewRequest();
             previewRequest.setRepositoryId(run.getProjectRepositoryId());
             previewRequest.setSourceRef(run.getHeadCommit());
-            previewRequest.setTargetBranch(run.getResolvedTargetCommit());
+            previewRequest.setTargetCommit(run.getResolvedTargetCommit());
             WorkerMergePreviewResponse preview = worker.mergePreview(previewRequest);
             requirePreviewContext(run, preview);
             Map<String, Object> report = new LinkedHashMap<>();
             report.put("targetCommit", preview.getResolvedTargetCommit());
+            report.put("headCommit", preview.getResolvedHeadCommit());
             report.put("mergeable", preview.isMergeable());
             report.put("conflicts", preview.getConflicts() == null ? List.of() : preview.getConflicts());
             String status = "FAILED";
@@ -127,7 +128,15 @@ public class TestRunExecutionService {
                     status = testResponse != null && "PASSED".equals(testResponse.getStatus()) ? "PASSED" : "FAILED";
                 }
             } else {
-                report.put("tests", Map.of("status", "SKIPPED", "reason", "MERGE_CONFLICT"));
+                report.put("failureCode", "GIT_MERGE_CONFLICT");
+                report.put("message", "源提交与目标提交存在合并冲突");
+                report.put("tests", Map.of("status", "SKIPPED", "reason", "MERGE_CONFLICT", "results", List.of()));
+            }
+            if ("FAILED".equals(status) && !report.containsKey("failureCode")) {
+                String failureCode = testFailureCode(testSummaryFrom(report));
+                report.put("failureCode", failureCode);
+                report.put("message", "TESTSET_FAILED".equals(failureCode)
+                        ? "至少一个门禁 Testset 未通过" : "门禁 Testset 执行超时");
             }
             completeDry(run, token, status, report, run.getHeadCommit());
         } catch (RuntimeException failure) {
@@ -194,6 +203,8 @@ public class TestRunExecutionService {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("status", response == null ? "FAILED" : response.getStatus());
         summary.put("resolvedHeadCommit", response == null ? null : response.getResolvedHeadCommit());
+        summary.put("resolvedSourceCommit", response == null ? null : response.getResolvedSourceCommit());
+        summary.put("resolvedTargetCommit", response == null ? null : response.getResolvedTargetCommit());
         summary.put("results", response == null || response.getResults() == null ? List.of()
                 : response.getResults().stream().map(result -> {
             Map<String, Object> item = new LinkedHashMap<>();
@@ -202,9 +213,35 @@ public class TestRunExecutionService {
             item.put("exitCode", result.getExitCode());
             item.put("durationMs", result.getDurationMs());
             item.put("failureCode", result.getFailureCode());
+            item.put("message", result.getMessage());
             return item;
         }).toList());
         return summary;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> testSummaryFrom(Map<String, Object> report) {
+        Object tests = report.get("tests");
+        return tests instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+    }
+
+    @SuppressWarnings("unchecked")
+    private String testFailureCode(Map<String, Object> summary) {
+        Object results = summary.get("results");
+        if (results instanceof List<?> list) {
+            for (Object value : list) {
+                if (value instanceof Map<?, ?> item && "TIMED_OUT".equals(item.get("failureCode"))) {
+                    return "DRY_RUN_TIMEOUT";
+                }
+                if (value instanceof Map<?, ?> item && "BUILD_ENVIRONMENT_UNAVAILABLE".equals(item.get("failureCode"))) {
+                    return "SANDBOX_WORKER_UNAVAILABLE";
+                }
+                if (value instanceof Map<?, ?> item && "TEST_COMMAND_NOT_ALLOWED".equals(item.get("failureCode"))) {
+                    return "TESTSET_DEFINITION_INVALID";
+                }
+            }
+        }
+        return "TESTSET_FAILED";
     }
 
     private boolean completeTest(TestRunEntity run, String token, String status, Map<String, Object> summary) {
@@ -264,9 +301,11 @@ public class TestRunExecutionService {
      */
     private void requirePassedTestContext(DryRunEntity run, WorkerTestExecutionResponse response) {
         if (response != null && "PASSED".equals(response.getStatus())
-                && !sameCommit(run.getResolvedTargetCommit(), response.getResolvedHeadCommit())) {
+                && (!sameCommit(run.getResolvedTargetCommit(), response.getResolvedHeadCommit())
+                || !sameCommit(run.getHeadCommit(), response.getResolvedSourceCommit())
+                || !sameCommit(run.getResolvedTargetCommit(), response.getResolvedTargetCommit()))) {
             throw new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.CONFLICT,
-                    "DRY_RUN_TEST_CONTEXT_MISMATCH", "Sandbox Worker passed tests for a different target commit");
+                    "DRY_RUN_TEST_CONTEXT_MISMATCH", "Sandbox Worker passed tests for a different merge context");
         }
     }
 
@@ -292,6 +331,7 @@ public class TestRunExecutionService {
         if (run.getTaskId() != null) payload.put("taskId", run.getTaskId());
         payload.put("headCommit", run.getHeadCommit());
         payload.put("targetBranch", run.getTargetBranch());
+        payload.put("targetCommit", run.getResolvedTargetCommit());
         payload.put("timestamp", Instant.now().toString());
         events.publish(run.getProjectId(), null, "dry-run.updated", run.getId().toString(), payload);
     }

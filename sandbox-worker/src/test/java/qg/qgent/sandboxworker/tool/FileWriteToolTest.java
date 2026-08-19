@@ -14,6 +14,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FileWriteToolTest {
     @TempDir
@@ -45,6 +46,19 @@ class FileWriteToolTest {
                 "content", "原内容"));
 
         assertEquals(false, result.getResult().get("changed"));
+    }
+
+    @Test
+    void createsEmptyNewFileReportsChanged() throws Exception {
+        FileWriteTool tool = new FileWriteTool(new RepositoryFileResolver());
+
+        ToolResult result = tool.execute(context(), Map.of("path", "empty.txt",
+                "expectedHash", FileReadTool.sha256(new byte[0]), "content", ""));
+
+        // 新建空文件：previous 与 next 都为空字节数组，但存在性已变化，必须记为真实变更
+        assertTrue(Files.exists(repository.resolve("empty.txt")));
+        assertEquals(0, Files.size(repository.resolve("empty.txt")));
+        assertEquals(true, result.getResult().get("changed"));
     }
 
     @Test

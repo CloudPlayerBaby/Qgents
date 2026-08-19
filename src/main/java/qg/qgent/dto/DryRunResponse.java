@@ -18,6 +18,7 @@ public class DryRunResponse {
     private String repositoryId;
     private String headCommit;
     private String targetBranch;
+    private String targetCommit;
     private String status;
     private Map<String, Object> report;
     private String createdBy;
