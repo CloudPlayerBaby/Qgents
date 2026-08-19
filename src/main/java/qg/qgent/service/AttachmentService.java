@@ -217,6 +217,36 @@ public class AttachmentService {
     }
 
     /**
+     * 供消息列表回显时回填 IMAGE/FILE 消息的预览字段（增量契约 §7 增强：previewable / previewType）。
+     * <p>
+     * 调用方已校验群成员可见性（群属于本项目），此处只校验附件归属与 READY；不签发带 token 的
+     * previewUrl —— 消息内容里的 URL 无法随 token 过期续期，前端拿到过期地址后没有回退，会再次
+     * 出现「无法预览」。previewable/previewType 无时效性，前端据此提示「点击预览」并走 preview-url
+     * 接口（带 5 分钟 Query 缓存）重新签发。
+     *
+     * @param projectId    附件所属项目 ID
+     * @param attachmentId 附件 ID（字符串形式）
+     * @return 预览字段；附件不存在、不属于本项目或未 READY 时返回 null（调用方保持原样回显）
+     */
+    public MessageAttachmentPreview messagePreview(UUID projectId, String attachmentId) {
+        UUID id;
+        try {
+            id = UUID.fromString(attachmentId);
+        } catch (IllegalArgumentException | NullPointerException e) {
+            return null;
+        }
+        AttachmentEntity attachment = attachmentMapper.selectById(id);
+        if (attachment == null || !projectId.equals(attachment.getProjectId())) {
+            return null;
+        }
+        if (!"READY".equals(attachment.getStatus())) {
+            return null;
+        }
+        String previewType = classifyPreviewType(attachment);
+        return new MessageAttachmentPreview(!"UNSUPPORTED".equals(previewType), previewType);
+    }
+
+    /**
      * 读取附件全部字节用于内联预览（契约 §5）。
      * <p>
      * 校验项目成员资格、附件归属与 READY 后从对象存储读取全部字节；本地存储回退返回 501。
@@ -329,6 +359,27 @@ public class AttachmentService {
 
         public Long sizeBytes() {
             return sizeBytes;
+        }
+    }
+
+    /**
+     * 消息回显预览字段载体（增量契约 §7：previewable / previewType，无时效性；非接口 DTO）。
+     */
+    public static class MessageAttachmentPreview {
+        private final boolean previewable;
+        private final String previewType;
+
+        public MessageAttachmentPreview(boolean previewable, String previewType) {
+            this.previewable = previewable;
+            this.previewType = previewType;
+        }
+
+        public boolean isPreviewable() {
+            return previewable;
+        }
+
+        public String getPreviewType() {
+            return previewType;
         }
     }
 
