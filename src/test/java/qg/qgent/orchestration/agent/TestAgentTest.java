@@ -494,14 +494,15 @@ class TestAgentTest {
     }
 
     @Test
-    void timeoutExitCodeMapsToInfrastructureFailureWithoutLlm() {
+    void timeoutExitCodeMapsToDeterministicFailureWithoutLlm() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 124, "partial", "reached the timeout of 10 minutes", null));
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        // 超时是确定性失败：不再走 FAILED_INFRASTRUCTURE 同相位重试，直接 FAILED 让任务落到终态。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("TEST_EXECUTION_TIMEOUT");
         verify(llm, never()).complete(anyString(), anyList());
     }

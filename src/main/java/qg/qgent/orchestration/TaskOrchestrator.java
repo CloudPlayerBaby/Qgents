@@ -186,6 +186,7 @@ public class TaskOrchestrator {
         TaskExecutionContext ctx = new TaskExecutionContext(task);
         // 续跑来源：首个 TaskRun 的 retryOfTaskRunId 指向被重试的失败运行
         ctx.retryOf = retryOfTaskRunId;
+        ctx.startStepId = startStepId;
         // 用户点击重试会进入新的编排会话；从最近一次 Coding 产物恢复同一 TaskStep 的
         // patch 失败计数，避免每个 TaskRun 都把三次失败门槛重新清零。
         if (startStepId != null) {
@@ -396,18 +397,27 @@ public class TaskOrchestrator {
                 taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
             }
         } else {
-            List<TaskStepEntity> plannerSteps = stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
-                    .eq(TaskStepEntity::getTaskId, task.getId())
-                    .eq(TaskStepEntity::getRole, "PLANNER")
-                    .orderByAsc(TaskStepEntity::getSequenceNo)
-                    .last("LIMIT 1"));
-            TaskStepEntity planner = plannerSteps == null || plannerSteps.isEmpty() ? null : plannerSteps.get(0);
-            if (planner != null) {
-                TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), planner.getId(),
-                        planner.getRole(), planner.getAssignedAgentId(), task.getCreatedBy(),
+            // 续跑/重试时启动阶段失败（如 Sandbox 获取失败）发生在任何 step 节点执行之前，此时
+            // 还没有 lastRunId。失败 run 必须关联到本次续跑的起始步骤（startStepId），否则会把
+            // 用户重试 TESTER 的失败错误地记成 PLANNER run，导致前端时间线 role 错乱、且重试
+            // 目标被引导到错误的步骤。仅在无 startStepId 时才回退到 PLANNER 步骤。
+            TaskStepEntity step = (ctx != null && ctx.startStepId != null)
+                    ? stepMapper.selectById(ctx.startStepId)
+                    : null;
+            if (step == null) {
+                List<TaskStepEntity> plannerSteps = stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
+                        .eq(TaskStepEntity::getTaskId, task.getId())
+                        .eq(TaskStepEntity::getRole, "PLANNER")
+                        .orderByAsc(TaskStepEntity::getSequenceNo)
+                        .last("LIMIT 1"));
+                step = plannerSteps == null || plannerSteps.isEmpty() ? null : plannerSteps.get(0);
+            }
+            if (step != null) {
+                TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
+                        step.getRole(), step.getAssignedAgentId(), task.getCreatedBy(),
                         ctx == null ? null : ctx.retryOf);
                 taskRunService.markRunning(run.getId());
-                recordFailureDiagnostic(task, run, planner, startupOutcome);
+                recordFailureDiagnostic(task, run, step, startupOutcome);
                 taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
             }
         }
@@ -1537,6 +1547,11 @@ public class TaskOrchestrator {
         private final java.util.Map<UUID, AgentRunOutcome> infraFeedback = new java.util.HashMap<>();
         private UUID lastRunId;
         private UUID retryOf;
+        /**
+         * 本次续跑的起始步骤 ID（用户重试/恢复器续跑传入）；null 表示全量编排。
+         * 用于启动阶段失败时把失败 run 关联到正确的步骤，避免退化成 PLANNER 步骤。
+         */
+        private UUID startStepId;
         /**
          * 最后一次 SUCCEEDED 的 CODING run，终态时供 FinalDiffBundleService 生成待确认 Diff 批次。
          */

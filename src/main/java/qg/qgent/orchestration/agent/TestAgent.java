@@ -125,6 +125,12 @@ public class TestAgent implements Agent {
                 TestFailureClassifier.Verdict verdict = failureClassifier.classify(
                         exec.exitCode(), exec.stdout(), exec.stderr(), fileTargets(input));
                 if (verdict.classification() == TestFailureClassifier.Classification.ENVIRONMENT) {
+                    // 超时是确定性失败：10 分钟时限内跑不完的测试，重试大概率再次超时（尤其是
+                    // Android SDK 缺失等确定性环境缺陷会反复超时）。直接判 FAILED 不再同相位重试，
+                    // 避免任务陷入多轮 10 分钟测试循环后仍显示「运行中」。
+                    if ("TEST_EXECUTION_TIMEOUT".equals(verdict.failureCode())) {
+                        return testExecutionTimeout(input, command, safeExec);
+                    }
                     return infraFailure(input, "test environment failure: " + verdict.failureCode());
                 }
             }
@@ -185,6 +191,9 @@ public class TestAgent implements Agent {
                 TestFailureClassifier.Verdict verdict = failureClassifier.classify(
                         exec.exitCode(), exec.stdout(), exec.stderr(), fileTargets(input));
                 if (verdict.classification() == TestFailureClassifier.Classification.ENVIRONMENT) {
+                    if ("TEST_EXECUTION_TIMEOUT".equals(verdict.failureCode())) {
+                        return testExecutionTimeout(input, entry.getCommand(), safeExec);
+                    }
                     return infraFailure(input, "test environment failure: " + verdict.failureCode());
                 }
                 worstExit = exec.exitCode();
@@ -658,6 +667,41 @@ public class TestAgent implements Agent {
         failure.setMessage("test agent failed: " + safeMessage);
         log.warn("tester infrastructure failure workspaceId={} failureCode={}", input.getWorkspaceId(), code);
         return failure;
+    }
+
+    /**
+     * 测试命令超时：确定性失败，不再走同相位基础设施重试。
+     * <p>
+     * 10 分钟测试时限内未完成，往往是因为测试目标本身跑不完（如 Android SDK 缺失、依赖反复下载）
+     * 等确定性环境缺陷，重试大概率再次超时。直接判 {@link RunOutcome#FAILED}（不可修复、不可重试），
+     * 让任务落到 FAILED 终态，避免陷入多轮 10 分钟循环后任务仍显示「运行中」。
+     * 保留真实 exitCode/stdout/stderr 供诊断展示，failureCode 用稳定码 TEST_EXECUTION_TIMEOUT。
+     */
+    private AgentRunOutcome testExecutionTimeout(AgentInput input, List<String> command, ExecutionResult exec) {
+        TestResult test = new TestResult();
+        test.setSuccess(false);
+        test.setExitCode(exec.exitCode());
+        test.setCommand(String.join(" ", command));
+        test.setStdout(exec.stdout());
+        test.setStderr(exec.stderr());
+        test.setVerificationMode("COMMAND");
+        test.setSummary("测试命令 " + String.join(" ", command) + " 执行超时（" + TEST_TIMEOUT.toMinutes()
+                + " 分钟时限），判定为确定性失败不再重试");
+        TestResult.Failure failure = new TestResult.Failure();
+        failure.setName("test execution timeout");
+        failure.setReason("测试在 " + TEST_TIMEOUT.toMinutes() + " 分钟时限内未完成，重试无法解决确定性环境缺陷");
+        failure.setSeverity("ERROR");
+        test.setFailures(List.of(failure));
+        test.setNeedsCodingFix(false);
+
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setPhase(input.getPhase());
+        outcome.setOutcome(RunOutcome.FAILED);
+        outcome.setTestResult(test);
+        outcome.setMessage(test.getSummary());
+        outcome.setFailureCode("TEST_EXECUTION_TIMEOUT");
+        log.warn("tester execution timeout workspaceId={}", input.getWorkspaceId());
+        return outcome;
     }
 
     private String infrastructureCode(String message) {
