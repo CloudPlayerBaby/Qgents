@@ -93,6 +93,11 @@ public class EventService {
      * 单连接空闲超时（毫秒）：心跳会保活，超时后线程退出、客户端按 Last-Event-ID 重连。
      */
     private static final long SSE_TIMEOUT_MS = 30 * 60 * 1000L;
+    /**
+     * 最大并发 SSE 连接数（项目级 + 通知级 + 团队级合计）：每个连接占用一个泵线程（固定 8 线程池
+     * 排队）。超过上限时拒绝建立新连接（返回 429），防止连接堆积耗尽泵线程与数据库连接。
+     */
+    private static final int MAX_SSE_CONNECTIONS = 128;
     /** 同一项目事件写入发生死锁时的最大新事务重试次数。 */
     private static final int EVENT_DEADLOCK_RETRIES = 3;
     /** 死锁重试的初始退避时间（毫秒）。 */
@@ -392,10 +397,24 @@ public class EventService {
         }
         long cursor = lastEventId != null ? lastEventId
                 : notificationEventMapper.maxSequence(userId);
+        if (!acquireSseSlot()) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "SSE_CONNECTION_LIMIT_EXCEEDED",
+                    "当前实时连接过多，请稍后重试");
+        }
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
-        emitter.onTimeout(() -> log.info("SSE notification timeout, userId={}, cursor={}", userId, cursor));
-        emitter.onError(e -> log.info("SSE notification error, userId={}: {}", userId, e.getMessage()));
-        emitter.onCompletion(() -> log.info("SSE notification completed, userId={}, cursor={}", userId, cursor));
+        AtomicBoolean connectionClosed = new AtomicBoolean();
+        emitter.onTimeout(() -> {
+            closeSseConnection(connectionClosed);
+            log.info("SSE notification timeout, userId={}, cursor={}", userId, cursor);
+        });
+        emitter.onError(e -> {
+            closeSseConnection(connectionClosed);
+            log.info("SSE notification error, userId={}: {}", userId, e.getMessage());
+        });
+        emitter.onCompletion(() -> {
+            closeSseConnection(connectionClosed);
+            log.info("SSE notification completed, userId={}, cursor={}", userId, cursor);
+        });
         executor.execute(() -> notificationPump(emitter, userId, cursor));
         return emitter;
     }
@@ -480,10 +499,24 @@ public class EventService {
             }
         }
         long cursor = lastEventId != null ? lastEventId : teamEventMapper.maxSequence(teamId);
+        if (!acquireSseSlot()) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "SSE_CONNECTION_LIMIT_EXCEEDED",
+                    "当前实时连接过多，请稍后重试");
+        }
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
-        emitter.onTimeout(() -> log.info("SSE team timeout, teamId={}, cursor={}", teamId, cursor));
-        emitter.onError(e -> log.info("SSE team error, teamId={}: {}", teamId, e.getMessage()));
-        emitter.onCompletion(() -> log.info("SSE team completed, teamId={}, cursor={}", teamId, cursor));
+        AtomicBoolean connectionClosed = new AtomicBoolean();
+        emitter.onTimeout(() -> {
+            closeSseConnection(connectionClosed);
+            log.info("SSE team timeout, teamId={}, cursor={}", teamId, cursor);
+        });
+        emitter.onError(e -> {
+            closeSseConnection(connectionClosed);
+            log.info("SSE team error, teamId={}: {}", teamId, e.getMessage());
+        });
+        emitter.onCompletion(() -> {
+            closeSseConnection(connectionClosed);
+            log.info("SSE team completed, teamId={}, cursor={}", teamId, cursor);
+        });
         executor.execute(() -> teamPump(emitter, teamId, cursor));
         return emitter;
     }
@@ -544,8 +577,11 @@ public class EventService {
         }
         long cursor = lastEventId != null ? lastEventId : eventMapper.maxSequence(projectId);
 
+        if (!acquireSseSlot()) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "SSE_CONNECTION_LIMIT_EXCEEDED",
+                    "当前实时连接过多，请稍后重试");
+        }
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
-        activeSseConnections.incrementAndGet();
         AtomicBoolean connectionClosed = new AtomicBoolean();
 
         emitter.onTimeout(() -> {
@@ -637,6 +673,24 @@ public class EventService {
             emitter.complete();
         } catch (Exception ignored) {
             // 连接已断时 complete 自身也可能抛错，忽略
+        }
+    }
+
+    /**
+     * 尝试占用一个 SSE 连接槽位。超过 {@link #MAX_SSE_CONNECTIONS} 时返回 false，
+     * 调用方应拒绝建立新连接（429），避免连接堆积耗尽泵线程（固定 8 线程池排队）
+     * 与数据库连接（每个泵线程周期性查询事件表）。
+     */
+    private boolean acquireSseSlot() {
+        while (true) {
+            int current = activeSseConnections.get();
+            if (current >= MAX_SSE_CONNECTIONS) {
+                log.warn("SSE connection limit reached, active={} max={}", current, MAX_SSE_CONNECTIONS);
+                return false;
+            }
+            if (activeSseConnections.compareAndSet(current, current + 1)) {
+                return true;
+            }
         }
     }
 

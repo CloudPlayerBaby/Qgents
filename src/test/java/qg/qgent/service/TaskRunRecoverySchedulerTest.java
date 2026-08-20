@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -49,6 +50,7 @@ class TaskRunRecoverySchedulerTest {
         TaskEntity task = new TaskEntity();
         task.setId(taskId);
         task.setProjectId(projectId);
+        task.setStatus("RUNNING");
         when(tasks.selectStaleOrphaned(any(), anyInt())).thenReturn(List.of(taskId));
         when(tasks.selectById(taskId)).thenReturn(task);
         when(steps.selectFirstIncompleteStep(taskId)).thenReturn(stepId);
@@ -68,6 +70,7 @@ class TaskRunRecoverySchedulerTest {
         TaskEntity task = new TaskEntity();
         task.setId(taskId);
         task.setProjectId(projectId);
+        task.setStatus("RUNNING");
         when(tasks.selectStaleOrphaned(any(), anyInt())).thenReturn(List.of(taskId));
         when(tasks.selectById(taskId)).thenReturn(task);
         when(steps.selectFirstIncompleteStep(taskId)).thenReturn(null);
@@ -97,6 +100,88 @@ class TaskRunRecoverySchedulerTest {
         scheduler.recover();
 
         verify(events, never()).publishEvent(any());
+    }
+
+    @Test
+    void dedupesResumeEventWithinWindow() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("RUNNING");
+        when(tasks.selectStaleOrphaned(any(), anyInt())).thenReturn(List.of(taskId));
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(steps.selectFirstIncompleteStep(taskId)).thenReturn(stepId);
+
+        scheduler.recover();
+        scheduler.recover();
+        scheduler.recover();
+
+        // 窗口内同一任务只发布一次续跑事件，避免编排池满时同任务事件堆积排队。
+        verify(events, times(1)).publishEvent(org.mockito.ArgumentMatchers.argThat((TaskResumeRequestedEvent e) ->
+                e.taskId().equals(taskId)));
+    }
+
+    @Test
+    void skipsResumeWhenTaskLeftResumableStates() {
+        // 扫描后任务已被用户重试/取消/交付（如 CANCELLED/WAITING_DIFF_CONFIRMATION）：
+        // 前置状态二次确认直接跳过，不发布无效续跑事件。
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("CANCELLED");
+        when(tasks.selectStaleOrphaned(any(), anyInt())).thenReturn(List.of(taskId));
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(steps.selectFirstIncompleteStep(taskId)).thenReturn(stepId);
+
+        scheduler.recover();
+
+        verify(events, never()).publishEvent(any());
+    }
+
+    @Test
+    void failedTaskIsNotAutoResumedByRecovery() {
+        // FAILED 是用户可见的失败终态：恢复器不自动续跑，只由用户显式重试触发。
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("FAILED");
+        when(tasks.selectStaleOrphaned(any(), anyInt())).thenReturn(List.of(taskId));
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(steps.selectFirstIncompleteStep(taskId)).thenReturn(stepId);
+
+        scheduler.recover();
+
+        verify(events, never()).publishEvent(any());
+    }
+
+    @Test
+    void pendingLeaseWaiterIsDedupedAgainstOrphanResume() {
+        // 同一 PENDING 任务可能同时命中「租约可用等待者」与「孤儿扫描」两个查询：
+        // 去重保证窗口内只发布一次续跑事件，不产生重复编排尝试。
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("PENDING");
+        when(tasks.selectStaleOrphaned(any(), anyInt())).thenReturn(List.of(taskId));
+        when(tasks.selectPendingWithAvailableWorkspaceLease(anyInt())).thenReturn(List.of(taskId));
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(steps.selectFirstIncompleteStep(taskId)).thenReturn(UUID.randomUUID());
+
+        scheduler.recover();
+
+        verify(events, times(1)).publishEvent(org.mockito.ArgumentMatchers.argThat((TaskResumeRequestedEvent e) ->
+                e.taskId().equals(taskId)));
     }
 
     @Test
