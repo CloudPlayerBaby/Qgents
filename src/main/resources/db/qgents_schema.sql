@@ -631,7 +631,7 @@ CREATE TABLE IF NOT EXISTS workspace_repositories (
 CREATE TABLE IF NOT EXISTS task_steps (
     id BINARY(16) PRIMARY KEY, task_id BINARY(16) NOT NULL, sequence_no INT UNSIGNED NOT NULL,
     title VARCHAR(255) NOT NULL, instruction TEXT NOT NULL, role VARCHAR(32) NOT NULL, assigned_agent_id BINARY(16) NULL,
-    acceptance_criteria TEXT NULL, required_capabilities JSON NULL COMMENT 'Planner 需要的 Agent 能力标签', allowed_paths JSON NULL COMMENT '当前步骤允许写入的 Workspace 相对路径', target_files JSON NULL COMMENT '当前步骤声明的目标文件（Workspace 相对路径），用于目标已满足判定', execution_mode VARCHAR(16) NOT NULL DEFAULT 'MUTATE' COMMENT '步骤执行语义：MUTATE/VERIFY/TEST/REVIEW/PLAN', status VARCHAR(32) NOT NULL DEFAULT 'PENDING', created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    acceptance_criteria TEXT NULL, required_capabilities JSON NULL COMMENT 'Planner 需要的 Agent 能力标签', allowed_paths JSON NULL COMMENT '当前步骤允许写入的 Workspace 相对路径', target_files JSON NULL COMMENT '当前步骤声明的目标文件（Workspace 相对路径），用于目标已满足判定', execution_mode VARCHAR(16) NOT NULL DEFAULT 'MUTATE' COMMENT '步骤执行语义：MUTATE/VERIFY/TEST/REVIEW/PLAN', verification_commands JSON NULL COMMENT 'Planner 冻结的按仓库验证命令（白名单模板），TEST 步骤专用', status VARCHAR(32) NOT NULL DEFAULT 'PENDING', created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_task_step_sequence(task_id,sequence_no),
     CONSTRAINT fk_task_step_task FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
@@ -1418,3 +1418,15 @@ SET @avatar_key_alter_sql = IF(@avatar_key_col_exists = 0,
 PREPARE avatar_key_alter_stmt FROM @avatar_key_alter_sql;
 EXECUTE avatar_key_alter_stmt;
 DEALLOCATE PREPARE avatar_key_alter_stmt;
+
+-- 用户×群置顶偏好表（个人偏好，跨设备同步；主键 user_id+group_id）。
+-- 群被删除/归档时该行可保留（前端按活跃群过滤），故不建外键，避免删群时约束失败。
+CREATE TABLE IF NOT EXISTS
+    user_group_preference (
+        user_id BINARY(16) NOT NULL COMMENT '用户ID',
+        group_id BINARY(16) NOT NULL COMMENT '需求群ID',
+        pinned TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否置顶（0/1）',
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
+        PRIMARY KEY (user_id, group_id),
+        KEY idx_ugp_group (group_id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '用户×群置顶偏好（跨设备同步）';

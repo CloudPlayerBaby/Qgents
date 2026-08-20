@@ -161,6 +161,7 @@ public class TaskPlanMaterializationService {
         }
         TaskStepEntity tester = step(task, sequence++, "Test", plan.getTestPlan(), "TESTER", List.of(),
                 "执行计划测试并记录真实结果", null, "TEST");
+        tester.setVerificationCommands(verificationCommandsFor(plan));
         steps.insert(tester);
         dependencies.insertLink(tester.getId(), previous);
         insertScopes(tester.getId(), repositories, "READ");
@@ -285,6 +286,28 @@ public class TaskPlanMaterializationService {
     }
 
     /**
+     * 把 Plan 的按仓库验证命令冻结为 TEST 步骤的结构化字段。命令已在
+     * {@code PlanResultParser} 经白名单校验；此处仅做形状转换，不再放行任意命令。
+     * Plan 未输出验证命令或全部非法时返回 null（Test Agent 回退自动探测）。
+     */
+    private List<TaskStepEntity.VerificationCommand> verificationCommandsFor(PlanResult plan) {
+        if (plan == null || plan.getVerification() == null
+                || plan.getVerification().getCommands() == null
+                || plan.getVerification().getCommands().isEmpty()) {
+            return null;
+        }
+        return plan.getVerification().getCommands().stream()
+                .filter(command -> command.getCommand() != null && !command.getCommand().isEmpty())
+                .map(command -> {
+                    TaskStepEntity.VerificationCommand frozen = new TaskStepEntity.VerificationCommand();
+                    frozen.setRepositoryPath(command.getRepositoryPath());
+                    frozen.setCommand(List.copyOf(command.getCommand()));
+                    return frozen;
+                })
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
      * Freeze Planner file declarations as workspace-relative write paths. A
      * raw single-repository path is expanded with the worktree prefix as well
      * because local access exposes the prefix while Worker accepts the
@@ -395,6 +418,7 @@ public class TaskPlanMaterializationService {
         }).toList());
         result.put("testPlan", plan.getTestPlan());
         result.put("verificationMode", plan.getVerificationMode());
+        result.put("verification", plan.getVerification() == null ? null : plan.getVerification());
         result.put("risks", plan.getRisks());
         result.put("deliveryMode", decision.mode());
         result.put("scaleReason", plan.getScaleReason());

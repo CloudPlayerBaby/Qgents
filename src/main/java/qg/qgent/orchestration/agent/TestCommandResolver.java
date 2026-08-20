@@ -18,6 +18,36 @@ public class TestCommandResolver {
     public record ResolvedCommand(List<String> command, String repositoryPath) {
     }
 
+    /**
+     * 校验 Planner 输出的结构化验证命令是否命中白名单模板。
+     * <p>
+     * Plan 来自 LLM，不能信任其任意 shell 指令；只有与自动检测同源的固定测试模板可放行：
+     * Maven（mvn test / sh ./mvnw test）、Gradle（gradle test / sh ./gradlew test）、
+     * npm（npm test）与 Node 测试文件（node &lt;tests/*.test.js&gt; 等）。带模块参数的
+     * -pl / :module:test 收敛由运行时 {@link #scopeToModule} 完成，Plan 不输出。
+     *
+     * @param command 待校验的命令向量
+     * @return 命中白名单模板返回 true；null / 空 / 任意 shell 命令返回 false
+     */
+    public static boolean isAllowedVerificationCommand(List<String> command) {
+        if (command == null || command.isEmpty()) {
+            return false;
+        }
+        if (command.equals(List.of("mvn", "test")) || command.equals(List.of("sh", "./mvnw", "test"))) {
+            return true;
+        }
+        if (command.equals(List.of("gradle", "test")) || command.equals(List.of("sh", "./gradlew", "test"))) {
+            return true;
+        }
+        if (command.equals(List.of("npm", "test"))) {
+            return true;
+        }
+        if (command.size() == 2 && "node".equals(command.get(0)) && isNodeTestFile(command.get(1))) {
+            return true;
+        }
+        return false;
+    }
+
     /** 多模块 Maven 中单个子模块的构建入口标记（相对各模块目录自身）。 */
     private static final List<String> MAVEN_MODULE_MARKERS = List.of("pom.xml");
     /** Gradle 多项目中单个子项目的构建入口标记。 */

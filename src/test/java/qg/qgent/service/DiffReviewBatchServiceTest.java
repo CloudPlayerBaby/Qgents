@@ -102,6 +102,7 @@ class DiffReviewBatchServiceTest {
         batch.setWorkspaceId(workspaceId);
         batch.setReviewStatus("PENDING_CONFIRMATION");
         batch.setDeliveryStatus("NOT_STARTED");
+        batch.setConfirmationSource("USER");
 
         DiffEntity diff = new DiffEntity();
         diff.setId(diffId);
@@ -185,7 +186,7 @@ class DiffReviewBatchServiceTest {
         task.setWorkspaceId(workspaceId); task.setCreatedBy(actor);
         DiffReviewBatchEntity batch = new DiffReviewBatchEntity(); batch.setId(batchId); batch.setProjectId(projectId);
         batch.setTaskId(taskId); batch.setWorkspaceId(workspaceId); batch.setReviewStatus("PENDING_CONFIRMATION");
-        batch.setDeliveryStatus("NOT_STARTED"); batch.setAggregateHash("hash");
+        batch.setDeliveryStatus("NOT_STARTED"); batch.setConfirmationSource("USER"); batch.setAggregateHash("hash");
         DiffEntity diff = new DiffEntity(); diff.setId(UUID.randomUUID()); diff.setProjectId(projectId);
         diff.setTaskId(taskId); diff.setTaskRunId(UUID.randomUUID()); diff.setWorkspaceId(workspaceId);
         diff.setProjectRepositoryId(repositoryId); diff.setHeadCommit("head"); diff.setWorkingTreeHash("hash");
@@ -412,7 +413,7 @@ class DiffReviewBatchServiceTest {
         task.setWorkspaceId(workspaceId); task.setCreatedBy(actor); task.setStatus("WAITING_DIFF_CONFIRMATION");
         DiffReviewBatchEntity batch = new DiffReviewBatchEntity(); batch.setId(batchId); batch.setProjectId(projectId);
         batch.setTaskId(taskId); batch.setWorkspaceId(workspaceId); batch.setReviewStatus("PENDING_CONFIRMATION");
-        batch.setDeliveryStatus("NOT_STARTED"); batch.setAggregateHash("hash");
+        batch.setDeliveryStatus("NOT_STARTED"); batch.setConfirmationSource("USER"); batch.setAggregateHash("hash");
         DiffEntity diff = new DiffEntity(); diff.setId(UUID.randomUUID()); diff.setProjectId(projectId);
         diff.setTaskId(taskId); diff.setTaskRunId(UUID.randomUUID()); diff.setWorkspaceId(workspaceId);
         diff.setProjectRepositoryId(repositoryId); diff.setHeadCommit("head"); diff.setWorkingTreeHash("hash");
@@ -445,6 +446,7 @@ class DiffReviewBatchServiceTest {
         TaskEntity task = new TaskEntity(); task.setId(taskId); task.setProjectId(projectId);
         DiffReviewBatchEntity batch = new DiffReviewBatchEntity(); batch.setId(batchId); batch.setProjectId(projectId);
         batch.setTaskId(taskId); batch.setReviewStatus("PENDING_CONFIRMATION"); batch.setDeliveryStatus("DELIVERING");
+        batch.setConfirmationSource("USER");
         batch.setDeliveryLeaseExpiresAt(LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(1));
         when(batches.selectOne(any())).thenReturn(batch);
         when(batches.selectByIdForUpdate(batchId)).thenReturn(batch);

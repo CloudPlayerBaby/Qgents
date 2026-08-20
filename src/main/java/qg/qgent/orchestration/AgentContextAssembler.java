@@ -113,6 +113,9 @@ public class AgentContextAssembler {
         input.setPlanResult(planResult);
         input.setCodingResult(codingResult);
         input.setTestResult(testResult);
+        // TEST 步骤冻结的按仓库验证命令随 TaskStep 持久化；恢复续跑时 planResult 为 null，
+        // 但 step 字段仍可用，Test Agent 优先消费白名单命令。
+        input.setVerificationCommands(step.getVerificationCommands());
         applyContext(input, task, groupContext);
         return input;
     }

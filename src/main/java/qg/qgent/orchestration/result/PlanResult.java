@@ -44,6 +44,38 @@ public class PlanResult {
      * 交付模式判定理由（规模/跨仓库/门禁等）；可为空。
      */
     private String scaleReason;
+    /**
+     * 结构化验证命令（可选）：Planner 明确给出的按仓库验证命令，供 TESTING 阶段优先消费。
+     * 命令必须命中 {@code TestCommandResolver} 的白名单模板（mvn/gradle/npm test 或
+     * node &lt;tests/*.test.js&gt;），解析器校验不通过的命令会被丢弃并回退自动检测；
+     * 缺失或为空时 Test Agent 依据文件树自动解析命令。
+     */
+    private Verification verification;
+
+    /**
+     * 结构化验证命令集合：每个仓库一条命令；按仓库解析执行。
+     */
+    @Data
+    public static class Verification {
+        private List<VerificationCommand> commands = new ArrayList<>();
+    }
+
+    /**
+     * 单个仓库的验证命令。
+     */
+    @Data
+    public static class VerificationCommand {
+        /**
+         * 目标仓库目录（Workspace 相对路径，与 worktree workspacePath 一致）；
+         * 空或 null 表示 Workspace 根目录（单仓库场景）。
+         */
+        private String repositoryPath;
+        /**
+         * 白名单验证命令，如 ["node", "tests/todo.test.js"] 或 ["mvn", "test"]；
+         * 空列表视为无效条目。
+         */
+        private List<String> command = new ArrayList<>();
+    }
 
     /**
      * 单个实现步骤。

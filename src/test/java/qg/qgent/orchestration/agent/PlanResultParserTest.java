@@ -256,4 +256,109 @@ class PlanResultParserTest {
         PlanResult plan = parser.parse(json);
         assertThat(plan.getImplementationSteps().get(0).getMachineAssertions()).hasSize(8);
     }
+
+    @Test
+    void parsesWhitelistedVerificationCommandsPerRepository() {
+        String json = VALID_JSON.replace("\"risks\": [\"risk1\"]", """
+                "risks": ["risk1"],
+                "verification": {"commands": [
+                  {"repositoryPath": "backend", "command": ["sh", "./mvnw", "test"]},
+                  {"repositoryPath": "frontend", "command": ["node", "tests/todo.test.js"]},
+                  {"command": ["npm", "test"]}
+                ]}
+                """);
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getVerification()).isNotNull();
+        assertThat(plan.getVerification().getCommands()).hasSize(3);
+        assertThat(plan.getVerification().getCommands().get(0).getRepositoryPath()).isEqualTo("backend");
+        assertThat(plan.getVerification().getCommands().get(0).getCommand()).containsExactly("sh", "./mvnw", "test");
+        assertThat(plan.getVerification().getCommands().get(1).getRepositoryPath()).isEqualTo("frontend");
+        assertThat(plan.getVerification().getCommands().get(1).getCommand())
+                .containsExactly("node", "tests/todo.test.js");
+        assertThat(plan.getVerification().getCommands().get(2).getRepositoryPath()).isNull();
+        assertThat(plan.getVerification().getCommands().get(2).getCommand()).containsExactly("npm", "test");
+    }
+
+    @Test
+    void missingVerificationFallsBackToNull() {
+        PlanResult plan = parser.parse(VALID_JSON);
+        assertThat(plan.getVerification()).isNull();
+    }
+
+    @Test
+    void dropsNonWhitelistedVerificationCommandsKeepsValidOnes() {
+        String json = VALID_JSON.replace("\"risks\": [\"risk1\"]", """
+                "risks": ["risk1"],
+                "verification": {"commands": [
+                  {"command": ["rm", "-rf", "/"]},
+                  {"command": ["curl", "http://evil"]},
+                  {"command": ["node", "tests/todo.test.js"]}
+                ]}
+                """);
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getVerification()).isNotNull();
+        assertThat(plan.getVerification().getCommands()).hasSize(1);
+        assertThat(plan.getVerification().getCommands().get(0).getCommand())
+                .containsExactly("node", "tests/todo.test.js");
+    }
+
+    @Test
+    void dropsVerificationCommandWithTraversalRepositoryPath() {
+        String json = VALID_JSON.replace("\"risks\": [\"risk1\"]", """
+                "risks": ["risk1"],
+                "verification": {"commands": [
+                  {"repositoryPath": "../outside", "command": ["npm", "test"]},
+                  {"command": ["gradle", "test"]}
+                ]}
+                """);
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getVerification()).isNotNull();
+        assertThat(plan.getVerification().getCommands()).hasSize(1);
+        assertThat(plan.getVerification().getCommands().get(0).getRepositoryPath()).isNull();
+        assertThat(plan.getVerification().getCommands().get(0).getCommand()).containsExactly("gradle", "test");
+    }
+
+    @Test
+    void dropsVerificationCommandWithMissingOrEmptyCommand() {
+        String json = VALID_JSON.replace("\"risks\": [\"risk1\"]", """
+                "risks": ["risk1"],
+                "verification": {"commands": [
+                  {"command": []},
+                  {"command": ["node", "tests/not-a-test.js"]},
+                  {"command": ["mvn", "test"]}
+                ]}
+                """);
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getVerification()).isNotNull();
+        assertThat(plan.getVerification().getCommands()).hasSize(1);
+        assertThat(plan.getVerification().getCommands().get(0).getCommand()).containsExactly("mvn", "test");
+    }
+
+    @Test
+    void allIllegalVerificationCommandsFallsBackToNull() {
+        String json = VALID_JSON.replace("\"risks\": [\"risk1\"]", """
+                "risks": ["risk1"],
+                "verification": {"commands": [
+                  {"command": ["bash", "-c", "echo pwned"]},
+                  {"command": ["python", "-c", "import os; os.system('x')"]}
+                ]}
+                """);
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getVerification()).isNull();
+    }
+
+    @Test
+    void capsVerificationCommandsAtEight() {
+        StringBuilder commands = new StringBuilder();
+        for (int i = 1; i <= 10; i++) {
+            if (i > 1) {
+                commands.append(',');
+            }
+            commands.append("{\"command\":[\"node\",\"tests/test").append(i).append(".test.js\"]}");
+        }
+        String json = VALID_JSON.replace("\"risks\": [\"risk1\"]",
+                "\"risks\": [\"risk1\"],\n  \"verification\": {\"commands\": [" + commands + "]}");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getVerification().getCommands()).hasSize(8);
+    }
 }

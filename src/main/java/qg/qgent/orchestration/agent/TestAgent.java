@@ -2,6 +2,7 @@ package qg.qgent.orchestration.agent;
 
 import org.springframework.stereotype.Component;
 import lombok.extern.slf4j.Slf4j;
+import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
@@ -90,6 +91,14 @@ public class TestAgent implements Agent {
             if (isManualVerification(input)) {
                 return manualVerification(input);
             }
+            // Plan/Step 冻结的按仓库验证命令优先：恢复续跑时 planResult 为 null，但 TaskStep
+            // 持久化的 verificationCommands 仍可用。全部命令非法时返回 null，回退自动探测。
+            if (input.getVerificationCommands() != null && !input.getVerificationCommands().isEmpty()) {
+                AgentRunOutcome planned = executePlannedVerification(input);
+                if (planned != null) {
+                    return planned;
+                }
+            }
             if (isPureFileTask(input)) {
                 return verifyFileTask(input, files);
             }
@@ -137,6 +146,92 @@ public class TestAgent implements Agent {
         } catch (RuntimeException e) {
             return infraFailure(input, e.getMessage());
         }
+    }
+
+    /**
+     * 按 TaskStep 冻结的按仓库验证命令逐一执行（白名单防御性再校验），聚合结果后交由 LLM 分析。
+     * 任一命令失败 → 整体失败；全部通过 → 成功。无合法命令（旧数据或全部被过滤）返回 null，
+     * 由调用方回退自动探测。
+     */
+    private AgentRunOutcome executePlannedVerification(AgentInput input) {
+        List<TaskStepEntity.VerificationCommand> allowed = input.getVerificationCommands().stream()
+                .filter(command -> command != null && command.getCommand() != null
+                        && TestCommandResolver.isAllowedVerificationCommand(command.getCommand()))
+                .toList();
+        if (allowed.isEmpty()) {
+            return null;
+        }
+        List<String> commandTexts = new ArrayList<>();
+        StringBuilder stdout = new StringBuilder();
+        StringBuilder stderr = new StringBuilder();
+        int worstExit = 0;
+        List<TestResult.Failure> failures = new ArrayList<>();
+        for (TaskStepEntity.VerificationCommand entry : allowed) {
+            List<String> command = entry.getCommand();
+            String repositoryPath = blankToNull(entry.getRepositoryPath());
+            ExecutionResult exec = repositoryPath == null
+                    ? executionPort.execute(input.getWorkspaceId(), command, TEST_TIMEOUT)
+                    : executionPort.execute(input.getWorkspaceId(), repositoryPath, command, TEST_TIMEOUT);
+            if (!exec.ok()) {
+                return infraFailure(input, exec.error() == null ? "test execution unavailable"
+                        : ExecutionContentSanitizer.sanitize(exec.error()));
+            }
+            ExecutionResult safeExec = sanitizedAndLimited(exec);
+            if (isCommandUnavailable(safeExec)) {
+                return infraFailure(input, "build environment unavailable (exit code " + exec.exitCode()
+                        + "): selected wrapper or build tool could not be launched; use a workspace-relative wrapper such as ./gradlew or ./mvnw");
+            }
+            if (exec.exitCode() != 0) {
+                TestFailureClassifier.Verdict verdict = failureClassifier.classify(
+                        exec.exitCode(), exec.stdout(), exec.stderr(), fileTargets(input));
+                if (verdict.classification() == TestFailureClassifier.Classification.ENVIRONMENT) {
+                    return infraFailure(input, "test environment failure: " + verdict.failureCode());
+                }
+                worstExit = exec.exitCode();
+                TestResult.Failure failure = new TestResult.Failure();
+                failure.setName(String.join(" ", command));
+                failure.setReason("exit code " + exec.exitCode() + "；命令未通过");
+                failure.setSeverity("ERROR");
+                failures.add(failure);
+            }
+            commandTexts.add(String.join(" ", command));
+            if (safeExec.stdout() != null && !safeExec.stdout().isBlank()) {
+                stdout.append("[STDOUT ").append(String.join(" ", command)).append("]\n")
+                        .append(safeExec.stdout()).append('\n');
+            }
+            if (safeExec.stderr() != null && !safeExec.stderr().isBlank()) {
+                stderr.append("[STDERR ").append(String.join(" ", command)).append("]\n")
+                        .append(safeExec.stderr()).append('\n');
+            }
+        }
+        boolean passed = worstExit == 0;
+        ExecutionResult merged = new ExecutionResult(true, worstExit, stdout.toString(), stderr.toString(), null);
+        TestResult test;
+        if (passed || !failures.isEmpty()) {
+            test = analyze(input, allowed.size() == 1 ? allowed.get(0).getCommand() : List.of("planned", "verification"),
+                    merged);
+            test.setFailures(failures.isEmpty() ? test.getFailures() : failures);
+        } else {
+            test = new TestResult();
+            test.setExitCode(worstExit);
+            test.setSummary("验证命令执行失败");
+        }
+        test.setSuccess(passed);
+        test.setVerificationMode("COMMAND");
+        test.setCommand(String.join(" && ", commandTexts));
+        test.setStdout(merged.stdout());
+        test.setStderr(merged.stderr());
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setPhase(input.getPhase());
+        outcome.setTestResult(test);
+        outcome.setOutcome(passed ? RunOutcome.SUCCEEDED
+                : (test.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
+        outcome.setMessage(test.getSummary());
+        return outcome;
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     /**

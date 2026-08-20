@@ -171,4 +171,30 @@ class TestCommandResolverTest {
         assertThat(resolver.resolveCommand(List.of("package.json", "tests/todo.test.js", "src/todo.js")))
                 .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("npm", "test"), null));
     }
+
+    // ---------- Plan 结构化验证命令白名单校验 ----------
+
+    @Test
+    void allowsWhitelistedVerificationTemplates() {
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("mvn", "test"))).isTrue();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("sh", "./mvnw", "test"))).isTrue();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("gradle", "test"))).isTrue();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("sh", "./gradlew", "test"))).isTrue();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("npm", "test"))).isTrue();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("node", "tests/todo.test.js"))).isTrue();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("node", "test/calc.spec.mjs"))).isTrue();
+    }
+
+    @Test
+    void rejectsArbitraryShellVerificationCommands() {
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("rm", "-rf", "/"))).isFalse();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("curl", "http://evil"))).isFalse();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("bash", "-c", "echo pwned"))).isFalse();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("mvn", "clean", "install"))).isFalse();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("npm", "run", "build"))).isFalse();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("node", "src/app.js"))).isFalse();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("node", "tests/util.js"))).isFalse();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of())).isFalse();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(null)).isFalse();
+    }
 }
