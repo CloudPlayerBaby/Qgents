@@ -2979,11 +2979,13 @@ SSE 事件仍使用 §12\.1 的事件信封；以下为 `data` 中的业务 payl
 
     
 
-    - `code` 枚举：`INPUT_REQUIRED/APPROVAL_REQUIRED/BLOCKED/EXECUTION_FAILED/CANCELLED`。
+    - `code` 枚举：`INPUT_REQUIRED/APPROVAL_REQUIRED/BLOCKED/EXECUTION_FAILED/STARTUP_FAILED/CANCELLED`。
 
         
 
     - `retryable` 由后端按状态机判断（FAILED/CANCELLED/BLOCKED 可重试）。
+
+    - 启动失败（任务尚未创建 TaskRun 即中止）时 `code=STARTUP_FAILED`，`failureCode` 返回稳定失败码（如 `GIT_BRANCH_NOT_FOUND`、`GIT_BASE_REF_NOT_FOUND`、`SANDBOX_WORKER_UNAVAILABLE`）；`GIT_BRANCH_NOT_FOUND` 的 `summary` 会携带仓库与基线分支名（如「仓库 CloudPlayerBaby/test01 不存在基线分支 develop」），前端可据此提供「修改基线分支后重新发起任务」入口。
 
         
 
