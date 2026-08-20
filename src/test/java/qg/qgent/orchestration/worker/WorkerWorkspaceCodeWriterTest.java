@@ -272,6 +272,21 @@ class WorkerWorkspaceCodeWriterTest {
     }
 
     @Test
+    void patchFileFallsBackToExceptionTypeWhenInfraMessageIsNull() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        // 复现 "patch failed: null" 场景：Worker 工具链路抛出的 RuntimeException 无消息。
+        when(client.submitToolExecution(any(), any())).thenThrow(new RuntimeException());
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isTrue();
+        assertThat(result.getError()).isEqualTo("patch failed: RuntimeException");
+        assertThat(result.getError()).doesNotContain("null");
+    }
+
+    @Test
     void patchFileRejectsInvalidHashAndBlankArgs() {
         when(sessions.require(WORKSPACE)).thenReturn(session());
 

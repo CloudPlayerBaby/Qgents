@@ -36,6 +36,12 @@ import static org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY;
 @RequiredArgsConstructor
 public class FilePatchTool implements SandboxTool {
     private static final int MAX_PATCH_LENGTH = 1024 * 1024;
+    /**
+     * 目标文件大小上限，与主后端 {@code LocalWorkspaceCodeWriter.MAX_WRITE_BYTES} 一致。
+     * 超过该上限时拒绝打补丁并提示改用整文件写入，避免对超大文件整读整写拖过执行
+     * 超时后被误判为基础设施失败。
+     */
+    private static final int MAX_PATCH_TARGET_BYTES = 256 * 1024;
 
     private final RepositoryFileResolver files;
 
@@ -57,6 +63,10 @@ public class FilePatchTool implements SandboxTool {
         Path target = files.resolveForWrite(context.getLocalRepository(), relativePath);
         try {
             requireExistingTextFile(target);
+            if (Files.size(target) > MAX_PATCH_TARGET_BYTES) {
+                throw new WorkerException(UNPROCESSABLE_ENTITY, "TOOL_PATH_INVALID",
+                        "目标文件超过 256KB，无法打补丁，请改用 file.write 提供完整文件内容");
+            }
             byte[] previous = Files.readAllBytes(target);
             if (!FileReadTool.sha256(previous).equalsIgnoreCase(expectedHash)) {
                 throw new WorkerException(CONFLICT, "FILE_HASH_MISMATCH", "文件已经发生变化，请重新读取后再写入");

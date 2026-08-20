@@ -159,7 +159,7 @@ public class TaskPlanMaterializationService {
             created.add(step);
             previous = step.getId();
         }
-        TaskStepEntity tester = step(task, sequence++, "Verify", plan.getTestPlan(), "TESTER", List.of(),
+        TaskStepEntity tester = step(task, sequence++, "Test", plan.getTestPlan(), "TESTER", List.of(),
                 "执行计划测试并记录真实结果", null, "TEST");
         steps.insert(tester);
         dependencies.insertLink(tester.getId(), previous);

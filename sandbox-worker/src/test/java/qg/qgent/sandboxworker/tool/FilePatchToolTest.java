@@ -193,6 +193,27 @@ class FilePatchToolTest {
     }
 
     @Test
+    void rejectsTargetFileLargerThan256KbBeforeApplyingPatch() throws Exception {
+        // 与主后端 LocalWorkspaceCodeWriter 的 256KB 上限一致：超限目标拒绝打补丁并保持原文件不变，
+        // 避免整读整写超大文件拖过执行超时后被误判为基础设施失败。
+        Path file = repository.resolve("large.txt");
+        String content = "line\n".repeat(60_000);
+        Files.writeString(file, content, StandardCharsets.UTF_8);
+        String patch = """
+                @@ -1,1 +1,1 @@
+                -line
+                +LINE
+                """;
+
+        WorkerException exception = assertThrows(WorkerException.class, () -> tool().execute(context(),
+                Map.of("path", "large.txt",
+                        "expectedHash", FileReadTool.sha256(Files.readAllBytes(file)), "patch", patch)));
+
+        assertEquals("TOOL_PATH_INVALID", exception.getCode());
+        assertEquals(content, Files.readString(file));
+    }
+
+    @Test
     void rejectsNonexistentFileAndDirectoryTargets() throws Exception {
         Files.createDirectories(repository.resolve("docs"));
         FilePatchTool tool = tool();

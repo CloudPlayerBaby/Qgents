@@ -77,7 +77,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             }
             return directoryFailure(path, execution);
         } catch (RuntimeException e) {
-            return WorkspaceDirectoryResult.infraFail(path, "directory creation failed: " + e.getMessage());
+            return WorkspaceDirectoryResult.infraFail(path, "directory creation failed: " + exceptionDetail(e));
         }
     }
 
@@ -112,7 +112,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             }
             return writeFailure(path, execution, "write failed");
         } catch (RuntimeException e) {
-            return WorkspaceWriteResult.infraFail(path, "write failed: " + e.getMessage());
+            return WorkspaceWriteResult.infraFail(path, "write failed: " + exceptionDetail(e));
         }
     }
 
@@ -145,7 +145,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             }
             return writeFailure(path, execution, "replace failed");
         } catch (RuntimeException e) {
-            return WorkspaceWriteResult.infraFail(path, "replace failed: " + e.getMessage());
+            return WorkspaceWriteResult.infraFail(path, "replace failed: " + exceptionDetail(e));
         }
     }
 
@@ -176,7 +176,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             }
             return writeFailure(path, execution, "patch failed");
         } catch (RuntimeException e) {
-            return WorkspaceWriteResult.infraFail(path, "patch failed: " + e.getMessage());
+            return WorkspaceWriteResult.infraFail(path, "patch failed: " + exceptionDetail(e));
         }
     }
 
@@ -230,7 +230,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             }
             return directoryFailure(relativeParent, execution);
         } catch (RuntimeException e) {
-            return WorkspaceDirectoryResult.infraFail(relativeParent, "directory creation failed: " + e.getMessage());
+            return WorkspaceDirectoryResult.infraFail(relativeParent, "directory creation failed: " + exceptionDetail(e));
         }
     }
 
@@ -254,6 +254,18 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
     private static String failureReason(WorkerToolExecution execution, String fallback) {
         return execution.getFailureReason() == null || execution.getFailureReason().isBlank()
                 ? fallback : execution.getFailureReason();
+    }
+
+    /**
+     * 异常消息兜底：消息为 null 或空白时退回异常类型名，避免把 {@code "null"} 拼进错误文案
+     * 丢失诊断信息（此前 apply_patch 曾出现 {@code "patch failed: null"}，无法定位失败原因）。
+     */
+    private static String exceptionDetail(Throwable exception) {
+        if (exception == null) {
+            return "unknown error";
+        }
+        String message = exception.getMessage();
+        return message == null || message.isBlank() ? exception.getClass().getSimpleName() : message;
     }
 
     private static boolean isToolFailure(WorkerToolExecution execution) {
