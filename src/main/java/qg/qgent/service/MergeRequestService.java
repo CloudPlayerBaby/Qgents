@@ -30,6 +30,9 @@ import java.util.*;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.function.Function;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 
 /**
  * MR 镜像、审查与质量门禁服务。
@@ -45,6 +48,9 @@ import java.util.function.Function;
  */
 @Service
 public class MergeRequestService {
+    private static final long LIST_CACHE_TTL_MILLIS = 2_000L;
+    private static final int LIST_CACHE_MAX_ENTRIES = 128;
+    private final ConcurrentHashMap<String, CachedMrPage> listCache = new ConcurrentHashMap<>();
     private static final Logger log = LoggerFactory.getLogger(MergeRequestService.class);
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 100;
@@ -183,6 +189,45 @@ public class MergeRequestService {
      */
     public ApiPageResponse<MergeRequestSummaryResponse> list(UUID projectId, UUID userId, UUID repositoryId,
                                                              UUID groupId, String status, String cursor, int limit, String requestId) {
+        int boundedLimit = clampLimit(limit);
+        String key = listCacheKey(projectId, userId, repositoryId, groupId, status, cursor, boundedLimit);
+        CachedMrPage cached = listCache.get(key);
+        long now = System.currentTimeMillis();
+        if (cached != null && cached.expiresAt() > now) {
+            return toResponse(await(cached.future()), requestId);
+        }
+        CachedMrPage candidate = new CachedMrPage(new CompletableFuture<>(), now + LIST_CACHE_TTL_MILLIS);
+        if (cached == null) {
+            CachedMrPage previous = listCache.putIfAbsent(key, candidate);
+            cached = previous == null ? candidate : previous;
+        } else if (listCache.replace(key, cached, candidate)) {
+            cached = candidate;
+        } else {
+            cached = listCache.get(key);
+        }
+        if (cached != candidate) {
+            return toResponse(await(cached.future()), requestId);
+        }
+        try {
+            ApiPageResponse<MergeRequestSummaryResponse> result = listUncached(projectId, userId, repositoryId,
+                    groupId, status, cursor, boundedLimit, requestId);
+            candidate.future().complete(new MrPageData(result.data(), result.page()));
+            trimListCache();
+            return result;
+        } catch (RuntimeException e) {
+            candidate.future().completeExceptionally(e);
+            listCache.remove(key, candidate);
+            throw e;
+        }
+    }
+
+    private ApiPageResponse<MergeRequestSummaryResponse> toResponse(MrPageData page, String requestId) {
+        return new ApiPageResponse<>(page.data(), page.page(), requestId);
+    }
+
+    private ApiPageResponse<MergeRequestSummaryResponse> listUncached(UUID projectId, UUID userId, UUID repositoryId,
+                                                                       UUID groupId, String status, String cursor,
+                                                                       int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
         int size = clampLimit(limit);
         List<UUID> repoIds = projectRepositoryMapper.selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
@@ -1707,8 +1752,11 @@ public class MergeRequestService {
         if (workspaceIds.isEmpty()) {
             return List.of();
         }
-        List<TaskEntity> tasks = taskMapper.selectList(Wrappers.<TaskEntity>query()
-                .eq("project_id", projectId).in("workspace_id", workspaceIds));
+        QueryWrapper<TaskEntity> taskQuery = Wrappers.<TaskEntity>query()
+                .eq("project_id", projectId).in("workspace_id", workspaceIds)
+                .eq(taskRequiredStatus != null, "status", taskRequiredStatus)
+                .eq(requirementGroupId != null, "requirement_group_id", requirementGroupId);
+        List<TaskEntity> tasks = taskMapper.selectList(taskQuery);
         if (tasks == null) tasks = List.of();
         Map<UUID, TaskEntity> taskByWorkspace = new HashMap<>();
         for (TaskEntity task : tasks) {
@@ -1896,4 +1944,43 @@ public class MergeRequestService {
     private String id(UUID uuid) {
         return uuid == null ? null : uuid.toString();
     }
+
+    private String listCacheKey(Object... values) {
+        return Arrays.stream(values)
+                .map(value -> value == null ? "" : String.valueOf(value))
+                .collect(Collectors.joining("\u001f"));
+    }
+
+    private MrPageData await(CompletableFuture<MrPageData> future) {
+        try {
+            return future.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("merge request list query interrupted", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IllegalStateException("merge request list query failed", cause);
+        }
+    }
+
+    private void trimListCache() {
+        if (listCache.size() <= LIST_CACHE_MAX_ENTRIES) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        listCache.entrySet().removeIf(entry -> entry.getValue().expiresAt() <= now);
+        while (listCache.size() > LIST_CACHE_MAX_ENTRIES) {
+            String key = listCache.keys().hasMoreElements() ? listCache.keys().nextElement() : null;
+            if (key == null || listCache.remove(key) == null) {
+                break;
+            }
+        }
+    }
+
+    private record CachedMrPage(CompletableFuture<MrPageData> future, long expiresAt) { }
+
+    private record MrPageData(List<MergeRequestSummaryResponse> data, PageMeta page) { }
 }
