@@ -104,4 +104,10 @@ public class GroupResponse {
      */
     @Schema(description = "当前用户在该群被 @ 的未读消息数（排除本人消息），≥ 0")
     private Long mentionedUnread;
+
+    /**
+     * 当前用户是否置顶该群（个人偏好，默认 false；字段缺失/为 null 时前端回退本地偏好）。
+     */
+    @Schema(description = "当前用户是否置顶该群（个人偏好，默认 false）")
+    private Boolean pinned;
 }

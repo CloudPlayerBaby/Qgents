@@ -41,6 +41,7 @@ public class GroupService {
     private final UserMapper userMapper;
     private final MessageMapper messageMapper;
     private final GroupReadStateMapper groupReadStateMapper;
+    private final UserGroupPreferenceMapper userGroupPreferenceMapper;
     private final ProjectAccessService access;
     private final EventService eventService;
 
@@ -49,6 +50,7 @@ public class GroupService {
                         ProjectMapper projectMapper, GroupAgentMapper groupAgentMapper, GroupMemberMapper groupMemberMapper,
                         AgentMapper agentMapper, UserMapper userMapper,
                         MessageMapper messageMapper, GroupReadStateMapper groupReadStateMapper,
+                        UserGroupPreferenceMapper userGroupPreferenceMapper,
                         ProjectAccessService access, EventService eventService) {
         this.groupMapper = groupMapper;
         this.groupRepositoryMapper = groupRepositoryMapper;
@@ -60,6 +62,7 @@ public class GroupService {
         this.userMapper = userMapper;
         this.messageMapper = messageMapper;
         this.groupReadStateMapper = groupReadStateMapper;
+        this.userGroupPreferenceMapper = userGroupPreferenceMapper;
         this.access = access;
         this.eventService = eventService;
     }
@@ -173,11 +176,13 @@ public class GroupService {
                 .collect(Collectors.toMap(GroupLatestMessageRow::getRequirementGroupId, Function.identity()));
         Map<UUID, Long> unreadByGroup = countUnread(visibleGroupIds, actor);
         Map<UUID, Long> mentionUnreadByGroup = countMentionUnread(visibleGroupIds, actor);
+        Map<UUID, Boolean> pinnedByGroup = countPinned(visibleGroupIds, actor);
         return visibleGroups.stream()
                 .map(group -> {
                     GroupResponse response = toResponse(group, latestByGroup.get(group.getId()),
                             unreadByGroup.get(group.getId()));
                     response.setMentionedUnread(mentionUnreadByGroup.getOrDefault(group.getId(), 0L));
+                    response.setPinned(pinnedByGroup.getOrDefault(group.getId(), false));
                     return response;
                 })
                 .toList();
@@ -208,10 +213,12 @@ public class GroupService {
                 .collect(Collectors.toMap(GroupLatestMessageRow::getRequirementGroupId, Function.identity()));
         Map<UUID, Long> unreadByGroup = countUnread(mainGroupIds, actor);
         Map<UUID, Long> mentionUnreadByGroup = countMentionUnread(mainGroupIds, actor);
+        Map<UUID, Boolean> pinnedByGroup = countPinned(mainGroupIds, actor);
         return mainGroups.stream()
                 .map(g -> {
                     GroupResponse response = toResponse(g, latestByGroup.get(g.getId()), unreadByGroup.get(g.getId()));
                     response.setMentionedUnread(mentionUnreadByGroup.getOrDefault(g.getId(), 0L));
+                    response.setPinned(pinnedByGroup.getOrDefault(g.getId(), false));
                     return response;
                 })
                 .toList();
@@ -236,6 +243,14 @@ public class GroupService {
     }
 
     /**
+     * 计算某用户在一组群中的置顶状态，返回群 ID → 是否置顶（仅置顶群入结果）。
+     */
+    private Map<UUID, Boolean> countPinned(List<UUID> groupIds, UUID actor) {
+        return userGroupPreferenceMapper.selectPinnedGroupIds(actor, groupIds).stream()
+                .collect(Collectors.toMap(Function.identity(), gid -> true));
+    }
+
+    /**
      * 获取群详情；群不属于该项目时返回 404。
      *
      * @param actor     当前用户 ID
@@ -248,8 +263,10 @@ public class GroupService {
         RequirementGroupEntity group = requireGroupInProject(projectId, groupId);
         Map<UUID, Long> unreadByGroup = countUnread(List.of(groupId), actor);
         Map<UUID, Long> mentionUnreadByGroup = countMentionUnread(List.of(groupId), actor);
+        Map<UUID, Boolean> pinnedByGroup = countPinned(List.of(groupId), actor);
         GroupResponse response = toResponse(group, null, unreadByGroup.get(groupId));
         response.setMentionedUnread(mentionUnreadByGroup.getOrDefault(groupId, 0L));
+        response.setPinned(pinnedByGroup.getOrDefault(groupId, false));
         return response;
     }
 
@@ -584,6 +601,26 @@ public class GroupService {
         return (next == null || next <= 1) ? 0L : next - 1;
     }
 
+    /**
+     * 设置 / 取消当前用户对某群的置顶（个人偏好，仅影响当前用户，不影响其他成员）。
+     * <p>
+     * 权限：项目成员即可置顶（只影响自己）；群不属于该项目时 404。重复设置相同值幂等。
+     * HTTP 层的 IdempotencyFilter 已负责请求回放；DB 层以 (user_id, group_id) 主键 upsert 幂等覆盖。
+     *
+     * @param actor     当前用户 ID
+     * @param projectId 项目 ID
+     * @param groupId   需求群 ID
+     * @param pinned    true 置顶，false 取消置顶
+     * @return 该群最新的置顶状态
+     */
+    @Transactional
+    public GroupPinResponse setPinned(UUID actor, UUID projectId, UUID groupId, boolean pinned) {
+        requireGroupMember(projectId, groupId, actor);
+        requireGroupInProject(projectId, groupId);
+        userGroupPreferenceMapper.upsertPin(actor, groupId, pinned);
+        return new GroupPinResponse(id(groupId), pinned);
+    }
+
     private List<UUID> validateRepositories(UUID projectId, List<UUID> repositoryIds) {
         if (repositoryIds == null || repositoryIds.isEmpty()) {
             return List.of();
@@ -628,9 +665,11 @@ public class GroupService {
                 iso(g.getLastMessageAt() != null ? g.getLastMessageAt() : g.getCreatedAt()), latestMessage,
                 iso(g.getCreatedAt()),
                 groupRepositoryMapper.selectRepositoryIds(g.getId()).stream().map(UUID::toString).toList(),
-                members, unreadCount == null ? 0L : unreadCount, 0L);
+                members, unreadCount == null ? 0L : unreadCount, 0L, false);
         // 「@ 我」未读数默认 0，list/mainGroups/get 按需覆盖
         response.setMentionedUnread(0L);
+        // 置顶为个人偏好，默认 false；list/mainGroups/get 按需覆盖
+        response.setPinned(false);
         return response;
     }
 
