@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
@@ -187,33 +188,64 @@ public class MergeRequestService {
         if (repoIds.isEmpty()) {
             return emptyPage(requestId);
         }
+        boolean includePendingCreate = status == null || status.isBlank()
+                || "PENDING_CREATE".equalsIgnoreCase(status);
+        List<MergeRequestSummaryResponse> pendingCandidates = includePendingCreate
+                ? placeholderMergeRequests(projectId, repositoryId, groupId,
+                "PENDING_CREATE".equalsIgnoreCase(status) ? null : "WAITING_PREFLIGHT")
+                : List.of();
+        Set<String> pendingIds = pendingCandidates.stream()
+                .map(MergeRequestSummaryResponse::getId).filter(Objects::nonNull).collect(Collectors.toSet());
         UUID cursorUuid = parseCursor(cursor);
-        LambdaQueryWrapper<MergeRequestEntity> query = Wrappers.<MergeRequestEntity>lambdaQuery()
-                .in(MergeRequestEntity::getProjectRepositoryId, repoIds)
-                .eq(status != null && !status.isBlank(), MergeRequestEntity::getStatus, status)
-                .eq(repositoryId != null, MergeRequestEntity::getProjectRepositoryId, repositoryId)
-                .lt(cursorUuid != null, MergeRequestEntity::getId, cursorUuid)
-                .orderByDesc(MergeRequestEntity::getId)
+        boolean cursorIsPending = cursor != null && pendingIds.contains(cursor);
+        QueryWrapper<MergeRequestEntity> query = Wrappers.<MergeRequestEntity>query()
+                .in("project_repository_id", repoIds)
+                .eq(status != null && !status.isBlank(), "status", status)
+                .eq(repositoryId != null, "project_repository_id", repositoryId)
+                // While paging through synthetic pending rows, do not apply the synthetic UUID
+                // to real MR rows or real rows could be skipped between placeholder pages.
+                .lt(!cursorIsPending && cursorUuid != null, "id", cursorUuid)
+                .orderByDesc("id")
                 .last("LIMIT " + (size + 1));
         if (groupId != null) {
             List<UUID> mrIds = mergeRequestGroupMapper.selectByRequirementGroupId(groupId).stream()
                     .map(MergeRequestGroupEntity::getMergeRequestId).toList();
             if (mrIds.isEmpty()) {
-                return emptyPage(requestId);
+                // Keep the real-MR side empty without discarding Task-backed placeholders.
+                query.eq("id", UUID.randomUUID());
+            } else {
+                query.in("id", mrIds);
             }
-            query.in(MergeRequestEntity::getId, mrIds);
         }
         List<MergeRequestEntity> rows = mergeRequestMapper.selectList(query);
-        boolean hasMore = rows.size() > size;
-        List<MergeRequestEntity> page = hasMore ? rows.subList(0, size) : rows;
-        Map<UUID, List<String>> groupIdsByMr = groupIdsByMr(page);
-        Map<UUID, QualityGateResponse> gatesByMr = qualityGates(page);
-        Map<UUID, String> webUrlsByMr = webUrlsByMr(page);
-        List<MergeRequestSummaryResponse> items = page.stream()
+        if (rows == null) rows = List.of();
+        Map<UUID, List<String>> groupIdsByMr = groupIdsByMr(rows);
+        Map<UUID, QualityGateResponse> gatesByMr = qualityGates(rows);
+        Map<UUID, String> webUrlsByMr = webUrlsByMr(rows);
+        List<MergeRequestSummaryResponse> items = rows.stream()
                 .map(mr -> toSummary(mr, groupIdsByMr.getOrDefault(mr.getId(), List.of()),
                         gatesByMr.get(mr.getId()), webUrlsByMr.get(mr.getId())))
-                .toList();
-        PageMeta meta = new PageMeta(hasMore ? items.get(items.size() - 1).getId() : null, hasMore);
+                .collect(Collectors.toCollection(ArrayList::new));
+
+        // Pending placeholders occupy the first cursor phase; after a real MR cursor is
+        // returned, the normal real-MR cursor stream resumes and placeholders stay hidden.
+        if (!pendingCandidates.isEmpty()) {
+            List<MergeRequestSummaryResponse> pending = pendingCandidates.stream()
+                    .filter(value -> cursor == null || cursor.isBlank() || cursorIsPending)
+                    .filter(value -> !cursorIsPending || comparePlaceholderId(value.getId(), cursor) < 0)
+                    .toList();
+            List<MergeRequestSummaryResponse> merged = new ArrayList<>(pending.size() + items.size());
+            merged.addAll(pending);
+            merged.addAll(items);
+            items = merged;
+        }
+
+        boolean hasMore = items.size() > size || (rows.size() > size && !cursorIsPending);
+        if (items.size() > size) {
+            items = new ArrayList<>(items.subList(0, size));
+        }
+        String nextCursor = hasMore && !items.isEmpty() ? items.get(items.size() - 1).getId() : null;
+        PageMeta meta = new PageMeta(nextCursor, hasMore);
         return new ApiPageResponse<>(items, meta, requestId);
     }
 
@@ -1556,12 +1588,163 @@ public class MergeRequestService {
         return diff == null ? null : id(diff.getId());
     }
 
+    /**
+     * Builds non-persistent MR rows for Task worktrees that are ready for a user-triggered
+     * Pull Request creation. The database remains the source of truth for real MR rows; these
+     * rows are deterministic projections only and therefore never receive a database status.
+     */
+    private List<MergeRequestSummaryResponse> placeholderMergeRequests(UUID projectId, UUID repositoryId,
+                                                                        UUID requirementGroupId,
+                                                                        String taskRequiredStatus) {
+        List<WorkspaceRepositoryEntity> worktrees = workspaceRepositoryMapper.selectByProject(projectId, repositoryId);
+        if (worktrees == null || worktrees.isEmpty()) {
+            return List.of();
+        }
+
+        List<UUID> workspaceIds = worktrees.stream().map(WorkspaceRepositoryEntity::getWorkspaceId)
+                .filter(Objects::nonNull).distinct().toList();
+        if (workspaceIds.isEmpty()) {
+            return List.of();
+        }
+        List<TaskEntity> tasks = taskMapper.selectList(Wrappers.<TaskEntity>query()
+                .eq("project_id", projectId).in("workspace_id", workspaceIds));
+        if (tasks == null) tasks = List.of();
+        Map<UUID, TaskEntity> taskByWorkspace = new HashMap<>();
+        for (TaskEntity task : tasks) {
+            if (task == null || task.getWorkspaceId() == null) continue;
+            if (taskRequiredStatus != null && !taskRequiredStatus.equalsIgnoreCase(task.getStatus())) continue;
+            if (requirementGroupId != null && !requirementGroupId.equals(task.getRequirementGroupId())) continue;
+            taskByWorkspace.merge(task.getWorkspaceId(), task, this::newerTask);
+        }
+        if (taskByWorkspace.isEmpty()) {
+            return List.of();
+        }
+
+        Set<UUID> projectRepositoryIds = worktrees.stream().map(WorkspaceRepositoryEntity::getProjectRepositoryId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (projectRepositoryIds.isEmpty()) {
+            return List.of();
+        }
+        List<MergeRequestEntity> existing = mergeRequestMapper.selectList(
+                Wrappers.<MergeRequestEntity>query()
+                        .in("project_repository_id", projectRepositoryIds)
+                        .ne("status", "MERGED")
+                        .ne("status", "CLOSED"));
+        if (existing == null) existing = List.of();
+        Set<String> existingKeys = existing.stream()
+                .filter(Objects::nonNull)
+                .filter(mr -> mr.getProjectRepositoryId() != null && mr.getSourceBranch() != null)
+                .map(mr -> branchKey(mr.getProjectRepositoryId(), mr.getSourceBranch()))
+                .collect(Collectors.toSet());
+
+        List<ProjectRepositoryEntity> repositoryRows = projectRepositoryMapper.selectBatchIds(projectRepositoryIds);
+        if (repositoryRows == null) repositoryRows = List.of();
+        Map<UUID, ProjectRepositoryEntity> repositories = repositoryRows.stream()
+                .collect(Collectors.toMap(ProjectRepositoryEntity::getId, Function.identity(), (left, right) -> left));
+        List<MergeRequestSummaryResponse> result = new ArrayList<>();
+        for (WorkspaceRepositoryEntity worktree : worktrees) {
+            TaskEntity task = taskByWorkspace.get(worktree.getWorkspaceId());
+            if (task == null || worktree.getProjectRepositoryId() == null
+                    || worktree.getSourceBranch() == null || worktree.getSourceBranch().isBlank()
+                    || worktree.getHeadCommit() == null || worktree.getHeadCommit().isBlank()) {
+                continue;
+            }
+            String key = branchKey(worktree.getProjectRepositoryId(), worktree.getSourceBranch());
+            if (existingKeys.contains(key)) continue;
+
+            ProjectRepositoryEntity repository = repositories.get(worktree.getProjectRepositoryId());
+            String targetBranch = worktree.getBaseRef();
+            if (targetBranch == null || targetBranch.isBlank()) {
+                targetBranch = repository == null ? null : repository.getDefaultBranch();
+            }
+            if (targetBranch == null || targetBranch.isBlank()) continue;
+
+            MergeRequestSummaryResponse row = new MergeRequestSummaryResponse();
+            row.setId(placeholderMrId(task.getId(), worktree.getProjectRepositoryId()));
+            row.setRepositoryId(id(worktree.getProjectRepositoryId()));
+            row.setGroupIds(List.of());
+            row.setProvider("GITHUB");
+            row.setNumber(0L);
+            row.setSourceBranch(worktree.getSourceBranch());
+            row.setTargetBranch(targetBranch);
+            row.setStatus("PENDING_CREATE");
+            row.setHeadCommit(worktree.getHeadCommit());
+            row.setMergeable(null);
+            row.setMergeableState(null);
+            // A list read must remain read-only and must not refresh Git stores or call GitHub.
+            // The dedicated Preflight endpoint supplies the live gate details for this Task.
+            row.setQualityGate(new QualityGateResponse("PENDING", List.of()));
+            row.setTitle(task.getTitle() == null || task.getTitle().isBlank()
+                    ? worktree.getSourceBranch() + " -> " + targetBranch : task.getTitle());
+            row.setWebUrl(null);
+            row.setCreatedAt(iso(task.getUpdatedAt() == null ? task.getCreatedAt() : task.getUpdatedAt()));
+            row.setTaskId(id(task.getId()));
+            row.setCreateMode("SYSTEM");
+            result.add(row);
+            existingKeys.add(key);
+        }
+        result.sort(Comparator.comparing(MergeRequestSummaryResponse::getId,
+                Comparator.nullsLast(Comparator.reverseOrder())));
+        return result;
+    }
+
+    private TaskEntity newerTask(TaskEntity left, TaskEntity right) {
+        LocalDateTime leftTime = left.getUpdatedAt() == null ? left.getCreatedAt() : left.getUpdatedAt();
+        LocalDateTime rightTime = right.getUpdatedAt() == null ? right.getCreatedAt() : right.getUpdatedAt();
+        if (leftTime == null) return right;
+        if (rightTime == null) return left;
+        if (rightTime.isAfter(leftTime)) return right;
+        if (rightTime.equals(leftTime) && right.getId() != null && left.getId() != null
+                && right.getId().compareTo(left.getId()) > 0) return right;
+        return left;
+    }
+
+    private String branchKey(UUID repositoryId, String sourceBranch) {
+        return repositoryId + "|" + sourceBranch;
+    }
+
+    private String placeholderMrId(UUID taskId, UUID repositoryId) {
+        String base = "pending-mr:" + (taskId == null ? "null-task" : taskId)
+                + ":" + (repositoryId == null ? "null-repo" : repositoryId);
+        return UUID.nameUUIDFromBytes(base.getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    private int comparePlaceholderId(String left, String right) {
+        try {
+            return UUID.fromString(left).compareTo(UUID.fromString(right));
+        } catch (RuntimeException ignored) {
+            return 1;
+        }
+    }
+
     private MergeRequestSummaryResponse toSummary(MergeRequestEntity mr, List<String> groupIds,
                                                   QualityGateResponse gate, String webUrl) {
-        return new MergeRequestSummaryResponse(id(mr.getId()), id(mr.getProjectRepositoryId()), groupIds,
-                mr.getProvider(), mr.getProviderNumber(), mr.getSourceBranch(), mr.getTargetBranch(), mr.getStatus(),
-                mr.getHeadCommit(), mr.getMergeable(), mr.getMergeableState(), gate, mr.getTitle(), webUrl,
-                iso(mr.getCreatedAt()));
+        MergeRequestSummaryResponse response = new MergeRequestSummaryResponse();
+        response.setId(id(mr.getId()));
+        response.setRepositoryId(id(mr.getProjectRepositoryId()));
+        response.setGroupIds(groupIds);
+        response.setProvider(mr.getProvider());
+        response.setNumber(mr.getProviderNumber());
+        response.setSourceBranch(mr.getSourceBranch());
+        response.setTargetBranch(mr.getTargetBranch());
+        response.setStatus(mr.getStatus());
+        response.setHeadCommit(mr.getHeadCommit());
+        response.setMergeable(mr.getMergeable());
+        response.setMergeableState(mr.getMergeableState());
+        response.setQualityGate(gate);
+        response.setTitle(mr.getTitle());
+        response.setWebUrl(webUrl);
+        response.setCreatedAt(iso(mr.getCreatedAt()));
+        response.setTaskId(id(mr.getTaskId()));
+        response.setCreateMode(inferCreateMode(mr));
+        return response;
+    }
+
+    private String inferCreateMode(MergeRequestEntity mr) {
+        if (mr == null) return "UNKNOWN";
+        if (mr.getTaskId() != null && mr.getAuthorUserId() != null) return "MANUAL";
+        if (mr.getTaskId() != null) return "SYSTEM";
+        return "UNKNOWN";
     }
 
     private MergeRequestDetailResponse toDetail(MergeRequestEntity mr, List<String> groupIds,
