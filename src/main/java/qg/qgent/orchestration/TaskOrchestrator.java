@@ -541,6 +541,32 @@ public class TaskOrchestrator {
                 && !hasMutableStep(ctx.steps)) {
             decision = StateMachineDecision.failed();
         }
+        // 质量循环不收敛：本轮与上一轮可修复项完全一致（无任何消减或变化）→ 提前终止，省下
+        // 注定空转的循环预算（模型修不动或该 MAJOR 本身是误报时，再多打回也只会重复耗 LLM 调用）。
+        // 有变化的循环（子集缩小/新增项/issue 变化）才记录本轮签名供下一轮比对。
+        if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
+                && ctx.qualityConvergence.hasNoProgress(outcome)) {
+            ctx.qualityConvergence.markNoProgress();
+            decision = StateMachineDecision.failed();
+        } else if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING) {
+            ctx.qualityConvergence.record(outcome);
+        }
+        // Coding 自报失败但存在真实写入证据（如模型误判"无法确认文件是否创建"）时，
+        // 给一次有界同相位重试：写入证据说明模型确实执行了修改，失败多为收尾误判而非
+        // 真实不可完成。门控严格限定为「纯自报失败」——排除已归类的失败
+        // （TOOL_PATCH_UNRECOVERABLE 等，failureCode 非空）与无任何写入的 no-op 自报失败
+        // （后者维持立即终态，避免重试同一个已达到目标状态的 Coding 产生回环）。
+        if (phase == OrchestrationPhase.CODING
+                && decision.getAction() == StateMachineDecision.Action.COMPLETE_FAILED
+                && outcome.getOutcome() == RunOutcome.FAILED
+                && outcome.getFailureCode() == null
+                && outcome.isHasRealChanges()
+                && ctx.counters.canRetryCodingSelfReport()) {
+            ctx.counters.incrementCodingSelfReportFailRetries();
+            log.info("CODING_SELF_REPORT_FAILED_RETRY taskId={} stepId={} workspaceId={}",
+                    task.getId(), step.getId(), input == null ? null : input.getWorkspaceId());
+            decision = StateMachineDecision.retryPhase(OrchestrationPhase.CODING);
+        }
         if (decision.getAction() == StateMachineDecision.Action.COMPLETE_SUCCESS
                 && hasFollowingStep(step, ctx.steps)) {
             decision = StateMachineDecision.advance(phase);
@@ -858,8 +884,12 @@ public class TaskOrchestrator {
                 code = ctx.counters.getQualityFixLoops() > 0 ? "TASK_QUALITY_LOOPS_EXHAUSTED"
                         : "TASK_FINALIZATION_FAILED";
                 if (reason == null || reason.isBlank()) {
+                    // 不收敛提前终止与循环耗尽用同一失败码（避免接口契约新增），但文案如实区分：
+                    // 前者是"连续多轮无进展主动叫停"，后者才是"循环额度用完"。
                     reason = ctx.counters.getQualityFixLoops() > 0
-                            ? "任务多次未通过质量验证，修复循环已耗尽"
+                            ? (ctx.qualityConvergence.noProgressTerminated()
+                                    ? "任务连续多轮质量验证未见修复进展，提前终止修复循环"
+                                    : "任务多次未通过质量验证，修复循环已耗尽")
                             : "任务在执行完成阶段失败，可查看任务诊断";
                 }
             }
@@ -1281,6 +1311,8 @@ public class TaskOrchestrator {
     private static final class TaskExecutionContext {
         private final TaskEntity task;
         private final OrchestrationCounters counters = new OrchestrationCounters();
+        /** 质量循环不收敛判定：记录上一轮可修复项签名，识别"修不动"的循环并提前终止。 */
+        private final QualityConvergenceTracker qualityConvergence = new QualityConvergenceTracker();
         private List<TaskStepEntity> steps;
         /** 质量反馈只定向给原失败 step 与被 requeue 的 Coding step。 */
         private QualityFeedback qualityFeedback;
@@ -1339,7 +1371,13 @@ public class TaskOrchestrator {
                 patchFailureCounts.clear();
                 inheritPatchFailureCounts(outcome.getPatchFailureCounts());
             }
-            if (outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE) {
+            // 基础设施失败与"有真实写入证据的自报失败"都作为同相位重试反馈暂存：
+            // 后者由 runStepNode 的证据门控重试时消费，让重试 run 能读到上一轮失败原因。
+            boolean selfReportFailRetry = phase == OrchestrationPhase.CODING
+                    && outcome.getOutcome() == RunOutcome.FAILED
+                    && outcome.getFailureCode() == null
+                    && outcome.isHasRealChanges();
+            if (outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE || selfReportFailRetry) {
                 infraFeedback.put(stepId, outcome);
                 return;
             }
@@ -1355,6 +1393,8 @@ public class TaskOrchestrator {
             if (outcome.getOutcome() == RunOutcome.SUCCEEDED && qualityFeedback != null
                     && qualityFeedback.sourceStepId().equals(stepId)) {
                 qualityFeedback = null;
+                // 质量相位通过即结束本段闭环，清除不收敛签名，避免跨环节残留比对。
+                qualityConvergence.clear();
             }
         }
 

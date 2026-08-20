@@ -58,6 +58,7 @@ public class CodingPromptBuilder {
                 - 如果返回 FILE_PATCH_FAILED 或 TOOL_PATCH_FORMAT_INVALID，禁止重复原 patch：先重新 read_file 获取最新内容和 sha256，按实际行内容重新生成完整 unified diff（校验 @@ 的行数和 +/-/空格行前缀）；目标是新文件时改用 write_file。
                 - 同一文件 apply_patch 连续失败 3 次后，工具返回 TOOL_PATCH_REPAIR_REQUIRED：先用 read_file 获取最新内容和 sha256，再用 replace_file 提供完整文件内容，不要再尝试生成 patch。
                 - 新文件使用 write_file；父目录由工具自动准备。只有需要单独创建空目录时才调用 create_directory，created=false 不算变更。
+                - 对尚未创建的新文件先 read_file 会返回 ok=false、TOOL_PATH_INVALID（文件不存在），这是写前确认的正常现象，不是失败；只要随后 write_file/apply_patch 返回 ok=true、changed=true 或 create_directory 返回 created=true，就是文件/目录已实际创建的确凿证据，收尾自检不得因"无法确认是否创建"而误报 success=false。
                 - 需要调用工具时只使用原生函数调用，每次调用只能使用 schema 中的工具名和完整参数；不要把工具调用 JSON 写进普通文本。
                 - 工具返回 ok=false 时先读取 errorCode、retryable、nextAction，再修正参数；禁止原样重复失败调用。路径越界、权限拒绝或未知工具不可通过重试绕过。
                 - 工具返回基础设施错误时不得伪造成功；停止并在 finalResult.errors 说明。工具返回成功但 changed=false 时也不能声称产生了文件变更。
@@ -93,6 +94,7 @@ public class CodingPromptBuilder {
                 - 先读取与任务相关的文件，理解现状后再修改；只读取需要的文件，不要把整个工作区一次性塞进上下文。
                 - 已有文件的修改优先使用 apply_patch 做精确局部修改；只有新建文件或需要整文件替换时才使用 write_file。
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
+                - 对尚未创建的新文件先 read_file 会返回 ok=false、TOOL_PATH_INVALID（文件不存在），这是写前确认的正常现象，不是失败；只要随后 write_file/apply_patch 返回 ok=true、changed=true 或 create_directory 返回 created=true，就是文件/目录已实际创建的确凿证据，收尾自检不得因"无法确认是否创建"而误报 success=false。
                 - 需要调用工具时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
                 - 工具返回 ok=false 时读取 errorCode、retryable、nextAction；最多修正参数重试一次，禁止原样重复失败调用。
                 - 如果返回 FILE_PATCH_FAILED 或 TOOL_PATCH_FORMAT_INVALID，先 read_file 再重建 patch；不要凭旧上下文修补 hunk，也不要把新文件交给 apply_patch。
@@ -139,7 +141,7 @@ public class CodingPromptBuilder {
         if (plan != null) {
             appendPlan(sb, plan);
         }
-        appendTestResult(sb, input.getTestResult());
+        appendTestResult(sb, input.getTestResult(), hasFeedback(input));
         sb.append("\n\n工作区文件树：\n").append(renderTree(files));
         sb.append(ContextPromptRenderer.render(input));
         return sb.toString();
@@ -172,18 +174,27 @@ public class CodingPromptBuilder {
         }
     }
 
-    private void appendTestResult(StringBuilder sb, TestResult test) {
+    /**
+     * 渲染上次测试结果。处于打回重做（存在前一轮反馈）时省略"测试失败项"：失败明细已由
+     * feedback / retryContext 承载，避免同一批失败项在 prompt 里重复渲染多遍；测试整体状态与
+     * 摘要仍保留，让 Coding 知道验证当前是否通过。
+     */
+    private void appendTestResult(StringBuilder sb, TestResult test, boolean omitFailures) {
         if (test == null) {
             return;
         }
         sb.append("\n\n上次测试结果：").append(test.isSuccess() ? "通过" : "未通过")
                 .append("（exit code ").append(test.getExitCode()).append("）");
-        if (test.getFailures() != null && !test.getFailures().isEmpty()) {
+        if (!omitFailures && test.getFailures() != null && !test.getFailures().isEmpty()) {
             sb.append("\n测试失败项：").append(test.getFailures());
         }
         if (test.getSummary() != null && !test.getSummary().isBlank()) {
             sb.append("\n测试摘要：").append(test.getSummary());
         }
+    }
+
+    private boolean hasFeedback(AgentInput input) {
+        return input.getFeedback() != null && !input.getFeedback().isBlank();
     }
 
     private void appendPlan(StringBuilder sb, PlanResult plan) {

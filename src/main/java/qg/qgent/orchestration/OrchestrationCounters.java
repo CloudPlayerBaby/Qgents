@@ -29,6 +29,15 @@ public class OrchestrationCounters {
      * 基础设施重试上限，超过则 Task FAILED。
      */
     private int maxInfraRetries = 3;
+    /**
+     * Coding 自报失败但存在真实写入证据时的同相位重试次数。
+     * 与基础设施重试相互独立：模型误判/中途放弃不等于基础设施故障，也不占用基础设施重试预算。
+     */
+    private int codingSelfReportFailRetries = 0;
+    /**
+     * Coding 自报失败但存在真实写入证据时的重试上限，超过则 Task FAILED。
+     */
+    private int maxCodingSelfReportFailRetries = 1;
 
     /**
      * 是否还能回 Coding 做一次质量修复。
@@ -44,12 +53,23 @@ public class OrchestrationCounters {
         return getInfraRetries(phase) < maxInfraRetries;
     }
 
+    /**
+     * 是否还能对"有真实写入证据的自报失败"Coding 做一次同相位重试。
+     */
+    public boolean canRetryCodingSelfReport() {
+        return codingSelfReportFailRetries < maxCodingSelfReportFailRetries;
+    }
+
     public void incrementQualityFixLoops() {
         qualityFixLoops++;
     }
 
     public void incrementInfraRetries(OrchestrationPhase phase) {
         infraRetriesByPhase.merge(phase, 1, Integer::sum);
+    }
+
+    public void incrementCodingSelfReportFailRetries() {
+        codingSelfReportFailRetries++;
     }
 
     public int getInfraRetries(OrchestrationPhase phase) {
