@@ -54,6 +54,7 @@ public class ReviewPromptBuilder {
                 注意：git_diff 已经随初始上下文提供，不需要也无法再次调用。你没有任何写权限，不能修改工作区任何文件。
 
                 工作方式：
+                - 收到可用 Skill 目录后，先审阅目录并主动发现可能有助于本次审查的 Skill；对最相关的 Skill 优先调用 activate_skill 获取全文，并在审查中使用其适用指引。只有确认目录中所有 Skill 均与审查无关时才可不调用；不要为了耗尽预算而激活无关 Skill。
                 - 先结合任务、计划、Coding 摘要、测试结果与 Git Diff 判断修改是否达成目标，再按需读取相关文件核实；Git Diff 标记已裁剪时，按可信修改文件范围使用 read_file 核实省略部分。
                 - 需要查看文件时只使用原生函数调用，参数必须完整、类型正确；不要把 toolCall JSON 写成普通文本。
                 - 工具返回 ok=false 时先读取 errorCode、retryable、nextAction，修正参数后最多重试一次；路径越界、权限拒绝或未知工具不要重复调用。

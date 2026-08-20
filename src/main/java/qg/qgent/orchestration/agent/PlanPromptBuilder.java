@@ -69,6 +69,7 @@ public class PlanPromptBuilder {
                 - executionMode 必须是 MUTATE 或 VERIFY：需要创建/修改文件时使用 MUTATE；只检查文件、验证现状或运行只读检查时使用 VERIFY。VERIFY 步骤不得要求 Agent 修改文件。
                 - requiredCapabilities 是可选的小写 kebab-case 能力标签数组；只填写该步骤实际需要的专项能力。
                 - suggestedAgentId 是可选的建议执行 Agent id：必须来自用户消息中「可用 Agent 清单」列出的 id；每个步骤尽量指派职责匹配的候选 Agent，让不同专长的 Agent 各司其职；无法确定或无需指定时省略该字段。
+                - 制定步骤前先审阅「可用 Agent 清单」，主动识别与任务或步骤匹配的候选 Agent。清单中 default=false 表示自定义 Agent；若其名称或说明显示专长与某一步匹配，应优先在该步骤填写其 suggestedAgentId，让后续编排实际调度该 Agent；不要因为已有同角色的默认 Agent 就忽略匹配的自定义 Agent。仅当没有匹配的候选 Agent 时才省略 suggestedAgentId，且不得为凑指派而选择无关 Agent。
                 - acceptanceNotes 是可选字段：一句话自然语言说明该步骤完成后如何验收，把模糊预期显式化，供 Coding 对齐与 Review 判断；无法简明描述时省略，不臆造。
                 - machineAssertions 是可选字段：仅当需求足够具体、可机器校验时输出（如"文件应为空""行数等于 4""内容包含 xxx"）；type 取值 EXISTS/EMPTY/LINES_EQ/LINES_GT/LINES_LT/CONTAINS/NOT_CONTAINS，file 为相对路径，value 为整数行数（LINES_*）或子串（CONTAINS/NOT_CONTAINS）；模糊/开放式需求（优化、重构、风格、设计调整）不得输出假精确断言。断言是预期信号而非最终裁决：Coding 因合理原因偏离时由后续 Test/Review 判断，不阻断计划。
                 - files 必须是无 .. 的相对路径；只能引用给出的文件树中已有的文件，或明确需要新建的文件（在 description 说明）。
@@ -115,7 +116,7 @@ public class PlanPromptBuilder {
     }
 
     /**
-     * 追加「可用 Agent 清单」段落：每个 Agent 给出 id / name / role / description，
+     * 追加「可用 Agent 清单」段落：每个 Agent 给出 id / name / role / default / description，
      * 并提醒步骤的 suggestedAgentId 必须取自该清单。
      */
     private void appendAgentPool(StringBuilder sb, List<AgentEntity> agents) {
@@ -128,6 +129,7 @@ public class PlanPromptBuilder {
             sb.append("- id: ").append(agent.getId())
                     .append(", name: ").append(nullToBlank(agent.getName()))
                     .append(", role: ").append(nullToBlank(agent.getRole()))
+                    .append(", default: ").append(Boolean.TRUE.equals(agent.getIsDefault()))
                     .append(", description: ").append(nullToBlank(agent.getDescription()))
                     .append('\n');
         }

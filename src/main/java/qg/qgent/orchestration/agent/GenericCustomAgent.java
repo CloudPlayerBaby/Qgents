@@ -408,6 +408,8 @@ public class GenericCustomAgent implements Agent {
     private static final String CONTEXT_TOOLS_CONTRACT = """
             - activate_skill：按默认上下文的 Skill 目录激活正文，参数 {"skillId": "UUID"}；每个 TaskRun 最多激活 5 个不同 Skill，正文只在当前运行中生效。
             - search_chat_history：仅检索当前需求群的历史消息，参数 {"query": "关键字", "limit": 10}；仅在近期消息缺少关键信息时调用，检索预算有限。
+
+            Skill 使用：收到可用 Skill 目录后，先审阅目录并主动发现可能有助于本次任务的 Skill；对最相关的 Skill 优先调用 activate_skill 获取全文，并在后续工作中使用其适用指引。只有确认目录中所有 Skill 均无关时才可不调用；不要为了耗尽预算而激活无关 Skill。
             """;
 
     private static final String WRITE_TOOLS_CONTRACT = READ_ONLY_TOOLS_CONTRACT + """

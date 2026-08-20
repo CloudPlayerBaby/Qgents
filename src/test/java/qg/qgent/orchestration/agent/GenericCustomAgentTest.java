@@ -228,11 +228,16 @@ class GenericCustomAgentTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ToolCallback>> toolsCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
+        ArgumentCaptor<String> systemCaptor = ArgumentCaptor.forClass(String.class);
+        verify(llm).nextToolTurn(systemCaptor.capture(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
         assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory", "list_files",
                 "read_file", "replace_file", "search_chat_history", "search_code", "write_file");
+        assertThat(systemCaptor.getValue())
+                .contains("先审阅目录并主动发现可能有助于本次任务的 Skill")
+                .contains("对最相关的 Skill 优先调用 activate_skill 获取全文")
+                .contains("只有确认目录中所有 Skill 均无关时才可不调用");
     }
 
     @Test

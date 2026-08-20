@@ -60,6 +60,8 @@ class ContextPromptRendererTest {
         assertThat(rendered).contains("- [USER] 补充：需要离线导出");
         assertThat(rendered).contains("- [AGENT] 收到，评估中");
         assertThat(rendered).contains("可用 Skill 目录：");
+        assertThat(rendered).contains("先阅读目录并主动判断每项与本次任务的关联")
+                .contains("只有逐项判断均无关时才可不调用");
         assertThat(rendered).contains("编码规范").doesNotContain("禁止提交 .env");
         assertThat(rendered).contains("项目约定：");
         assertThat(rendered).contains("- 缓存约定: Redis key 以 projectId 前缀");

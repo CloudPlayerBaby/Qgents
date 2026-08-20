@@ -184,6 +184,7 @@ class PlanAgentTest {
         dev.setId(UUID.randomUUID());
         dev.setName("Java 后端");
         dev.setRole("DEVELOPER");
+        dev.setIsDefault(false);
         dev.setDescription("负责后端实现");
         when(dispatcher.listTeamCandidates(any(), any())).thenReturn(List.of(dev));
         when(codeAccess.listFiles(any())).thenReturn(List.of());
@@ -198,6 +199,7 @@ class PlanAgentTest {
         assertThat(planUser).contains(dev.getId().toString())
                 .contains("Java 后端")
                 .contains("DEVELOPER")
+                .contains("default: false")
                 .contains("负责后端实现");
     }
 

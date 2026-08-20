@@ -92,6 +92,14 @@ class CodingPromptBuilderTest {
     }
 
     @Test
+    void nativeSystemProactivelyUsesRelevantSkills() {
+        assertThat(promptBuilder.buildSystem(true))
+                .contains("先审阅目录并主动发现可能有助于本次任务的 Skill")
+                .contains("对最相关的 Skill 优先调用 activate_skill 获取全文")
+                .contains("只有确认目录中所有 Skill 均与任务无关时才可不调用");
+    }
+
+    @Test
     void documentsPatchFormatRecoveryWithoutRelaxingPatchValidation() {
         assertThat(promptBuilder.buildSystem(true))
                 .contains("FILE_PATCH_FAILED", "重新生成完整 unified diff", "新文件时改用 write_file");

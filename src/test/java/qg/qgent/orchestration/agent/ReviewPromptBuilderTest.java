@@ -51,6 +51,14 @@ class ReviewPromptBuilderTest {
     }
 
     @Test
+    void nativeSystemProactivelyUsesRelevantSkills() {
+        assertThat(promptBuilder.buildSystem(true))
+                .contains("先审阅目录并主动发现可能有助于本次审查的 Skill")
+                .contains("对最相关的 Skill 优先调用 activate_skill 获取全文")
+                .contains("只有确认目录中所有 Skill 均与审查无关时才可不调用");
+    }
+
+    @Test
     void boundsLargeDiffCopyAndKeepsTrustedModifiedFileScope() {
         String rawDiff = "DIFF-HEAD\n" + "x".repeat(100_000) + "\nDIFF-TAIL";
         GitDiffResult diff = GitDiffResult.ok(rawDiff, "base", "head");
