@@ -30,12 +30,14 @@ import static org.mockito.Mockito.when;
 class TaskStartedNoticeListenerTest {
 
     @Test
-    void usesDedicatedOrchestrationExecutor() throws NoSuchMethodException {
+    void usesDedicatedNoticeExecutorNotOrchestrationPool() throws NoSuchMethodException {
         Async async = TaskStartedNoticeListener.class
                 .getMethod("onTaskCreated", TaskCreatedEvent.class)
                 .getAnnotation(Async.class);
 
-        assertEquals("taskOrchestratorExecutor", async.value());
+        // 确认消息必须与分钟级编排池（taskOrchestratorExecutor）隔离，
+        // 否则编排长任务占满线程时「已收到需求」会被排队拖到任务结束。
+        assertEquals("taskStartedNoticeExecutor", async.value());
     }
 
     @Test

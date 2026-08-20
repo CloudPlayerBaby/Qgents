@@ -10,6 +10,11 @@ public class ExecutorPerformanceProperties {
     private Pool orchestration = new Pool(2, 4, 100);
     private Pool testExecution = new Pool(2, 4, 100);
     private Pool taskRunTimeout = new Pool(2, 4, 64);
+    /**
+     * 任务启动确认（TaskStartedNoticeListener）独立执行器：与分钟级编排池隔离，
+     * 避免确认消息在编排长任务占满线程时排队，保证「已收到你的需求」即时回复。
+     */
+    private Pool taskStartedNotice = new Pool(2, 4, 100);
 
     public Pool getOrchestration() {
         return orchestration;
@@ -33,6 +38,14 @@ public class ExecutorPerformanceProperties {
 
     public void setTaskRunTimeout(Pool taskRunTimeout) {
         this.taskRunTimeout = taskRunTimeout;
+    }
+
+    public Pool getTaskStartedNotice() {
+        return taskStartedNotice;
+    }
+
+    public void setTaskStartedNotice(Pool taskStartedNotice) {
+        this.taskStartedNotice = taskStartedNotice;
     }
 
     public static class Pool {
