@@ -8,9 +8,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
@@ -37,6 +40,7 @@ import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 import qg.qgent.websocket.RealtimeFrame;
 
 import java.io.IOException;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -85,6 +89,10 @@ public class EventService {
      * 单连接空闲超时（毫秒）：心跳会保活，超时后线程退出、客户端按 Last-Event-ID 重连。
      */
     private static final long SSE_TIMEOUT_MS = 30 * 60 * 1000L;
+    /** 同一项目事件写入发生死锁时的最大新事务重试次数。 */
+    private static final int EVENT_DEADLOCK_RETRIES = 3;
+    /** 死锁重试的初始退避时间（毫秒）。 */
+    private static final long EVENT_DEADLOCK_BACKOFF_MS = 50L;
 
     private final EventMapper eventMapper;
     private final ProjectAccessService projectAccess;
@@ -100,6 +108,7 @@ public class EventService {
     private final ProjectMapper projectMapper;
     private final UserMapper userMapper;
     private final TeamMapper teamMapper;
+    private final TransactionTemplate eventTransaction;
 
     @Autowired
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
@@ -107,7 +116,8 @@ public class EventService {
                         ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
                         ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
                         RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
-                        ProjectMapper projectMapper, UserMapper userMapper, TeamMapper teamMapper) {
+                        ProjectMapper projectMapper, UserMapper userMapper, TeamMapper teamMapper,
+                        PlatformTransactionManager transactionManager) {
         this.eventMapper = eventMapper;
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
@@ -121,6 +131,7 @@ public class EventService {
         this.projectMapper = projectMapper;
         this.userMapper = userMapper;
         this.teamMapper = teamMapper;
+        this.eventTransaction = transactionManager == null ? null : new TransactionTemplate(transactionManager);
         // SSE 泵线程执行期间保留提交线程的 MDC（requestId），便于按请求串联日志
         MdcTaskDecorator mdcDecorator = new MdcTaskDecorator();
         AtomicInteger seq = new AtomicInteger(1);
@@ -143,7 +154,19 @@ public class EventService {
                         RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
                         ProjectMapper projectMapper) {
         this(eventMapper, projectAccess, notificationEventMapper, teamEventMapper, publisher, realtimeHub,
-                projectMemberMapper, teamMemberMapper, groupMapper, groupMemberMapper, projectMapper, null, null);
+                projectMemberMapper, teamMemberMapper, groupMapper, groupMemberMapper, projectMapper, null, null, null);
+    }
+
+    /** 保留测试与既有直接构造调用的完整构造器，不启用生产事务重试。 */
+    public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
+                        NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
+                        ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
+                        ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
+                        RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
+                        ProjectMapper projectMapper, UserMapper userMapper, TeamMapper teamMapper) {
+        this(eventMapper, projectAccess, notificationEventMapper, teamEventMapper, publisher, realtimeHub,
+                projectMemberMapper, teamMemberMapper, groupMapper, groupMemberMapper, projectMapper,
+                userMapper, teamMapper, null);
     }
 
     /**
@@ -160,9 +183,37 @@ public class EventService {
      * @param resourceId 关联资源ID字符串，如 taskRunId，可为 null
      * @param payload    脱敏事件载荷 JSON
      */
-    @Transactional
     public void publish(UUID projectId, UUID groupId, String eventType, String resourceId,
                         Map<String, Object> payload) {
+        // 已处于业务事务时保持原子性，由调用方事务统一回滚；编排器等非事务调用则由本服务
+        // 开启短事务，并在死锁回滚后使用全新事务重试，避免在 rollback-only 事务中原地重试。
+        if (TransactionSynchronizationManager.isActualTransactionActive() || eventTransaction == null) {
+            publishInTransaction(projectId, groupId, eventType, resourceId, payload);
+            return;
+        }
+        RuntimeException last = null;
+        for (int attempt = 0; attempt < EVENT_DEADLOCK_RETRIES; attempt++) {
+            try {
+                eventTransaction.executeWithoutResult(status ->
+                        publishInTransaction(projectId, groupId, eventType, resourceId, payload));
+                return;
+            } catch (RuntimeException failure) {
+                last = failure;
+                if (!isDeadlock(failure) || attempt + 1 >= EVENT_DEADLOCK_RETRIES) {
+                    throw failure;
+                }
+                long backoff = EVENT_DEADLOCK_BACKOFF_MS << attempt;
+                log.warn("event publish deadlocked; retrying projectId={} eventType={} attempt={} backoffMs={}",
+                        projectId, eventType, attempt + 1, backoff);
+                sleepBackoff(backoff);
+            }
+        }
+        throw last == null ? new IllegalStateException("event publish failed") : last;
+    }
+
+    /** 在当前事务中分配项目序号并写入事件。 */
+    private void publishInTransaction(UUID projectId, UUID groupId, String eventType, String resourceId,
+                                      Map<String, Object> payload) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         EventEntity event = new EventEntity();
         event.setId(UuidV7.next());
@@ -185,6 +236,30 @@ public class EventService {
         //   groupId 为需求群 → 仅该群显式成员。
         Set<UUID> members = broadcastMembers(projectId, groupId);
         fan(members, "project", id(projectId), id(groupId), null, null, resourceId, eventType, payload);
+    }
+
+    private boolean isDeadlock(Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof DeadlockLoserDataAccessException) {
+                return true;
+            }
+            if (current instanceof SQLException sql
+                    && ("40001".equals(sql.getSQLState()) || sql.getErrorCode() == 1213)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private void sleepBackoff(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("event publish retry interrupted", interrupted);
+        }
     }
 
     /**
