@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
+import qg.qgent.config.PerformanceMetrics;
 
 /**
  * Worker 客户端装配：启用 {@link SandboxWorkerProperties} 并基于 {@link RestClient#builder()}
@@ -21,7 +23,8 @@ import org.springframework.web.client.RestClient;
 public class SandboxWorkerConfiguration {
 
     @Bean
-    SandboxWorkerClient sandboxWorkerClient(SandboxWorkerProperties properties, ObjectMapper objectMapper) {
+    SandboxWorkerClient sandboxWorkerClient(SandboxWorkerProperties properties, ObjectMapper objectMapper,
+                                            ObjectProvider<PerformanceMetrics> metricsProvider) {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
         requestFactory.setReadTimeout((int) properties.getResponseTimeout().toMillis());
@@ -32,6 +35,6 @@ public class SandboxWorkerConfiguration {
             builder.defaultHeaders(headers -> headers.setBearerAuth(properties.getBackendServiceToken()));
         }
         RestClient client = builder.build();
-        return new SandboxWorkerClient(client, objectMapper);
+        return new SandboxWorkerClient(client, objectMapper, metricsProvider.getIfAvailable());
     }
 }

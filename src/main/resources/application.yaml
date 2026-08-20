@@ -135,12 +135,40 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
+# 运行指标端点仅用于内网/受控监控访问，不纳入业务接口文档。
+management:
+  server:
+    # 本地 Prometheus 专用管理端口，不占用业务端口；生产环境必须按部署网络覆盖。
+    port: ${MANAGEMENT_SERVER_PORT:8081}
+    address: ${MANAGEMENT_SERVER_ADDRESS:127.0.0.1}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: never
+
 sandbox:
   # 内部 Git 凭据接口没有安全默认值；生产与联调均必须显式注入随机 service token。
   backend-service-token: ${SANDBOX_BACKEND_SERVICE_TOKEN:}
 
 # Agent Run 单相位总时限与任务恢复相关配置
 qgents:
+  executor:
+    # 保持当前默认容量；部署时可按 CPU、外部服务限流和实测队列调整。
+    orchestration:
+      core-size: ${QGENTS_ORCHESTRATION_CORE_SIZE:2}
+      max-size: ${QGENTS_ORCHESTRATION_MAX_SIZE:4}
+      queue-capacity: ${QGENTS_ORCHESTRATION_QUEUE_CAPACITY:100}
+    test-execution:
+      core-size: ${QGENTS_TEST_EXECUTION_CORE_SIZE:2}
+      max-size: ${QGENTS_TEST_EXECUTION_MAX_SIZE:4}
+      queue-capacity: ${QGENTS_TEST_EXECUTION_QUEUE_CAPACITY:100}
+    task-run-timeout:
+      core-size: ${QGENTS_TASK_RUN_TIMEOUT_CORE_SIZE:2}
+      max-size: ${QGENTS_TASK_RUN_TIMEOUT_MAX_SIZE:4}
+      queue-capacity: ${QGENTS_TASK_RUN_TIMEOUT_QUEUE_CAPACITY:64}
   push:
     # 移动端 FCM HTTP v1 离线推送默认关闭；服务账号密钥只允许由受控环境变量注入。
     enabled: ${QGENTS_PUSH_ENABLED:false}

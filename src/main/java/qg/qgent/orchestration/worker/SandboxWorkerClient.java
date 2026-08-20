@@ -1,6 +1,7 @@
 package qg.qgent.orchestration.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -8,6 +9,7 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import qg.qgent.api.ApiException;
+import qg.qgent.config.PerformanceMetrics;
 
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -48,10 +50,16 @@ public class SandboxWorkerClient {
 
     private final RestClient client;
     private final ObjectMapper objectMapper;
+    private final PerformanceMetrics metrics;
 
     public SandboxWorkerClient(RestClient client, ObjectMapper objectMapper) {
+        this(client, objectMapper, null);
+    }
+
+    public SandboxWorkerClient(RestClient client, ObjectMapper objectMapper, PerformanceMetrics metrics) {
         this.client = client;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
     }
 
     /**
@@ -291,11 +299,25 @@ public class SandboxWorkerClient {
      * 统一执行调用并做错误映射，不让 RestClient 原始异常泄漏到上层。
      */
     private <T> T execute(Supplier<T> call) {
+        Timer.Sample timer = metrics == null ? null : metrics.start();
         try {
-            return call.get();
+            T result = call.get();
+            if (metrics != null) {
+                metrics.stop(timer, "qgents.worker.request.duration", "worker_http", "succeeded");
+                metrics.increment("qgents.worker.request.total", "worker_http", "succeeded");
+            }
+            return result;
         } catch (RestClientResponseException exception) {
+            if (metrics != null) {
+                metrics.stop(timer, "qgents.worker.request.duration", "worker_http", "failed");
+                metrics.increment("qgents.worker.request.total", "worker_http", "failed");
+            }
             throw workerError(exception);
         } catch (RestClientException exception) {
+            if (metrics != null) {
+                metrics.stop(timer, "qgents.worker.request.duration", "worker_http", "failed");
+                metrics.increment("qgents.worker.request.total", "worker_http", "failed");
+            }
             throw new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE",
                     "Sandbox worker is unavailable: " + exception.getMessage());
         }
