@@ -639,7 +639,10 @@ public class MessageService {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "MESSAGE_CONTENT_INVALID", "消息内容不能为空");
         }
         switch (type) {
-            case "TEXT" -> requireField(content, "text", "文本消息缺少 text 字段");
+            case "TEXT" -> {
+                requireField(content, "text", "文本消息缺少 text 字段");
+                rejectSerializedQuoteEnvelope(content);
+            }
             // QUOTE 引用消息：content 为引用摘要（quotedMessageId/quotedText/quotedSenderName），无 text 字段
             case "QUOTE" -> {
                 requireField(content, "quotedMessageId", "引用消息缺少 quotedMessageId 字段");
@@ -664,6 +667,37 @@ public class MessageService {
         Object value = content.get(field);
         if (!(value instanceof String s) || s.isBlank()) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "MESSAGE_CONTENT_INVALID", message);
+        }
+    }
+
+    /**
+     * 防止客户端把 QUOTE 请求对象 JSON 拼进普通 TEXT 后落库为绿色文本气泡。
+     * <p>
+     * 这里只拦截具有完整引用协议特征的文本，不尝试把普通 JSON 文本自动转换成 QUOTE，
+     * 避免改变用户正常聊天语义。正确做法是重新发送 type=QUOTE 并填写 replyToId。
+     */
+    private void rejectSerializedQuoteEnvelope(Map<String, Object> content) {
+        Object raw = content.get("text");
+        if (!(raw instanceof String text) || text.isBlank()) {
+            return;
+        }
+        int start = text.indexOf('{');
+        if (start < 0 || start >= text.length() - 1) {
+            return;
+        }
+        try {
+            var node = mapper.readTree(text.substring(start));
+            if (node != null && node.isObject()
+                    && node.hasNonNull("quotedMessageId")
+                    && node.hasNonNull("quotedText")
+                    && node.hasNonNull("replyText")) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "QUOTE_MESSAGE_REQUIRED",
+                        "引用消息必须使用 type=QUOTE，并通过 replyToId 指定被引用消息");
+            }
+        } catch (ApiException e) {
+            throw e;
+        } catch (Exception ignored) {
+            // 普通文本可能包含不完整 JSON，按 TEXT 正常处理。
         }
     }
 

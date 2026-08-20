@@ -6,7 +6,6 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.Mention;
-import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.dto.TaskCreateRequest;
 import qg.qgent.dto.TaskResponse;
 import qg.qgent.dto.TaskTriggerRequest;
@@ -60,7 +59,7 @@ class TaskTriggerServiceTest {
         service.trigger(actor, projectId, groupId, messageId, body);
 
         verify(taskService).create(eq(projectId), eq(actor), any());
-        verifyManualTriggerMessage(actor, projectId, groupId, task);
+        verifyNoInteractions(messageService);
     }
 
     @Test
@@ -78,7 +77,7 @@ class TaskTriggerServiceTest {
 
         assertSame(existing, service.trigger(actor, projectId, groupId, messageId, body));
         verify(taskService, never()).create(any(), any(), any());
-        verifyManualTriggerMessage(actor, projectId, groupId, existing);
+        verifyNoInteractions(messageService);
     }
 
     @Test
@@ -383,7 +382,7 @@ class TaskTriggerServiceTest {
 
         assertSame(existing, result);
         verify(taskService, never()).create(any(), any(), any());
-        verifyManualTriggerMessage(actor, projectId, groupId, existing);
+        verifyNoInteractions(messageService);
     }
 
     @Test
@@ -405,7 +404,7 @@ class TaskTriggerServiceTest {
     }
 
     @Test
-    void triggerPropagatesManualMessageFailureAfterCreatingTask() {
+    void triggerDoesNotSendAnySyntheticMessageAfterCreatingTask() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
         UUID messageId = UUID.randomUUID(), repoId = UUID.randomUUID();
         MessageEntity message = message(groupId, messageId, "{\"text\":\"实现邮箱登录\"}");
@@ -414,14 +413,11 @@ class TaskTriggerServiceTest {
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
         when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
         when(taskService.create(eq(projectId), eq(actor), any())).thenReturn(task);
-        doThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "MESSAGE_SEND_FAILED", "消息发送失败"))
-                .when(messageService).send(eq(actor), eq(projectId), eq(groupId), any());
-
         TaskTriggerRequest body = new TaskTriggerRequest();
         body.setTitle("实现邮箱登录");
 
-        assertThrows(ApiException.class, () -> service.trigger(actor, projectId, groupId, messageId, body));
-        verifyManualTriggerMessage(actor, projectId, groupId, task);
+        assertSame(task, service.trigger(actor, projectId, groupId, messageId, body));
+        verifyNoInteractions(messageService);
     }
 
     /** 并发兜底：唯一约束冲突（同消息被并发建 Task）时返回已有任务，不再次创建。 */
@@ -445,7 +441,7 @@ class TaskTriggerServiceTest {
 
         assertSame(existing, result);
         verify(taskService).findByTriggerMessage(projectId, messageId, actor);
-        verifyManualTriggerMessage(actor, projectId, groupId, existing);
+        verifyNoInteractions(messageService);
     }
 
     /** 并发兜底：唯一键冲突但查不到已有任务（异常态）时不得静默吞掉，抛回原异常。 */
@@ -480,16 +476,6 @@ class TaskTriggerServiceTest {
         return response;
     }
 
-    private void verifyManualTriggerMessage(UUID actor, UUID projectId, UUID groupId, TaskResponse task) {
-        ArgumentCaptor<MessageSendRequest> captor = ArgumentCaptor.forClass(MessageSendRequest.class);
-        verify(messageService).send(eq(actor), eq(projectId), eq(groupId), captor.capture());
-        MessageSendRequest message = captor.getValue();
-        assertEquals("TEXT", message.getType());
-        assertEquals("@编排助手 " + task.getRequirement(), message.getContent().get("text"));
-        assertEquals(List.of(), message.getMentions());
-        assertEquals("manual-task-trigger-" + task.getId(), message.getClientMessageId());
-        assertNull(message.getReplyToId());
-    }
 
     private MessageEntity diffMessage(UUID groupId, UUID id, UUID diffId) {
         return message(groupId, id, "{\"diffId\":\"" + diffId + "\"}", null, "DIFF");
