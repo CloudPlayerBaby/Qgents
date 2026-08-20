@@ -115,6 +115,19 @@ class GitStoreManagerTest {
         assertEquals(true, Files.exists(store));
     }
 
+    @Test
+    void classifiesAuthenticationFailureWithoutReturningGitStderr() {
+        GitStoreManager manager = new GitStoreManager(new RecordingGitRepositoryManager(root, "a".repeat(40),
+                true, "remote: HTTP Basic: Access denied for secret-token"));
+
+        WorkerException exception = assertThrows(WorkerException.class,
+                () -> manager.sync(UUID.randomUUID(), request("https://github.com/qgents/example.git")));
+
+        assertEquals("GIT_REMOTE_AUTH_FAILED", exception.getCode());
+        assertEquals("远程 Git 认证失败", exception.getMessage());
+        assertEquals(false, exception.getMessage().contains("secret-token"));
+    }
+
     private GitRepositoryManager failingFetchRecording(Path root, String fetchedHead) {
         return new RecordingGitRepositoryManager(root, fetchedHead, true);
     }
@@ -146,11 +159,18 @@ class GitStoreManagerTest {
         }
 
         private RecordingGitRepositoryManager(Path root, String fetchedHead, boolean failFetch) {
+            this(root, fetchedHead, failFetch, "fetch failed");
+        }
+
+        private RecordingGitRepositoryManager(Path root, String fetchedHead, boolean failFetch, String fetchError) {
             super(properties(root), org.springframework.web.client.RestClient.builder().build());
             this.storeRoot = root.resolve("stores");
             this.fetchedHead = fetchedHead;
             this.failFetch = failFetch;
+            this.fetchError = fetchError;
         }
+
+        private final String fetchError;
 
         @Override
         <T> T locked(UUID repositoryId, java.util.function.Supplier<T> action) {
@@ -183,7 +203,7 @@ class GitStoreManagerTest {
                 return new CommandResult(2, "", "");
             }
             if (command.contains("fetch")) {
-                return failFetch ? new CommandResult(1, "", "fetch failed") : new CommandResult(0, "", "");
+                return failFetch ? new CommandResult(1, "", fetchError) : new CommandResult(0, "", "");
             }
             return new CommandResult(0, "", "");
         }

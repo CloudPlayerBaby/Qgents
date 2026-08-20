@@ -495,6 +495,24 @@ class TaskRunServiceTest {
     }
 
     @Test
+    void terminalFailurePersistsInternalGitCategoryAsStableClientCode() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("RUNNING");
+        when(runs.selectById(runId)).thenReturn(run);
+        when(logs.nextSequence(runId)).thenReturn(0L);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+
+        service.complete(runId, "FAILED", "GIT_REMOTE_AUTH_FAILED", "远程 Git 认证失败");
+
+        assertEquals("GIT_STORE_FETCH_FAILED", run.getFailureCode());
+        var log = org.mockito.ArgumentCaptor.forClass(ExecutionLogEntity.class);
+        verify(logs).insert(log.capture());
+        assertTrue(log.getValue().getContent().contains("GIT_STORE_FETCH_FAILED"));
+        assertFalse(log.getValue().getContent().contains("GIT_REMOTE_AUTH_FAILED"));
+    }
+
+    @Test
     void executionContextKeepsStableFieldsWhenTaskHasNoRepository() {
         UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
         TaskRunEntity run = run(projectId, runId);

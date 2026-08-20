@@ -70,6 +70,8 @@ public final class ExecutionContentSanitizer {
                     "SANDBOX_NOT_FOUND", "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT",
                     "BUILD_ENVIRONMENT_UNAVAILABLE" ->
                     code.toUpperCase(Locale.ROOT);
+            case "GIT_REMOTE_AUTH_FAILED", "GIT_REMOTE_BRANCH_NOT_FOUND", "GIT_REMOTE_REPOSITORY_UNAVAILABLE",
+                    "GIT_REMOTE_RATE_LIMITED", "GIT_REMOTE_NETWORK_FAILED" -> "GIT_STORE_FETCH_FAILED";
             case "DRY_RUN_TIMEOUT" -> "DRY_RUN_TIMEOUT";
             default -> "FAILED_INFRASTRUCTURE";
         };
@@ -124,6 +126,8 @@ public final class ExecutionContentSanitizer {
                     "GIT_BASE_REF_NOT_FOUND", "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
                     "GIT_STORE_FETCH_FAILED",
                     "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
+                    "GIT_REMOTE_AUTH_FAILED", "GIT_REMOTE_BRANCH_NOT_FOUND", "GIT_REMOTE_REPOSITORY_UNAVAILABLE",
+                    "GIT_REMOTE_RATE_LIMITED", "GIT_REMOTE_NETWORK_FAILED",
                     "WORKER_PUSH_FAILED", "DRY_RUN_TIMEOUT" -> infrastructureDescription(code);
             default -> GENERIC_FAILURE_DESCRIPTION;
         };
@@ -148,6 +152,8 @@ public final class ExecutionContentSanitizer {
                     "GIT_STORE_FETCH_FAILED",
                     "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
                     "WORKER_PUSH_FAILED", "DRY_RUN_TIMEOUT" -> code.toUpperCase(Locale.ROOT);
+            case "GIT_REMOTE_AUTH_FAILED", "GIT_REMOTE_BRANCH_NOT_FOUND", "GIT_REMOTE_REPOSITORY_UNAVAILABLE",
+                    "GIT_REMOTE_RATE_LIMITED", "GIT_REMOTE_NETWORK_FAILED" -> "GIT_STORE_FETCH_FAILED";
             default -> null;
         };
     }

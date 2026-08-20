@@ -981,6 +981,10 @@ public class TaskRunService {
         if (code == null || code.isBlank()) {
             return "EXECUTION_FAILED";
         }
+        String publicCode = ExecutionContentSanitizer.publicFailureCode(code);
+        if (publicCode != null) {
+            return publicCode;
+        }
         String normalized = code.strip().toUpperCase(Locale.ROOT);
         return normalized.matches("[A-Z][A-Z0-9_]{0,63}") ? normalized : "EXECUTION_FAILED";
     }

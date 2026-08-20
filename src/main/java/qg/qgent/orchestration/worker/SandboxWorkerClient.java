@@ -106,8 +106,8 @@ public class SandboxWorkerClient {
                     .retrieve()
                     .body(WorkerGitStoreSyncResponse.class));
         } catch (ApiException failure) {
-            log.error("sandbox git store sync failed repositoryId={} code={} message={}", repositoryId,
-                    failure.code(), failure.getMessage(), failure);
+            log.warn("sandbox git store sync failed repositoryId={} status={} code={}", repositoryId,
+                    failure.status(), failure.code());
             throw failure;
         }
     }
@@ -139,8 +139,8 @@ public class SandboxWorkerClient {
                     .retrieve()
                     .body(WorkerGitCommitResponse.class));
         } catch (ApiException failure) {
-            log.error("sandbox git commit failed workspaceId={} repositoryId={} code={} message={}", workspaceId,
-                    repositoryId, failure.code(), failure.getMessage(), failure);
+            log.warn("sandbox git commit failed workspaceId={} repositoryId={} status={} code={}", workspaceId,
+                    repositoryId, failure.status(), failure.code());
             throw failure;
         }
     }
@@ -156,8 +156,8 @@ public class SandboxWorkerClient {
                     .retrieve()
                     .body(WorkerGitPushResponse.class));
         } catch (ApiException failure) {
-            log.error("sandbox git push failed workspaceId={} repositoryId={} code={} message={}", workspaceId,
-                    repositoryId, failure.code(), failure.getMessage(), failure);
+            log.warn("sandbox git push failed workspaceId={} repositoryId={} status={} code={}", workspaceId,
+                    repositoryId, failure.status(), failure.code());
             throw failure;
         }
     }

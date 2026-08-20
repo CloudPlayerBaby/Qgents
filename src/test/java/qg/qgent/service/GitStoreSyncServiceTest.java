@@ -64,6 +64,47 @@ class GitStoreSyncServiceTest {
     }
 
     @Test
+    void retriesTransientSyncWithFreshFetchGrant() {
+        Fixture fixture = new Fixture();
+        String sha = "a".repeat(40);
+        when(fixture.github.getBranch(anyLong(), any(), any(), any())).thenReturn(new GitHubBranchDetails("main", sha));
+        when(fixture.credentials.generateGrant(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn("grant-first", "grant-second");
+        when(fixture.worker.syncGitStore(eq(fixture.repository.getId()), any()))
+                .thenThrow(new ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                        "GIT_REMOTE_NETWORK_FAILED", "transient"))
+                .thenReturn(new WorkerGitStoreSyncResponse().setHeadCommit(sha));
+        WorkerGitResolveResponse resolved = new WorkerGitResolveResponse();
+        resolved.setCommitSha(sha);
+        when(fixture.worker.resolveGitRef(any())).thenReturn(resolved);
+
+        assertEquals(sha, fixture.service.refreshTargetBranch(fixture.projectId, fixture.repository, "main"));
+        verify(fixture.github, org.mockito.Mockito.times(2)).getBranch(anyLong(), any(), any(), any());
+        verify(fixture.credentials, org.mockito.Mockito.times(2)).generateGrant(any(), any(), any(), any(), any(), any(), any());
+        verify(fixture.worker, org.mockito.Mockito.times(2)).syncGitStore(eq(fixture.repository.getId()), any());
+        verify(fixture.worker).resolveGitRef(any());
+    }
+
+    @Test
+    void doesNotRetryUnclassifiedFetchFailure() {
+        Fixture fixture = new Fixture();
+        String sha = "a".repeat(40);
+        when(fixture.github.getBranch(anyLong(), any(), any(), any())).thenReturn(new GitHubBranchDetails("main", sha));
+        when(fixture.credentials.generateGrant(any(), any(), any(), any(), any(), any(), any())).thenReturn("grant");
+        when(fixture.worker.syncGitStore(eq(fixture.repository.getId()), any()))
+                .thenThrow(new ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                        "GIT_STORE_FETCH_FAILED", "unclassified"));
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> fixture.service.refreshTargetBranch(fixture.projectId, fixture.repository, "main"));
+
+        assertEquals("GIT_STORE_FETCH_FAILED", error.code());
+        verify(fixture.github).getBranch(anyLong(), any(), any(), any());
+        verify(fixture.credentials).generateGrant(any(), any(), any(), any(), any(), any(), any());
+        verify(fixture.worker).syncGitStore(eq(fixture.repository.getId()), any());
+    }
+
+    @Test
     void refreshSourceHeadPersistsHeadWhenRemoteAdvanced() {
         Fixture fixture = new Fixture();
         String oldHead = "a".repeat(40);

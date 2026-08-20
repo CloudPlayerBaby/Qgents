@@ -243,6 +243,38 @@ class MergeRequestServiceTest {
     }
 
     @Test
+    void retriesTransientWorkerPushWithFreshGrant() throws Exception {
+        TaskEntity task = new TaskEntity();
+        task.setId(UUID.randomUUID());
+        task.setProjectId(UUID.randomUUID());
+        task.setWorkspaceId(UUID.randomUUID());
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setSourceBranch("feat/retry");
+        worktree.setHeadCommit("a".repeat(40));
+        GitHubRepositoryEntity github = new GitHubRepositoryEntity();
+        github.setOwnerLogin("owner");
+        github.setName("repo");
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setTeamId(UUID.randomUUID());
+        installation.setProviderInstallationId(123L);
+        when(gitCredentialService.generateGrant(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn("push-grant-first", "push-grant-second");
+        when(sandboxWorkerClient.pushWorkspaceBranch(any(), any(), any()))
+                .thenThrow(new ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                        "SANDBOX_WORKER_UNAVAILABLE", "response lost"))
+                .thenReturn(new qg.qgent.orchestration.worker.WorkerGitPushResponse()
+                        .setBranch(worktree.getSourceBranch()).setHeadCommit(worktree.getHeadCommit()).setVerified(true));
+
+        Method push = MergeRequestService.class.getDeclaredMethod("pushBranch", TaskEntity.class, UUID.class,
+                WorkspaceRepositoryEntity.class, GitHubRepositoryEntity.class, GitHubInstallationEntity.class, String.class);
+        push.setAccessible(true);
+        assertDoesNotThrow(() -> push.invoke(service, task, UUID.randomUUID(), worktree, github, installation, "DIFF_FIRST"));
+
+        verify(gitCredentialService, times(2)).generateGrant(any(), any(), any(), any(), any(), any(), any());
+        verify(sandboxWorkerClient, times(2)).pushWorkspaceBranch(eq(task.getWorkspaceId()), any(), any());
+    }
+
+    @Test
     void createReplacesStaleLocalOpenMrWhenGithubNoLongerHasIt() {
         UUID projectId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();

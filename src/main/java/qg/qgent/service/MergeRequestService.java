@@ -55,6 +55,9 @@ public class MergeRequestService {
      */
     private static final int MERGEABLE_POLL_ATTEMPTS = 5;
     private static final Duration MERGEABLE_POLL_INTERVAL = Duration.ofSeconds(2);
+    /** PUSH 的一次 HTTP 应答丢失不代表远端未接收；最多重放一次同一 branch/head 的幂等推送。 */
+    private static final int WORKER_PUSH_MAX_ATTEMPTS = 2;
+    private static final long WORKER_PUSH_INITIAL_BACKOFF_MILLIS = 250L;
 
     private final MergeRequestMapper mergeRequestMapper;
     private final MergeRequestGroupMapper mergeRequestGroupMapper;
@@ -621,29 +624,59 @@ public class MergeRequestService {
     private void pushBranch(TaskEntity task, UUID repositoryId, WorkspaceRepositoryEntity worktree,
                             GitHubRepositoryEntity github, GitHubInstallationEntity installation, String mode) {
         String fullName = github.getOwnerLogin() + "/" + github.getName();
-        String grantId = credentialService.generateGrant(installation.getTeamId(), task.getProjectId(),
-                installation.getProviderInstallationId(), fullName, worktree.getSourceBranch(),
-                worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
         log.info("branch push starting projectId={} taskId={} repositoryId={} branch={} mode={} expectedHeadCommit={}",
                 task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(), mode, worktree.getHeadCommit());
-        WorkerGitPushResponse pushed;
+        for (int attempt = 1; attempt <= WORKER_PUSH_MAX_ATTEMPTS; attempt++) {
+            String grantId = credentialService.generateGrant(installation.getTeamId(), task.getProjectId(),
+                    installation.getProviderInstallationId(), fullName, worktree.getSourceBranch(),
+                    worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
+            try {
+                WorkerGitPushResponse pushed = workerClient.pushWorkspaceBranch(task.getWorkspaceId(), repositoryId,
+                        new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
+                                .setCredentialGrantId(grantId));
+                if (pushed == null || !pushed.isVerified() || !worktree.getHeadCommit().equals(pushed.getHeadCommit())) {
+                    throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
+                            "Sandbox Worker push verification failed or HEAD mismatch");
+                }
+                log.info("branch push verified projectId={} taskId={} repositoryId={} branch={} headCommit={} attempt={}",
+                        task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(),
+                        pushed.getHeadCommit(), attempt);
+                return;
+            } catch (ApiException failure) {
+                if ("WORKER_PUSH_VERIFICATION_FAILED".equals(failure.code())) {
+                    throw failure;
+                }
+                if (!isRetryableWorkerPush(failure) || attempt >= WORKER_PUSH_MAX_ATTEMPTS) {
+                    log.warn("branch push failed projectId={} taskId={} repositoryId={} branch={} status={} code={} attempt={}",
+                            task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(),
+                            failure.status(), failure.code(), attempt);
+                    throw new ApiException(failure.status(), "WORKER_PUSH_FAILED",
+                            "Failed to push branch via Sandbox Worker");
+                }
+                sleepBeforeWorkerPushRetry(attempt, failure.code());
+            }
+        }
+        throw new IllegalStateException("Worker push retry loop unexpectedly completed");
+    }
+
+    private boolean isRetryableWorkerPush(ApiException failure) {
+        return switch (failure.code()) {
+            case "SANDBOX_WORKER_UNAVAILABLE", "GIT_REMOTE_NETWORK_FAILED", "GIT_REMOTE_RATE_LIMITED",
+                    "GIT_COMMAND_TIMEOUT" -> true;
+            default -> false;
+        };
+    }
+
+    private void sleepBeforeWorkerPushRetry(int attempt, String code) {
+        long backoff = Math.min(2_000L, WORKER_PUSH_INITIAL_BACKOFF_MILLIS * (1L << (attempt - 1)));
+        long jitter = java.util.concurrent.ThreadLocalRandom.current().nextLong(Math.max(1L, backoff / 4));
+        log.warn("branch push retrying attempt={} code={} backoffMs={}", attempt, code, backoff + jitter);
         try {
-            pushed = workerClient.pushWorkspaceBranch(task.getWorkspaceId(), repositoryId,
-                    new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
-                            .setCredentialGrantId(grantId));
-        } catch (ApiException failure) {
-            log.warn("branch push failed projectId={} taskId={} repositoryId={} branch={} status={} code={} message={}",
-                    task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(),
-                    failure.status(), failure.code(), failure.getMessage());
-            throw new ApiException(failure.status(), "WORKER_PUSH_FAILED",
-                    "Failed to push branch via Sandbox Worker: " + failure.getMessage());
+            Thread.sleep(backoff + jitter);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "WORKER_PUSH_RETRY_INTERRUPTED", "代码推送重试被中断");
         }
-        if (pushed == null || !pushed.isVerified() || !worktree.getHeadCommit().equals(pushed.getHeadCommit())) {
-            throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
-                    "Sandbox Worker push verification failed or HEAD mismatch");
-        }
-        log.info("branch push verified projectId={} taskId={} repositoryId={} branch={} headCommit={}",
-                task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(), pushed.getHeadCommit());
     }
 
     private void validateRemote(CreateClaim claim, GitHubPullRequestDetails remote) {

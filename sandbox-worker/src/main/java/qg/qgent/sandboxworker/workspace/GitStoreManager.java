@@ -51,12 +51,13 @@ public class GitStoreManager {
         try {
             repositories.withCredential(request.getCredentialGrantId(), request.getExpectedHeadCommit(), repositoryFullName,
                     request.getRemoteBranch(), "FETCH", environment -> {
-                        repositories.requireSuccess(repositories.run(List.of("git", "--git-dir", store.toString(), "fetch",
-                                        "--no-tags", repositoryUrl,
+                        GitRepositoryManager.CommandResult result = repositories.run(List.of("git", "--git-dir",
+                                        store.toString(), "fetch", "--no-tags", repositoryUrl,
                                         "+refs/heads/" + request.getRemoteBranch() + ":refs/heads/"
-                                                + request.getRemoteBranch()),
-                                        environment),
-                                "GIT_STORE_FETCH_FAILED", "无法同步远程 Git Store");
+                                                + request.getRemoteBranch()), environment);
+                        if (result.exitCode() != 0) {
+                            throw classifyFetchFailure(result);
+                        }
                         return null;
                     });
 
@@ -75,9 +76,9 @@ public class GitStoreManager {
                     created);
             return new GitStoreSyncResponse(repositoryId, request.getRemoteBranch(), actualHead, created);
         } catch (RuntimeException failure) {
-            log.error("git store sync failed repositoryId={} repository={} branch={} expectedHeadCommit={} exceptionType={} message={}",
+            log.warn("git store sync failed repositoryId={} repository={} branch={} expectedHeadCommit={} failureCode={} exceptionType={}",
                     repositoryId, repositoryFullName, request.getRemoteBranch(), request.getExpectedHeadCommit(),
-                    failure.getClass().getSimpleName(), failure.getMessage(), failure);
+                    failureCode(failure), failure.getClass().getSimpleName());
             // 本次新建的 bare Store 在后续 fetch/校验失败时可能残留为空壳，删除避免下次以半成品复用；
             // 已存在的 Store 失败时保留原引用，不破坏既有内容。删除失败仅告警，不阻断异常抛回。
             if (created) {
@@ -120,6 +121,45 @@ public class GitStoreManager {
         }
         verifyBareStore(store);
         return false;
+    }
+
+    /**
+     * 仅以 Git stderr 的固定特征做受限分类，不回传或记录原始 stderr。内部别名会在主后端折叠为
+     * 既有 {@code GIT_STORE_FETCH_FAILED}，同时保留给受限失败诊断用于区分是否值得重试。
+     */
+    private WorkerException classifyFetchFailure(GitRepositoryManager.CommandResult result) {
+        String stderr = result.stderr() == null ? "" : result.stderr().toLowerCase(Locale.ROOT);
+        if (containsAny(stderr, "authentication failed", "http basic: access denied", "invalid username or password",
+                "terminal prompts disabled", "403 forbidden", "401 unauthorized")) {
+            return new WorkerException(HttpStatus.UNAUTHORIZED, "GIT_REMOTE_AUTH_FAILED", "远程 Git 认证失败");
+        }
+        if (containsAny(stderr, "couldn't find remote ref", "could not find remote ref")) {
+            return new WorkerException(HttpStatus.UNPROCESSABLE_ENTITY, "GIT_REMOTE_BRANCH_NOT_FOUND", "远程分支不存在");
+        }
+        if (containsAny(stderr, "repository not found", "not found")) {
+            return new WorkerException(HttpStatus.NOT_FOUND, "GIT_REMOTE_REPOSITORY_UNAVAILABLE", "远程仓库不可用");
+        }
+        if (containsAny(stderr, "rate limit", "429 too many requests", "too many requests")) {
+            return new WorkerException(HttpStatus.SERVICE_UNAVAILABLE, "GIT_REMOTE_RATE_LIMITED", "远程 Git 服务限流");
+        }
+        if (containsAny(stderr, "could not resolve host", "failed to connect", "connection timed out", "connection reset",
+                "remote end hung up", "tls", "ssl", "http 5", "502 bad gateway", "503 service unavailable")) {
+            return new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_REMOTE_NETWORK_FAILED", "远程 Git 网络连接失败");
+        }
+        return new WorkerException(HttpStatus.BAD_GATEWAY, "GIT_STORE_FETCH_FAILED", "无法同步远程 Git Store");
+    }
+
+    private boolean containsAny(String value, String... fragments) {
+        for (String fragment : fragments) {
+            if (value.contains(fragment)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String failureCode(RuntimeException failure) {
+        return failure instanceof WorkerException worker ? worker.getCode() : "UNCLASSIFIED";
     }
 
     private void verifyBareStore(Path store) {

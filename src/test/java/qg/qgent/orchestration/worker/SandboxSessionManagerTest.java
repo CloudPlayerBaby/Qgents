@@ -541,7 +541,7 @@ class SandboxSessionManagerTest {
     void syncFirstFailsSecondSucceeds() {
         mockDependenciesForAcquire();
         when(client.syncGitStore(any(), any()))
-                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_STORE_FETCH_FAILED", "transient"))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_REMOTE_NETWORK_FAILED", "transient"))
                 .thenReturn(syncResponse(REPO, "main", "a".repeat(40)));
 
         SandboxSession session = enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE);
@@ -552,12 +552,12 @@ class SandboxSessionManagerTest {
     }
 
     @Test
-    void baseRefNotFoundRetriesToSucceed() {
+    void transientProvisionFailureRetriesToSucceed() {
         mockDependenciesForAcquire();
         WorkerWorkspace provisioned = new WorkerWorkspace();
         provisioned.setStorageKey("workspaces/" + WORKSPACE);
         when(client.provisionWorkspace(any(), any()))
-                .thenThrow(new ApiException(HttpStatus.CONFLICT, "GIT_BASE_REF_NOT_FOUND", "base not ready"))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_REMOTE_NETWORK_FAILED", "remote unavailable"))
                 .thenReturn(provisioned);
 
         enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE);
@@ -582,6 +582,20 @@ class SandboxSessionManagerTest {
     }
 
     @Test
+    void unclassifiedFetchFailureIsAttemptedOnce() {
+        mockDependenciesForAcquire();
+        when(client.syncGitStore(any(), any()))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_STORE_FETCH_FAILED", "unclassified"));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE));
+
+        assertEquals("GIT_STORE_FETCH_FAILED", exception.code());
+        verify(client, times(1)).syncGitStore(any(), any());
+        verify(client, never()).provisionWorkspace(any(), any());
+    }
+
+    @Test
     void afterMultiRepoFailureNextRoundSyncsAll() {
         mockDependenciesForAcquire();
         UUID repoB = UUID.fromString("00000000-0000-0000-0000-000000000005");
@@ -596,7 +610,7 @@ class SandboxSessionManagerTest {
         // repoA 恒成功；repoB 首轮失败、第二轮成功
         when(client.syncGitStore(eq(REPO), any())).thenReturn(syncResponse(REPO, "main", "a".repeat(40)));
         when(client.syncGitStore(eq(repoB), any()))
-                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_STORE_FETCH_FAILED", "transient"))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_REMOTE_NETWORK_FAILED", "transient"))
                 .thenReturn(syncResponse(repoB, "main", "a".repeat(40)));
 
         enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE);
@@ -716,12 +730,12 @@ class SandboxSessionManagerTest {
     void retriesExhaustedThrowsFinalException() {
         mockDependenciesForAcquire();
         when(client.syncGitStore(any(), any()))
-                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_STORE_FETCH_FAILED", "always"));
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "GIT_REMOTE_NETWORK_FAILED", "always"));
 
         ApiException exception = assertThrows(ApiException.class,
                 () -> enabledManagerZeroBackoff().acquire(TASK, PROJECT, WORKSPACE));
 
-        assertEquals("GIT_STORE_FETCH_FAILED", exception.code());
+        assertEquals("GIT_REMOTE_NETWORK_FAILED", exception.code());
         verify(client, times(3)).syncGitStore(any(), any());
         verify(client, never()).provisionWorkspace(any(), any());
     }

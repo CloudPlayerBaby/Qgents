@@ -51,4 +51,16 @@ class ExecutionContentSanitizerTest {
         assertThat(ExecutionContentSanitizer.infrastructureDescription("ANDROID_SDK_PATH_MISSING"))
                 .isEqualTo("执行基础设施暂不可用");
     }
+
+    @Test
+    void keepsInternalGitFetchFailureCategoriesOutOfClientContracts() {
+        assertThat(ExecutionContentSanitizer.stableInfrastructureCode("GIT_REMOTE_AUTH_FAILED"))
+                .isEqualTo("GIT_STORE_FETCH_FAILED");
+        assertThat(ExecutionContentSanitizer.stableInfrastructureCode("GIT_REMOTE_NETWORK_FAILED"))
+                .isEqualTo("GIT_STORE_FETCH_FAILED");
+        assertThat(ExecutionContentSanitizer.publicFailureCode("GIT_REMOTE_AUTH_FAILED"))
+                .isEqualTo("GIT_STORE_FETCH_FAILED");
+        assertThat(ExecutionContentSanitizer.infrastructureDescription("GIT_REMOTE_AUTH_FAILED"))
+                .isEqualTo("代码仓库同步失败");
+    }
 }

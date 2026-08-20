@@ -400,7 +400,7 @@ public class TaskOrchestrator {
             }
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        latest.setFailureCode(failure.code());
+        latest.setFailureCode(clientFailureCode(failure.code()));
         latest.setFailureReason(failure.reason());
         latest.setFailureRetryable(failure.retryable());
         latest.setFailureOccurredAt(now);
@@ -496,8 +496,9 @@ public class TaskOrchestrator {
                     task.getId());
             return;
         }
-        String userFailureReason = ExecutionContentSanitizer.userFailureDescription(failure.code());
-        latest.setFailureCode(failure.code());
+        String stableClientCode = clientFailureCode(failure.code());
+        String userFailureReason = ExecutionContentSanitizer.userFailureDescription(stableClientCode);
+        latest.setFailureCode(stableClientCode);
         // 规划异常详情只保留在服务端日志，任务字段和群聊状态卡片只能使用受控说明。
         latest.setFailureReason(userFailureReason);
         // 计划路径错误来自本次 Planner 输出，不是用户数据不可修复错误；允许重新规划一次，
@@ -803,6 +804,12 @@ public class TaskOrchestrator {
         failureDiagnostics.record(task, run, step, outcome == null ? null : outcome.getPhase(), outcome);
     }
 
+    /** 保留既有客户端错误码契约；仅将内部别名折叠为已发布的稳定码。 */
+    private String clientFailureCode(String code) {
+        String publicCode = ExecutionContentSanitizer.publicFailureCode(code);
+        return publicCode == null ? code : publicCode;
+    }
+
     private String terminalStatus(RunOutcome outcome) {
         return switch (outcome) {
             case SUCCEEDED -> "SUCCEEDED";
@@ -979,7 +986,7 @@ public class TaskOrchestrator {
                             : "任务在执行完成阶段失败，可查看任务诊断";
                 }
             }
-            task.setFailureCode(code);
+            task.setFailureCode(clientFailureCode(code));
             task.setFailureReason(ExecutionContentSanitizer.sanitize(reason));
             task.setFailureRetryable(true);
             task.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
