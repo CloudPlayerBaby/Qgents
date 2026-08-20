@@ -51,6 +51,12 @@ public class TestResult {
      * 是否需要 Coding Agent 修复；false 且未通过时不可自动修复。
      */
     private boolean needsCodingFix;
+    /**
+     * Plan 结构化断言（machineAssertions）的确定性校验结果（仅纯文件断言路径产出），作为供
+     * Review 判断的"预期信号"，不参与本结果 success 判定——Coding 因合理原因偏离断言时由
+     * Review 结合偏差声明做最终裁决。可为空列表。
+     */
+    private List<FileAssertion> assertionResults = new ArrayList<>();
 
     /**
      * 单个失败项。
@@ -60,5 +66,22 @@ public class TestResult {
         private String name;
         private String reason;
         private String severity;
+    }
+
+    /**
+     * 单条结构化断言的校验事实（机器可信信号，非裁决）。
+     */
+    @Data
+    public static class FileAssertion {
+        /** 目标文件（Workspace 相对路径）。 */
+        private String file;
+        /** 断言类型：EXISTS/EMPTY/LINES_EQ/LINES_GT/LINES_LT/CONTAINS/NOT_CONTAINS。 */
+        private String type;
+        /** 期望值（Plan 声明）：LINES_* 为行数、CONTAINS/NOT_CONTAINS 为子串；EXISTS/EMPTY 为 null。 */
+        private String expected;
+        /** 实际观察值（人类可读）。 */
+        private String actual;
+        /** 是否满足断言。 */
+        private boolean passed;
     }
 }

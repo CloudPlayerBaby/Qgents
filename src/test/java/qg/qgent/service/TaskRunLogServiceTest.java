@@ -79,12 +79,12 @@ class TaskRunLogServiceTest {
         verify(logs, times(2)).insert(captured.capture());
         verify(events, times(2)).publish(eq(run.getProjectId()), isNull(),
                 eq("task-run.step.progress"), eq(run.getId().toString()), any(Map.class));
-        assertTrue(captured.getAllValues().stream().anyMatch(entry -> "VERIFY".equals(entry.getNode())
+        assertTrue(captured.getAllValues().stream().anyMatch(entry -> "TEST".equals(entry.getNode())
                 && entry.getContent().contains("mvn test")
                 && entry.getContent().contains("exitCode：1")
                 && entry.getContent().contains("失败项数量：1")
                 && !entry.getContent().contains("1 个测试失败")));
-        assertTrue(captured.getAllValues().stream().anyMatch(entry -> "VERIFY/FAILURE".equals(entry.getNode())
+        assertTrue(captured.getAllValues().stream().anyMatch(entry -> "TEST/FAILURE".equals(entry.getNode())
                 && entry.getContent().contains("验证失败项详情已隐藏")
                 && !entry.getContent().contains("expected 200 but got 500")));
     }

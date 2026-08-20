@@ -23,6 +23,7 @@ import qg.qgent.entity.WorkspaceRepositoryEntity;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -85,6 +86,13 @@ public class AgentContextAssembler {
     public AgentInput assemble(TaskEntity task, TaskStepEntity step, OrchestrationPhase phase,
                                AgentRunOutcome feedback, UUID taskRunId, PlanResult planResult, CodingResult codingResult,
                                TestResult testResult, GroupContext groupContext) {
+        return assemble(task, step, phase, feedback, taskRunId, planResult, codingResult, testResult, groupContext, null);
+    }
+
+    public AgentInput assemble(TaskEntity task, TaskStepEntity step, OrchestrationPhase phase,
+                               AgentRunOutcome feedback, UUID taskRunId, PlanResult planResult, CodingResult codingResult,
+                               TestResult testResult, GroupContext groupContext,
+                               Map<String, Integer> inheritedPatchFailureCounts) {
         AgentInput input = base(task);
         input.setPhase(phase);
         input.setTaskStepId(step.getId());
@@ -94,7 +102,7 @@ public class AgentContextAssembler {
         input.setAllowedPaths(step.getAllowedPaths());
         input.setTargetFiles(step.getTargetFiles());
         input.setFeedback(feedback == null ? null : formatFeedback(feedback));
-        input.setRetryContext(feedback == null ? null : retryContext(feedback));
+        input.setRetryContext(retryContext(feedback, inheritedPatchFailureCounts));
         input.setPlanResult(planResult);
         input.setCodingResult(codingResult);
         input.setTestResult(testResult);
@@ -282,30 +290,46 @@ public class AgentContextAssembler {
         return feedback.getMessage();
     }
 
-    private RetryContext retryContext(AgentRunOutcome outcome) {
+    private RetryContext retryContext(AgentRunOutcome outcome, Map<String, Integer> inheritedCounts) {
+        if (outcome == null && (inheritedCounts == null || inheritedCounts.isEmpty())) {
+            return null;
+        }
         RetryContext context = new RetryContext();
-        String code = outcome.getFailureCode();
+        String code = outcome == null ? "FILE_PATCH_FAILED" : outcome.getFailureCode();
         if (code == null || code.isBlank()) {
             code = outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE ? "INFRASTRUCTURE_FAILURE"
                     : outcome.getOutcome() == RunOutcome.FAILED_QUALITY ? "QUALITY_GATE_FAILED" : "AGENT_RETRY";
         }
         context.setFailureCode(limit(code, 128));
-        context.setFailureSummary(limit(formatFeedback(outcome), 2000));
-        TestResult test = outcome.getTestResult();
+        context.setFailureSummary(limit(outcome == null
+                ? "前序运行的补丁连续失败，请先重新 read_file，再按要求切换 replace_file"
+                : formatFeedback(outcome), 2000));
+        TestResult test = outcome == null ? null : outcome.getTestResult();
         if (test != null && test.getFailures() != null) {
             context.setFailures(test.getFailures().stream().map(value -> limit(
                     String.valueOf(value.getName()) + ": " + String.valueOf(value.getReason()), 500)).limit(20).toList());
         }
-        ReviewResult review = outcome.getReviewResult();
+        ReviewResult review = outcome == null ? null : outcome.getReviewResult();
         if (review != null && review.getFindings() != null) {
             context.setFailures(review.getFindings().stream().map(value -> limit(
                     String.valueOf(value.getSeverity()) + " " + String.valueOf(value.getFile()) + ": " + String.valueOf(value.getIssue()), 500)).limit(20).toList());
         }
-        CodingResult coding = outcome.getCodingResult();
+        CodingResult coding = outcome == null ? null : outcome.getCodingResult();
         if (coding != null && coding.getModifiedFiles() != null) {
             context.setModifiedFiles(coding.getModifiedFiles().stream().map(value -> limit(value, 300)).limit(100).toList());
         }
-        context.setInstruction(outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE
+        Map<String, Integer> counts = outcome == null ? null : outcome.getPatchFailureCounts();
+        if (counts == null || counts.isEmpty()) {
+            counts = inheritedCounts;
+        }
+        if (counts != null) {
+            context.setPatchFailureCounts(counts.entrySet().stream()
+                    .filter(entry -> entry.getKey() != null && entry.getValue() != null && entry.getValue() > 0)
+                    .limit(100)
+                    .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
+                            (left, right) -> right, java.util.LinkedHashMap::new)));
+        }
+        context.setInstruction(outcome != null && outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE
                 ? "先检查并恢复基础设施，再在相同上下文重试；不要修改业务代码绕过门禁。"
                 : "根据失败项修复代码并重新执行验证，不得绕过质量门禁。");
         return context;

@@ -87,10 +87,26 @@ public class CodingTools {
 
     public CodingTools(UUID workspaceId, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
                        Collection<String> allowedPaths) {
+        this(workspaceId, codeAccess, writer, allowedPaths, null);
+    }
+
+    /**
+     * 创建编码工具并继承同一 Task/Step 在前序 TaskRun 中的补丁失败计数。
+     * 计数只包含相对路径和整数，不把历史补丁或文件内容带入新一轮模型上下文。
+     */
+    public CodingTools(UUID workspaceId, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
+                       Collection<String> allowedPaths, Map<String, Integer> previousPatchFailures) {
         this.workspaceId = workspaceId;
         this.codeAccess = codeAccess;
         this.writer = writer;
         this.pathPolicy = TaskStepPathPolicy.of(allowedPaths);
+        if (previousPatchFailures != null) {
+            previousPatchFailures.forEach((path, count) -> {
+                if (path != null && !path.isBlank() && count != null && count > 0) {
+                    patchFailuresByPath.put(path, Math.min(count, PATCH_FAILURE_ESCALATION_THRESHOLD));
+                }
+            });
+        }
     }
 
     /**

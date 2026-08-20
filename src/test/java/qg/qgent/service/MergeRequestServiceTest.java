@@ -1544,6 +1544,56 @@ class MergeRequestServiceTest {
     }
 
     @Test
+    void listInjectsDeterministicPendingCreatePlaceholderForWaitingPreflightTask() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setDefaultBranch("main");
+        when(projectRepositoryMapper.selectList(any())).thenReturn(java.util.List.of(repository));
+        when(projectRepositoryMapper.selectBatchIds(anyCollection())).thenReturn(java.util.List.of(repository));
+
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setWorkspaceId(workspaceId);
+        worktree.setProjectRepositoryId(repositoryId);
+        worktree.setBaseRef("main");
+        worktree.setSourceBranch("feat/task-pending");
+        worktree.setHeadCommit("head-sha");
+        when(workspaceRepositoryMapper.selectByProject(projectId, null)).thenReturn(java.util.List.of(worktree));
+
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setWorkspaceId(workspaceId);
+        task.setStatus("WAITING_PREFLIGHT");
+        task.setDeliveryMode("MR_FIRST");
+        task.setTitle("待创建 MR");
+        when(taskMapper.selectList(any())).thenReturn(java.util.List.of(task));
+        when(mergeRequestMapper.selectList(any())).thenReturn(java.util.List.of());
+
+        var response = service.list(projectId, userId, null, null, null, null, 20, "req-1");
+
+        assertEquals(1, response.data().size());
+        MergeRequestSummaryResponse row = response.data().get(0);
+        assertEquals("PENDING_CREATE", row.getStatus());
+        assertEquals(taskId.toString(), row.getTaskId());
+        assertEquals("SYSTEM", row.getCreateMode());
+        assertEquals(repositoryId.toString(), row.getRepositoryId());
+        assertEquals("feat/task-pending", row.getSourceBranch());
+        assertEquals("main", row.getTargetBranch());
+        assertEquals(0L, row.getNumber());
+        assertNull(row.getWebUrl());
+
+        var again = service.list(projectId, userId, null, null, null, null, 20, "req-1");
+        assertEquals(row.getId(), again.data().get(0).getId());
+    }
+
+    @Test
     void checksSuccess() {
         UUID projectId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();

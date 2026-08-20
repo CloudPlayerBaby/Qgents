@@ -10,7 +10,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.Mention;
-import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.dto.TaskCreateRequest;
 import qg.qgent.dto.TaskResponse;
 import qg.qgent.dto.TaskTriggerRequest;
@@ -96,7 +95,6 @@ public class TaskTriggerService {
         // 幂等：同一触发消息只建一次 Task（引用 DIFF 续作尤其要防重复点击创建多个续作 Task）
         TaskResponse existing = taskService.findByTriggerMessage(projectId, message.getId(), actor);
         if (existing != null) {
-            sendManualTriggerMessage(actor, projectId, groupId, existing);
             return existing;
         }
         ContinuationRef continuation = resolveQuotedDiffContinuation(projectId, groupId, message);
@@ -109,9 +107,7 @@ public class TaskTriggerService {
                     "需求群未绑定仓库，请先为需求群绑定仓库后再触发任务");
         }
         request.setDeliveryMode(body.getDeliveryMode());
-        TaskResponse created = createIdempotent(projectId, actor, message, request);
-        sendManualTriggerMessage(actor, projectId, groupId, created);
-        return created;
+        return createIdempotent(projectId, actor, message, request);
     }
 
     /**
@@ -174,30 +170,6 @@ public class TaskTriggerService {
             }
             throw e;
         }
-    }
-
-    /**
-     * 手动触发成功后，以当前用户身份在群里留下可见的普通发言。
-     * <p>
-     * 文本中的 {@code @编排助手} 是展示文案而非结构化 AGENT 提及，避免该回显消息再次进入
-     * {@link #triggerFromMention} 自动建任务链路。clientMessageId 使用 Task ID 固定生成，
-     * 保证重试只复用同一条回显消息。
-     */
-    private void sendManualTriggerMessage(UUID actor, UUID projectId, UUID groupId, TaskResponse task) {
-        if (task == null || task.getId() == null) {
-            return;
-        }
-        String requirement = task.getRequirement();
-        if (requirement == null || requirement.isBlank()) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "TASK_REQUIREMENT_MISSING",
-                    "任务需求不能为空");
-        }
-        MessageSendRequest body = new MessageSendRequest();
-        body.setType("TEXT");
-        body.setContent(Map.of("text", "@编排助手 " + requirement));
-        body.setMentions(List.of());
-        body.setClientMessageId("manual-task-trigger-" + task.getId());
-        messageService.send(actor, projectId, groupId, body);
     }
 
     private TaskCreateRequest assembleRequest(RequirementGroupEntity group,

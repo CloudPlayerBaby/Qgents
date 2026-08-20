@@ -3,6 +3,7 @@ package qg.qgent.orchestration.agent;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,5 +52,14 @@ class ChangedWriteFactLedgerTest {
         // 超限丢弃最旧，仍保留最近结果供摘要；展开的最近失败不含被丢弃的最早一条。
         assertThat(summary).contains("失败 " + ChangedWriteFactLedger.MAX_TOOL_OUTCOMES + " 次");
         assertThat(summary).doesNotContain("fail 0");
+    }
+
+    @Test
+    void inheritedPatchFailureCountSurvivesBeforeNextToolResult() {
+        ChangedWriteFactLedger inherited = new ChangedWriteFactLedger(Map.of("src/A.java", 2));
+        assertThat(inherited.patchFailureCounts()).containsEntry("src/A.java", 2);
+        inherited.recordToolOutcomes(List.of(new ToolOutcome("apply_patch", "src/A.java", false, false,
+                "TOOL_PATCH_REPAIR_REQUIRED", true, "repair required")));
+        assertThat(inherited.patchFailureCounts()).containsEntry("src/A.java", 3);
     }
 }

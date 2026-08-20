@@ -56,7 +56,7 @@ public class PlanPromptBuilder {
                 {
                   "taskUnderstanding": "对需求的完整理解",
                   "implementationGoals": ["目标1", "目标2"],
-                  "steps": [{"title": "步骤标题", "files": ["相对路径1", "相对路径2"], "description": "该步骤做什么", "executionMode": "MUTATE", "requiredCapabilities": ["java", "spring-boot"], "suggestedAgentId": "可选，团队可用 Agent 的 id"}],
+                  "steps": [{"title": "步骤标题", "files": ["相对路径1", "相对路径2"], "description": "该步骤做什么", "executionMode": "MUTATE", "requiredCapabilities": ["java", "spring-boot"], "suggestedAgentId": "可选，团队可用 Agent 的 id", "acceptanceNotes": "该步骤完成后的验收标准，一句话", "machineAssertions": [{"type": "LINES_EQ", "file": "相对路径", "value": "4"}]}],
                   "testPlan": "如何验证实现符合需求",
                   "verificationMode": "AUTOMATED",
                   "risks": ["风险1"],
@@ -69,6 +69,8 @@ public class PlanPromptBuilder {
                 - executionMode 必须是 MUTATE 或 VERIFY：需要创建/修改文件时使用 MUTATE；只检查文件、验证现状或运行只读检查时使用 VERIFY。VERIFY 步骤不得要求 Agent 修改文件。
                 - requiredCapabilities 是可选的小写 kebab-case 能力标签数组；只填写该步骤实际需要的专项能力。
                 - suggestedAgentId 是可选的建议执行 Agent id：必须来自用户消息中「可用 Agent 清单」列出的 id；每个步骤尽量指派职责匹配的候选 Agent，让不同专长的 Agent 各司其职；无法确定或无需指定时省略该字段。
+                - acceptanceNotes 是可选字段：一句话自然语言说明该步骤完成后如何验收，把模糊预期显式化，供 Coding 对齐与 Review 判断；无法简明描述时省略，不臆造。
+                - machineAssertions 是可选字段：仅当需求足够具体、可机器校验时输出（如"文件应为空""行数等于 4""内容包含 xxx"）；type 取值 EXISTS/EMPTY/LINES_EQ/LINES_GT/LINES_LT/CONTAINS/NOT_CONTAINS，file 为相对路径，value 为整数行数（LINES_*）或子串（CONTAINS/NOT_CONTAINS）；模糊/开放式需求（优化、重构、风格、设计调整）不得输出假精确断言。断言是预期信号而非最终裁决：Coding 因合理原因偏离时由后续 Test/Review 判断，不阻断计划。
                 - files 必须是无 .. 的相对路径；只能引用给出的文件树中已有的文件，或明确需要新建的文件（在 description 说明）。
                 - 多仓库 Workspace 下，files 的每一项必须以对应仓库的 workspacePath 开头，格式为 workspacePath/仓库内路径；新建目录和新建文件同样必须带此前缀。禁止输出 src/App.vue、vue3/、package.json 这类无法确定仓库的裸路径。单仓库时才可使用仓库内相对路径。
                 - 不要臆造文件树中不存在的既有文件。

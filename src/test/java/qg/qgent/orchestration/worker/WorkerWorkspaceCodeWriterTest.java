@@ -234,6 +234,35 @@ class WorkerWorkspaceCodeWriterTest {
     }
 
     @Test
+    void patchFileTreatsLegacyWorkerFailureWithoutCodeAsToolFailure() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        WorkerToolExecution legacyFailure = failed(null, null);
+        legacyFailure.setTool("file.patch");
+        stubToolExecution(request -> legacyFailure);
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isFalse();
+    }
+
+    @Test
+    void patchFileTreatsLegacyWorkerFailureWithoutToolNameAsToolFailure() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        // Old Worker versions may omit both failureCode and tool; the caller still knows this
+        // operation was file.patch and must preserve a model-repairable failure classification.
+        stubToolExecution(request -> failed(null, null));
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isFalse();
+        assertThat(result.getFailureCode()).isEqualTo("FILE_PATCH_FAILED");
+    }
+
+    @Test
     void patchFileDoesNotClassifyFailureReasonPrefixWithoutMatchingFailureCode() {
         when(sessions.require(WORKSPACE)).thenReturn(session());
         stubToolExecution(request -> failed("PROCESS_EXIT_NONZERO", "FILE_PATCH_FAILED: hunk 声明行数与正文不一致"));
@@ -269,6 +298,21 @@ class WorkerWorkspaceCodeWriterTest {
         assertThat(result.isOk()).isFalse();
         assertThat(result.isInfrastructureFailure()).isTrue();
         assertThat(result.getError()).contains("worker down");
+    }
+
+    @Test
+    void patchFileFallsBackToExceptionTypeWhenInfraMessageIsNull() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        // 复现 "patch failed: null" 场景：Worker 工具链路抛出的 RuntimeException 无消息。
+        when(client.submitToolExecution(any(), any())).thenThrow(new RuntimeException());
+
+        WorkspaceWriteResult result = writer.patchFile(WORKSPACE, "repo-1/src/Foo.java", HASH,
+                "@@ -1,1 +1,1 @@\n-a\n+b\n");
+
+        assertThat(result.isOk()).isFalse();
+        assertThat(result.isInfrastructureFailure()).isTrue();
+        assertThat(result.getError()).isEqualTo("patch failed: RuntimeException");
+        assertThat(result.getError()).doesNotContain("null");
     }
 
     @Test

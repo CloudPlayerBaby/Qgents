@@ -229,6 +229,21 @@ class AgentServiceLifecycleTest {
     }
 
     @Test
+    void publishByTeamOwnerPublishesImmediatelyWithoutApproval() {
+        member(teamId, owner);
+        TeamEntity team = team(teamId, owner);
+        when(teams.selectById(teamId)).thenReturn(team);
+        AgentEntity agent = agent(agentId(), teamId, owner, "PRIVATE", "ACTIVE", false);
+        when(agents.selectById(agent.getId())).thenReturn(agent);
+
+        AgentResponse response = service.publish(owner, teamId, agent.getId());
+
+        assertEquals("TEAM", response.getVisibility());
+        assertEquals(owner.toString(), response.getReviewedBy());
+        verify(agents).updateById(any(AgentEntity.class));
+    }
+
+    @Test
     void publishRejectsOtherUsersPrivateAgentAsNotFound() {
         member(teamId, other);
         AgentEntity agent = agent(agentId(), teamId, creator, "PRIVATE", "ACTIVE", false);

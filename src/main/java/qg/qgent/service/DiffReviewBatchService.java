@@ -51,6 +51,8 @@ public class DiffReviewBatchService {
      */
     private MessageService messageService;
     private OrchestratorAgentService orchestratorAgents;
+    /** TASK_STATUS 卡片仓库映射；缺失时仅降级卡片字段，不影响交付。 */
+    private TaskStatusRepositoryContextService repositoryContextService;
     /** 跨实例 Workspace 写租约；生产环境必须注入，纯 Mockito 构造器可不设置。 */
     private WorkspaceWriteLeaseService workspaceWriteLeases;
     /** commit/push 前的工作分支 MR 锁定门禁。 */
@@ -86,6 +88,11 @@ public class DiffReviewBatchService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setOrchestratorAgents(OrchestratorAgentService orchestratorAgents) {
         this.orchestratorAgents = orchestratorAgents;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setRepositoryContextService(TaskStatusRepositoryContextService repositoryContextService) {
+        this.repositoryContextService = repositoryContextService;
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -577,6 +584,7 @@ public class DiffReviewBatchService {
         content.put("status", "WAITING_PREFLIGHT");
         content.put("deliveryMode", "MR_FIRST");
         content.put("message", "代码已推送，请完成 Dry Run 和独立成员 CQ+1 后创建 MR");
+        addRepositoryContext(content, task, currentBatchRepositoryIds(task));
         MessageSendRequest body = new MessageSendRequest();
         body.setType("TASK_STATUS");
         body.setClientMessageId("task-card-" + task.getId());
@@ -600,6 +608,7 @@ public class DiffReviewBatchService {
         content.put("status", status);
         content.put("phase", "DELIVERY");
         content.put("message", message);
+        addRepositoryContext(content, task, currentBatchRepositoryIds(task));
         MessageSendRequest body = new MessageSendRequest();
         body.setType("TASK_STATUS");
         body.setClientMessageId("task-card-" + task.getId());
@@ -619,6 +628,31 @@ public class DiffReviewBatchService {
             case "WAITING_PREFLIGHT" -> "代码已推送，等待 MR 前预检";
             default -> "任务交付状态更新：" + status;
         };
+    }
+
+    private void addRepositoryContext(Map<String, Object> content, TaskEntity task, List<UUID> repositoryIds) {
+        if (repositoryContextService == null || content == null || task == null) return;
+        try {
+            content.put("repositoryMappings", repositoryContextService.allRepositories(task));
+            content.put("currentRepositoryPaths", repositoryIds == null
+                    ? List.of() : repositoryContextService.pathsForRepositories(task, repositoryIds));
+        } catch (RuntimeException failure) {
+            log.warn("repository context omitted from delivery card taskId={}: {}", task.getId(), failure.getMessage());
+            content.put("repositoryMappings", List.of());
+            content.put("currentRepositoryPaths", List.of());
+        }
+    }
+
+    private List<UUID> currentBatchRepositoryIds(TaskEntity task) {
+        try {
+            DiffReviewBatchEntity batch = latest(task.getProjectId(), task.getId());
+            if (batch == null) return List.of();
+            return diffs(batch.getId()).stream().map(DiffEntity::getProjectRepositoryId)
+                    .filter(java.util.Objects::nonNull).distinct().toList();
+        } catch (RuntimeException failure) {
+            log.warn("current diff repositories unavailable taskId={}: {}", task.getId(), failure.getMessage());
+            return List.of();
+        }
     }
 
     private void refreshDiffCard(TaskEntity task, DiffReviewBatchEntity batch) {

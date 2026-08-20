@@ -337,8 +337,24 @@ public class SandboxSessionManager {
             // 否则按基线分支实时解析远端 HEAD。
             String expectedHeadCommit = isCommitSha(repository.getBaseCommit()) ? repository.getBaseCommit() : null;
             if (!isCommitSha(expectedHeadCommit)) {
-                GitHubBranchDetails branchDetails = githubAppClient.getBranch(
-                        installation.getProviderInstallationId(), ghRepo.getOwnerLogin(), ghRepo.getName(), remoteBranch);
+                String owner = ghRepo.getOwnerLogin();
+                String repoName = ghRepo.getName();
+                GitHubBranchDetails branchDetails;
+                try {
+                    branchDetails = githubAppClient.getBranch(
+                            installation.getProviderInstallationId(), owner, repoName, remoteBranch);
+                } catch (ApiException branchFailure) {
+                    // 基线分支不存在是用户可修复的确定性错误：保留稳定码与仓库/分支上下文，
+                    // 供任务启动失败卡片与详情 statusReason 展示「修改基线分支后重试」，不降级为泛化错误。
+                    if ("GIT_BRANCH_NOT_FOUND".equals(branchFailure.code())) {
+                        throw new ApiException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY,
+                                "GIT_BRANCH_NOT_FOUND",
+                                "仓库 " + owner + "/" + repoName + " 不存在基线分支 " + remoteBranch,
+                                List.of(Map.of("repository", owner + "/" + repoName,
+                                        "branch", remoteBranch, "fullName", owner + "/" + repoName)));
+                    }
+                    throw branchFailure;
+                }
                 expectedHeadCommit = branchDetails == null ? null : branchDetails.commitSha();
                 if (!isCommitSha(expectedHeadCommit)) {
                     throw new IllegalStateException("GitHub branch did not return a valid HEAD commit: " + remoteBranch);

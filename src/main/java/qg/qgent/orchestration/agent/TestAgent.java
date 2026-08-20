@@ -9,6 +9,7 @@ import qg.qgent.orchestration.RunOutcome;
 import qg.qgent.orchestration.ExecutionContentSanitizer;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.LlmMessage;
+import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.orchestration.tool.ExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionResult;
@@ -22,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * 真实 Test Agent：依据工作区构建工具解析安全测试命令，通过 {@link ExecutionPort} 在
@@ -255,6 +257,7 @@ public class TestAgent implements Agent {
         test.setFailures(failures);
         test.setNeedsCodingFix(!failures.isEmpty());
         test.setSuccess(failures.isEmpty());
+        test.setAssertionResults(verifyAssertions(input, targets, available));
         test.setSummary(failures.isEmpty()
                 ? "未检测到项目测试命令，已完成文件断言：" + String.join(", ", checks)
                 : "文件断言未通过：" + failures.get(0).getReason());
@@ -433,6 +436,99 @@ public class TestAgent implements Agent {
             return EMPTY_FILE_SHA256.equalsIgnoreCase(sha.replaceFirst("^sha256:", ""));
         }
         return content.getBytes(StandardCharsets.UTF_8).length == 0;
+    }
+
+    /**
+     * 执行 Plan 输出的可选结构化断言（machineAssertions），产出断言校验事实供 Review 判断，
+     * 但不改变 Test 的通过/失败——断言是"预期信号而非裁决"，Coding 因合理原因偏离断言时由
+     * Review 结合其偏差声明做最终判断。只校验断言文件属于本次 Coding 实际修改目标（targets）
+     * 的条目；计划预期改 A、实际改了 B 的分歧不在 Test 终审，留给 Review。
+     */
+    private List<TestResult.FileAssertion> verifyAssertions(AgentInput input, List<String> targets,
+                                                            Set<String> available) {
+        PlanResult plan = input.getPlanResult();
+        if (plan == null || plan.getImplementationSteps() == null || plan.getImplementationSteps().isEmpty()) {
+            return List.of();
+        }
+        List<TestResult.FileAssertion> results = new ArrayList<>();
+        for (PlanResult.ImplementationStep step : plan.getImplementationSteps()) {
+            if (step.getMachineAssertions() == null) {
+                continue;
+            }
+            for (PlanResult.Assertion assertion : step.getMachineAssertions()) {
+                String file = normalizePath(assertion.getFile());
+                if (!targets.contains(file)) {
+                    continue;
+                }
+                results.add(runAssertion(input.getWorkspaceId(), file, assertion, available));
+            }
+        }
+        return results;
+    }
+
+    /**
+     * 单条断言的确定性校验：EXISTS 查文件树、EMPTY 复用 {@link #isEmptyFile}、LINES_* 按 \n
+     * 分割段数（空内容为 0 行）、CONTAINS/NOT_CONTAINS 做子串判断。结果写入校验事实，不裁决。
+     */
+    private TestResult.FileAssertion runAssertion(UUID workspaceId, String file, PlanResult.Assertion assertion,
+                                                  Set<String> available) {
+        TestResult.FileAssertion result = new TestResult.FileAssertion();
+        result.setFile(file);
+        result.setType(assertion.getType());
+        result.setExpected(assertion.getValue());
+        switch (assertion.getType()) {
+            case "EXISTS" -> {
+                boolean exists = available.contains(file);
+                result.setActual(exists ? "存在" : "不存在");
+                result.setPassed(exists);
+            }
+            case "EMPTY" -> {
+                WorkspaceFileReadResult read = codeAccess.readFile(workspaceId, file);
+                String content = read == null || !read.isOk() || read.getContent() == null ? "" : read.getContent();
+                boolean empty = isEmptyFile(read, content);
+                result.setActual(empty ? "空" : "非空");
+                result.setPassed(empty);
+            }
+            case "LINES_EQ", "LINES_GT", "LINES_LT" -> {
+                String content = readFileContent(workspaceId, file);
+                int lines = countLines(content);
+                int expected = assertion.getValue() == null ? -1 : Integer.parseInt(assertion.getValue());
+                boolean passed = switch (assertion.getType()) {
+                    case "LINES_EQ" -> lines == expected;
+                    case "LINES_GT" -> lines > expected;
+                    default -> lines < expected;
+                };
+                result.setActual(String.valueOf(lines));
+                result.setPassed(passed);
+            }
+            case "CONTAINS", "NOT_CONTAINS" -> {
+                String content = readFileContent(workspaceId, file);
+                String needle = assertion.getValue() == null ? "" : assertion.getValue();
+                boolean contains = content.contains(needle);
+                boolean passed = assertion.getType().equals("CONTAINS") ? contains : !contains;
+                result.setActual(contains ? "包含" : "不包含");
+                result.setPassed(passed);
+            }
+            default -> {
+                result.setActual("不支持的类型");
+                result.setPassed(false);
+            }
+        }
+        return result;
+    }
+
+    private String readFileContent(UUID workspaceId, String file) {
+        WorkspaceFileReadResult read = codeAccess.readFile(workspaceId, file);
+        return read == null || !read.isOk() || read.getContent() == null ? "" : read.getContent();
+    }
+
+    /** 内容行数：空内容为 0 行；按 String.lines() 语义统计（末尾换行不产生额外空行），
+     *  与编辑器显示行数及 Plan "行数 = N" 的预期一致。 */
+    private int countLines(String content) {
+        if (content == null || content.isEmpty()) {
+            return 0;
+        }
+        return (int) content.lines().count();
     }
 
     private AgentRunOutcome infraFailure(AgentInput input, String message) {

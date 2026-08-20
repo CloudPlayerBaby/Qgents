@@ -3,6 +3,7 @@ package qg.qgent.orchestration.agent;
 import org.junit.jupiter.api.Test;
 import qg.qgent.orchestration.result.PlanResult;
 
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -174,5 +175,85 @@ class PlanResultParserTest {
                 "\"description\":\"do it\",\"suggestedAgentId\":\"not-a-uuid\"");
         PlanResult plan = parser.parse(json);
         assertThat(plan.getImplementationSteps().get(0).getSuggestedAgentId()).isNull();
+    }
+
+    @Test void parsesAcceptanceNotesAndMachineAssertions() {
+        String json = VALID_JSON.replace("\"description\":\"do it\"",
+                "\"description\":\"do it\",\"acceptanceNotes\":\"追加后配置文件共 4 行且可解析\","
+                        + "\"machineAssertions\":["
+                        + "{\"type\":\"LINES_EQ\",\"file\":\"a.java\",\"value\":\"4\"},"
+                        + "{\"type\":\"CONTAINS\",\"file\":\"a.java\",\"value\":\"enabled=true\"},"
+                        + "{\"type\":\"EXISTS\",\"file\":\"b.java\"}]");
+        PlanResult plan = parser.parse(json);
+        PlanResult.ImplementationStep step = plan.getImplementationSteps().get(0);
+        assertThat(step.getAcceptanceNotes()).isEqualTo("追加后配置文件共 4 行且可解析");
+        assertThat(step.getMachineAssertions()).hasSize(3);
+        PlanResult.Assertion first = step.getMachineAssertions().get(0);
+        assertThat(first.getType()).isEqualTo("LINES_EQ");
+        assertThat(first.getFile()).isEqualTo("a.java");
+        assertThat(first.getValue()).isEqualTo("4");
+        assertThat(step.getMachineAssertions().get(1).getType()).isEqualTo("CONTAINS");
+        assertThat(step.getMachineAssertions().get(2).getType()).isEqualTo("EXISTS");
+    }
+
+    @Test void missingAssertionsFallsBackToEmpty() {
+        PlanResult plan = parser.parse(VALID_JSON);
+        assertThat(plan.getImplementationSteps().get(0).getAcceptanceNotes()).isNull();
+        assertThat(plan.getImplementationSteps().get(0).getMachineAssertions()).isEmpty();
+    }
+
+    @Test void ignoresInvalidAssertionTypeAndKeepsValidOnes() {
+        String json = VALID_JSON.replace("\"description\":\"do it\"",
+                "\"description\":\"do it\",\"machineAssertions\":["
+                        + "{\"type\":\"BOGUS\",\"file\":\"a.java\",\"value\":\"4\"},"
+                        + "{\"type\":\"LINES_EQ\",\"file\":\"a.java\",\"value\":\"4\"},"
+                        + "{\"type\":\"EMPTY\",\"file\":\"a.java\"}]");
+        PlanResult plan = parser.parse(json);
+        List<PlanResult.Assertion> assertions = plan.getImplementationSteps().get(0).getMachineAssertions();
+        assertThat(assertions).hasSize(2);
+        assertThat(assertions.get(0).getType()).isEqualTo("LINES_EQ");
+        assertThat(assertions.get(1).getType()).isEqualTo("EMPTY");
+    }
+
+    @Test void ignoresAssertionsWithTraversalOrAbsoluteFile() {
+        String json = VALID_JSON.replace("\"description\":\"do it\"",
+                "\"description\":\"do it\",\"machineAssertions\":["
+                        + "{\"type\":\"EXISTS\",\"file\":\"/etc/passwd\"},"
+                        + "{\"type\":\"EXISTS\",\"file\":\"../outside.java\"},"
+                        + "{\"type\":\"EXISTS\",\"file\":\"a.java\"}]");
+        PlanResult plan = parser.parse(json);
+        List<PlanResult.Assertion> assertions = plan.getImplementationSteps().get(0).getMachineAssertions();
+        assertThat(assertions).hasSize(1);
+        assertThat(assertions.get(0).getFile()).isEqualTo("a.java");
+    }
+
+    @Test void dropsLinesAssertionWithNonIntegerValue() {
+        String json = VALID_JSON.replace("\"description\":\"do it\"",
+                "\"description\":\"do it\",\"machineAssertions\":["
+                        + "{\"type\":\"LINES_EQ\",\"file\":\"a.java\",\"value\":\"not-a-number\"}]");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getImplementationSteps().get(0).getMachineAssertions()).isEmpty();
+    }
+
+    @Test void dropsAssertionMissingRequiredValue() {
+        String json = VALID_JSON.replace("\"description\":\"do it\"",
+                "\"description\":\"do it\",\"machineAssertions\":["
+                        + "{\"type\":\"CONTAINS\",\"file\":\"a.java\"}]");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getImplementationSteps().get(0).getMachineAssertions()).isEmpty();
+    }
+
+    @Test void capsMachineAssertionsPerStepAtEight() {
+        StringBuilder assertions = new StringBuilder();
+        for (int i = 1; i <= 10; i++) {
+            if (i > 1) {
+                assertions.append(',');
+            }
+            assertions.append("{\"type\":\"EXISTS\",\"file\":\"f").append(i).append(".java\"}");
+        }
+        String json = VALID_JSON.replace("\"description\":\"do it\"",
+                "\"description\":\"do it\",\"machineAssertions\":[" + assertions + "]");
+        PlanResult plan = parser.parse(json);
+        assertThat(plan.getImplementationSteps().get(0).getMachineAssertions()).hasSize(8);
     }
 }

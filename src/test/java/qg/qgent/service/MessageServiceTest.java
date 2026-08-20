@@ -117,6 +117,35 @@ class MessageServiceTest {
     }
 
     @Test
+    void textMessageRejectsSerializedQuoteEnvelopeInsteadOfPersistingWrongType() {
+        MessageMapper messages = mock(MessageMapper.class);
+        RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        UUID groupId = UUID.randomUUID();
+        group.setId(groupId);
+        group.setProjectId(UUID.randomUUID());
+        when(groups.selectOne(any())).thenReturn(group);
+        MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
+                mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
+                mock(ProjectAccessService.class), mock(GroupService.class), new ObjectMapper(),
+                mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class),
+                mock(ApplicationEventPublisher.class));
+
+        MessageSendRequest request = new MessageSendRequest();
+        request.setType("TEXT");
+        request.setContent(Map.of("text", "@编排助手 {\"replyText\":\"继续修改\","
+                + "\"quotedText\":\"[Diff] 原任务\",\"quotedMessageId\":\"01abc\"}"));
+
+        assertThatThrownBy(() -> service.send(UUID.randomUUID(), group.getProjectId(), groupId, request))
+                .isInstanceOfSatisfying(ApiException.class,
+                        error -> {
+                            assertThat(error.code()).isEqualTo("QUOTE_MESSAGE_REQUIRED");
+                            assertThat(error.getMessage()).contains("type=QUOTE");
+                        });
+        verify(messages, never()).insert(any(MessageEntity.class));
+    }
+
+    @Test
     void agentMessageRejectsMissingCrossTeamAndInactiveAgentBeforeWriting() {
         UUID projectId = UUID.randomUUID();
         UUID groupId = UUID.randomUUID();

@@ -34,4 +34,12 @@ public class MergeRequestSummaryResponse {
     private String title;
     private String webUrl;
     private String createdAt;
+    /**
+     * 关联的 Task ID。仅任务驱动的真实 MR 或待创建占位记录返回。
+     */
+    private String taskId;
+    /**
+     * MR 创建来源：MANUAL、SYSTEM 或 UNKNOWN。
+     */
+    private String createMode;
 }

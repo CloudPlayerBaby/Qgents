@@ -41,6 +41,11 @@ public class CodingResult {
      * 错误列表（success=false 时给出原因），不代表验收结果。
      */
     private List<String> errors = new ArrayList<>();
+    /**
+     * 与计划/验收标准存在差异时的自声明偏差（"差异 + 理由"），供 Review 判断偏差是否合理；
+     * 无差异时为空列表。该字段是模型自述文本，仅透传不校验，不代表服务端验收结论。
+     */
+    private List<String> deviations = new ArrayList<>();
 
     /**
      * 单次自检。

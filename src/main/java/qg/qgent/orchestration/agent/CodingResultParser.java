@@ -77,6 +77,7 @@ public class CodingResultParser {
         result.setModifiedDirectories(optionalStringArray(node, "modifiedDirectories"));
         result.setChanges(optionalStringArray(node, "changes"));
         result.setErrors(optionalStringArray(node, "errors"));
+        result.setDeviations(optionalStringArray(node, "deviations"));
         if (result.isSuccess() && (result.getSummary() == null || result.getSummary().isBlank())) {
             throw new CodingParseException("coding finalResult success=true requires non-empty 'summary'");
         }

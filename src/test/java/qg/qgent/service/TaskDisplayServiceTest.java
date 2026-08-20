@@ -326,6 +326,44 @@ class TaskDisplayServiceTest {
     }
 
     @Test
+    void taskDetailAndListLinkExecutionFailureToLatestFailedRun() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, actor, workspaceId, "RUNNING");
+        when(tasks.selectById(task.getId())).thenReturn(task);
+        when(workspaces.selectById(workspaceId)).thenReturn(workspace(workspaceId));
+        when(steps.selectList(any())).thenReturn(List.of(step(stepId, task.getId(), "FAILED")));
+        TaskRunEntity failed = run(projectId, task.getId(), stepId, runId, "FAILED");
+        failed.setFailureCode("FILE_PATCH_FAILED");
+        failed.setFailureReason("补丁无法应用，请重新读取文件后重试");
+        when(runs.selectList(any())).thenReturn(List.of(failed));
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+
+        when(tasks.selectList(any())).thenReturn(List.of(task));
+        when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
+        UserEntity creator = new UserEntity();
+        creator.setId(actor);
+        creator.setDisplayName("发起人");
+        when(users.selectList(any())).thenReturn(List.of(creator));
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        group.setId(groupId);
+        group.setName("登录功能");
+        when(groups.selectList(any())).thenReturn(List.of(group));
+
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
+                .data().getFirst();
+
+        assertEquals("EXECUTION_FAILED", item.getAttention().getKind());
+        assertEquals(runId.toString(), item.getAttention().getTaskRunId());
+        assertEquals("补丁无法应用，请重新读取文件后重试", item.getAttention().getSummary());
+
+        TaskDetailResponse detail = service.detail(projectId, task.getId(), actor);
+        assertEquals("EXECUTION_FAILED", detail.getAttention().getKind());
+        assertEquals(runId.toString(), detail.getAttention().getTaskRunId());
+    }
+
+    @Test
     void detailExposesFirstDiffIdInDiffReviewSummary() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
         UUID groupId = UUID.randomUUID(), creatorId = UUID.randomUUID(), workspaceId = UUID.randomUUID();

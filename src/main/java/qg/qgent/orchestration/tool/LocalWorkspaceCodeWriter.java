@@ -90,7 +90,7 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
             }
             return WorkspaceDirectoryResult.ok(path, true);
         } catch (IOException e) {
-            return WorkspaceDirectoryResult.infraFail(path, "directory creation failed: " + e.getMessage());
+            return WorkspaceDirectoryResult.infraFail(path, "directory creation failed: " + exceptionDetail(e));
         }
     }
 
@@ -137,7 +137,7 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
             return WorkspaceWriteResult.ok(path, Sha256.hex(written),
                     !existed || !java.util.Arrays.equals(previous, written));
         } catch (IOException e) {
-            return WorkspaceWriteResult.infraFail(path, "write failed: " + e.getMessage());
+            return WorkspaceWriteResult.infraFail(path, "write failed: " + exceptionDetail(e));
         }
     }
 
@@ -189,7 +189,7 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
             return WorkspaceWriteResult.ok(path, Sha256.hex(nextBytes),
                     !java.util.Arrays.equals(previous, nextBytes));
         } catch (IOException e) {
-            return WorkspaceWriteResult.infraFail(path, "replace failed: " + e.getMessage());
+            return WorkspaceWriteResult.infraFail(path, "replace failed: " + exceptionDetail(e));
         }
     }
 
@@ -251,7 +251,7 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
             boolean changed = !java.util.Arrays.equals(previous, nextBytes);
             return WorkspaceWriteResult.ok(path, Sha256.hex(nextBytes), changed);
         } catch (IOException e) {
-            return WorkspaceWriteResult.infraFail(path, "patch failed: " + e.getMessage());
+            return WorkspaceWriteResult.infraFail(path, "patch failed: " + exceptionDetail(e));
         }
     }
 
@@ -309,6 +309,18 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
                 .onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT);
         return decoder.decode(ByteBuffer.wrap(bytes)).toString();
+    }
+
+    /**
+     * 异常消息兜底：消息为 null 或空白时退回异常类型名，避免把 {@code "null"} 拼进错误文案
+     * 丢失诊断信息（此前 apply_patch 曾出现 {@code "patch failed: null"}，无法定位失败原因）。
+     */
+    private static String exceptionDetail(Throwable exception) {
+        if (exception == null) {
+            return "unknown error";
+        }
+        String message = exception.getMessage();
+        return message == null || message.isBlank() ? exception.getClass().getSimpleName() : message;
     }
 
     /**

@@ -261,8 +261,8 @@ public class AgentService {
     }
 
     /**
-     * 提交发布审核：PRIVATE + ACTIVE → PENDING + ACTIVE。仅创建者可提交。
-     * 提交后进入待审核队列（交付中心 AGENT 类型可见），由 Team Owner 批准为 TEAM 或拒绝回 PRIVATE。
+     * 发布自定义 Agent：普通创建者为 PRIVATE + ACTIVE → PENDING + ACTIVE；Team Owner 自建的
+     * Agent 直接 PRIVATE + ACTIVE → TEAM + ACTIVE，免除自己审核自己的发布。
      */
     @Transactional
     public AgentResponse publish(UUID actor, UUID teamId, UUID agentId) {
@@ -277,10 +277,17 @@ public class AgentService {
             throw new ApiException(HttpStatus.CONFLICT, "AGENT_STATE_CONFLICT",
                     "只有 PRIVATE 且 ACTIVE 的 Agent 可以提交发布审核");
         }
-        agent.setVisibility("PENDING");
-        agent.setReviewReason(null);
-        agent.setReviewedBy(null);
-        agent.setReviewedAt(null);
+        if (isTeamOwner(teamId, actor)) {
+            agent.setVisibility("TEAM");
+            agent.setReviewedBy(actor);
+            agent.setReviewedAt(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+            agent.setReviewReason(null);
+        } else {
+            agent.setVisibility("PENDING");
+            agent.setReviewReason(null);
+            agent.setReviewedBy(null);
+            agent.setReviewedAt(null);
+        }
         agentMapper.updateById(agent);
         return toResponse(agent, true);
     }

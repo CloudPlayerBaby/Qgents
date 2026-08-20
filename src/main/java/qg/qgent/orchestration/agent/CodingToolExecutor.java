@@ -13,6 +13,7 @@ import qg.qgent.orchestration.tool.WorkspaceChangeResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +60,18 @@ public class CodingToolExecutor {
         this.pathPolicy = TaskStepPathPolicy.of(allowedPaths);
     }
 
+    public CodingToolExecutor(WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
+                              Collection<String> allowedPaths, Map<String, Integer> previousPatchFailures) {
+        this(codeAccess, writer, allowedPaths);
+        if (previousPatchFailures != null) {
+            previousPatchFailures.forEach((path, count) -> {
+                if (path != null && !path.isBlank() && count != null && count > 0) {
+                    patchFailuresByPath.put(path, Math.min(count, PATCH_FAILURE_ESCALATION_THRESHOLD));
+                }
+            });
+        }
+    }
+
     /**
      * 绑定成功写后的预览回调与任务上下文。由 CodingAgent 每次 run 调用；未配置时不记录预览。
      */
@@ -99,6 +112,10 @@ public class CodingToolExecutor {
 
     public String getLastToolError() {
         return lastToolError;
+    }
+
+    public Map<String, Integer> getPatchFailureCounts() {
+        return Collections.unmodifiableMap(new HashMap<>(patchFailuresByPath));
     }
 
     private String listFiles(UUID workspaceId, String name) {

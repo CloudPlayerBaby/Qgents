@@ -391,6 +391,34 @@ class TaskPlanMaterializationServiceTest {
         assertThat(updated.getValue().getDeliveryReason()).contains("质量门禁");
     }
 
+    @Test
+    void developerInstructionCarriesAcceptanceNotesWhenPlanDeclaresThem() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        TaskStepDependencyMapper dependencies = mock(TaskStepDependencyMapper.class);
+        TaskStepRepositoryMapper scopes = mock(TaskStepRepositoryMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository()));
+        PlanResult plan = plan();
+        plan.getImplementationSteps().get(0).setAcceptanceNotes("追加一行后配置文件共 4 行且可解析");
+        TaskPlanMaterializationService service = service(tasks, steps, dependencies, scopes, worktrees,
+                mock(TaskExecutionArtifactService.class), mock(EventService.class), mock(AgentDispatcher.class));
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.materialize(task, plan);
+
+        ArgumentCaptor<TaskStepEntity> inserted = ArgumentCaptor.forClass(TaskStepEntity.class);
+        verify(steps, times(4)).insert(inserted.capture());
+        // 验收标准以自然语言透传进 DEVELOPER 步骤指令，供 Coding 对齐与 Review 判断。
+        assertThat(inserted.getAllValues().get(0).getInstruction())
+                .contains("验收标准：")
+                .contains("追加一行后配置文件共 4 行且可解析");
+    }
+
     private WorkspaceRepositoryEntity repository() {
         WorkspaceRepositoryEntity repository = new WorkspaceRepositoryEntity();
         repository.setProjectRepositoryId(UUID.randomUUID());

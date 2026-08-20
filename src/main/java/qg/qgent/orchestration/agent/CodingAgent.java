@@ -107,7 +107,8 @@ public class CodingAgent implements Agent {
                     AgentContextLogFormatter.samples(input));
         }
         List<LlmObservation> observations = new ArrayList<>();
-        ChangedWriteFactLedger observedWrites = new ChangedWriteFactLedger();
+        ChangedWriteFactLedger observedWrites = new ChangedWriteFactLedger(
+                input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts());
         try {
             CodingResult coding = protocol.isNative()
                     ? executeCodingNative(input, observations, observedWrites)
@@ -124,6 +125,7 @@ public class CodingAgent implements Agent {
             outcome.setMessage((coding.isSuccess() ? coding.getSummary() : firstError(coding))
                     + (patchUnrecoverable ? "；补丁连续失败且 replace_file 未完成，无法继续自动修复" : ""));
             outcome.setObservations(observations);
+            outcome.setPatchFailureCounts(observedWrites.patchFailureCounts());
             log.info("coding agent done phase={} workspaceId={} outcome={} observations={}",
                     input.getPhase(), input.getWorkspaceId(), outcome.getOutcome(), observations.size());
             return outcome;
@@ -144,6 +146,7 @@ public class CodingAgent implements Agent {
             failure.setMessage("coding agent failed: " + e.getMessage()
                     + (patchUnrecoverable ? "；补丁连续失败且 replace_file 未完成，无法继续自动修复" : ""));
             failure.setObservations(observations);
+            failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
             return failure;
         } catch (ApiException e) {
             AgentRunOutcome failure = new AgentRunOutcome();
@@ -152,6 +155,7 @@ public class CodingAgent implements Agent {
             failure.setFailureCode(e.code());
             failure.setMessage("coding agent failed: " + e.getMessage());
             failure.setObservations(observations);
+            failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
             return failure;
         } catch (RuntimeException e) {
             log.error("CODING_AGENT_FAILED phase={} workspaceId={} category={}",
@@ -161,6 +165,7 @@ public class CodingAgent implements Agent {
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
             failure.setMessage("coding agent failed: " + e.getMessage());
             failure.setObservations(observations);
+            failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
             return failure;
         }
     }
@@ -183,7 +188,8 @@ public class CodingAgent implements Agent {
         List<Message> history = new ArrayList<>();
         history.add(buildUserMessage(input, files));
         String system = promptBuilder.buildSystem(true);
-        CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer, input.getAllowedPaths());
+        CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer, input.getAllowedPaths(),
+                input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts());
         tools.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId());
         ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
@@ -311,7 +317,8 @@ public class CodingAgent implements Agent {
         List<LlmMessage> history = new ArrayList<>();
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files)));
         String system = promptBuilder.buildSystem(false);
-        CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer, input.getAllowedPaths());
+        CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer, input.getAllowedPaths(),
+                input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts());
         toolExecutor.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId(), input.getWorkspaceId());
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
@@ -324,6 +331,7 @@ public class CodingAgent implements Agent {
                         round, toolCall.path("name").asText("?"), input.getPhase(), input.getWorkspaceId());
                 history.add(LlmMessage.tool(toolExecutor.execute(input.getWorkspaceId(), toolCall)));
                 observedWrites.recordToolFailure(toolExecutor.getLastToolError());
+                observedWrites.recordPatchFailureCounts(toolExecutor.getPatchFailureCounts());
                 continue;
             }
             JsonNode finalResult = node.get("finalResult");

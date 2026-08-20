@@ -8,6 +8,7 @@ import qg.qgent.orchestration.result.PlanResult;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -40,7 +41,10 @@ public class PlanResultParser {
     private static final int MAX_RISKS = 20;
     private static final int MAX_FILES_PER_STEP = 20;
     private static final int MAX_CAPABILITIES_PER_STEP = 12;
+    private static final int MAX_ASSERTIONS_PER_STEP = 8;
     private static final Pattern CAPABILITY = Pattern.compile("[a-z0-9]+(?:-[a-z0-9]+)*");
+    private static final Set<String> ASSERTION_TYPES = Set.of(
+            "EXISTS", "EMPTY", "LINES_EQ", "LINES_GT", "LINES_LT", "CONTAINS", "NOT_CONTAINS");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -94,6 +98,8 @@ public class PlanResultParser {
             step.setExecutionMode(optionalExecutionMode(stepNode, step.getTitle(), step.getDescription()));
             step.setRequiredCapabilities(optionalCapabilities(stepNode));
             step.setSuggestedAgentId(optionalStepAgentId(stepNode));
+            step.setAcceptanceNotes(optionalText(stepNode, "acceptanceNotes"));
+            step.setMachineAssertions(parseAssertions(stepNode));
             steps.add(step);
         }
         return steps;
@@ -235,6 +241,56 @@ public class PlanResultParser {
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    /**
+     * 可选的结构化断言解析：仅接受白名单类型 + 合法相对路径 + 必填参数完备的条目。
+     * 非法条目一律忽略（不抛 PlanParseException），避免模型的断言噪声阻断计划——断言是
+     * 预期信号而非裁决，缺失/非法不改变计划可用性（与 suggestedAgentId 同款"可选字段
+     * 非法不阻断"原则）。每步至多保留 {@link #MAX_ASSERTIONS_PER_STEP} 条。
+     */
+    private List<PlanResult.Assertion> parseAssertions(JsonNode stepNode) {
+        JsonNode assertionsNode = stepNode.get("machineAssertions");
+        if (assertionsNode == null || !assertionsNode.isArray()) {
+            return List.of();
+        }
+        List<PlanResult.Assertion> result = new ArrayList<>();
+        for (JsonNode item : assertionsNode) {
+            if (!item.isObject()) {
+                continue;
+            }
+            String type = optionalText(item, "type");
+            String normalized = type == null ? null : type.toUpperCase(Locale.ROOT);
+            if (normalized == null || !ASSERTION_TYPES.contains(normalized)) {
+                continue;
+            }
+            String file = optionalText(item, "file");
+            if (file == null || !isRelativePath(file)) {
+                continue;
+            }
+            String value = optionalText(item, "value");
+            boolean needsValue = normalized.startsWith("LINES_")
+                    || normalized.equals("CONTAINS") || normalized.equals("NOT_CONTAINS");
+            if (needsValue && (value == null || value.isBlank())) {
+                continue;
+            }
+            if (normalized.startsWith("LINES_")) {
+                try {
+                    Integer.parseInt(value);
+                } catch (NumberFormatException e) {
+                    continue;
+                }
+            }
+            PlanResult.Assertion assertion = new PlanResult.Assertion();
+            assertion.setType(normalized);
+            assertion.setFile(file);
+            assertion.setValue(value);
+            result.add(assertion);
+            if (result.size() >= MAX_ASSERTIONS_PER_STEP) {
+                break;
+            }
+        }
+        return result;
     }
 
     /**

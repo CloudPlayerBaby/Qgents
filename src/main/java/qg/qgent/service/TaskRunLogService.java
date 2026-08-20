@@ -97,7 +97,7 @@ public class TaskRunLogService {
     }
 
     /**
-     * 持久化 Verify 的结构化结果摘要。命令、退出码和摘要必须与 stdout/stderr 同属一个
+     * 持久化 Test 的结构化结果摘要。命令、退出码和摘要必须与 stdout/stderr 同属一个
      * TaskRun 日志序列，前端只读取现有 logs 接口即可还原“执行了什么、结果如何、为什么失败”。
      * 原始 stdout/stderr 仍由 {@link #appendWorkerOutput(TaskRunEntity, String, String)} 分行写入，
      * 失败项只保留脱敏后的有限摘要，避免把完整 LLM 响应或敏感命令参数写入日志。
@@ -120,9 +120,9 @@ public class TaskRunLogService {
                 .append("；命令：").append(command)
                 .append("；exitCode：").append(result.getExitCode())
                 .append("；失败项数量：").append(failureCount);
-        append(run, "EXECUTION", "VERIFY", summary.toString());
+        append(run, "EXECUTION", "TEST", summary.toString());
         if (failureCount > 0) {
-            append(run, "EXECUTION", "VERIFY/FAILURE", "验证失败项详情已隐藏，请查看受控执行记录");
+            append(run, "EXECUTION", "TEST/FAILURE", "验证失败项详情已隐藏，请查看受控执行记录");
         }
     }
 
