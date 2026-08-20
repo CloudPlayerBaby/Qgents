@@ -74,4 +74,57 @@ class TestCommandResolverTest {
         assertThat(resolver.resolveCommand(List.of("gradlew", "build.gradle", "src/Main.java"), List.of("src/Main.java")))
                 .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("sh", "./gradlew", "test"), null));
     }
+
+    @Test
+    void scopesMavenMultiModuleToTheModifiedModule() {
+        assertThat(resolver.resolveCommand(List.of("pom.xml", "services/backend/pom.xml",
+                        "services/backend/src/Main.java"), List.of("services/backend/src/Main.java")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(
+                        List.of("mvn", "-pl", "services/backend", "test"), null));
+    }
+
+    @Test
+    void scopesMavenMultiModuleKeepingWrapperChoice() {
+        assertThat(resolver.resolveCommand(List.of("pom.xml", "mvnw", "services/backend/pom.xml",
+                        "services/backend/src/Main.java"), List.of("services/backend/src/Main.java")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(
+                        List.of("sh", "./mvnw", "-pl", "services/backend", "test"), null));
+    }
+
+    @Test
+    void fallsBackToFullMavenTestWhenTargetsSpanMultipleModules() {
+        assertThat(resolver.resolveCommand(List.of("pom.xml", "services/backend/pom.xml",
+                        "services/frontend/pom.xml", "services/backend/src/Main.java",
+                        "services/frontend/src/App.java"),
+                List.of("services/backend/src/Main.java", "services/frontend/src/App.java")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("mvn", "test"), null));
+    }
+
+    @Test
+    void keepsFullMavenTestForSingleModuleRepository() {
+        // 仓库根本身是唯一 pom：targets 下没有嵌套模块，保持整仓库命令。
+        assertThat(resolver.resolveCommand(List.of("services/backend/pom.xml", "services/backend/mvnw",
+                        "services/backend/src/Main.java", "web/package.json"),
+                List.of("services/backend/src/Main.java")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(
+                        List.of("sh", "./mvnw", "test"), "services/backend"));
+    }
+
+    @Test
+    void scopesGradleMultiProjectToTheModifiedProject() {
+        assertThat(resolver.resolveCommand(List.of("settings.gradle", "gradlew",
+                        "services/backend/build.gradle", "services/backend/src/Main.java"),
+                List.of("services/backend/src/Main.java")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(
+                        List.of("sh", "./gradlew", ":services:backend:test"), null));
+    }
+
+    @Test
+    void fallsBackToFullGradleTestWhenTargetsSpanMultipleProjects() {
+        assertThat(resolver.resolveCommand(List.of("settings.gradle",
+                        "services/backend/build.gradle", "services/frontend/build.gradle",
+                        "services/backend/src/Main.java", "services/frontend/src/App.java"),
+                List.of("services/backend/src/Main.java", "services/frontend/src/App.java")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("gradle", "test"), null));
+    }
 }

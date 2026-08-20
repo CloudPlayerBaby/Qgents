@@ -35,6 +35,8 @@ import java.util.UUID;
  *   <li>LLM 不参与命令选择，命令由 {@link TestCommandResolver} 白名单模板解析；</li>
  *   <li>检测不到受支持构建工具时，纯文件任务走只读文件断言；无法确定断言目标时才判 Task FAILED；</li>
  *   <li>ExecutionPort 返回 ok=false（Sandbox 未就绪等）→ FAILED_INFRASTRUCTURE 同相位重试；</li>
+ *   <li>环境/超时/依赖网络失败由 {@link TestFailureClassifier} 在 LLM 分析前分流为 FAILED_INFRASTRUCTURE，
+ *       走同相位重试、不占用质量修复循环，也不让 Coding 空转修复；</li>
  *   <li>LLM 分析失败仅退回基于真实执行的结果，不影响 PASS/FAIL 真实性。</li>
  * </ul>
  * 不修改 Workspace、不 write_file、不调用其他 Agent、不执行 Git 命令、不访问宿主机。
@@ -73,6 +75,7 @@ public class TestAgent implements Agent {
     private final TestCommandResolver commandResolver = new TestCommandResolver();
     private final TestPromptBuilder promptBuilder = new TestPromptBuilder();
     private final TestResultParser parser = new TestResultParser();
+    private final TestFailureClassifier failureClassifier = new TestFailureClassifier();
 
     public TestAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, ExecutionPort executionPort) {
         this.llm = llm;
@@ -106,6 +109,15 @@ public class TestAgent implements Agent {
             if (isCommandUnavailable(safeExec)) {
                 return infraFailure(input, "build environment unavailable (exit code " + exec.exitCode()
                         + "): selected wrapper or build tool could not be launched; use a workspace-relative wrapper such as ./gradlew or ./mvnw");
+            }
+            // 环境/超时/依赖网络失败在 LLM 分析之前分流：不占用质量修复循环，也不让 Coding 空转修复。
+            // 只对真实失败（exit != 0）分类，避免通过执行的日志误触发环境关键字。
+            if (exec.exitCode() != 0) {
+                TestFailureClassifier.Verdict verdict = failureClassifier.classify(
+                        exec.exitCode(), exec.stdout(), exec.stderr(), fileTargets(input));
+                if (verdict.classification() == TestFailureClassifier.Classification.ENVIRONMENT) {
+                    return infraFailure(input, "test environment failure: " + verdict.failureCode());
+                }
             }
             TestResult test = analyze(input, command, safeExec);
             boolean passed = exec.exitCode() == 0;
@@ -550,6 +562,9 @@ public class TestAgent implements Agent {
         if (value.contains("SANDBOX_NOT_FOUND")) return "SANDBOX_NOT_FOUND";
         if (value.contains("DOCKER_EXEC") || value.contains("DOCKER_ENGINE")) return "DOCKER_EXEC_FAILED";
         if (value.contains("BUILD ENVIRONMENT UNAVAILABLE")) return "BUILD_ENVIRONMENT_UNAVAILABLE";
+        if (value.contains("TEST_DEPENDENCY_UNAVAILABLE")) return "TEST_DEPENDENCY_UNAVAILABLE";
+        if (value.contains("TEST_NETWORK_UNAVAILABLE")) return "TEST_NETWORK_UNAVAILABLE";
+        if (value.contains("TEST_SERVICE_UNAVAILABLE")) return "TEST_SERVICE_UNAVAILABLE";
         if (value.contains("TIMEOUT") || value.contains("TIMED OUT") || value.contains("超时")) return "TEST_EXECUTION_TIMEOUT";
         return "FAILED_INFRASTRUCTURE";
     }

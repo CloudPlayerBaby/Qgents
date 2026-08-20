@@ -43,7 +43,8 @@ public final class ExecutionContentSanitizer {
                     "GIT_STORE_FETCH_FAILED", "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH",
                     "GITHUB_API_UNAVAILABLE", "WORKER_PUSH_FAILED", "WORKSPACE_WRITE_LEASE_LOST",
                     "SANDBOX_NOT_FOUND", "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT",
-                    "BUILD_ENVIRONMENT_UNAVAILABLE" ->
+                    "BUILD_ENVIRONMENT_UNAVAILABLE", "TEST_DEPENDENCY_UNAVAILABLE",
+                    "TEST_NETWORK_UNAVAILABLE", "TEST_SERVICE_UNAVAILABLE" ->
                     code.toUpperCase(Locale.ROOT);
             case "DRY_RUN_TIMEOUT" -> "DRY_RUN_TIMEOUT";
             default -> "FAILED_INFRASTRUCTURE";
@@ -63,6 +64,9 @@ public final class ExecutionContentSanitizer {
             case "DOCKER_EXEC_FAILED" -> "Sandbox 内进程启动失败";
             case "TEST_EXECUTION_TIMEOUT" -> "测试命令执行超时";
             case "BUILD_ENVIRONMENT_UNAVAILABLE" -> "测试构建环境不可用";
+            case "TEST_DEPENDENCY_UNAVAILABLE" -> "测试依赖解析或构建环境不可用";
+            case "TEST_NETWORK_UNAVAILABLE" -> "测试执行网络不可达";
+            case "TEST_SERVICE_UNAVAILABLE" -> "测试所需服务（数据库/缓存/消息队列）连接失败";
             case "GIT_BASE_REF_NOT_FOUND" -> "找不到任务指定的基线分支或提交";
             case "GIT_BRANCH_NOT_FOUND" -> "仓库不存在指定的基线分支，请在项目仓库配置中选择真实存在的分支";
             case "GIT_REF_NOT_FOUND" -> "Worker Git Store 中找不到指定分支或提交";
@@ -96,6 +100,7 @@ public final class ExecutionContentSanitizer {
             case "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
+                    "TEST_DEPENDENCY_UNAVAILABLE", "TEST_NETWORK_UNAVAILABLE", "TEST_SERVICE_UNAVAILABLE",
                     "GIT_BASE_REF_NOT_FOUND", "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
                     "GIT_STORE_FETCH_FAILED",
                     "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
@@ -119,6 +124,7 @@ public final class ExecutionContentSanitizer {
                     "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
+                    "TEST_DEPENDENCY_UNAVAILABLE", "TEST_NETWORK_UNAVAILABLE", "TEST_SERVICE_UNAVAILABLE",
                     "GIT_BASE_REF_NOT_FOUND", "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
                     "GIT_STORE_FETCH_FAILED",
                     "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
@@ -142,6 +148,7 @@ public final class ExecutionContentSanitizer {
                     "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
+                    "TEST_DEPENDENCY_UNAVAILABLE", "TEST_NETWORK_UNAVAILABLE", "TEST_SERVICE_UNAVAILABLE",
                     "GIT_BASE_REF_NOT_FOUND", "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
                     "GIT_STORE_FETCH_FAILED",
                     "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",

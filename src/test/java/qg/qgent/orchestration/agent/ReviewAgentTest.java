@@ -136,6 +136,75 @@ class ReviewAgentTest {
     }
 
     @Test
+    void nativeMinorOnlyPassesEvenWhenLlmClaimsFailed() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        // LLM 保守写 success=false，但只有 MINOR finding → 服务端强制 PASS（R-J）。
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":false,\"summary\":\"minor note\","
+                        + "\"findings\":[{\"file\":\"src/main/java/X.java\",\"severity\":\"MINOR\","
+                        + "\"issue\":\"method name unclear\",\"suggestion\":\"rename\"}],"
+                        + "\"suggestions\":[],\"needsCodingFix\":true}}"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getReviewResult().isSuccess()).isTrue();
+    }
+
+    @Test
+    void nativeEmptyFindingsPassEvenWhenLlmClaimsFailed() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        // 零 finding + success=false → 无可修之物，直接 PASS，消除空转。
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":false,\"summary\":\"hesitant\","
+                        + "\"findings\":[],\"suggestions\":[],\"needsCodingFix\":true}}"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getReviewResult().isSuccess()).isTrue();
+        assertThat(outcome.getReviewResult().getFindings()).isEmpty();
+    }
+
+    @Test
+    void nativeMinorWithCorrectnessWordPassesSinceLenient() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        // 宽松版不升格：MINOR 即使提到空指针也放行，即使 LLM 声称通过也仍是 PASS。
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":true,\"summary\":\"ok\","
+                        + "\"findings\":[{\"file\":\"src/main/java/X.java\",\"severity\":\"MINOR\","
+                        + "\"issue\":\"null check missing\",\"suggestion\":\"add null check\"}],"
+                        + "\"suggestions\":[],\"needsCodingFix\":true}}"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getReviewResult().isSuccess()).isTrue();
+        assertThat(outcome.getReviewResult().getFindings().get(0).getSeverity()).isEqualTo("MINOR");
+    }
+
+    @Test
+    void nativeMajorStyleFindingPassesWithNormalizedSeverity() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        // MAJOR 但纯风格（unused import）→ 降级 MINOR → PASS，findings 严重度同步归一化。
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":false,\"summary\":\"style only\","
+                        + "\"findings\":[{\"file\":\"src/main/java/X.java\",\"severity\":\"MAJOR\","
+                        + "\"issue\":\"unused import\",\"suggestion\":\"remove it\"}],"
+                        + "\"suggestions\":[],\"needsCodingFix\":true}}"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getReviewResult().isSuccess()).isTrue();
+        assertThat(outcome.getReviewResult().getFindings().get(0).getSeverity()).isEqualTo("MINOR");
+    }
+
+    @Test
     void nativeIllegalFinalTextMapsToToolCallMalformed() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
