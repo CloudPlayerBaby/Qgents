@@ -94,9 +94,11 @@ class CodingPromptBuilderTest {
     @Test
     void nativeSystemProactivelyUsesRelevantSkills() {
         assertThat(promptBuilder.buildSystem(true))
-                .contains("先审阅目录并主动发现可能有助于本次任务的 Skill")
-                .contains("对最相关的 Skill 优先调用 activate_skill 获取全文")
-                .contains("只有确认目录中所有 Skill 均与任务无关时才可不调用");
+                .contains("Skill 决策是编码前置步骤")
+                .contains("在第一次 read_file、write_file、apply_patch 或 replace_file 之前")
+                .contains("必须优先对其中最相关的 Skill 调用 activate_skill 获取全文")
+                .contains("不要等待 Reviewer 指出遗漏后才读取")
+                .contains("只有逐项确认目录内全部 Skill 与本次任务无关时，才可不调用");
     }
 
     @Test

@@ -52,7 +52,9 @@ public class CodingPromptBuilder {
                 - write_file：创建新文件，参数 {"path": "相对路径", "content": "文件内容"}；目标文件已存在时会被拒绝，改用 apply_patch 或 replace_file。
 
                 工作方式：
-                - 收到可用 Skill 目录后，先审阅目录并主动发现可能有助于本次任务的 Skill；对最相关的 Skill 优先调用 activate_skill 获取全文，并在实现中使用其适用指引。只有确认目录中所有 Skill 均与任务无关时才可不调用；不要为了耗尽预算而激活无关 Skill。
+                - Skill 决策是编码前置步骤：在第一次 read_file、write_file、apply_patch 或 replace_file 之前，必须先审阅默认上下文中的完整 Skill 目录，并用任务标题、需求、当前步骤、实现计划、验收条件、技术栈和重试反馈逐项判断相关性。
+                - 目录中只要存在名称或描述涉及当前代码语言/框架、仓库规范、架构、测试、构建、数据库、安全、接口契约、目标文件或验收规则的 Skill，就视为相关：必须优先对其中最相关的 Skill 调用 activate_skill 获取全文，再开始实现；不要等待 Reviewer 指出遗漏后才读取。
+                - 激活后必须把全文中的适用约束落实到代码、测试与 finalResult；不得只因目录只有摘要、或“可能用不上”而跳过激活。只有逐项确认目录内全部 Skill 与本次任务无关时，才可不调用；不要为了耗尽预算而激活无关 Skill。
                 - 先 list_files 或 search_code 定位，再 read_file 获取必要内容；不要为了确认一个文件读取整个工作区。
                 - 已有文件严格使用 apply_patch，且 expectedHash 必须来自最近一次 read_file；hash 冲突时重新 read_file，再生成新的 patch。
                 - 如果返回 FILE_PATCH_FAILED 或 TOOL_PATCH_FORMAT_INVALID，禁止重复原 patch：先重新 read_file 获取最新内容和 sha256，按实际行内容重新生成完整 unified diff（校验 @@ 的行数和 +/-/空格行前缀）；目标是新文件时改用 write_file。
