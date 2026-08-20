@@ -204,6 +204,15 @@ class TaskDisplayServiceTest {
         group.setName("登录功能");
         when(groups.selectList(any())).thenReturn(List.of(group));
         when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
+        // DIFF_FIRST + PENDING_CONFIRMATION + USER 才展示「等待确认最终 Diff」；
+        // 批次缺失时按自动交付处理，不误报用户确认。
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(UUID.randomUUID());
+        batch.setProjectId(projectId);
+        batch.setTaskId(task.getId());
+        batch.setReviewStatus("PENDING_CONFIRMATION");
+        batch.setConfirmationSource("USER");
+        when(diffBatches.selectList(any())).thenReturn(List.of(batch));
 
         TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
@@ -380,6 +389,7 @@ class TaskDisplayServiceTest {
         batch.setProjectId(projectId);
         batch.setTaskId(task.getId());
         batch.setReviewStatus("PENDING_CONFIRMATION");
+        batch.setConfirmationSource("USER");
         when(diffBatches.selectList(any())).thenReturn(List.of(batch));
 
         DiffEntity firstRepo = new DiffEntity();

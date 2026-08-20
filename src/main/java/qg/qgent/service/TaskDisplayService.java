@@ -410,6 +410,16 @@ public class TaskDisplayService {
                         "请查看同一 Workspace 的最新 Diff，旧 Diff 不能再确认", null, null,
                         id(batch.getId()), null, iso(task.getUpdatedAt()));
             }
+            // 仅 DIFF_FIRST + USER 确认的批次才需要用户确认；MR_FIRST 为系统自动授权
+            // （ACCEPTED+SYSTEM），不应让前端误以为等待用户确认。
+            boolean userConfirmation = "DIFF_FIRST".equals(task.getDeliveryMode())
+                    && batch != null
+                    && "PENDING_CONFIRMATION".equals(batch.getReviewStatus())
+                    && "USER".equals(batch.getConfirmationSource());
+            if (!userConfirmation) {
+                return new Attention("DELIVERING", "自动交付中", "MR_FIRST 已自动授权交付，无需用户确认",
+                        null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
+            }
             return new Attention("DIFF_CONFIRMATION_REQUIRED", "等待确认最终 Diff", "已生成多仓库总 Diff，等待确认",
                     null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
         }
@@ -502,7 +512,12 @@ public class TaskDisplayService {
                 : (!ownerOrAdmin ? "TASK_FORBIDDEN"
                    : (!hasPendingStep ? "NO_PENDING_STEP" : "TASK_TERMINATED"));
 
-        boolean reviewDecidable = batch != null && "PENDING_CONFIRMATION".equals(batch.getReviewStatus());
+        // 仅 DIFF_FIRST + PENDING_CONFIRMATION + USER（用户发起确认）的批次可确认/拒绝；
+        // MR_FIRST 为系统自动授权（ACCEPTED+SYSTEM），不存在用户确认环节。
+        boolean reviewDecidable = "DIFF_FIRST".equals(task.getDeliveryMode())
+                && batch != null
+                && "PENDING_CONFIRMATION".equals(batch.getReviewStatus())
+                && "USER".equals(batch.getConfirmationSource());
         boolean canConfirm = ownerOrAdmin && reviewDecidable;
         String confirmReason = canConfirm ? null
                 : (!ownerOrAdmin ? "DIFF_REVIEW_FORBIDDEN"
