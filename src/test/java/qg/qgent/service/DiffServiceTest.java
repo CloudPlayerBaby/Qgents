@@ -6,12 +6,16 @@ import qg.qgent.dto.ApiPageResponse;
 import qg.qgent.dto.DiffListItemResponse;
 import qg.qgent.dto.FinalDiffPreviewResponse;
 import qg.qgent.dto.DiffResponse;
+import qg.qgent.dto.DiffCommentRequest;
+import qg.qgent.dto.DiffCommentResponse;
+import qg.qgent.entity.DiffCommentEntity;
 import qg.qgent.entity.DiffFileEntity;
 import qg.qgent.entity.DiffReviewBatchEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.entity.TaskStepEntity;
+import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.*;
 
 import java.util.List;
@@ -34,9 +38,11 @@ class DiffServiceTest {
     private final DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
     private final TaskRunMapper taskRuns = mock(TaskRunMapper.class);
     private final TaskStepMapper taskSteps = mock(TaskStepMapper.class);
-    private final DiffService service = new DiffService(diffs, files, mock(DiffCommentMapper.class), batches, tasks,
+    private final DiffCommentMapper comments = mock(DiffCommentMapper.class);
+    private final UserMapper users = mock(UserMapper.class);
+    private final DiffService service = new DiffService(diffs, files, comments, batches, tasks,
             taskRuns, taskSteps, workspaces, access, events,
-            mock(NotificationService.class), delivery, mock(UserMapper.class));
+            mock(NotificationService.class), delivery, users);
 
     @Test
     void rejectRequiresReasonAndDoesNotCreateACommit() {
@@ -265,6 +271,57 @@ class DiffServiceTest {
                 response.getLines().getFirst().getContent().length()));
         assertTrue(response.getLines().getFirst().getContentTruncated());
         assertTrue(response.getViewDetailsRequired());
+    }
+
+    @Test
+    void commentsCarryAuthorNameAndAvatarUrl() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
+        UUID authorId = UUID.randomUUID(), diffId = UUID.randomUUID();
+        DiffEntity diff = diff(projectId, taskId);
+        diff.setId(diffId);
+        DiffCommentEntity comment = new DiffCommentEntity();
+        comment.setId(UUID.randomUUID());
+        comment.setDiffId(diffId);
+        comment.setBody("密码有做哈希吗？");
+        comment.setAuthorUserId(authorId);
+        comment.setCreatedAt(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+        when(diffs.selectById(diffId)).thenReturn(diff);
+        when(comments.selectList(any())).thenReturn(List.of(comment));
+        UserEntity author = new UserEntity();
+        author.setId(authorId);
+        author.setDisplayName("李同学");
+        author.setAvatarUrl("https://cdn.example.com/avatars/user-002.png");
+        when(users.selectBatchIds(Set.of(authorId))).thenReturn(List.of(author));
+
+        List<DiffCommentResponse> result = service.comments(projectId, diffId, actor);
+
+        assertEquals(1, result.size());
+        DiffCommentResponse response = result.getFirst();
+        assertEquals("李同学", response.getAuthorName());
+        assertEquals("https://cdn.example.com/avatars/user-002.png", response.getAuthorAvatarUrl());
+        assertEquals(authorId.toString(), response.getAuthorUserId());
+    }
+
+    @Test
+    void addCommentReturnsAuthorAvatarFromFreshUserLookup() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
+        UUID diffId = UUID.randomUUID();
+        DiffEntity diff = diff(projectId, taskId);
+        diff.setId(diffId);
+        when(diffs.selectById(diffId)).thenReturn(diff);
+        UserEntity author = new UserEntity();
+        author.setId(actor);
+        author.setDisplayName("陈同学");
+        author.setAvatarUrl("https://cdn.example.com/avatars/user-001.png");
+        when(users.selectById(actor)).thenReturn(author);
+
+        DiffCommentRequest request = new DiffCommentRequest();
+        request.setBody("已使用 bcrypt");
+        DiffCommentResponse response = service.addComment(projectId, diffId, actor, request);
+
+        assertEquals("陈同学", response.getAuthorName());
+        assertEquals("https://cdn.example.com/avatars/user-001.png", response.getAuthorAvatarUrl());
+        assertEquals(actor.toString(), response.getAuthorUserId());
     }
 
     private DiffEntity diff(UUID projectId, UUID taskId) {
