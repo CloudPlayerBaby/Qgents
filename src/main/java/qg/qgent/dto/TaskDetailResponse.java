@@ -104,6 +104,12 @@ public class TaskDetailResponse {
     private ExecutionSummary executionSummary;
 
     /**
+     * 当前待处理事项；与任务列表返回同一套关联字段，失败时可定位具体 TaskRun。
+     */
+    @Schema(description = "待处理事项")
+    private Attention attention;
+
+    /**
      * 关联 Workspace 摘要。
      */
     @Schema(description = "关联 Workspace 摘要")

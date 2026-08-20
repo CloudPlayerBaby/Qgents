@@ -77,6 +77,8 @@ public class TaskOrchestrator {
     private final TaskPlanMaterializationService planMaterialization;
     private final java.util.concurrent.ExecutorService taskRunTimeoutExecutor;
     private final OrchestrationTimeoutProperties orchestrationTimeout;
+    /** TASK_STATUS 卡片的真实 Workspace/Repository 映射；通知失败不得影响编排。 */
+    private TaskStatusRepositoryContextService repositoryContextService;
 
     /**
      * 各编排任务的执行现场（富结果/反馈/计数，不进图状态），按 taskId 暂存。
@@ -110,6 +112,11 @@ public class TaskOrchestrator {
         this.planMaterialization = planMaterialization;
         this.taskRunTimeoutExecutor = taskRunTimeoutExecutor;
         this.orchestrationTimeout = orchestrationTimeout;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setRepositoryContextService(TaskStatusRepositoryContextService repositoryContextService) {
+        this.repositoryContextService = repositoryContextService;
     }
 
     /**
@@ -171,6 +178,11 @@ public class TaskOrchestrator {
         TaskExecutionContext ctx = new TaskExecutionContext(task);
         // 续跑来源：首个 TaskRun 的 retryOfTaskRunId 指向被重试的失败运行
         ctx.retryOf = retryOfTaskRunId;
+        // 用户点击重试会进入新的编排会话；从最近一次 Coding 产物恢复同一 TaskStep 的
+        // patch 失败计数，避免每个 TaskRun 都把三次失败门槛重新清零。
+        if (startStepId != null) {
+            ctx.inheritPatchFailureCounts(artifactService.latestPatchFailureCounts(startStepId));
+        }
         // 进程内防重入必须保持在 sandbox acquire 之前：只有赢家到达 acquire，避免并发编排器
         // 双持同一 workspace session、输家 finally release 销毁赢家正在用的沙箱。
         TaskExecutionContext previous = executions.putIfAbsent(taskId, ctx);
@@ -340,15 +352,57 @@ public class TaskOrchestrator {
     private StartupFailure startupFailure(RuntimeException cause) {
         String rawCode = cause instanceof ApiException api ? api.code() : null;
         String code = ExecutionContentSanitizer.stableInfrastructureCode(rawCode);
-        String reason = ExecutionContentSanitizer.infrastructureDescription(code);
+        String reason;
+        boolean retryable = true;
+        if ("GIT_BRANCH_NOT_FOUND".equals(code)) {
+            // 基线分支不存在是用户可修复的确定性错误：保留仓库与分支名，供卡片与 statusReason
+            // 展示「修改基线分支后重试」；从结构化 details 提取，不回显异常原文。
+            BranchContext context = branchContext(cause);
+            reason = context == null
+                    ? ExecutionContentSanitizer.infrastructureDescription(code)
+                    : "仓库 " + context.repository() + " 不存在基线分支 " + context.branch()
+                    + "，请在项目仓库配置中选择真实存在的分支后重试";
+            retryable = true;
+        } else {
+            reason = ExecutionContentSanitizer.infrastructureDescription(code);
+        }
         String title = switch (code) {
             case "GIT_STORE_FETCH_FAILED", "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH" -> "代码仓库同步失败";
             case "GIT_BASE_REF_NOT_FOUND", "GIT_REF_NOT_FOUND" -> "代码仓库基线不可用";
+            case "GIT_BRANCH_NOT_FOUND" -> "基线分支不存在";
             case "SANDBOX_WORKER_UNAVAILABLE", "SANDBOX_WORKER_ERROR" -> "执行环境不可用";
             case "GITHUB_API_UNAVAILABLE" -> "GitHub 服务不可用";
             default -> "任务启动失败";
         };
-        return new StartupFailure(code, title, reason, true);
+        return new StartupFailure(code, title, reason, retryable);
+    }
+
+    /**
+     * 从启动异常的结构化 details 提取仓库与基线分支（仅 GIT_BRANCH_NOT_FOUND 使用）。
+     * details 缺失或结构不符时返回 null，调用方回退到脱敏通用文案。
+     */
+    private BranchContext branchContext(RuntimeException cause) {
+        if (!(cause instanceof ApiException api)) {
+            return null;
+        }
+        try {
+            for (Object detail : api.details()) {
+                if (detail instanceof Map<?, ?> map) {
+                    Object fullName = map.get("fullName");
+                    Object branch = map.get("branch");
+                    if (fullName instanceof String f && branch instanceof String b
+                            && !f.isBlank() && !b.isBlank()) {
+                        return new BranchContext(f, b);
+                    }
+                }
+            }
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+        return null;
+    }
+
+    private record BranchContext(String repository, String branch) {
     }
 
     /**
@@ -443,8 +497,9 @@ public class TaskOrchestrator {
         TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
                 step.getRole(), step.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
         taskRunService.markRunning(run.getId());
-        AgentInput input = contextAssembler.assemble(task, step, phase, ctx.feedbackFor(step.getId()), run.getId(), ctx.planResult,
-                ctx.codingResult, ctx.testResult, ctx.groupContext);
+        AgentRunOutcome feedback = ctx.feedbackFor(step.getId());
+        AgentInput input = contextAssembler.assemble(task, step, phase, feedback, run.getId(), ctx.planResult,
+                ctx.codingResult, ctx.testResult, ctx.groupContext, ctx.patchFailureCounts());
         AgentRunOutcome outcome = safeExecute(agent.get(), phase, input);
         for (WorkerToolExecution execution : WorkerExecutionTraceContext.drain(run.getId())) {
             taskRunService.appendWorkerToolExecution(run, execution);
@@ -676,6 +731,9 @@ public class TaskOrchestrator {
                     .map(LlmObservation::toSummary)
                     .toList();
             summary.put("observations", observations);
+        }
+        if (outcome.getPatchFailureCounts() != null && !outcome.getPatchFailureCounts().isEmpty()) {
+            summary.put("patchFailureCounts", outcome.getPatchFailureCounts());
         }
         if ("REVIEWER".equals(step.getRole()) && outcome.getReviewResult() != null) {
             summary.put("review", reviewSummary(outcome.getReviewResult()));
@@ -958,6 +1016,7 @@ public class TaskOrchestrator {
     }
 
     private void publishTaskStatusCard(TaskEntity task, Map<String, Object> content, String idSuffix) {
+        enrichRepositoryContext(task, content, idSuffix);
         MessageSendRequest body = new MessageSendRequest();
         body.setType("TASK_STATUS");
         body.setClientMessageId("task-card-" + task.getId());
@@ -973,6 +1032,31 @@ public class TaskOrchestrator {
             }
         } catch (RuntimeException e) {
             log.warn("agent card skipped, taskId={}, suffix={}: {}", task.getId(), idSuffix, e.getMessage());
+        }
+    }
+
+    /**
+     * 在既有 TASK_STATUS content 中补充结构化仓库映射；服务不可用时降级为空数组，
+     * 不让卡片增强逻辑影响任务真实状态。
+     */
+    private void enrichRepositoryContext(TaskEntity task, Map<String, Object> content, String idSuffix) {
+        if (repositoryContextService == null || task == null || content == null) {
+            return;
+        }
+        try {
+            content.put("repositoryMappings", repositoryContextService.allRepositories(task));
+            Object rawStepId = content.get("currentStepId");
+            UUID stepId = rawStepId == null ? null : UUID.fromString(String.valueOf(rawStepId));
+            if (stepId == null && idSuffix != null && idSuffix.startsWith("step-")) {
+                stepId = UUID.fromString(idSuffix.substring("step-".length()));
+            }
+            content.put("currentRepositoryPaths",
+                    repositoryContextService.currentPathsForStep(task, stepId));
+        } catch (RuntimeException failure) {
+            log.warn("repository context omitted from task card taskId={}: {}",
+                    task.getId(), failure.getMessage());
+            content.put("repositoryMappings", List.of());
+            content.put("currentRepositoryPaths", List.of());
         }
     }
 
@@ -1202,6 +1286,8 @@ public class TaskOrchestrator {
         private PlanResult planResult;
         private CodingResult codingResult;
         private TestResult testResult;
+        /** 当前 TaskStep 跨 TaskRun 继承的 patch 失败计数。 */
+        private final Map<String, Integer> patchFailureCounts = new LinkedHashMap<>();
         /**
          * 本次 orchestrate 快照的群聊/Skill/Memory 上下文，跨节点复用；组装失败时为 null（不阻断）。
          */
@@ -1209,6 +1295,20 @@ public class TaskOrchestrator {
 
         private TaskExecutionContext(TaskEntity task) {
             this.task = task;
+        }
+
+        private void inheritPatchFailureCounts(Map<String, Integer> counts) {
+            if (counts != null) {
+                counts.forEach((path, count) -> {
+                    if (path != null && !path.isBlank() && count != null && count > 0) {
+                        patchFailureCounts.put(path, Math.min(count, 3));
+                    }
+                });
+            }
+        }
+
+        private Map<String, Integer> patchFailureCounts() {
+            return Map.copyOf(patchFailureCounts);
         }
 
         private AgentRunOutcome feedbackFor(UUID stepId) {
@@ -1224,6 +1324,10 @@ public class TaskOrchestrator {
         }
 
         private void recordOutcome(UUID stepId, OrchestrationPhase phase, AgentRunOutcome outcome) {
+            if (phase == OrchestrationPhase.CODING && outcome.getPatchFailureCounts() != null) {
+                patchFailureCounts.clear();
+                inheritPatchFailureCounts(outcome.getPatchFailureCounts());
+            }
             if (outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE) {
                 infraFeedback.put(stepId, outcome);
                 return;

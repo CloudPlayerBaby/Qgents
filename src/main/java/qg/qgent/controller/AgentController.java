@@ -137,8 +137,8 @@ public class AgentController {
     }
 
     /**
-     * 契约 §11.1（v2.0.6 审核化）：提交发布审核（仅创建者，PRIVATE+ACTIVE → PENDING+ACTIVE）。
-     * 不再直接发布为 TEAM；需 Team Owner 调用 approve 批准后方为 TEAM 共享。
+     * 契约 §11.1：发布自定义 Agent（仅创建者）；普通成员进入 PENDING，Team Owner 自建 Agent
+     * 直接发布为 TEAM，无需额外 approve。
      */
     @PostMapping("/teams/{teamId}/agents/{agentId}/publish")
     public ApiResponse<AgentResponse> publish(@AuthenticationPrincipal UUID actor, @PathVariable UUID teamId,

@@ -197,6 +197,7 @@ public class TaskDisplayService {
                 task.getDeliveryMode(), task.getDeliveryReason(),
                 groupSummary(groupById.get(task.getRequirementGroupId())),
                 userSummary(userById.get(task.getCreatedBy())), criteria, execution,
+                attention,
                 workspaceSummary(task, worktreeData), buildCapabilities(task, actor, stepList, batch),
                 artifactSummary(taskId), diffReviewSummary(batch, batchDiffs), sourceMessage(task),
                 id(task.getTriggerMessageId()), iso(task.getCreatedAt()), iso(task.getUpdatedAt()));
@@ -204,6 +205,8 @@ public class TaskDisplayService {
 
     /**
      * TaskRun 尚未创建时仍返回启动失败原因；旧任务没有持久化原因则保持 null。
+     * GIT_BRANCH_NOT_FOUND 等带上下文（仓库/分支）的失败优先使用启动时持久化的
+     * failureReason，保证详情页展示「修改基线分支后重试」的具体信息。
      */
     private TaskStatusReason taskStatusReason(TaskEntity task) {
         if (task == null || !"FAILED".equals(task.getStatus())
@@ -211,8 +214,13 @@ public class TaskDisplayService {
             return null;
         }
         String failureCode = ExecutionContentSanitizer.publicFailureCode(task.getFailureCode());
+        String summary = ExecutionContentSanitizer.userFailureDescription(failureCode);
+        if (failureCode != null && "GIT_BRANCH_NOT_FOUND".equals(failureCode)
+                && task.getFailureReason() != null && !task.getFailureReason().isBlank()) {
+            summary = task.getFailureReason();
+        }
         return new TaskStatusReason("STARTUP_FAILED", failureCode,
-                "任务启动失败", ExecutionContentSanitizer.userFailureDescription(failureCode),
+                "任务启动失败", summary,
                 ExecutionContentSanitizer.userFailureRetryable(failureCode),
                 iso(task.getFailureOccurredAt()));
     }
@@ -453,10 +461,28 @@ public class TaskDisplayService {
                         req == null ? null : id(req.getId()), null, null, iso(run.getUpdatedAt()));
             }
         }
-        boolean hasFailed = taskRuns.stream().anyMatch(r -> "FAILED".equals(r.getStatus()));
-        if (hasFailed && !TERMINAL_TASK_STATUSES.contains(status)) {
-            return new Attention("EXECUTION_FAILED", "执行失败", "任务执行出现失败，请查看执行记录",
-                    null, null, null, null, iso(task.getUpdatedAt()));
+        TaskRunEntity failedRun = taskRuns.stream()
+                .filter(r -> "FAILED".equals(r.getStatus()))
+                .max(Comparator.comparing(TaskRunEntity::getFailureOccurredAt,
+                        Comparator.nullsFirst(Comparator.naturalOrder()))
+                        .thenComparing(TaskRunEntity::getUpdatedAt,
+                                Comparator.nullsFirst(Comparator.naturalOrder()))
+                        .thenComparing(TaskRunEntity::getId,
+                                Comparator.nullsFirst(Comparator.naturalOrder())))
+                .orElse(null);
+        // FAILED 也是需要展示失败原因的终态；成功、取消等终态不应被历史失败运行污染。
+        if (failedRun != null && ("FAILED".equals(status) || !TERMINAL_TASK_STATUSES.contains(status))) {
+            String publicCode = ExecutionContentSanitizer.publicFailureCode(failedRun.getFailureCode());
+            String failureReason = failedRun.getFailureReason() == null
+                    ? null : ExecutionContentSanitizer.sanitize(failedRun.getFailureReason()).strip();
+            String summary = publicCode == null
+                    ? (failureReason == null || failureReason.isBlank()
+                    ? ExecutionContentSanitizer.userFailureDescription(null) : failureReason)
+                    : ExecutionContentSanitizer.userFailureDescription(publicCode);
+            return new Attention("EXECUTION_FAILED", "执行失败", summary,
+                    id(failedRun.getId()), null, null, null,
+                    iso(failedRun.getFailureOccurredAt() == null
+                            ? failedRun.getUpdatedAt() : failedRun.getFailureOccurredAt()));
         }
         return null;
     }

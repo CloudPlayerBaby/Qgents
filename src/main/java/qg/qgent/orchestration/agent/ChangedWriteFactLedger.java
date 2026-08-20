@@ -29,7 +29,31 @@ final class ChangedWriteFactLedger {
     private final Set<String> changedFiles = new LinkedHashSet<>();
     private final Set<String> changedDirectories = new LinkedHashSet<>();
     private final List<ToolOutcome> toolOutcomes = new ArrayList<>();
+    private final Map<String, Integer> patchFailureCounts = new LinkedHashMap<>();
     private String lastToolError;
+
+    ChangedWriteFactLedger() {
+    }
+
+    ChangedWriteFactLedger(Map<String, Integer> previousCounts) {
+        if (previousCounts != null) {
+            previousCounts.forEach((path, count) -> {
+                if (path != null && !path.isBlank() && count != null && count > 0) {
+                    patchFailureCounts.put(path, Math.min(count, CodingTools.PATCH_FAILURE_ESCALATION_THRESHOLD));
+                }
+            });
+        }
+    }
+
+    void recordPatchFailureCounts(Map<String, Integer> counts) {
+        if (counts != null) {
+            counts.forEach((path, count) -> {
+                if (path != null && !path.isBlank() && count != null && count > 0) {
+                    patchFailureCounts.put(path, Math.min(count, CodingTools.PATCH_FAILURE_ESCALATION_THRESHOLD));
+                }
+            });
+        }
+    }
 
     void recordToolFailure(String error) {
         if (error != null && !error.isBlank()) {
@@ -66,7 +90,19 @@ final class ChangedWriteFactLedger {
                 toolOutcomes.remove(0);
             }
             toolOutcomes.add(outcome);
+            if ("apply_patch".equals(outcome.toolName()) && outcome.path() != null) {
+                if (outcome.ok() && outcome.changed()) {
+                    patchFailureCounts.remove(outcome.path());
+                } else if (!outcome.ok() && ("TOOL_PATCH_FORMAT_INVALID".equals(outcome.errorCode())
+                        || "TOOL_PATCH_REPAIR_REQUIRED".equals(outcome.errorCode()))) {
+                    patchFailureCounts.merge(outcome.path(), 1, Integer::sum);
+                }
+            }
         }
+    }
+
+    Map<String, Integer> patchFailureCounts() {
+        return Map.copyOf(patchFailureCounts);
     }
 
     /**

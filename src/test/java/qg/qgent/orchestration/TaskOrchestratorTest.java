@@ -332,6 +332,40 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void startupFailureKeepsGitBranchNotFoundWithRepositoryContext() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        doThrow(new qg.qgent.api.ApiException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY,
+                "GIT_BRANCH_NOT_FOUND",
+                "仓库 CloudPlayerBaby/test01 不存在基线分支 develop",
+                java.util.List.of(java.util.Map.of("repository", "CloudPlayerBaby/test01",
+                        "branch", "develop", "fullName", "CloudPlayerBaby/test01"))))
+                .when(fixture.sessions).acquire(any(), any(), any());
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess()))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(task.getFailureCode()).isEqualTo("GIT_BRANCH_NOT_FOUND");
+        assertThat(task.getFailureReason())
+                .contains("CloudPlayerBaby/test01")
+                .contains("develop")
+                .contains("基线分支");
+        assertThat(task.getFailureRetryable()).isTrue();
+
+        ArgumentCaptor<MessageSendRequest> cards = ArgumentCaptor.forClass(MessageSendRequest.class);
+        verify(fixture.messages, atLeastOnce()).upsertTaskStatusCard(eq(task.getRequirementGroupId()), any(), cards.capture());
+        MessageSendRequest failed = cards.getAllValues().stream()
+                .filter(card -> "FAILED".equals(card.getContent().get("status")))
+                .findFirst().orElseThrow();
+        String failedMessage = String.valueOf(failed.getContent().get("message"));
+        assertThat(failedMessage)
+                .contains("基线分支不存在")
+                .contains("CloudPlayerBaby/test01")
+                .contains("develop")
+                .contains("重试");
+    }
+
+    @Test
     void initializationFailureDoesNotFakeTaskRun() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();

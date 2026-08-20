@@ -88,7 +88,8 @@ public class GenericCustomAgent implements Agent {
         log.info("custom agent start agentId={} role={} write={} phase={} workspaceId={}",
                 entity.getId(), entity.getRole(), writeCapable, input.getPhase(), input.getWorkspaceId());
         List<LlmObservation> observations = new ArrayList<>();
-        ChangedWriteFactLedger observedWrites = new ChangedWriteFactLedger();
+        ChangedWriteFactLedger observedWrites = new ChangedWriteFactLedger(
+                input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts());
         try {
             CustomResult result = executeCustom(input, observations, writeCapable, observedWrites);
             if (executionMode.requireChange() && result.success() && !observedWrites.hasChangedWrite()) {
@@ -105,6 +106,7 @@ public class GenericCustomAgent implements Agent {
                             : (result.summary() == null || result.summary().isBlank()
                                     ? "目标已由前序步骤满足，本步骤无新增写入" : result.summary()));
                     satisfied.setObservations(observations);
+                    satisfied.setPatchFailureCounts(observedWrites.patchFailureCounts());
                     return satisfied;
                 }
                 // 确定性模型行为错误：声明 success 但没有任何可信文件变更。重试同相位不会改变模型
@@ -128,6 +130,7 @@ public class GenericCustomAgent implements Agent {
                         + observedWrites.recoveryHint())
                         + (patchUnrecoverable ? "；连续补丁失败后的 replace_file 也未完成" : ""));
                 failure.setObservations(observations);
+                failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
                 return failure;
             }
             AgentRunOutcome outcome = new AgentRunOutcome();
@@ -143,6 +146,7 @@ public class GenericCustomAgent implements Agent {
             outcome.setMessage(pickMessage(result)
                     + (patchUnrecoverable ? "；补丁连续失败且 replace_file 未完成，无法继续自动修复" : ""));
             outcome.setObservations(observations);
+            outcome.setPatchFailureCounts(observedWrites.patchFailureCounts());
             // 写角色成功且本次确实产生变更时，回填最小 CodingResult；目录与文件分开记录。
             if (result.success() && writeCapable && lastCodingTools != null
                     && (!lastCodingTools.getModifiedFiles().isEmpty()
@@ -164,6 +168,7 @@ public class GenericCustomAgent implements Agent {
             failure.setFailureCode(e.code());
             failure.setMessage("custom agent failed: " + e.getMessage());
             failure.setObservations(observations);
+            failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
             return failure;
         } catch (RuntimeException e) {
             log.error("CUSTOM_AGENT_FAILED agentId={} phase={} category={} message={}",
@@ -176,6 +181,7 @@ public class GenericCustomAgent implements Agent {
             }
             failure.setMessage("custom agent failed: " + e.getMessage());
             failure.setObservations(observations);
+            failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
             return failure;
         }
     }
@@ -195,7 +201,8 @@ public class GenericCustomAgent implements Agent {
                 && input.getPhase() != qg.qgent.orchestration.OrchestrationPhase.TESTING;
         String system = buildSystem(writeCapable, contextToolsAvailable);
         Object tools = toolRegistry.toolsFor(input.getWorkspaceId(), entity.getRole(), writeCapable,
-                input.getAllowedPaths());
+                input.getAllowedPaths(), input.getRetryContext() == null
+                        ? null : input.getRetryContext().getPatchFailureCounts());
         if (tools instanceof CodingTools codingTools) {
             codingTools.setWriteObserver(observedWrites.observing(writeObserver), input.getProjectId(),
                     input.getTaskId(), input.getTaskRunId());
@@ -226,6 +233,7 @@ public class GenericCustomAgent implements Agent {
             }
             if (tools instanceof CodingTools codingTools) {
                 observedWrites.recordToolFailure(codingTools.getLastToolError());
+                observedWrites.recordToolOutcomes(codingTools.drainOutcomes());
             }
             if ("length".equalsIgnoreCase(turn.finishReason())) {
                 return finalizeCustom(system, requestHistory, turn, observations, round,

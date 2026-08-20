@@ -8,6 +8,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Agent 角色 → 工具白名单注册表：决定自定义 Agent 能拿到哪些工具。结构即权限，编译期可审计。
@@ -64,8 +65,13 @@ public class AgentToolRegistry {
      */
     public Object toolsFor(UUID workspaceId, String role, boolean allowWrite,
                            Collection<String> allowedPaths) {
+        return toolsFor(workspaceId, role, allowWrite, allowedPaths, null);
+    }
+
+    public Object toolsFor(UUID workspaceId, String role, boolean allowWrite,
+                           Collection<String> allowedPaths, Map<String, Integer> previousPatchFailures) {
         return allowWrite && hasWriteRole(role)
-                ? new CodingTools(workspaceId, codeAccess, writer, allowedPaths)
+                ? new CodingTools(workspaceId, codeAccess, writer, allowedPaths, previousPatchFailures)
                 : new ReviewTools(workspaceId, codeAccess);
     }
 }
