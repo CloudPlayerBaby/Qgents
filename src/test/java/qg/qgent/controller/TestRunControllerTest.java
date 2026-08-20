@@ -18,6 +18,7 @@ import qg.qgent.dto.DryRunListItemResponse;
 import qg.qgent.dto.PageMeta;
 import qg.qgent.dto.TestRunListItemResponse;
 import qg.qgent.dto.TestRunResponse;
+import qg.qgent.service.MrPreflightService;
 import qg.qgent.service.PreflightGateService;
 import qg.qgent.service.TestRunService;
 
@@ -41,12 +42,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class TestRunControllerTest {
     private final TestRunService testRunService = mock(TestRunService.class);
     private final PreflightGateService preflightGates = mock(PreflightGateService.class);
+    private final MrPreflightService preflightService = mock(MrPreflightService.class);
     private final UUID userId = UUID.randomUUID();
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        TestRunController controller = new TestRunController(testRunService, preflightGates);
+        TestRunController controller = new TestRunController(testRunService, preflightGates, preflightService);
         mockMvc = MockMvcBuilders
                 .standaloneSetup(controller)
                 .setCustomArgumentResolvers(new AuthenticationPrincipalResolver(userId))

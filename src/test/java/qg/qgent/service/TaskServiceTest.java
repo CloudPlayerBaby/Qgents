@@ -41,6 +41,7 @@ class TaskServiceTest {
     private final ContextService contextService = mock(ContextService.class);
     private final TaskContextSnapshotCodec contextSnapshotCodec = new TaskContextSnapshotCodec(new ObjectMapper());
     private final MergeRequestMapper mergeRequests = mock(MergeRequestMapper.class);
+    private final MrPreflightRequestMapper preflightRequests = mock(MrPreflightRequestMapper.class);
     private final TaskService service = new TaskService(tasks, workspaces, repositories, steps, dependencies, scopes,
             groups, projectRepositories, projects, messages, agents, access, events, eventPublisher, defaultAgents,
             contextService, contextSnapshotCodec);
@@ -267,7 +268,7 @@ class TaskServiceTest {
         blocker.setSourceBranch("feat/task-x");
         blocker.setStatus("OPEN");
         when(mergeRequests.selectOne(any())).thenReturn(blocker);
-        service.setDevelopmentGuard(new WorkBranchDevelopmentGuard(repositories, mergeRequests));
+        service.setDevelopmentGuard(new WorkBranchDevelopmentGuard(repositories, mergeRequests, preflightRequests));
 
         TaskCreateRequest request = request(groupId, List.of());
         request.setWorkspaceId(workspaceId);

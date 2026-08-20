@@ -6,10 +6,24 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import qg.qgent.entity.DiffEntity;
 
+import java.util.List;
+import java.util.UUID;
+
 @Mapper
 public interface DiffMapper extends BaseMapper<DiffEntity> {
     @Select("select * from diffs where id=#{id} for update")
-    DiffEntity selectByIdForUpdate(java.util.UUID id);
+    DiffEntity selectByIdForUpdate(UUID id);
+
+    /**
+     * 返回分支级预检覆盖的已交付 Diff：这些任务的接受 Diff 已被 Commit 并 Push，属于该分支级 MR 的累计内容。
+     */
+    @Select("<script>select d.id from diffs d where d.project_id=#{projectId} "
+            + "and d.project_repository_id=#{repositoryId} and d.delivery_status in ('PUSHED','MR_CREATED') "
+            + "and d.task_id in <foreach collection='taskIds' item='taskId' open='(' separator=',' close=')'>#{taskId}</foreach> "
+            + "order by d.created_at</script>")
+    List<UUID> selectDeliveredDiffIds(@Param("projectId") UUID projectId,
+                                      @Param("repositoryId") UUID repositoryId,
+                                      @Param("taskIds") List<UUID> taskIds);
 
     @Select("select d.* from diffs d left join diff_review_batches b on b.id=d.review_batch_id "
             + "where d.task_id=#{taskId} and d.project_id=#{projectId} and d.workspace_id=#{workspaceId} "

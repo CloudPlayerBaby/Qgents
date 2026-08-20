@@ -3,8 +3,10 @@ package qg.qgent.service;
 import org.junit.jupiter.api.Test;
 import qg.qgent.api.ApiException;
 import qg.qgent.entity.MergeRequestEntity;
+import qg.qgent.entity.MrPreflightRequestEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.mapper.MergeRequestMapper;
+import qg.qgent.mapper.MrPreflightRequestMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 
 import java.util.List;
@@ -19,7 +21,9 @@ import static org.mockito.Mockito.when;
 class WorkBranchDevelopmentGuardTest {
     private final WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
     private final MergeRequestMapper mergeRequests = mock(MergeRequestMapper.class);
-    private final WorkBranchDevelopmentGuard guard = new WorkBranchDevelopmentGuard(worktrees, mergeRequests);
+    private final MrPreflightRequestMapper preflightRequests = mock(MrPreflightRequestMapper.class);
+    private final WorkBranchDevelopmentGuard guard = new WorkBranchDevelopmentGuard(worktrees, mergeRequests,
+            preflightRequests);
 
     @Test
     void openMrBlocksContinuationWithStructuredDetails() {
@@ -59,6 +63,45 @@ class WorkBranchDevelopmentGuardTest {
         guard.requireContinuationAllowed(UUID.randomUUID(), workspaceId);
     }
 
+    @Test
+    void activePreflightBlocksContinuationWithMrPreflightLocked() {
+        UUID workspaceId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree(workspaceId, repositoryId)));
+        when(mergeRequests.selectOne(any())).thenReturn(null);
+        when(preflightRequests.selectOne(any())).thenReturn(preflight(repositoryId, "WAITING_CQ"));
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> guard.requireContinuationAllowed(UUID.randomUUID(), workspaceId));
+
+        assertEquals("MR_PREFLIGHT_LOCKED", error.code());
+    }
+
+    @Test
+    void activePreflightBlocksDirectBranchPush() {
+        UUID projectId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        when(mergeRequests.selectOne(any())).thenReturn(null);
+        when(preflightRequests.selectOne(any())).thenReturn(preflight(repositoryId, "DRY_RUN_RUNNING"));
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> guard.requireBranchWritable(projectId, repositoryId, "feat/task",
+                        "DIFF_DELIVERY_BLOCKED_BY_OPEN_MR", "locked"));
+
+        assertEquals("MR_PREFLIGHT_LOCKED", error.code());
+    }
+
+    @Test
+    void terminalPreflightDoesNotBlockContinuation() {
+        UUID workspaceId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree(workspaceId, repositoryId)));
+        when(mergeRequests.selectOne(any())).thenReturn(null);
+        when(preflightRequests.selectOne(any())).thenReturn(null);
+
+        guard.requireContinuationAllowed(UUID.randomUUID(), workspaceId);
+    }
+
     private WorkspaceRepositoryEntity worktree(UUID workspaceId, UUID repositoryId) {
         WorkspaceRepositoryEntity value = new WorkspaceRepositoryEntity();
         value.setWorkspaceId(workspaceId);
@@ -72,6 +115,15 @@ class WorkBranchDevelopmentGuardTest {
         value.setId(UUID.randomUUID());
         value.setProjectRepositoryId(repositoryId);
         value.setProviderNumber(42L);
+        value.setSourceBranch("feat/task");
+        value.setStatus(status);
+        return value;
+    }
+
+    private MrPreflightRequestEntity preflight(UUID repositoryId, String status) {
+        MrPreflightRequestEntity value = new MrPreflightRequestEntity();
+        value.setId(UUID.randomUUID());
+        value.setProjectRepositoryId(repositoryId);
         value.setSourceBranch("feat/task");
         value.setStatus(status);
         return value;
