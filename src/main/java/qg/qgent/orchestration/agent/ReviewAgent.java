@@ -104,6 +104,11 @@ public class ReviewAgent implements Agent {
             boolean success = verdict.passed();
             review.setSuccess(success);
             review.setFindings(verdict.normalizedFindings());
+            // 测试因环境问题未完成验证时，本次放行是「无真实测试证据」下的审查放行：标记
+            // testsNotExecuted，供终态如实标注「代码审查通过，但测试因环境问题未执行」。
+            if (success && isEnvironmentBlocked(input)) {
+                review.setTestsNotExecuted(true);
+            }
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
             outcome.setReviewResult(review);
@@ -272,6 +277,13 @@ public class ReviewAgent implements Agent {
         }
         throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+    }
+
+    /** 测试是否因环境问题未完成验证（TestResult.environmentFailureCode 非空）。 */
+    private boolean isEnvironmentBlocked(AgentInput input) {
+        return input != null && input.getTestResult() != null
+                && input.getTestResult().getEnvironmentFailureCode() != null
+                && !input.getTestResult().getEnvironmentFailureCode().isBlank();
     }
 
     private String firstFinding(ReviewResult review) {

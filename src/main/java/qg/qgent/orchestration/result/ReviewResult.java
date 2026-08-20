@@ -41,6 +41,11 @@ public class ReviewResult {
      * 而不是回退到笼统的「审查未通过」。仅在未通过时非空。
      */
     private String failureCode;
+    /**
+     * 是否在「测试因环境问题未执行」的阻塞下通过审查。true 表示 Review 放行时测试并未真实通过，
+     * 终态需如实标注「代码审查通过，但测试因环境问题未执行」，不得描述为测试通过。
+     */
+    private boolean testsNotExecuted;
 
     /**
      * 单个审查发现。

@@ -57,6 +57,12 @@ public class TestResult {
      * Review 结合偏差声明做最终裁决。可为空列表。
      */
     private List<FileAssertion> assertionResults = new ArrayList<>();
+    /**
+     * 环境阻塞失败码：非空表示测试命令已真实执行但非零退出，且被确定性判定为环境/依赖/网络/服务/
+     * 超时/构建工具不可用（非本次代码缺陷）。供 Review 在「测试因环境问题未执行」的阻塞下审查代码
+     * 逻辑，并在终态如实标注「测试因环境问题未执行」。仅环境阻塞时非空。
+     */
+    private String environmentFailureCode;
 
     /**
      * 单个失败项。

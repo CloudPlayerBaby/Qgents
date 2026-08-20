@@ -29,6 +29,12 @@ class OrchestrationStateMachineTest {
         assertThat(d.getNextPhase()).isEqualTo(OrchestrationPhase.REVIEWING);
     }
 
+    @Test void testEnvironmentBlockedAdvancesToReviewing() {
+        StateMachineDecision d = stateMachine.decide(OrchestrationPhase.TESTING, RunOutcome.TEST_FAILED, counters);
+        assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.ADVANCE);
+        assertThat(d.getNextPhase()).isEqualTo(OrchestrationPhase.REVIEWING);
+    }
+
     @Test void reviewingSuccessCompletesSuccess() {
         StateMachineDecision d = stateMachine.decide(OrchestrationPhase.REVIEWING, RunOutcome.SUCCEEDED, counters);
         assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.COMPLETE_SUCCESS);

@@ -922,6 +922,9 @@ public class TaskOrchestrator {
         value.put("verificationMode", test.getVerificationMode());
         value.put("exitCode", test.getExitCode());
         value.put("needsCodingFix", test.isNeedsCodingFix());
+        if (test.getEnvironmentFailureCode() != null && !test.getEnvironmentFailureCode().isBlank()) {
+            value.put("environmentFailureCode", test.getEnvironmentFailureCode());
+        }
         List<TestResult.Failure> allFailures = test.getFailures() == null ? List.of() : test.getFailures();
         List<Map<String, Object>> failures = allFailures.stream().filter(java.util.Objects::nonNull).limit(4).map(failure -> {
                     Map<String, Object> item = new LinkedHashMap<>();
@@ -944,6 +947,7 @@ public class TaskOrchestrator {
         result.put("success", review.isSuccess());
         result.put("summary", truncate(review.getSummary(), 2000));
         result.put("needsCodingFix", review.isNeedsCodingFix());
+        result.put("testsNotExecuted", review.isTestsNotExecuted());
         Map<String, Integer> severityCount = new LinkedHashMap<>();
         List<Map<String, Object>> findings = new ArrayList<>();
         for (ReviewResult.Finding finding : review.getFindings()) {
@@ -1129,7 +1133,15 @@ public class TaskOrchestrator {
         if (finishing.reviewBatchId() != null) {
             sendDiffCard(task, finishing.reviewBatchId());
         }
-        sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, taskResultMessage(finishing));
+        String cardMessage = taskResultMessage(finishing);
+        // 环境阻塞放行：测试因环境问题未执行，终态如实标注，不得描述为测试通过。
+        if (action == StateMachineDecision.Action.COMPLETE_SUCCESS && !"FAILED".equals(finishing.status())
+                && ctx.testResult != null && ctx.testResult.getEnvironmentFailureCode() != null
+                && !ctx.testResult.getEnvironmentFailureCode().isBlank()) {
+            cardMessage = cardMessage + "；代码审查通过，但测试因环境问题未执行（"
+                    + ctx.testResult.getEnvironmentFailureCode() + "）";
+        }
+        sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, cardMessage);
     }
 
     /**

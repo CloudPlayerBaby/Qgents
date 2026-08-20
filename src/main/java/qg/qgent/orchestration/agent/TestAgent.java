@@ -36,8 +36,9 @@ import java.util.UUID;
  *   <li>LLM 不参与命令选择，命令由 {@link TestCommandResolver} 白名单模板解析；</li>
  *   <li>检测不到受支持构建工具时，纯文件任务走只读文件断言；无法确定断言目标时才判 Task FAILED；</li>
  *   <li>ExecutionPort 返回 ok=false（Sandbox 未就绪等）→ FAILED_INFRASTRUCTURE 同相位重试；</li>
- *   <li>环境/超时/依赖网络失败由 {@link TestFailureClassifier} 在 LLM 分析前分流为 FAILED_INFRASTRUCTURE，
- *       走同相位重试、不占用质量修复循环，也不让 Coding 空转修复；</li>
+ *   <li>环境/超时/依赖网络失败由 {@link TestFailureClassifier} 在 LLM 分析前分流为 TEST_FAILED，
+ *       携带环境证据转交 Review 兜底审查代码逻辑（代码无误放行并标注测试未执行、有误回 Coding），
+ *       不再同相位盲重试；</li>
  *   <li>LLM 分析失败仅退回基于真实执行的结果，不影响 PASS/FAIL 真实性。</li>
  * </ul>
  * 不修改 Workspace、不 write_file、不调用其他 Agent、不执行 Git 命令、不访问宿主机。
@@ -116,8 +117,7 @@ public class TestAgent implements Agent {
             }
             ExecutionResult safeExec = sanitizedAndLimited(exec);
             if (isCommandUnavailable(safeExec)) {
-                return infraFailure(input, "build environment unavailable (exit code " + exec.exitCode()
-                        + "): selected wrapper or build tool could not be launched; use a workspace-relative wrapper such as ./gradlew or ./mvnw");
+                return environmentBlocked(input, command, safeExec, "BUILD_ENVIRONMENT_UNAVAILABLE");
             }
             // 环境/超时/依赖网络失败在 LLM 分析之前分流：不占用质量修复循环，也不让 Coding 空转修复。
             // 只对真实失败（exit != 0）分类，避免通过执行的日志误触发环境关键字。
@@ -131,7 +131,7 @@ public class TestAgent implements Agent {
                     if ("TEST_EXECUTION_TIMEOUT".equals(verdict.failureCode())) {
                         return testExecutionTimeout(input, command, safeExec);
                     }
-                    return infraFailure(input, "test environment failure: " + verdict.failureCode());
+                    return environmentBlocked(input, command, safeExec, verdict.failureCode());
                 }
             }
             TestResult test = analyze(input, command, safeExec);
@@ -184,8 +184,7 @@ public class TestAgent implements Agent {
             }
             ExecutionResult safeExec = sanitizedAndLimited(exec);
             if (isCommandUnavailable(safeExec)) {
-                return infraFailure(input, "build environment unavailable (exit code " + exec.exitCode()
-                        + "): selected wrapper or build tool could not be launched; use a workspace-relative wrapper such as ./gradlew or ./mvnw");
+                return environmentBlocked(input, command, safeExec, "BUILD_ENVIRONMENT_UNAVAILABLE");
             }
             if (exec.exitCode() != 0) {
                 TestFailureClassifier.Verdict verdict = failureClassifier.classify(
@@ -194,7 +193,7 @@ public class TestAgent implements Agent {
                     if ("TEST_EXECUTION_TIMEOUT".equals(verdict.failureCode())) {
                         return testExecutionTimeout(input, entry.getCommand(), safeExec);
                     }
-                    return infraFailure(input, "test environment failure: " + verdict.failureCode());
+                    return environmentBlocked(input, command, safeExec, verdict.failureCode());
                 }
                 worstExit = exec.exitCode();
                 TestResult.Failure failure = new TestResult.Failure();
@@ -655,6 +654,33 @@ public class TestAgent implements Agent {
             return 0;
         }
         return (int) content.lines().count();
+    }
+
+    /**
+     * 环境阻塞：测试命令已真实执行但非零退出，且被确定性判定为环境/依赖/网络/服务/超时或构建工具
+     * 不可用（非本次代码缺陷）。不再同相位盲重试，而是携带环境证据转交 Review 兜底审查代码逻辑：
+     * 代码无误则放行（终态如实标注「测试因环境问题未执行」），代码有误则回 Coding 修复。
+     */
+    private AgentRunOutcome environmentBlocked(AgentInput input, List<String> command,
+                                               ExecutionResult exec, String failureCode) {
+        TestResult test = new TestResult();
+        test.setSuccess(false);
+        test.setExitCode(exec.exitCode());
+        test.setCommand(String.join(" ", command));
+        test.setVerificationMode("COMMAND");
+        test.setStdout(exec.stdout());
+        test.setStderr(exec.stderr());
+        test.setEnvironmentFailureCode(failureCode);
+        test.setSummary("测试因环境问题未能完成验证：" + failureCode);
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setPhase(input.getPhase());
+        outcome.setTestResult(test);
+        outcome.setOutcome(RunOutcome.TEST_FAILED);
+        outcome.setMessage("test environment blocked: " + failureCode);
+        outcome.setFailureCode(failureCode);
+        log.warn("tester environment blocked workspaceId={} failureCode={}",
+                input.getWorkspaceId(), failureCode);
+        return outcome;
     }
 
     private AgentRunOutcome infraFailure(AgentInput input, String message) {

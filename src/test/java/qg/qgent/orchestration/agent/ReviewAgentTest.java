@@ -421,6 +421,45 @@ class ReviewAgentTest {
         verify(llm, never()).nextToolTurn(anyString(), anyList(), anyList());
     }
 
+    @Test
+    void nativeEnvironmentBlockedReleaseMarksTestsNotExecuted() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(reviewJson(true, "code reviewed ok", "[]")));
+
+        AgentInput envInput = input();
+        envInput.getTestResult().setSuccess(false);
+        envInput.getTestResult().setExitCode(1);
+        envInput.getTestResult().setEnvironmentFailureCode("TEST_DEPENDENCY_UNAVAILABLE");
+
+        AgentRunOutcome outcome = nativeAgent().run(envInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getReviewResult().isSuccess()).isTrue();
+        assertThat(outcome.getReviewResult().isTestsNotExecuted()).isTrue();
+    }
+
+    @Test
+    void nativeEnvironmentBlockedWithMajorStillRequeuesCoding() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":" + reviewJson(false, "bug found",
+                        "[{\"file\":\"src/main/java/X.java\",\"severity\":\"MAJOR\","
+                                + "\"issue\":\"logic error\",\"suggestion\":\"fix\"}]") + "}"));
+
+        AgentInput envInput = input();
+        envInput.getTestResult().setSuccess(false);
+        envInput.getTestResult().setExitCode(1);
+        envInput.getTestResult().setEnvironmentFailureCode("TEST_DEPENDENCY_UNAVAILABLE");
+
+        AgentRunOutcome outcome = nativeAgent().run(envInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getReviewResult().isTestsNotExecuted()).isFalse();
+    }
+
     // ---------- legacy 手写 JSON 协议（灰度期回归） ----------
 
     @Test

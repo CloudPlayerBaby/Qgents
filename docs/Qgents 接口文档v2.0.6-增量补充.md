@@ -828,7 +828,13 @@ Task、TaskRun、TaskStep、phase、role 与 executionMode；重试创建新 Run
 - TESTING 上下文可包含验证方式、exitCode、是否需要 Coding 修复、失败项数量及限长的
   `name/reason/severity`；不得保存原始命令、stdout、stderr、环境变量、凭据、宿主机路径或异常堆栈。
 - `task_execution_artifacts.summary` 仍是项目成员可见的受控摘要。测试失败时可包含
-  `testFailure.verificationMode/exitCode/needsCodingFix/failureCount/failures[]`，所有文本均经过脱敏与长度限制。
+  `testFailure.verificationMode/exitCode/needsCodingFix/failureCount/failures[]`，
+  环境阻塞时 `testFailure` 额外含 `environmentFailureCode`（如 `TEST_DEPENDENCY_UNAVAILABLE`），所有文本均经过脱敏与长度限制。
   `failureCode=PROCESS_EXIT_NONZERO` 时 `message` 固定为“工具进程执行失败”。
+- 测试命令已真实执行但非零退出、且被确定性判定为环境问题（依赖/网络/服务/构建工具不可用）时，
+  任务不再同相位盲重试，而是转 Review 兜底审查代码逻辑：代码无误放行（任务成功），代码有误回 Coding。
+  测试超时（`TEST_EXECUTION_TIMEOUT`）除外——它是确定性失败，直接 `FAILED`、不重试也不转 Review。
+  放行时 `review.testsNotExecuted=true`，终态卡片与通知必须如实标注
+  “代码审查通过，但测试因环境问题未执行（<environmentFailureCode>）”，不得描述为测试通过。
 - 无法归类的普通失败对外使用稳定 `failureCode=EXECUTION_FAILED`，不返回内部异常原文；基础设施失败继续使用
   已发布的基础设施失败码。

@@ -198,15 +198,17 @@ class TestAgentTest {
     }
 
     @Test
-    void missingCommandMapsToInfrastructureFailureWithoutLlmAnalysis() {
+    void missingCommandMapsToEnvironmentBlocked() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 127, "", "gradlew: command not found", null));
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains("workspace-relative wrapper");
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo("BUILD_ENVIRONMENT_UNAVAILABLE");
+        assertThat(outcome.getTestResult().getEnvironmentFailureCode())
+                .isEqualTo("BUILD_ENVIRONMENT_UNAVAILABLE");
         verify(llm, never()).complete(anyString(), anyList());
     }
 
@@ -481,15 +483,17 @@ class TestAgentTest {
     }
 
     @Test
-    void environmentFailureIsClassifiedAsInfrastructureWithoutLlmAnalysis() {
+    void environmentFailureRoutesToReviewForAdjudication() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 1, "", "Connection refused to host mysql:3306", null));
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("TEST_SERVICE_UNAVAILABLE");
+        assertThat(outcome.getTestResult().getEnvironmentFailureCode()).isEqualTo("TEST_SERVICE_UNAVAILABLE");
+        assertThat(outcome.getTestResult().isSuccess()).isFalse();
         verify(llm, never()).complete(anyString(), anyList());
     }
 
@@ -508,7 +512,7 @@ class TestAgentTest {
     }
 
     @Test
-    void dependencyResolutionFailureMapsToInfrastructureWithoutLlm() {
+    void dependencyResolutionFailureRoutesToReviewForAdjudication() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 1, "",
@@ -516,8 +520,9 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("TEST_DEPENDENCY_UNAVAILABLE");
+        assertThat(outcome.getTestResult().getEnvironmentFailureCode()).isEqualTo("TEST_DEPENDENCY_UNAVAILABLE");
         verify(llm, never()).complete(anyString(), anyList());
     }
 
