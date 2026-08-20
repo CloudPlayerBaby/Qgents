@@ -46,6 +46,32 @@ public class ReviewResult {
      * 终态需如实标注「代码审查通过，但测试因环境问题未执行」，不得描述为测试通过。
      */
     private boolean testsNotExecuted;
+    /**
+     * 结构化修复动作：审查发现可确定性执行的修复（如缺失末尾换行）时由模型输出，编排器据此
+     * 选择受控修复动作（如 ENSURE_TRAILING_NEWLINE），避免 AI 手工重拼文件或反复生成错误 patch。
+     * 可选；未输出时回退到「打回 Coding 自行修复」。
+     */
+    private RepairAction repairAction;
+
+    /**
+     * 结构化修复动作：类型 + 目标文件 + 说明。type 目前支持 ENSURE_TRAILING_NEWLINE；
+     * file 为 Workspace 相对路径。
+     */
+    @Data
+    public static class RepairAction {
+        /**
+         * 修复动作类型：ENSURE_TRAILING_NEWLINE（确保文件以换行结尾）等。
+         */
+        private String type;
+        /**
+         * 目标文件（Workspace 相对路径）。
+         */
+        private String file;
+        /**
+         * 修复原因/说明（受控，不携带原始日志）。
+         */
+        private String reason;
+    }
 
     /**
      * 单个审查发现。

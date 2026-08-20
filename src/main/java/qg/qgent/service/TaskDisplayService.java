@@ -337,8 +337,9 @@ public class TaskDisplayService {
     // ---------- 执行统计 / 待处理事项 / 操作能力 ----------
 
     /**
-     * 过滤 PLANNER bootstrap 步骤：PLANNER 不建 TaskRun、不进正式执行图，也不应出现在
-     * 步骤列表 / 执行统计 / 能力派生中（规划期 tasks 状态为 PLANNING，正式步骤尚未生成）。
+     * 过滤 PLANNER bootstrap 步骤：PLANNER 步骤会在编排中产生 PLANNER TaskRun（供失败诊断与
+     * 重试审计），但不进正式执行图，也不出现在步骤列表 / 执行统计 / 能力派生中（规划期 tasks
+     * 状态为 PLANNING，正式步骤尚未生成）。Planner Run 仍可通过任务运行列表查看。
      */
     private List<TaskStepEntity> withoutPlanner(List<TaskStepEntity> stepList) {
         return stepList.stream().filter(step -> !"PLANNER".equals(step.getRole())).toList();

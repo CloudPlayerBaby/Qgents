@@ -377,17 +377,20 @@ public class CodingAgent implements Agent {
      * 实际写入路径会补入结果，避免模型遗漏 modifiedFiles/modifiedDirectories；没有任何证据时把结果降为协议失败，防止
      * JSON repair 把“未执行任何文件修改”包装成 Developer 成功。
      * <p>
-     * 唯一例外是目标已满足：本步骤声明的目标文件已存在于 Workspace（前序步骤越界完成或历史提交已覆盖），
-     * 零写入是本步骤职责已被满足的幂等结果，按 SUCCEEDED 收敛，交由后续 Verify/Review 校验；
-     * 目标缺失且模型声称成功时才判为真正的语义失败。
+     * 「目标已满足」零写入收敛仅限质量修复步骤：上一轮 Test/Review 以 FAILED_QUALITY 打回后，
+     * 若本步骤声明的目标文件已存在于 Workspace（前序步骤越界完成或历史提交已覆盖），零写入是
+     * 职责已被满足的幂等结果，按 SUCCEEDED 收敛；普通 MUTATE 步骤仍要求真实变更，避免内容错误
+     * 被文件存在性掩盖而误判成功。
      */
     private void validateAndCompleteChanges(CodingResult coding, ChangedWriteFactLedger observedWrites,
                                             AgentInput input) {
         if (coding == null || !coding.isSuccess()) {
             return;
         }
+        boolean qualityRepair = input.getRetryContext() != null && input.getRetryContext().isQualityRepair();
         if (!observedWrites.hasChangedWrite()) {
-            if (TargetSatisfaction.isSatisfied(codeAccess, input.getWorkspaceId(), input.getTargetFiles())) {
+            if (qualityRepair && TargetSatisfaction.isSatisfied(codeAccess, input.getWorkspaceId(),
+                    input.getTargetFiles())) {
                 log.info("CODING_ALREADY_SATISFIED phase={} workspaceId={} targets={}",
                         input.getPhase(), input.getWorkspaceId(), input.getTargetFiles());
                 // 结果范围只使用服务端观察到的真实变更事实；本步无真实变更，modifiedFiles/Directories 置空，

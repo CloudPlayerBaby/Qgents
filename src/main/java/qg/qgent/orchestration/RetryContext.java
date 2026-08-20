@@ -26,4 +26,20 @@ public class RetryContext {
      */
     private List<UUID> reviewActivatedSkillIds = new ArrayList<>();
     private String instruction;
+    /**
+     * 是否为质量修复步骤：上一轮 Test/Review 以 {@code FAILED_QUALITY} 打回 Coding 修复。
+     * 仅质量修复步骤允许在零写入时用「目标已满足」收敛（satisfied 兜底）；普通 MUTATE 步骤
+     * 仍要求真实变更，避免内容错误被文件存在性掩盖而误判成功。
+     */
+    private boolean qualityRepair;
+    /**
+     * 上一轮 Review 给出的结构化修复动作（如 ENSURE_TRAILING_NEWLINE）。传给回修的 Coding Agent，
+     * 作为优先执行的受控修复动作（如先调 ensure_trailing_newline 追加末尾换行），避免 AI 手工
+     * 重拼文件或反复生成错误 patch。可为 null（无结构化修复动作时回退到按 finding 自行修复）。
+     */
+    private String repairAction;
+    /**
+     * 修复动作目标文件（Workspace 相对路径），与 {@link #repairAction} 配套。
+     */
+    private String repairFile;
 }

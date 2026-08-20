@@ -19,6 +19,7 @@ import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 import qg.qgent.service.ContextService;
 
@@ -145,7 +146,8 @@ class CodingAgentTest {
         verify(llm).nextToolTurn(anyString(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory", "list_files", "read_file",
+        assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory",
+                "ensure_trailing_newline", "list_files", "read_file",
                 "replace_file", "search_chat_history", "search_code", "write_file");
     }
 
@@ -361,12 +363,18 @@ class CodingAgentTest {
     }
 
     @Test
-    void nativeSuccessWithoutWritesIsSatisfiedWhenAllTargetsExist() {
+    void nativeSuccessWithoutWritesIsSatisfiedOnlyForQualityRepairWhenTargetsExistNonEmpty() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(codeAccess.readFile(any(), any())).thenReturn(
+                WorkspaceFileReadResult.ok("src/main/java/X.java", "class X {}", "abc", true, "LF"));
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
         AgentInput input = codingInput();
         input.setTargetFiles(List.of("src/main/java/X.java"));
+        // 仅质量修复步骤允许零写入 satisfied 兜底；普通 MUTATE 步骤无写入必须失败。
+        RetryContext retry = new RetryContext();
+        retry.setQualityRepair(true);
+        input.setRetryContext(retry);
 
         AgentRunOutcome outcome = nativeAgent().run(input);
 
@@ -374,6 +382,26 @@ class CodingAgentTest {
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
         assertThat(outcome.getCodingResult().getModifiedDirectories()).isEmpty();
+    }
+
+    @Test
+    void nativeSuccessWithoutWritesRejectedForNormalMutateEvenWhenTargetsExist() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(codeAccess.readFile(any(), any())).thenReturn(
+                WorkspaceFileReadResult.ok("src/main/java/X.java", "class X {}", "abc", true, "LF"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
+        AgentInput input = codingInput();
+        input.setTargetFiles(List.of("src/main/java/X.java"));
+        // 普通 MUTATE 步骤（非质量修复）：即使目标存在且内容非空，零写入仍判 CODING_NO_ACTUAL_CHANGE。
+        RetryContext retry = new RetryContext();
+        retry.setQualityRepair(false);
+        input.setRetryContext(retry);
+
+        AgentRunOutcome outcome = nativeAgent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
     }
 
     @Test

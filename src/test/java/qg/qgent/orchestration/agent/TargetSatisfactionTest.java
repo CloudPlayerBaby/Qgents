@@ -2,6 +2,7 @@ package qg.qgent.orchestration.agent;
 
 import org.junit.jupiter.api.Test;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 
 import java.util.List;
 import java.util.UUID;
@@ -12,8 +13,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * 目标已满足判定的单元测试：仅依赖 {@link WorkspaceCodeAccess#listFiles} 返回的 Workspace
- * 相对路径做存在性核对，覆盖精确命中、目录前缀命中、缺失目标、空声明与核对失败五类输入。
+ * 目标已满足判定的单元测试：依据 {@link WorkspaceCodeAccess#readFile} 的结果——目标必须存在
+ * 且内容非空才算已满足（空文件/目录/读取失败均不算），避免文件存在但内容错误被误判完成。
  */
 class TargetSatisfactionTest {
 
@@ -21,24 +22,28 @@ class TargetSatisfactionTest {
     private final UUID workspaceId = UUID.randomUUID();
 
     @Test
-    void satisfiedWhenAllTargetsExistExactly() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of("repo-1/src/App.java", "repo-1/README.md"));
+    void satisfiedWhenAllTargetsExistAndNonEmpty() {
+        when(codeAccess.readFile(any(), any())).thenReturn(
+                WorkspaceFileReadResult.ok("repo-1/src/App.java", "class App {}", "abc",
+                        true, "LF"));
 
         assertThat(TargetSatisfaction.isSatisfied(codeAccess, workspaceId, List.of("repo-1/src/App.java",
                 "repo-1/README.md"))).isTrue();
     }
 
     @Test
-    void satisfiedWhenTargetIsDirectoryPrefixOfExistingFile() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+    void notSatisfiedWhenTargetIsDirectory() {
+        // 目录不是文件：readFile 对目录路径失败 → 不视为已满足（空目录/目录声明不兜底）。
+        when(codeAccess.readFile(any(), any())).thenReturn(WorkspaceFileReadResult.fail("src/main",
+                "not a regular file"));
 
-        // 声明目录（如 docs/）时，其下已有文件视为目标已满足。
-        assertThat(TargetSatisfaction.isSatisfied(codeAccess, workspaceId, List.of("src/main"))).isTrue();
+        assertThat(TargetSatisfaction.isSatisfied(codeAccess, workspaceId, List.of("src/main"))).isFalse();
     }
 
     @Test
     void notSatisfiedWhenAnyTargetMissing() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        when(codeAccess.readFile(any(), any())).thenReturn(WorkspaceFileReadResult.fail("src/main/java/Y.java",
+                "file not found"));
 
         assertThat(TargetSatisfaction.isSatisfied(codeAccess, workspaceId, List.of("src/main/java/X.java",
                 "src/main/java/Y.java"))).isFalse();
@@ -46,18 +51,25 @@ class TargetSatisfactionTest {
 
     @Test
     void notSatisfiedWhenTargetsNullOrEmpty() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
-
         assertThat(TargetSatisfaction.isSatisfied(codeAccess, workspaceId, null)).isFalse();
         assertThat(TargetSatisfaction.isSatisfied(codeAccess, workspaceId, List.of())).isFalse();
     }
 
     @Test
-    void notSatisfiedWhenListFilesEmptyOrThrows() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of());
+    void notSatisfiedWhenTargetFileIsEmpty() {
+        // 空文件不算「目标已满足」——空文件可能是本次任务该写入内容却只创建了占位。
+        when(codeAccess.readFile(any(), any())).thenReturn(WorkspaceFileReadResult.ok("src/App.java", "", "abc",
+                false, "NONE"));
+
+        assertThat(TargetSatisfaction.isSatisfied(codeAccess, workspaceId, List.of("src/App.java"))).isFalse();
+    }
+
+    @Test
+    void notSatisfiedWhenReadFailsOrThrows() {
+        when(codeAccess.readFile(any(), any())).thenReturn(WorkspaceFileReadResult.fail("src/App.java", "unreadable"));
         assertThat(TargetSatisfaction.isSatisfied(codeAccess, workspaceId, List.of("src/App.java"))).isFalse();
 
-        when(codeAccess.listFiles(any())).thenThrow(new IllegalStateException("workspace unavailable"));
+        when(codeAccess.readFile(any(), any())).thenThrow(new IllegalStateException("workspace unavailable"));
         // 核对失败不误放行，回退到原零变更失败判定。
         assertThat(TargetSatisfaction.isSatisfied(codeAccess, workspaceId, List.of("src/App.java"))).isFalse();
     }

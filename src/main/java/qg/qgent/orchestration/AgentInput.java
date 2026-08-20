@@ -15,7 +15,8 @@ import java.util.UUID;
 
 /**
  * Agent 的结构化输入：任务上下文 + 本 step 步骤 + 循环反馈 + 群聊/Skill/Memory 上下文。
- * PLAN bootstrap 不创建 TaskRun；正式执行图中的 CODING/TESTING/REVIEWING 输入均关联 TaskRun 与 TaskStep。
+ * PLAN bootstrap 也创建 PLANNER TaskRun（供失败诊断与重试审计）；正式执行图中的
+ * CODING/TESTING/REVIEWING 输入均关联 TaskRun 与 TaskStep。
  * <p>
  * 群聊/Skill/Memory 上下文来自 {@code ContextService.buildForGroup}（后端4 已按用户+项目过滤），
  * 由 {@link AgentContextAssembler} 在每次 orchestrate 时快照一次注入；缺失时为空列表，属补充信息，

@@ -387,6 +387,16 @@ public class AgentContextAssembler {
                     : outcome.getOutcome() == RunOutcome.FAILED_QUALITY ? "QUALITY_GATE_FAILED" : "AGENT_RETRY";
         }
         context.setFailureCode(limit(code, 128));
+        // 质量修复步骤标识：仅 Test/Review 以 FAILED_QUALITY 打回时置 true，供 Coding 判定
+        // 是否允许「目标已满足」零写入收敛（satisfied 兜底仅限质量修复场景）。
+        context.setQualityRepair(outcome != null && outcome.getOutcome() == RunOutcome.FAILED_QUALITY);
+        // Review 结构化修复动作透传给回修的 Coding Agent，作为优先执行的受控修复动作。
+        if (outcome != null && outcome.getReviewResult() != null
+                && outcome.getReviewResult().getRepairAction() != null) {
+            ReviewResult.RepairAction action = outcome.getReviewResult().getRepairAction();
+            context.setRepairAction(action.getType());
+            context.setRepairFile(limit(action.getFile(), 512));
+        }
         // failureSummary 只给一行受控概述，明细走 failures、正文走 feedback，同一批失败项
         // 在 Coding prompt 里只出现两次（正文 + 结构化列表），不再整份 dump 三遍。
         context.setFailureSummary(limit(outcome == null
