@@ -174,7 +174,7 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
             if ("SUCCEEDED".equals(execution.getStatus())) {
                 return okResult(path, execution, expectedHash);
             }
-            return writeFailure(path, execution, "patch failed");
+            return writeFailure(path, execution, "patch failed", "file.patch");
         } catch (RuntimeException e) {
             return WorkspaceWriteResult.infraFail(path, "patch failed: " + e.getMessage());
         }
@@ -246,9 +246,17 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
     }
 
     private static WorkspaceWriteResult writeFailure(String path, WorkerToolExecution execution, String fallback) {
-        String reason = failureReason(execution, fallback);
-        return isToolFailure(execution) ? WorkspaceWriteResult.fail(path, execution.getFailureCode(), reason)
-                : WorkspaceWriteResult.infraFail(path, execution.getFailureCode(), reason);
+        return writeFailure(path, execution, fallback, null);
+    }
+
+    private static WorkspaceWriteResult writeFailure(String path, WorkerToolExecution execution, String fallback,
+                                                     String operation) {
+        String failureCode = effectiveFailureCode(execution, operation);
+        String reason = failureReason(execution,
+                "FILE_PATCH_FAILED".equals(failureCode)
+                        ? "补丁无法应用，请重新读取文件后重试" : fallback);
+        return isToolFailure(execution, operation) ? WorkspaceWriteResult.fail(path, failureCode, reason)
+                : WorkspaceWriteResult.infraFail(path, failureCode, reason);
     }
 
     private static String failureReason(WorkerToolExecution execution, String fallback) {
@@ -257,10 +265,37 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
     }
 
     private static boolean isToolFailure(WorkerToolExecution execution) {
+        return isToolFailure(execution, null);
+    }
+
+    private static boolean isToolFailure(WorkerToolExecution execution, String operation) {
         if (!"FAILED".equals(execution.getStatus())) {
             return false;
         }
-        String failureCode = execution.getFailureCode();
-        return RECOVERABLE_TOOL_FAILURE_CODES.contains(failureCode);
+        String failureCode = effectiveFailureCode(execution, operation);
+        if (RECOVERABLE_TOOL_FAILURE_CODES.contains(failureCode)) {
+            return true;
+        }
+        // 兼容尚未部署 failureCode/failureReason 字段的旧 Worker：file.patch 的失败只能
+        // 通过结构化工具结果回灌模型修复。其它工具不能按工具名猜测，避免把 Worker/网络故障
+        // 错误降级成可重试的业务参数错误。
+        return (failureCode == null || failureCode.isBlank())
+                && "file.patch".equals(operation == null ? execution.getTool() : operation);
+    }
+
+    private static String effectiveFailureCode(WorkerToolExecution execution) {
+        return effectiveFailureCode(execution, null);
+    }
+
+    private static String effectiveFailureCode(WorkerToolExecution execution, String operation) {
+        if (execution == null) {
+            return null;
+        }
+        if (execution.getFailureCode() != null && !execution.getFailureCode().isBlank()) {
+            return execution.getFailureCode();
+        }
+        return "FAILED".equals(execution.getStatus())
+                && "file.patch".equals(operation == null ? execution.getTool() : operation)
+                ? "FILE_PATCH_FAILED" : null;
     }
 }

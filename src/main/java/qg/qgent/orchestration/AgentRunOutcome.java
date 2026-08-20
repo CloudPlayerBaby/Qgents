@@ -8,7 +8,9 @@ import qg.qgent.orchestration.result.ReviewResult;
 import qg.qgent.orchestration.result.TestResult;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Agent 执行的结构化输出，按相位携带对应的结果对象。
@@ -36,6 +38,8 @@ public class AgentRunOutcome {
      * 缺失时为 null（PLAN/LEGACY 或未执行模型调用），落库侧做空值兼容。
      */
     private List<LlmObservation> observations;
+    /** Coding 工具按相对路径累计的连续 patch 失败次数，供下一次 TaskRun 继承。 */
+    private Map<String, Integer> patchFailureCounts = new LinkedHashMap<>();
 
     /**
      * 追加一条观测；首次调用时惰性初始化列表。

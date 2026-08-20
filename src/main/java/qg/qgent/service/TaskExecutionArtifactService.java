@@ -64,6 +64,30 @@ public class TaskExecutionArtifactService {
                 .stream().map(this::response).toList();
     }
 
+    /** Reads the latest persisted patch failure counters for a task step. */
+    public Map<String, Integer> latestPatchFailureCounts(UUID taskStepId) {
+        if (taskStepId == null) {
+            return Map.of();
+        }
+        TaskExecutionArtifactEntity artifact = artifacts.selectList(Wrappers.<TaskExecutionArtifactEntity>lambdaQuery()
+                        .eq(TaskExecutionArtifactEntity::getTaskStepId, taskStepId)
+                        .eq(TaskExecutionArtifactEntity::getArtifactType, "CODING")
+                        .orderByDesc(TaskExecutionArtifactEntity::getSequenceNo)
+                        .last("LIMIT 1"))
+                .stream().findFirst().orElse(null);
+        if (artifact == null || artifact.getSummary() == null
+                || !(artifact.getSummary().get("patchFailureCounts") instanceof Map<?, ?> raw)) {
+            return Map.of();
+        }
+        Map<String, Integer> result = new LinkedHashMap<>();
+        raw.forEach((key, value) -> {
+            if (key != null && !String.valueOf(key).isBlank() && value instanceof Number number && number.intValue() > 0) {
+                result.put(String.valueOf(key), Math.min(number.intValue(), 3));
+            }
+        });
+        return result;
+    }
+
     private TaskExecutionArtifactEntity create(TaskEntity task, TaskRunEntity run, TaskStepEntity step, String type,
                                                Map<String, Object> summary) {
         TaskEntity locked = tasks.selectByIdForUpdate(task.getId());
