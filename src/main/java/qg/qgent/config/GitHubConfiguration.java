@@ -6,7 +6,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import qg.qgent.github.GitHubAppClient;
+import qg.qgent.github.GitHubOAuthClient;
 import qg.qgent.github.RestGitHubAppClient;
+import qg.qgent.github.RestGitHubOAuthClient;
 
 import java.net.InetSocketAddress;
 import java.net.ProxySelector;
@@ -15,7 +17,8 @@ import java.time.Clock;
 import java.time.Duration;
 
 @Configuration
-@EnableConfigurationProperties({GitHubAppProperties.class, GitHubWebhookProperties.class, GitHubProxyProperties.class})
+@EnableConfigurationProperties({GitHubAppProperties.class, GitHubOAuthProperties.class,
+        GitHubWebhookProperties.class, GitHubProxyProperties.class})
 public class GitHubConfiguration {
 
     /**
@@ -44,6 +47,17 @@ public class GitHubConfiguration {
                 .requestFactory(factory)
                 .build();
         return new RestGitHubAppClient(client, properties, clock);
+    }
+
+    @Bean
+    GitHubOAuthClient gitHubOAuthClient(GitHubOAuthProperties properties, GitHubProxyProperties proxyProperties) {
+        HttpClient httpClient = createHttpClient(proxyProperties);
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
+        factory.setReadTimeout(READ_TIMEOUT);
+        RestClient oauthClient = RestClient.builder().requestFactory(factory).build();
+        RestClient apiClient = RestClient.builder().baseUrl("https://api.github.com")
+                .requestFactory(factory).build();
+        return new RestGitHubOAuthClient(oauthClient, apiClient, properties);
     }
 
     static HttpClient createHttpClient(GitHubProxyProperties proxyProperties) {

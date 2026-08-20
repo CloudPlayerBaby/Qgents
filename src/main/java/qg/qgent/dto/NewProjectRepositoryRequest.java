@@ -8,7 +8,7 @@ import lombok.Data;
 import java.util.UUID;
 
 /**
- * 在团队 GitHub App 账号下新建并绑定 GitHub 仓库的参数。
+ * 在团队 GitHub App 组织账号下新建并绑定 GitHub 仓库的参数。
  * 创建项目时由 {@link CreateProjectRequest} 使用，已有项目也可通过项目级建仓接口使用。
  */
 @Data
@@ -36,6 +36,7 @@ public class NewProjectRepositoryRequest {
 
     /**
      * 建仓使用的 GitHub App 安装记录 ID；团队只有一个 ACTIVE 安装时可省略。
+     * ORGANIZATION 使用 GitHub App；USER 使用当前 Qgents 用户的 GitHub OAuth 授权。
      */
     @Schema(description = "建仓使用的安装记录 ID，团队仅一个 ACTIVE 安装时可省略")
     private UUID installationId;

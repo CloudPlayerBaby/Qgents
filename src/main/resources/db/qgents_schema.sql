@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS
         team_id BINARY(16) NOT NULL COMMENT '授权所属团队ID',
         provider_installation_id BIGINT UNSIGNED NOT NULL COMMENT 'GitHub App installation数字ID',
         account_login VARCHAR(255) NOT NULL COMMENT 'GitHub授权账号登录名',
-        account_type VARCHAR(32) NOT NULL COMMENT 'GitHub账号类型枚举：USER/ORGANIZATION',
+        account_type VARCHAR(32) NOT NULL COMMENT 'GitHub账号类型枚举：USER/ORGANIZATION；USER 建仓使用 OAuth',
         status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '安装状态枚举：ACTIVE/SUSPENDED/DELETED',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '同步创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '同步更新时间（UTC）',
@@ -145,6 +145,47 @@ CREATE TABLE IF NOT EXISTS
         KEY idx_ghi_team (team_id, status),
         CONSTRAINT fk_ghi_team FOREIGN KEY (team_id) REFERENCES teams (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '团队GitHub App安装授权元数据，不存访问令牌';
+
+CREATE TABLE IF NOT EXISTS
+    github_oauth_states (
+        id BINARY(16) PRIMARY KEY COMMENT 'OAuth state UUIDv7，同时作为签名 JWT jti',
+        state_hash BINARY(32) NOT NULL COMMENT 'state 原文 SHA-256 摘要，不保存 state 原文',
+        user_id BINARY(16) NOT NULL COMMENT '发起授权的 Qgents 用户',
+        client VARCHAR(16) NOT NULL COMMENT '回跳端：WEB/MOBILE',
+        expires_at DATETIME(6) NOT NULL COMMENT 'state 过期时间（UTC）',
+        consumed_at DATETIME(6) NULL COMMENT '一次性消费时间（UTC）',
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        UNIQUE KEY uk_ghos_state_hash (state_hash),
+        KEY idx_ghos_user (user_id, created_at),
+        KEY idx_ghos_expiry (expires_at, consumed_at),
+        CONSTRAINT fk_ghos_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT chk_ghos_client CHECK (client IN ('WEB', 'MOBILE'))
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'GitHub OAuth 一次性 state 摘要';
+
+CREATE TABLE IF NOT EXISTS
+    github_user_authorizations (
+        id BINARY(16) PRIMARY KEY COMMENT '授权记录 UUIDv7',
+        user_id BINARY(16) NOT NULL COMMENT 'Qgents 用户',
+        provider VARCHAR(32) NOT NULL COMMENT 'OAuth 提供方，当前固定 GITHUB',
+        provider_user_id BIGINT UNSIGNED NOT NULL COMMENT 'GitHub /user.id',
+        provider_login VARCHAR(255) NOT NULL COMMENT 'GitHub login 展示快照',
+        access_token_ciphertext TEXT NULL COMMENT 'AES-GCM 加密后的 OAuth Token，不保存明文',
+        scopes VARCHAR(1024) NULL COMMENT '实际授权 scope 快照，逗号分隔',
+        status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE/REVOKING/REVOKED/EXPIRED/ERROR',
+        last_error_code VARCHAR(64) NULL COMMENT '最近一次远程撤销失败的稳定错误码',
+        authorized_at DATETIME(6) NOT NULL COMMENT '首次或最近重新授权时间（UTC）',
+        last_validated_at DATETIME(6) NULL COMMENT '最近成功调用 GitHub /user 时间（UTC）',
+        revoked_at DATETIME(6) NULL COMMENT '本地撤销时间（UTC）',
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+        UNIQUE KEY uk_ghua_user_provider (user_id, provider),
+        UNIQUE KEY uk_ghua_provider_user (provider, provider_user_id),
+        KEY idx_ghua_user_status (user_id, status),
+        KEY idx_ghua_provider_status (provider_user_id, status),
+        CONSTRAINT fk_ghua_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT chk_ghua_provider CHECK (provider IN ('GITHUB')),
+        CONSTRAINT chk_ghua_status CHECK (status IN ('ACTIVE', 'REVOKING', 'REVOKED', 'EXPIRED', 'ERROR'))
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Qgents 用户 GitHub OAuth 授权密文';
 
 CREATE TABLE IF NOT EXISTS
     github_repositories (

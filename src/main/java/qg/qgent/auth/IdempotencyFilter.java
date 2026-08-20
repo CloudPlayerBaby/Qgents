@@ -63,12 +63,13 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 
         // GitHub Installations: POST, DELETE, POST /sync
         boolean isGitHubInstallApi = path.matches("^/api/v1/teams/[^/]+/integrations/github/installations(?:/[^/]+(?:/sync)?)?$");
+        boolean isGitHubOAuthWriteApi = path.matches("^/api/v1/me/integrations/github/oauth(?:/start)?$");
 
         // 项目下的所有写接口都可能被移动端、SSE 刷新后的前端重试或网络层重放。
         // 不只保护仓库绑定和 Diff 审核，否则 Dry Run、CQ 决策、创建 MR 等高副作用操作会重复执行。
         boolean isProjectWriteApi = path.matches("^/api/v1/projects/[^/]+(?:/.*)?$");
 
-        return !isGitHubInstallApi && !isProjectWriteApi;
+        return !isGitHubInstallApi && !isGitHubOAuthWriteApi && !isProjectWriteApi;
     }
 
     @Override
@@ -188,6 +189,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 
     private String scope(HttpServletRequest request) {
         String path = request.getRequestURI().replaceAll(UUID_PATTERN, "{id}");
-        return request.getMethod() + " " + path;
+        String query = request.getQueryString();
+        return request.getMethod() + " " + path + (query == null || query.isBlank() ? "" : "?" + query);
     }
 }
