@@ -191,7 +191,8 @@ public class DiffReviewBatchService {
                         "This Diff was superseded by a newer change in the same Workspace");
             }
             if (!"PENDING_CONFIRMATION".equals(locked.getReviewStatus())
-                    || !"NOT_STARTED".equals(locked.getDeliveryStatus())) {
+                    || !"NOT_STARTED".equals(locked.getDeliveryStatus())
+                    || !"USER".equals(locked.getConfirmationSource())) {
                 throw new ApiException(HttpStatus.CONFLICT, "DIFF_REVIEW_NOT_DECIDABLE", "Final Diff is not awaiting review");
             }
             TaskEntity lockedTask = tasks.selectByIdForUpdate(taskId);
@@ -351,7 +352,8 @@ public class DiffReviewBatchService {
                 && batch.getDeliveryLeaseExpiresAt() != null
                 && !batch.getDeliveryLeaseExpiresAt().isAfter(now);
         if (!"PENDING_CONFIRMATION".equals(batch.getReviewStatus())
-                || !("NOT_STARTED".equals(batch.getDeliveryStatus()) || recoverable)) {
+                || !("NOT_STARTED".equals(batch.getDeliveryStatus()) || recoverable)
+                || !"USER".equals(batch.getConfirmationSource())) {
             throw new ApiException(HttpStatus.CONFLICT, "DIFF_REVIEW_NOT_DECIDABLE", "Final Diff is not awaiting confirmation");
         }
         if (batch.getDeliveryOperationId() == null) batch.setDeliveryOperationId(UUID.randomUUID().toString());
