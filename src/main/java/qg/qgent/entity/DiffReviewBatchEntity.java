@@ -10,6 +10,8 @@ import java.util.UUID;
 
 /**
  * Task-level, multi-repository Diff review and delivery state.
+ * reviewStatus may be PENDING_CONFIRMATION, ACCEPTED, REJECTED or SUPERSEDED;
+ * SUPERSEDED means a newer revision was produced in the same Workspace.
  */
 @Data
 @TableName("diff_review_batches")

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 import qg.qgent.entity.DiffEntity;
 
 import java.util.List;
@@ -13,6 +14,13 @@ import java.util.UUID;
 public interface DiffMapper extends BaseMapper<DiffEntity> {
     @Select("select * from diffs where id=#{id} for update")
     DiffEntity selectByIdForUpdate(UUID id);
+
+    @Select("select * from diffs where review_batch_id=#{batchId} order by created_at asc, id asc for update")
+    List<DiffEntity> selectByReviewBatchForUpdate(@Param("batchId") UUID batchId);
+
+    /** Marks every repository Diff in a superseded review batch atomically. */
+    @Update("update diffs set status='SUPERSEDED', updated_at=#{updatedAt} where review_batch_id=#{batchId}")
+    int markReviewBatchSuperseded(@Param("batchId") UUID batchId, @Param("updatedAt") java.time.LocalDateTime updatedAt);
 
     /**
      * 返回分支级预检覆盖的已交付 Diff：这些任务的接受 Diff 已被 Commit 并 Push，属于该分支级 MR 的累计内容。
