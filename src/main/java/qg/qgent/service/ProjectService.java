@@ -70,6 +70,7 @@ public class ProjectService {
      */
     @Transactional
     public ProjectResponse create(UUID actor, UUID teamId, CreateProjectRequest request) {
+        validateRepositorySource(request);
         // 事务外建仓：在获取 team 行锁之前调用（createRemoteRepository 用 NOT_SUPPORTED 挂起事务），
         // 确保 GitHub 建仓 HTTP 不持有数据库事务或行锁（AGENTS §3.4）。
         GitHubRepositoryService.RemoteRepositoryCreation createdRepository = null;
@@ -112,6 +113,20 @@ public class ProjectService {
         eventService.publish(project.getId(), null, "project.created", project.getId().toString(),
                 Map.of("projectId", project.getId(), "name", project.getName(), "createdBy", actor));
         return response(project, "PROJECT_ADMIN");
+    }
+
+    /**
+     * 创建项目时只能选择绑定已有仓库或自动新建仓库，不能让后端静默忽略其中一项。
+     */
+    private void validateRepositorySource(CreateProjectRequest request) {
+        if (request != null
+                && request.getNewRepository() != null
+                && request.getRepositoryIds() != null
+                && !request.getRepositoryIds().isEmpty()) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "PROJECT_REPOSITORY_SOURCE_CONFLICT",
+                    "repositoryIds 与 newRepository 不能同时传入");
+        }
     }
 
     /**

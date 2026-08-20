@@ -292,7 +292,54 @@ public class GitHubRepositoryService {
                 installation.getProviderInstallationId(), installation.getAccountType(), installation.getAccountLogin(),
                 new GitHubRepositoryCreateRequest(request.getName(), request.getDescription(),
                         request.getIsPrivate() == null || request.getIsPrivate(), true));
+        if (created == null || created.getDefaultBranch() == null || created.getDefaultBranch().isBlank()) {
+            if (created != null && created.getOwnerLogin() != null && created.getName() != null) {
+                try {
+                    gitHubClient.deleteRepository(installation.getProviderInstallationId(), created.getOwnerLogin(),
+                            created.getName());
+                } catch (RuntimeException cleanupFailure) {
+                    log.error("自动建仓返回不完整元数据，补偿删除失败，repository={}/{}",
+                            created.getOwnerLogin(), created.getName(), cleanupFailure);
+                }
+            }
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_REPOSITORY_METADATA_INCOMPLETE",
+                    "GitHub 创建仓库未返回可用的默认分支");
+        }
         return new RemoteRepositoryCreation(installation, created);
+    }
+
+    /**
+     * 在已有项目中创建一个初始化好的 GitHub 仓库并绑定到当前项目。
+     * <p>
+     * 创建 GitHub 仓库属于团队级外部资源操作，第一版仅允许 Team Owner 发起；
+     * 项目管理员仍可通过普通绑定接口接入团队已经授权的仓库。GitHub HTTP 调用在事务外执行，
+     * 本地镜像与项目绑定在独立事务内落库，落库失败时尽力删除本次新建的远端仓库。
+     *
+     * @param actorId 操作人
+     * @param projectId 已存在的项目 ID
+     * @param request 建仓参数
+     * @return 新建并绑定后的项目仓库
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public ProjectRepositoryResponse createProjectRepository(UUID actorId, UUID projectId,
+                                                              NewProjectRepositoryRequest request) {
+        ProjectEntity project = projectMapper.selectById(projectId);
+        if (project == null) {
+            throw notFound("Project does not exist");
+        }
+
+        RemoteRepositoryCreation creation = createRemoteRepository(actorId, project.getTeamId(), request);
+        try {
+            return required.execute(status -> bindCreatedRepository(projectId, creation, request));
+        } catch (RuntimeException failure) {
+            try {
+                deleteRemoteRepository(creation);
+            } catch (RuntimeException cleanupFailure) {
+                log.error("项目级建仓本地绑定失败，补偿删除远端仓库失败，repository={}/{}",
+                        creation.repository().getOwnerLogin(), creation.repository().getName(), cleanupFailure);
+            }
+            throw failure;
+        }
     }
 
     /**

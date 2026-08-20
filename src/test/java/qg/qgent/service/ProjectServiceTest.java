@@ -36,6 +36,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class ProjectServiceTest {
@@ -102,6 +103,23 @@ class ProjectServiceTest {
         verify(githubRepositoryService).bindCreatedRepository(any(UUID.class), eq(creation), eq(newRepo));
         verify(githubRepositoryService, never()).bindRepositoriesOnCreate(any(UUID.class), any(UUID.class),
                 any(UUID.class), any());
+    }
+
+    @Test
+    void createRejectsConflictingRepositorySourcesBeforeSideEffects() {
+        UUID teamId = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        CreateProjectRequest request = new CreateProjectRequest();
+        request.setName("project");
+        request.setRepositoryIds(List.of(UUID.randomUUID()));
+        NewProjectRepositoryRequest newRepo = new NewProjectRepositoryRequest();
+        newRepo.setName("auto-repo");
+        request.setNewRepository(newRepo);
+
+        ApiException error = assertThrows(ApiException.class, () -> service.create(owner, teamId, request));
+
+        assertEquals("PROJECT_REPOSITORY_SOURCE_CONFLICT", error.code());
+        verifyNoInteractions(projects, githubRepositoryService, teams, teamMembers, members);
     }
 
     @Test
