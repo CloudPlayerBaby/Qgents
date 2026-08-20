@@ -256,6 +256,37 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void qualityLoopExhaustionPersistsExplicitFailureCodeInsteadOfFinalization() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+        // 质量循环上限 3 次：前 3 次 FAILED_QUALITY 触发 requeue，第 4 次循环耗尽落终态。
+        AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
+        TestResult repairNeeded = new TestResult();
+        repairNeeded.setSuccess(false);
+        repairNeeded.setNeedsCodingFix(true);
+        repairNeeded.setSummary("测试未通过，需要修复");
+        failedTest.setTestResult(repairNeeded);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), failedTest,
+                fixture.success(OrchestrationPhase.CODING), failedTest,
+                fixture.success(OrchestrationPhase.CODING), failedTest,
+                fixture.success(OrchestrationPhase.CODING), failedTest))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+        assertThat(task.getFailureCode()).isEqualTo("TASK_QUALITY_LOOPS_EXHAUSTED");
+        assertThat(task.getFailureReason()).contains("质量");
+        assertThat(task.getFailureRetryable()).isTrue();
+    }
+
+    @Test
     void failedPlannerDoesNotEnterFormalGraphOrCreateTaskRun() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();

@@ -261,7 +261,8 @@ class TaskRunServiceTest {
         assertEquals("PLANNING", response.getStage());
         assertNull(response.getLatestFailedRun());
         assertEquals("SANDBOX_WORKER_UNAVAILABLE", response.getFailure().getFailureCode());
-        assertEquals("执行环境暂时不可用", response.getFailure().getSummary());
+        // 稳定码统一映射受控文案（不回显持久化原文，防止旧数据泄漏内部细节）
+        assertEquals("Sandbox Worker 当前不可用", response.getFailure().getSummary());
     }
 
     @Test
