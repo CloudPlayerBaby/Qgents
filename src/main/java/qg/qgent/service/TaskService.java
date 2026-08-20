@@ -126,10 +126,6 @@ public class TaskService {
                         "触发消息不属于当前需求群");
             }
         }
-        // 创建事务内冻结默认上下文。ContextService 首先校验需求群成员关系，拒绝未加入该群的项目成员；
-        // 触发消息即使不在最近 50 条窗口内也会完整写入快照。
-        Map<String, Object> contextSnapshot = contextSnapshotCodec.encode(
-                contextService.buildTaskSnapshot(actor, projectId, group.getId(), body.getTriggerMessageId()));
         boolean reuseWorkspace = body.getWorkspaceId() != null || body.getContinuationOfTaskId() != null;
         if (reuseWorkspace && (body.getWorkspaceId() == null || body.getContinuationOfTaskId() == null)) {
             throw validation("WORKSPACE_CONTINUATION_INCOMPLETE",
@@ -186,6 +182,13 @@ public class TaskService {
                         "仓库已从项目解绑，不能创建新任务");
             }
         }
+        // 创建事务内冻结默认上下文。ContextService 首先校验需求群成员关系，拒绝未加入该群的项目成员；
+        // 触发消息即使不在最近 50 条窗口内也会完整写入快照。仓库清单以本次实际生效的 repositoryIds
+        // 为准（新建 = 请求指定，续作 = Workspace worktree 列表），不再回读需求群绑定记录，避免
+        // Workspace 挂载与 Agent 上下文仓库不一致。
+        Map<String, Object> contextSnapshot = contextSnapshotCodec.encode(
+                contextService.buildTaskSnapshot(actor, projectId, group.getId(), body.getTriggerMessageId(),
+                        repositoryIds));
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         if (!reuseWorkspace) {
             workspace.setCreatedAt(now);

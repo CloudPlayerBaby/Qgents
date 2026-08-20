@@ -109,9 +109,17 @@ public class ContextService {
      * 创建 Task 时捕获默认上下文，并确保触发消息全文存在于快照中。
      * <p>
      * 触发消息可能早于近期窗口；此处按群内序号补入而非截断，避免 Task 核心来源在重试时丢失。
+     * <p>
+     * 仓库范围以显式 {@code repositoryIds} 为准：新建 Workspace 传请求指定仓库、续作任务传
+     * Workspace worktree 仓库列表；缺省（null）时才回退到需求群绑定仓库，保证 Workspace 实际
+     * 挂载与 Agent 上下文中的仓库清单一致，避免"Workspace 有 3 个仓库、AI 上下文 repositories=0"。
+     *
+     * @param repositoryIds 本次 Task 实际生效的项目仓库绑定 ID；null 表示沿用需求群绑定仓库
      */
-    public GroupContext buildTaskSnapshot(UUID actor, UUID projectId, UUID groupId, UUID triggerMessageId) {
+    public GroupContext buildTaskSnapshot(UUID actor, UUID projectId, UUID groupId, UUID triggerMessageId,
+                                          List<UUID> repositoryIds) {
         GroupContext context = buildForGroup(actor, projectId, groupId, DEFAULT_MESSAGE_LIMIT);
+        context = withRepositoryScope(context, projectId, repositoryIds);
         if (triggerMessageId == null) {
             return context;
         }
@@ -128,6 +136,25 @@ public class ContextService {
         return new GroupContext(context.getGroupId(), context.getProjectId(), context.getRequirementTitle(),
                 context.getRequirementDescription(), context.getRepositoryIds(), context.getRepositories(),
                 conversation, context.getSkills(), context.getMemories());
+    }
+
+    /** 兼容入口：{@code repositoryIds} 缺省时沿用需求群绑定仓库。 */
+    public GroupContext buildTaskSnapshot(UUID actor, UUID projectId, UUID groupId, UUID triggerMessageId) {
+        return buildTaskSnapshot(actor, projectId, groupId, triggerMessageId, null);
+    }
+
+    /**
+     * 以显式仓库范围替换快照中的仓库清单：null 表示沿用需求群绑定仓库（原样返回），
+     * 非 null 时 {@code repositoryIds} 与 {@code repositories} 一律以传入 ID 为准。
+     */
+    private GroupContext withRepositoryScope(GroupContext context, UUID projectId, List<UUID> repositoryIds) {
+        if (repositoryIds == null) {
+            return context;
+        }
+        List<String> ids = repositoryIds.stream().map(UUID::toString).distinct().toList();
+        return new GroupContext(context.getGroupId(), context.getProjectId(), context.getRequirementTitle(),
+                context.getRequirementDescription(), ids, repositoryManifest(projectId, ids),
+                context.getConversation(), context.getSkills(), context.getMemories());
     }
 
     private List<ContextRepository> repositoryManifest(UUID projectId, List<String> repositoryIds) {

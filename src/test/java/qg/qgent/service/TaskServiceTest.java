@@ -159,14 +159,15 @@ class TaskServiceTest {
                 .thenReturn(List.of(worktree(backend, "repo-1", "base", "feat/task-x")));
         GroupContext context = new GroupContext(groupId.toString(), projectId.toString(), "需求", "背景", List.of(),
                 List.of(), List.of(), List.of());
-        when(contextService.buildTaskSnapshot(actor, projectId, groupId, null)).thenReturn(context);
+        // 快照必须携带本次实际生效的 repositoryIds，而不是只依赖需求群绑定记录。
+        when(contextService.buildTaskSnapshot(actor, projectId, groupId, null, List.of(backend))).thenReturn(context);
 
         service.create(projectId, actor, request(groupId, List.of(backend)));
 
         ArgumentCaptor<TaskEntity> captured = ArgumentCaptor.forClass(TaskEntity.class);
         verify(tasks).insert(captured.capture());
         assertThat(captured.getValue().getContextSnapshot()).containsEntry("version", 1).containsKey("groupContext");
-        verify(contextService).buildTaskSnapshot(actor, projectId, groupId, null);
+        verify(contextService).buildTaskSnapshot(actor, projectId, groupId, null, List.of(backend));
     }
 
     @Test
