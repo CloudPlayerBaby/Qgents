@@ -623,7 +623,8 @@ public class TestRunService {
     private TestRunResponse toTestRun(TestRunEntity run) {
         return new TestRunResponse(id(run.getId()), id(run.getProjectId()), id(run.getProjectRepositoryId()),
                 run.getRef(), run.getTestsetIds(), run.getStatus(), run.getSummary(),
-                id(run.getCreatedBy()), iso(run.getCreatedAt()));
+                id(run.getCreatedBy()), iso(run.getCreatedAt()),
+                iso(run.getStartedAt()), iso(run.getFinishedAt()), iso(run.getUpdatedAt()));
     }
 
     private DryRunResponse toDryRun(DryRunEntity run) {

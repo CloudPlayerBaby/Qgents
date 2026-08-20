@@ -9733,6 +9733,29 @@ GET /api/v1/projects/{projectId}/dry-runs
 
 状态值、筛选值或游标格式不合法时分别返回 `400 INVALID_STATUS_FILTER` 或 `400 INVALID_CURSOR`；非项目成员按通用权限错误处理。
 
+### 38.5 Test Run 详情
+
+`GET /api/v1/projects/{projectId}/test-runs/{testRunId}` 返回单条运行的完整生命周期与结果摘要。
+
+响应 `data` 字段：
+
+|字段|类型|说明|
+|---|---|---|
+|`id`|UUID|Test Run ID|
+|`projectId`|UUID|项目 ID|
+|`repositoryId`|UUID|项目仓库绑定 ID|
+|`ref`|string/null|请求 ref；Task 运行未直接提交 ref 时返回解析后的执行 ref|
+|`testsetIds`|UUID\[\]|本次运行使用的 Testset 快照 ID 列表|
+|`status`|enum|`QUEUED`、`RUNNING`、`PASSED`、`FAILED`、`CANCELLED`|
+|`summary`|object/null|用例与结果摘要；含 `status`、resolved 提交 SHA 与 `results` 数组|
+|`createdBy`|UUID|发起用户 ID|
+|`createdAt`|RFC 3339 string|创建时间，UTC|
+|`startedAt`|RFC 3339 string/null|执行开始时间（claim 时写入）；QUEUED 时为 `null`|
+|`finishedAt`|RFC 3339 string/null|执行结束时间（进入终态时写入）；非终态时为 `null`|
+|`updatedAt`|RFC 3339 string/null|最后更新时间，由数据库在行变更时维护|
+
+`summary.results[]` 与列表接口的用例摘要一致，含 `testsetId`、`status`、`exitCode`、`durationMs`、`failureCode`、`message`；`summary.failureCode` 与 `summary.message` 为执行失败时的稳定错误码与脱敏描述。
+
 ## 39. `TASK_STATUS` 卡片结构化仓库映射
 
 `TASK_STATUS` 消息的 `content` 新增以下字段，用于让客户端明确展示 AI 当前操作的真实项目仓库：
