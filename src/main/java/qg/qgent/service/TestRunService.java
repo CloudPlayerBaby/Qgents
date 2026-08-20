@@ -405,6 +405,7 @@ public class TestRunService {
         if (source == null || !projectId.equals(source.getProjectId())) {
             throw new ApiException(HttpStatus.NOT_FOUND, "DRY_RUN_NOT_FOUND", "试运行不存在或不可见");
         }
+        requireRepository(projectId, source.getProjectRepositoryId());
         if (!"FAILED".equals(source.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "DRY_RUN_RETRY_NOT_ALLOWED", "只有失败的 Dry Run 可以重试");
         }
@@ -455,6 +456,10 @@ public class TestRunService {
         ProjectRepositoryEntity repo = repositoryMapper.selectById(repositoryId);
         if (repo == null || !repo.getProjectId().equals(projectId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "REPOSITORY_NOT_FOUND", "仓库不存在或不可见");
+        }
+        if (!"ACTIVE".equals(repo.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_UNBOUND",
+                    "项目仓库绑定已解绑，不能创建新的测试或预演运行");
         }
         return repo;
     }

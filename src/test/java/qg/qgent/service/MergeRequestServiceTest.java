@@ -23,6 +23,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -56,6 +58,7 @@ class MergeRequestServiceTest {
     private final AtomicReference<MergeRequestDeliveryOperationEntity> operation = new AtomicReference<>();
 
     private MergeRequestService service;
+    private PreflightGateService preflightGates;
 
     @BeforeEach
     void setUp() {
@@ -86,10 +89,14 @@ class MergeRequestServiceTest {
                 githubRepositoryMapper, projectMapper, githubClient, notificationService,
                 sandboxWorkerClient, gitCredentialService, deliveryOperations, transactions, diffs
         );
-        PreflightGateService preflightGates = mock(PreflightGateService.class);
+        preflightGates = mock(PreflightGateService.class);
         service.setPreflightGates(preflightGates);
         when(preflightGates.normalizeTargetBranch(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
         when(preflightGates.resolveTargetCommit(any(), any(), anyString())).thenReturn("target-commit");
+        org.mockito.Mockito.lenient().when(preflightGates.requireEvidence(any(), any(), any(), anyString(), anyString()))
+                .thenAnswer(invocation -> preflightEvidence(
+                        invocation.getArgument(1, WorkspaceRepositoryEntity.class).getHeadCommit(),
+                        invocation.getArgument(4, String.class)));
         when(githubClient.getBranch(anyLong(), anyString(), anyString(), anyString()))
                 .thenAnswer(invocation -> new GitHubBranchDetails(invocation.getArgument(3), "sha123"));
     }
@@ -209,7 +216,14 @@ class MergeRequestServiceTest {
         assertEquals("clean", response.getMergeableState());
 
         verify(mergeRequestMapper).insert(any(MergeRequestEntity.class));
+        verify(mergeRequestMapper, atLeastOnce()).selectByIdForUpdate(inserted.get().getId());
         verify(mergeRequestGroupMapper).insert(any(MergeRequestGroupEntity.class));
+        ArgumentCaptor<QualityCheckResultEntity> preflightChecks = ArgumentCaptor.forClass(QualityCheckResultEntity.class);
+        verify(qualityCheckMapper, times(2)).insert(preflightChecks.capture());
+        assertEquals(java.util.Set.of("DRY_RUN", "CQ_PLUS_ONE"), preflightChecks.getAllValues().stream()
+                .map(QualityCheckResultEntity::getCheckType).collect(java.util.stream.Collectors.toSet()));
+        assertTrue(preflightChecks.getAllValues().stream().allMatch(check -> "PASSED".equals(check.getStatus())
+                && "sha123".equals(check.getCommitSha()) && check.getSource().startsWith("PREFLIGHT_")));
         verify(diffs).markDelivered(eq(accepted.getId()), any());
         assertEquals("SUCCEEDED", task.getStatus());
         verify(taskMapper).updateById(task);
@@ -556,10 +570,77 @@ class MergeRequestServiceTest {
         worktree.setHeadCommit(headCommit);
         MergeRequestCreateRequest request = new MergeRequestCreateRequest();
         request.setRepositoryId(repositoryId);
+        request.setTargetBranch("main");
         Class<?> claimType = Class.forName("qg.qgent.service.MergeRequestService$CreateClaim");
         java.lang.reflect.Constructor<?> constructor = claimType.getDeclaredConstructors()[0];
         constructor.setAccessible(true);
-        return constructor.newInstance(task, worktree, null, null, request, null, null, null);
+        return constructor.newInstance(task, worktree, null, null, request, null, null, null, "target-commit");
+    }
+
+    private PreflightGateService.PreflightEvidence preflightEvidence(String sourceCommit, String targetCommit) {
+        DryRunEntity dryRun = new DryRunEntity();
+        dryRun.setId(UUID.randomUUID());
+        dryRun.setStatus("PASSED");
+        dryRun.setHeadCommit(sourceCommit);
+        dryRun.setTargetBranch("main");
+        dryRun.setResolvedTargetCommit(targetCommit);
+        PreflightCqReviewEntity cq = new PreflightCqReviewEntity();
+        cq.setId(UUID.randomUUID());
+        cq.setDecision("APPROVED");
+        cq.setReviewerUserId(UUID.randomUUID());
+        cq.setSourceCommit(sourceCommit);
+        cq.setTargetBranch("main");
+        cq.setTargetCommit(targetCommit);
+        return new PreflightGateService.PreflightEvidence(dryRun, cq);
+    }
+
+    @Test
+    void preflightProjectionReplayDoesNotInsertDuplicateChecks() throws Exception {
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(UUID.randomUUID());
+        mr.setHeadCommit("source-commit");
+        PreflightGateService.PreflightEvidence evidence = preflightEvidence("source-commit", "target-commit");
+        QualityCheckResultEntity existing = new QualityCheckResultEntity();
+        existing.setId(UUID.randomUUID());
+        when(qualityCheckMapper.selectOne(any())).thenReturn(null, null, null, null, existing, existing);
+
+        invokePrivate("projectPreflightChecks", mr, evidence);
+        invokePrivate("projectPreflightChecks", mr, evidence);
+
+        verify(qualityCheckMapper, times(2)).insert(any(QualityCheckResultEntity.class));
+    }
+
+    @Test
+    void stalePreflightEvidenceDuringFinalizationDoesNotProjectPassedChecks() throws Exception {
+        TaskEntity task = new TaskEntity();
+        task.setId(UUID.randomUUID()); task.setProjectId(UUID.randomUUID()); task.setWorkspaceId(UUID.randomUUID());
+        task.setDeliveryMode("MR_FIRST"); task.setStatus("WAITING_PREFLIGHT");
+        UUID repositoryId = UUID.randomUUID();
+        Object claim = createClaim(task, repositoryId, "source-commit");
+        ApiException stale = new ApiException(org.springframework.http.HttpStatus.CONFLICT, "MR_PREFLIGHT_NOT_PASSED",
+                "预检已失效");
+        PreflightGateService stalePreflight = mock(PreflightGateService.class);
+        service.setPreflightGates(stalePreflight);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            throw stale;
+        }).when(stalePreflight).requireEvidence(any(), any(), any(), anyString(), anyString());
+        GitHubPullRequestDetails remote = new GitHubPullRequestDetails(1L, 7, "open", "title", "source-commit",
+                "feature/test", "main", false, "url", null, "unknown", "target-commit");
+
+        InvocationTargetException failure = assertThrows(InvocationTargetException.class,
+                () -> invokePrivate("finalizeCreate", claim, remote));
+
+        assertSame(stale, failure.getCause());
+        verify(qualityCheckMapper, never()).insert(any(QualityCheckResultEntity.class));
+        verify(mergeRequestMapper, never()).insert(any(MergeRequestEntity.class));
+    }
+
+    private Object invokePrivate(String name, Object... arguments) throws Exception {
+        Method method = java.util.Arrays.stream(MergeRequestService.class.getDeclaredMethods())
+                .filter(candidate -> name.equals(candidate.getName()) && candidate.getParameterCount() == arguments.length)
+                .findFirst().orElseThrow();
+        method.setAccessible(true);
+        return method.invoke(service, arguments);
     }
 
     @Test

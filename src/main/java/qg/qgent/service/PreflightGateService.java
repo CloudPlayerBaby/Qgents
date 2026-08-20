@@ -81,12 +81,33 @@ public class PreflightGateService {
      */
     public void requireReady(TaskEntity task, WorkspaceRepositoryEntity worktree, UUID repositoryId,
                              String targetBranch, String targetCommit) {
+        requireEvidence(task, worktree, repositoryId, targetBranch, targetCommit);
+    }
+
+    /**
+     * 返回在给定源/目标提交上已经核验的预检事实。MR 落库阶段调用此方法，确保投影的
+     * DRY_RUN 与 CQ+1 都来自同一固定 Git 上下文，而不是客户端或 GitHub 推导出的状态。
+     */
+    public PreflightEvidence requireEvidence(TaskEntity task, WorkspaceRepositoryEntity worktree, UUID repositoryId,
+                                             String targetBranch, String targetCommit) {
         PreflightGateResponse gate = evaluate(task, worktree, repositoryId, targetBranch, targetCommit);
         if (!"PASSED".equals(gate.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "MR_PREFLIGHT_NOT_PASSED",
                     "MR 创建前预检未通过", gate.getBlockers().stream()
                     .map(blocker -> java.util.Map.of("code", blocker)).toList());
         }
+        DryRunEntity dryRun = latestDryRun(task.getProjectId(), task.getId(), repositoryId, worktree.getHeadCommit(),
+                targetBranch, targetCommit);
+        PreflightCqReviewEntity cq = dryRun == null ? null : latestCq(dryRun.getId(), worktree.getHeadCommit(),
+                targetCommit, task.getCreatedBy());
+        if (dryRun == null || cq == null || !"PASSED".equals(dryRun.getStatus()) || !"APPROVED".equals(cq.getDecision())) {
+            throw new ApiException(HttpStatus.CONFLICT, "MR_PREFLIGHT_NOT_PASSED", "MR 创建前预检未通过");
+        }
+        return new PreflightEvidence(dryRun, cq);
+    }
+
+    /** 已通过 MR 前预检的不可变 Dry Run 与独立 CQ+1 证据。 */
+    public record PreflightEvidence(DryRunEntity dryRun, PreflightCqReviewEntity cqReview) {
     }
 
     /** 在事务外解析当前目标分支，并校验仓库归属。 */

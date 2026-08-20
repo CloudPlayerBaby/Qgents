@@ -261,8 +261,6 @@ public class MergeRequestService {
             CreateFinalization finalized = inTransaction(() -> finalizeCreate(resolvedClaim, remote));
             MergeRequestEntity mr = finalized.mergeRequest();
             publishTaskCompleted(finalized.completedTask());
-            publishUpdated(mr);
-            publishMergeRequestCard(resolvedClaim.task(), mr);
             MergeRequestEntity refreshed;
             try {
                 // mergeability 轮询是 best-effort：MR 已创建成功，轮询失败不得影响交付结果。
@@ -271,16 +269,27 @@ public class MergeRequestService {
                 log.warn("mergeability poll failed for MR {}, falling back to created state", mr.getId(), failure);
                 refreshed = mr;
             }
+            final MergeRequestEntity postCreateMr = refreshed;
             // PR 创建成功后写入 AI_REVIEW 检查并发 MR_PENDING 通知（best-effort，
             // 失败不影响已创建的 PR 事实；DIFF_FIRST 手动建 MR 同样受益）
             if (qualityGates != null) {
                 try {
-                    qualityGates.onPullRequestCreated(refreshed);
+                    qualityGates.onPullRequestCreated(postCreateMr);
                 } catch (RuntimeException failure) {
                     log.warn("post-create quality gate hooks failed for MR {}", mr.getId(), failure);
                 }
             }
-            return summary(refreshed);
+            MergeRequestEntity gateReady = inTransaction(() -> {
+                MergeRequestEntity current = mergeRequestMapper.selectByIdForUpdate(mr.getId());
+                if (current == null) {
+                    return postCreateMr;
+                }
+                refreshQualityGate(current);
+                return current;
+            });
+            publishUpdated(gateReady);
+            publishMergeRequestCard(resolvedClaim.task(), gateReady);
+            return summary(gateReady);
         } catch (RuntimeException failure) {
             markCreateFailed(resolvedClaim, failure);
             throw failure;
@@ -375,14 +384,14 @@ public class MergeRequestService {
         GitHubRepositoryEntity githubRepository = requireGitHubRepository(projectId, request.getRepositoryId());
         GitHubInstallationEntity installation = requireInstallation(githubRepository);
         if (existing != null && worktree.getHeadCommit().equals(existing.getHeadCommit())) {
-            return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, existing);
+            return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, existing, targetCommit);
         }
         if (existing != null) {
             // 已有 open MR 且 headCommit 不同：推送新 commit 后更新已有 MR，不新建 PR，也不走 delivery operation
-            return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, existing);
+            return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, existing, targetCommit);
         }
         if (deliveryOperationMapper == null) {
-            return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, null);
+            return new CreateClaim(task, worktree, githubRepository, installation, request, null, null, null, targetCommit);
         }
         MergeRequestDeliveryOperationEntity active = deliveryOperationMapper.selectActiveBranchForUpdate(
                 request.getRepositoryId(), worktree.getSourceBranch(), request.getTargetBranch());
@@ -405,7 +414,7 @@ public class MergeRequestService {
         if (operation != null && "COMPLETED".equals(operation.getStatus())) {
             MergeRequestEntity completed = mergeRequestMapper.selectById(operation.getMergeRequestId());
             if (completed != null) return new CreateClaim(task, worktree, githubRepository, installation,
-                    request, operation, null, completed);
+                    request, operation, null, completed, targetCommit);
         }
         if (operation != null && (("RUNNING".equals(operation.getStatus())
                 || "REMOTE_CREATED".equals(operation.getStatus()))
@@ -435,7 +444,7 @@ public class MergeRequestService {
         operation.setUpdatedAt(now);
         if (deliveryOperationMapper.selectById(operation.getId()) == null) deliveryOperationMapper.insert(operation);
         else deliveryOperationMapper.updateById(operation);
-        return new CreateClaim(task, worktree, githubRepository, installation, request, operation, token, null);
+        return new CreateClaim(task, worktree, githubRepository, installation, request, operation, token, null, targetCommit);
     }
 
     /**
@@ -546,7 +555,8 @@ public class MergeRequestService {
         });
         return refreshed == null ? retireStaleExistingAndClaim(projectId, userId, request, targetCommit, claim)
                 : new CreateClaim(claim.task(), claim.worktree(),
-                claim.githubRepository(), claim.installation(), claim.request(), claim.operation(), claim.token(), refreshed);
+                claim.githubRepository(), claim.installation(), claim.request(), claim.operation(), claim.token(), refreshed,
+                claim.targetCommit());
     }
 
     private CreateClaim retireStaleExistingAndClaim(UUID projectId, UUID userId, MergeRequestCreateRequest request,
@@ -625,6 +635,10 @@ public class MergeRequestService {
         MergeRequestDeliveryOperationEntity operation = claim.operation() == null ? null
                 : deliveryOperationMapper.selectByIdForUpdate(claim.operation().getId());
         if (operation != null) requireOperationClaim(operation, claim.token());
+        // 远端创建后、MR 与检查落库前再次以领取时冻结的 target commit 核验预检证据。
+        // 此处不调用 GitHub/Worker，避免持有数据库事务时执行外部 HTTP 调用。
+        PreflightGateService.PreflightEvidence preflight = requirePreflightGates().requireEvidence(claim.task(),
+                claim.worktree(), claim.request().getRepositoryId(), claim.request().getTargetBranch(), claim.targetCommit());
         MergeRequestEntity existing = mergeRequestMapper.selectOne(Wrappers.<MergeRequestEntity>lambdaQuery()
                 .eq(MergeRequestEntity::getProjectRepositoryId, claim.request().getRepositoryId())
                 .eq(MergeRequestEntity::getProvider, "GITHUB")
@@ -654,8 +668,16 @@ public class MergeRequestService {
                 relation.setRequirementGroupId(claim.task().getRequirementGroupId());
                 mergeRequestGroupMapper.insert(relation);
             }
-            refreshQualityGate(mr);
         }
+        // 同一 MR 的投影必须串行化：质量检查表保留 attempt 历史，不能以全局唯一键覆盖。
+        // 新建 MR 已经落库，已有 MR 亦在此处统一锁定，再执行 select-then-insert 幂等判断。
+        mr = mergeRequestMapper.selectByIdForUpdate(mr.getId());
+        if (mr == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "MR_FINALIZATION_CONTEXT_LOST",
+                    "Pull Request local mirror disappeared during finalization");
+        }
+        projectPreflightChecks(mr, preflight);
+        refreshQualityGate(mr);
         if (operation != null) {
             operation.setStatus("COMPLETED");
             operation.setMergeRequestId(mr.getId());
@@ -877,7 +899,7 @@ public class MergeRequestService {
     private record CreateClaim(TaskEntity task, WorkspaceRepositoryEntity worktree,
                                GitHubRepositoryEntity githubRepository, GitHubInstallationEntity installation,
                                MergeRequestCreateRequest request, MergeRequestDeliveryOperationEntity operation,
-                               String token, MergeRequestEntity existing) {
+                               String token, MergeRequestEntity existing, String targetCommit) {
     }
 
     private PreflightGateService requirePreflightGates() {
@@ -1195,6 +1217,52 @@ public class MergeRequestService {
         check.setCommitSha(mr.getHeadCommit());
         check.setSource(source);
         check.setSummary(reason == null ? Map.of() : Map.of("reason", reason));
+        check.setStartedAt(now);
+        check.setCompletedAt(now);
+        check.setCreatedAt(now);
+        qualityCheckMapper.insert(check);
+    }
+
+    /**
+     * 将 MR 创建前已经核验的真实事实投影到 MR 检查列表。来源中包含证据 ID，重放同一
+     * 远端创建操作时不会重复写入；后续新的 Dry Run/CQ 仍会形成新的 attempt。
+     */
+    private void projectPreflightChecks(MergeRequestEntity mr, PreflightGateService.PreflightEvidence evidence) {
+        DryRunEntity dryRun = evidence.dryRun();
+        PreflightCqReviewEntity cq = evidence.cqReview();
+        writePreflightCheckIfAbsent(mr, "DRY_RUN", "PREFLIGHT_DRY_RUN:" + dryRun.getId(), Map.of(
+                "dryRunId", dryRun.getId().toString(), "sourceCommit", dryRun.getHeadCommit(),
+                "targetBranch", dryRun.getTargetBranch(), "targetCommit", dryRun.getResolvedTargetCommit()));
+        Map<String, Object> cqSummary = new LinkedHashMap<>();
+        cqSummary.put("dryRunId", dryRun.getId().toString());
+        cqSummary.put("cqReviewId", cq.getId().toString());
+        cqSummary.put("reviewerUserId", cq.getReviewerUserId().toString());
+        cqSummary.put("sourceCommit", cq.getSourceCommit());
+        cqSummary.put("targetBranch", cq.getTargetBranch());
+        cqSummary.put("targetCommit", cq.getTargetCommit());
+        writePreflightCheckIfAbsent(mr, "CQ_PLUS_ONE", "PREFLIGHT_CQ_PLUS_ONE:" + cq.getId(), cqSummary);
+    }
+
+    private void writePreflightCheckIfAbsent(MergeRequestEntity mr, String checkType, String source,
+                                              Map<String, Object> summary) {
+        QualityCheckResultEntity existing = qualityCheckMapper.selectOne(Wrappers.<QualityCheckResultEntity>lambdaQuery()
+                .eq(QualityCheckResultEntity::getMergeRequestId, mr.getId())
+                .eq(QualityCheckResultEntity::getCheckType, checkType)
+                .eq(QualityCheckResultEntity::getCommitSha, mr.getHeadCommit())
+                .eq(QualityCheckResultEntity::getSource, source).last("LIMIT 1"));
+        if (existing != null) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        QualityCheckResultEntity check = new QualityCheckResultEntity();
+        check.setId(UuidV7.next());
+        check.setMergeRequestId(mr.getId());
+        check.setCheckType(checkType);
+        check.setAttemptNo(nextAttemptNo(mr.getId(), checkType, mr.getHeadCommit()));
+        check.setStatus("PASSED");
+        check.setCommitSha(mr.getHeadCommit());
+        check.setSource(source);
+        check.setSummary(summary);
         check.setStartedAt(now);
         check.setCompletedAt(now);
         check.setCreatedAt(now);

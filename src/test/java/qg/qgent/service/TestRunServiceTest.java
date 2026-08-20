@@ -309,6 +309,7 @@ class TestRunServiceTest {
         source.setAttemptCount(1);
         source.setTestsetSnapshot(List.of());
         source.setReport(Map.of("failureCode", "SANDBOX_WORKER_UNAVAILABLE"));
+        repository(projectId, source.getProjectRepositoryId());
         when(dryRuns.selectByIdForUpdate(source.getId())).thenReturn(source);
         when(dryRuns.selectCount(any())).thenReturn(0L);
 
@@ -320,6 +321,49 @@ class TestRunServiceTest {
                 && "head".equals(value.getHeadCommit())
                 && "target".equals(value.getResolvedTargetCommit())));
         verify(executions).dispatchDryRun(any(UUID.class));
+    }
+
+    @Test
+    void rejectsUnboundRepositoryBeforeCreatingManualTestOrDryRun() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        unboundRepository(projectId, repositoryId);
+        TestRunCreateRequest testRequest = new TestRunCreateRequest();
+        testRequest.setRepositoryId(repositoryId); testRequest.setRef("feature/test"); testRequest.setTestsetIds(List.of());
+        ApiException testFailure = assertThrows(ApiException.class,
+                () -> service.createTestRun(projectId, actor, testRequest));
+        assertEquals("PROJECT_REPOSITORY_UNBOUND", testFailure.code());
+
+        DryRunCreateRequest dryRequest = new DryRunCreateRequest();
+        dryRequest.setRepositoryId(repositoryId); dryRequest.setSourceRef("feature/test"); dryRequest.setTargetBranch("main");
+        ApiException dryFailure = assertThrows(ApiException.class,
+                () -> service.createDryRun(projectId, actor, dryRequest));
+        assertEquals("PROJECT_REPOSITORY_UNBOUND", dryFailure.code());
+        verify(testRuns, never()).insert(any(TestRunEntity.class));
+        verify(dryRuns, never()).insert(any(DryRunEntity.class));
+        verifyNoInteractions(worker, executions);
+    }
+
+    @Test
+    void rejectsUnboundRepositoryForAutomaticAndRetryDryRuns() {
+        UUID projectId = UUID.randomUUID(), repositoryId = UUID.randomUUID(), taskId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId, workspaceId);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(workspaces.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree(workspaceId, repositoryId, "feature/test", "head")));
+        unboundRepository(projectId, repositoryId);
+        ApiException automaticFailure = assertThrows(ApiException.class,
+                () -> service.createAutomaticDryRun(projectId, taskId, repositoryId, "main"));
+        assertEquals("PROJECT_REPOSITORY_UNBOUND", automaticFailure.code());
+
+        DryRunEntity failed = new DryRunEntity();
+        failed.setId(UUID.randomUUID()); failed.setProjectId(projectId); failed.setProjectRepositoryId(repositoryId);
+        failed.setStatus("FAILED"); failed.setReport(Map.of("failureCode", "SANDBOX_WORKER_UNAVAILABLE"));
+        when(dryRuns.selectByIdForUpdate(failed.getId())).thenReturn(failed);
+        ApiException retryFailure = assertThrows(ApiException.class,
+                () -> service.retryDryRun(projectId, failed.getId(), UUID.randomUUID()));
+        assertEquals("PROJECT_REPOSITORY_UNBOUND", retryFailure.code());
+        verify(dryRuns, never()).insert(any(DryRunEntity.class));
+        verifyNoInteractions(worker, executions);
     }
 
     @Test
@@ -466,6 +510,13 @@ class TestRunServiceTest {
     private void repository(UUID projectId, UUID repositoryId) {
         ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
         repository.setId(repositoryId); repository.setProjectId(projectId); repository.setDefaultBranch("main");
+        repository.setStatus("ACTIVE");
+        when(repositories.selectById(repositoryId)).thenReturn(repository);
+    }
+
+    private void unboundRepository(UUID projectId, UUID repositoryId) {
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId); repository.setProjectId(projectId); repository.setStatus("UNBOUND");
         when(repositories.selectById(repositoryId)).thenReturn(repository);
     }
 }

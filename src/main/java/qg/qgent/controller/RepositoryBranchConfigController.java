@@ -32,51 +32,51 @@ public class RepositoryBranchConfigController {
     /**
      * 契约 §6.1：查询受保护分支策略。
      */
-    @GetMapping("/projects/{projectId}/repositories/{repositoryId}/branch-policies/{branch}")
+    @GetMapping("/projects/{projectId}/repositories/{projectRepositoryId}/branch-policies/{branch}")
     public ApiResponse<BranchPolicyDto> getBranchPolicy(
-            @PathVariable UUID projectId,
-            @PathVariable UUID repositoryId,
-            @PathVariable String branch,
+            @PathVariable("projectId") UUID projectId,
+            @PathVariable("projectRepositoryId") UUID projectRepositoryId,
+            @PathVariable("branch") String branch,
             HttpServletRequest request) {
-        return ok(service.getBranchPolicy(currentActor.currentUserId(), projectId, repositoryId, branch), request);
+        return ok(service.getBranchPolicy(currentActor.currentUserId(), projectId, projectRepositoryId, branch), request);
     }
 
     /**
      * 契约 §6.1：配置受保护分支策略。
      */
-    @PutMapping("/projects/{projectId}/repositories/{repositoryId}/branch-policies/{branch}")
+    @PutMapping("/projects/{projectId}/repositories/{projectRepositoryId}/branch-policies/{branch}")
     public ApiResponse<BranchPolicyDto> updateBranchPolicy(
-            @PathVariable UUID projectId,
-            @PathVariable UUID repositoryId,
-            @PathVariable String branch,
+            @PathVariable("projectId") UUID projectId,
+            @PathVariable("projectRepositoryId") UUID projectRepositoryId,
+            @PathVariable("branch") String branch,
             @Valid @RequestBody UpdateBranchPolicyRequest body,
             HttpServletRequest request) {
-        return ok(service.updateBranchPolicy(currentActor.currentUserId(), projectId, repositoryId, branch, body), request);
+        return ok(service.updateBranchPolicy(currentActor.currentUserId(), projectId, projectRepositoryId, branch, body), request);
     }
 
     /**
      * 契约 §6.1：查询目标分支的质量门禁。
      */
-    @GetMapping("/projects/{projectId}/repositories/{repositoryId}/quality-gates/{branch}")
+    @GetMapping("/projects/{projectId}/repositories/{projectRepositoryId}/quality-gates/{branch}")
     public ApiResponse<QualityGateDto> getQualityGate(
-            @PathVariable UUID projectId,
-            @PathVariable UUID repositoryId,
-            @PathVariable String branch,
+            @PathVariable("projectId") UUID projectId,
+            @PathVariable("projectRepositoryId") UUID projectRepositoryId,
+            @PathVariable("branch") String branch,
             HttpServletRequest request) {
-        return ok(service.getQualityGate(currentActor.currentUserId(), projectId, repositoryId, branch), request);
+        return ok(service.getQualityGate(currentActor.currentUserId(), projectId, projectRepositoryId, branch), request);
     }
 
     /**
      * 契约 §6.1：配置目标分支的质量门禁。
      */
-    @PutMapping("/projects/{projectId}/repositories/{repositoryId}/quality-gates/{branch}")
+    @PutMapping("/projects/{projectId}/repositories/{projectRepositoryId}/quality-gates/{branch}")
     public ApiResponse<QualityGateDto> updateQualityGate(
-            @PathVariable UUID projectId,
-            @PathVariable UUID repositoryId,
-            @PathVariable String branch,
+            @PathVariable("projectId") UUID projectId,
+            @PathVariable("projectRepositoryId") UUID projectRepositoryId,
+            @PathVariable("branch") String branch,
             @Valid @RequestBody UpdateQualityGateRequest body,
             HttpServletRequest request) {
-        return ok(service.updateQualityGate(currentActor.currentUserId(), projectId, repositoryId, branch, body), request);
+        return ok(service.updateQualityGate(currentActor.currentUserId(), projectId, projectRepositoryId, branch, body), request);
     }
 
     private <T> ApiResponse<T> ok(T data, HttpServletRequest request) {

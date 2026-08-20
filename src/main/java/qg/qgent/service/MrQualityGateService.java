@@ -28,9 +28,9 @@ import java.util.function.Supplier;
  *       无 REVIEWING 产物（异常路径）不写检查（不伪造），记 warn。</li>
  *   <li><b>MR_PENDING 通知</b>：PR 创建成功后通知任务发起人（kind 复用 §7.1，resourceId=mrId）。</li>
  * </ul>
- * DRY_RUN、TESTSET 与 CQ+1 不在本类范围：DRY_RUN 必须由真实沙箱预演执行器写入，不能以 GitHub
- * 可合并性代替；TESTSET 由 Testset 执行器按门禁配置写入（未配置即无检查项，不伪造）；CQ+1 为人工
- * 审查，走 cq-approvals 接口。所有检查写入均在短事务内完成，且不包裹网络调用。
+ * MR 创建阶段会由 {@link MergeRequestService} 对已核验的预检 Dry Run 与 CQ+1 事实进行投影；
+ * 本类仅补充创建后的 AI_REVIEW 与通知，与该预检投影互补。TESTSET 仍由 MR 前 Dry Run 的真实执行
+ * 强制校验，不伪造独立 MR 级检查。所有检查写入均在短事务内完成，且不包裹网络调用。
  */
 @Service
 @Slf4j

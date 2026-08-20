@@ -267,16 +267,13 @@ public class RepositoryBranchConfigService {
      * 浼氬悓鏃舵牎楠岃浠撳簱鏄惁鐪熺殑琚椤圭洰缁戝畾銆?
      */
     private ProjectRepositoryEntity getProjectRepository(UUID projectId, UUID repositoryId) {
-        ProjectRepositoryEntity projectRepo = projectRepositoryMapper
-                .selectOne(new LambdaQueryWrapper<ProjectRepositoryEntity>()
-                        .eq(ProjectRepositoryEntity::getProjectId, projectId)
-                        .eq(ProjectRepositoryEntity::getRepositoryId, repositoryId));
-        if (projectRepo == null) {
+        ProjectRepositoryEntity projectRepo = projectRepositoryMapper.selectById(repositoryId);
+        if (projectRepo == null || !projectId.equals(projectRepo.getProjectId())) {
             throw new ApiException(HttpStatus.NOT_FOUND, "PROJECT_REPOSITORY_NOT_FOUND",
                     "Project repository binding not found");
         }
         // 软解绑后的仓库不再可配置：历史配置保留只读，写入需先重新绑定
-        if ("UNBOUND".equals(projectRepo.getStatus())) {
+        if (!"ACTIVE".equals(projectRepo.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_REPOSITORY_UNBOUND",
                     "Project repository binding is unbound");
         }

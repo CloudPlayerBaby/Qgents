@@ -17,6 +17,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -60,6 +61,26 @@ class PreflightGateServiceTest {
 
         assertDoesNotThrow(() -> service.requireReady(context.task(), context.worktree(), context.repositoryId(),
                 "main", "target-commit"));
+    }
+
+    @Test
+    void returnsOnlyTheVerifiedDryRunAndIndependentCqEvidence() {
+        Context context = context();
+        context.task().setCreatedBy(UUID.randomUUID());
+        PreflightCqReviewEntity review = new PreflightCqReviewEntity();
+        review.setId(UUID.randomUUID());
+        review.setDecision("APPROVED");
+        review.setSourceCommit("source-commit");
+        review.setTargetCommit("target-commit");
+        review.setReviewerUserId(UUID.randomUUID());
+        when(dryRuns.selectOne(any())).thenReturn(context.dryRun());
+        when(cqReviews.selectOne(any())).thenReturn(review);
+
+        PreflightGateService.PreflightEvidence evidence = service.requireEvidence(context.task(), context.worktree(),
+                context.repositoryId(), "main", "target-commit");
+
+        assertSame(context.dryRun(), evidence.dryRun());
+        assertSame(review, evidence.cqReview());
     }
 
     @Test

@@ -85,7 +85,7 @@ class RepositoryBranchConfigServiceTest {
     @Test
     void getsBranchPolicyWhenAuthorized() {
         authorizeProjectMember();
-        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(projectRepository());
+        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(projectRepository());
         RepositoryBranchConfigEntity config = new RepositoryBranchConfigEntity();
         java.util.Map<String, Object> policy = new java.util.HashMap<>();
         policy.put("requirePullRequest", true);
@@ -93,10 +93,34 @@ class RepositoryBranchConfigServiceTest {
         config.setPolicyJson(policy);
         when(branchConfigMapper.selectOne(any(Wrapper.class))).thenReturn(config);
 
-        BranchPolicyDto result = service.getBranchPolicy(actorId, projectId, repositoryId, branchName);
+        BranchPolicyDto result = service.getBranchPolicy(actorId, projectId, projectRepositoryId, branchName);
 
         assertEquals(true, result.getRequirePullRequest());
         assertEquals(false, result.getAllowDirectPush());
+    }
+
+    @Test
+    void rejectsGitHubRepositoryMirrorIdInsteadOfProjectBindingId() {
+        authorizeProjectMember();
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.getBranchPolicy(actorId, projectId, repositoryId, branchName));
+
+        assertEquals("PROJECT_REPOSITORY_NOT_FOUND", error.code());
+        verify(projectRepositoryMapper).selectById(repositoryId);
+    }
+
+    @Test
+    void rejectsUnboundProjectRepositoryBinding() {
+        authorizeProjectMember();
+        ProjectRepositoryEntity binding = projectRepository();
+        binding.setStatus("UNBOUND");
+        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(binding);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.getQualityGate(actorId, projectId, projectRepositoryId, branchName));
+
+        assertEquals("PROJECT_REPOSITORY_UNBOUND", error.code());
     }
 
     @Test
@@ -111,14 +135,14 @@ class RepositoryBranchConfigServiceTest {
     @Test
     void updatesBranchPolicyWhenAdmin() {
         authorizeProjectAdmin();
-        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(projectRepository());
+        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(projectRepository());
         when(branchConfigMapper.selectOne(any(Wrapper.class))).thenReturn(null);
 
         UpdateBranchPolicyRequest request = new UpdateBranchPolicyRequest();
         request.setRequirePullRequest(true);
         request.setMinimumHumanApprovals(2);
 
-        BranchPolicyDto result = service.updateBranchPolicy(actorId, projectId, repositoryId, branchName, request);
+        BranchPolicyDto result = service.updateBranchPolicy(actorId, projectId, projectRepositoryId, branchName, request);
 
         assertEquals(true, result.getRequirePullRequest());
         assertEquals(2, result.getMinimumHumanApprovals());
@@ -146,7 +170,7 @@ class RepositoryBranchConfigServiceTest {
     @Test
     void getsQualityGateWhenAuthorized() {
         authorizeProjectMember();
-        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(projectRepository());
+        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(projectRepository());
         RepositoryBranchConfigEntity config = new RepositoryBranchConfigEntity();
         config.setId(UUID.randomUUID());
         config.setRequiredChecks(List.of("TESTSET", "AI_REVIEW"));
@@ -158,7 +182,7 @@ class RepositoryBranchConfigServiceTest {
         org.mockito.Mockito.lenient().when(branchConfigTestsetMapper.selectList(any(Wrapper.class)))
                 .thenReturn(List.of(ts));
 
-        QualityGateDto result = service.getQualityGate(actorId, projectId, repositoryId, branchName);
+        QualityGateDto result = service.getQualityGate(actorId, projectId, projectRepositoryId, branchName);
 
         assertNotNull(result.getRequiredChecks());
         assertEquals(2, result.getRequiredChecks().size());
@@ -169,7 +193,7 @@ class RepositoryBranchConfigServiceTest {
     @Test
     void updatesQualityGateWhenAdmin() {
         authorizeProjectAdmin();
-        when(projectRepositoryMapper.selectOne(any(Wrapper.class))).thenReturn(projectRepository());
+        when(projectRepositoryMapper.selectById(projectRepositoryId)).thenReturn(projectRepository());
         RepositoryBranchConfigEntity config = new RepositoryBranchConfigEntity();
         config.setId(UUID.randomUUID());
         when(branchConfigMapper.selectOne(any(Wrapper.class))).thenReturn(config);
@@ -183,7 +207,7 @@ class RepositoryBranchConfigServiceTest {
         testset.setProjectRepositoryId(projectRepositoryId); testset.setStatus("ENABLED");
         when(testsetMapper.selectBatchIds(List.of(testsetId))).thenReturn(List.of(testset));
 
-        QualityGateDto result = service.updateQualityGate(actorId, projectId, repositoryId, branchName, request);
+        QualityGateDto result = service.updateQualityGate(actorId, projectId, projectRepositoryId, branchName, request);
 
         assertEquals(1, result.getRequiredChecks().size());
         assertEquals(1, result.getRequiredTestsetIds().size());
@@ -219,6 +243,7 @@ class RepositoryBranchConfigServiceTest {
         pr.setId(projectRepositoryId);
         pr.setProjectId(projectId);
         pr.setRepositoryId(repositoryId);
+        pr.setStatus("ACTIVE");
         return pr;
     }
 }

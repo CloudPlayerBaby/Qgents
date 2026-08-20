@@ -727,9 +727,9 @@ callback 只保存 Installation 元数据和授权仓库范围。GitHub App 私�
 
 `AI_REVIEW` 可由该 Task 的结构化 `REVIEWING` 产物写入质量检查结果；产物缺失时不得伪造通过或失败结果。
 
-`DRY_RUN` 必须由真实的沙箱合并预演执行器写入。GitHub 的 `mergeable`、`mergeableState`、PR 是否存在或远端分支是否可推送，都不是 Dry Run 结果，不能写入 `quality_check_results.checkType=DRY_RUN`。
+`DRY_RUN` 必须来自真实的沙箱合并预演。创建 MR 时，服务端会在短事务内再次核验同一源/目标提交上的已通过 Dry Run 与独立 CQ+1，并将这两项真实预检事实投影为 `quality_check_results`（`source` 分别为 `PREFLIGHT_DRY_RUN:<dryRunId>`、`PREFLIGHT_CQ_PLUS_ONE:<cqReviewId>`），供 MR 门禁列表展示和汇总。GitHub 的 `mergeable`、`mergeableState`、PR 是否存在或远端分支是否可推送，都不是 Dry Run 结果，不能写入 `quality_check_results.checkType=DRY_RUN`。
 
-`TESTSET`、`DRY_RUN`、`AI_REVIEW` 与 `CQ_PLUS_ONE` 均以各自真实执行或审批事实参与门禁汇总；未配置的检查保持无检查项，未执行的必选检查保持未通过，不得伪造 `PASSED`。
+`TESTSET` 由 MR 前 Dry Run 的真实执行强制校验，不额外伪造 MR 级 `TESTSET` 检查；`DRY_RUN`、`AI_REVIEW` 与 `CQ_PLUS_ONE` 均以各自真实执行或审批事实参与门禁汇总。未配置的检查保持无检查项，未执行的必选检查保持未通过，不得伪造 `PASSED`。
 
 ### 6\.2 项目工作分支视图
 
