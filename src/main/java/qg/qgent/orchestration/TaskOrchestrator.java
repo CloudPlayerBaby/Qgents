@@ -405,7 +405,9 @@ public class TaskOrchestrator {
             }
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        latest.setFailureCode(clientFailureCode(failure.code()));
+        String publicFailureCode = clientFailureCode(failure.code());
+        latest.setFailureCode(publicFailureCode);
+        // startupFailure 仅从稳定码或结构化 branch details 构造 reason，不包含上游异常原文。
         latest.setFailureReason(failure.reason());
         latest.setFailureRetryable(failure.retryable());
         latest.setFailureOccurredAt(now);
@@ -813,7 +815,7 @@ public class TaskOrchestrator {
     /** 保留既有客户端错误码契约；仅将内部别名折叠为已发布的稳定码。 */
     private String clientFailureCode(String code) {
         String publicCode = ExecutionContentSanitizer.publicFailureCode(code);
-        return publicCode == null ? code : publicCode;
+        return publicCode == null ? "FAILED_INFRASTRUCTURE" : publicCode;
     }
 
     private String terminalStatus(RunOutcome outcome) {
@@ -1030,8 +1032,9 @@ public class TaskOrchestrator {
                             : "任务在执行完成阶段失败，可查看任务诊断";
                 }
             }
-            task.setFailureCode(clientFailureCode(code));
-            task.setFailureReason(ExecutionContentSanitizer.sanitize(reason));
+            String publicFailureCode = clientFailureCode(code);
+            task.setFailureCode(publicFailureCode);
+            task.setFailureReason(ExecutionContentSanitizer.userFailureDescription(publicFailureCode));
             task.setFailureRetryable(true);
             task.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
         } else if ("SUCCEEDED".equals(finishing.status()) || "DELIVERING".equals(finishing.status())) {
@@ -1365,6 +1368,10 @@ public class TaskOrchestrator {
      * 任务结果卡片文案：按终态表达交付确认、完成、失败或取消。
      */
     private String taskResultMessage(FinishingStatus finishing) {
+        if ("FAILED".equals(finishing.status())) {
+            return "任务执行失败：" + ExecutionContentSanitizer.userFailureDescription(
+                    clientFailureCode(finishing.failureCode()));
+        }
         if (finishing.message() != null) {
             return finishing.message();
         }
@@ -1373,7 +1380,6 @@ public class TaskOrchestrator {
             case "DELIVERING" -> "任务开发完成，正在提交并推送代码";
             case "WAITING_PREFLIGHT" -> "代码已推送，等待 MR 前预检";
             case "SUCCEEDED" -> "任务已完成";
-            case "FAILED" -> "任务执行失败";
             case "CANCELLED" -> "任务已取消";
             default -> "任务状态更新：" + finishing.status();
         };

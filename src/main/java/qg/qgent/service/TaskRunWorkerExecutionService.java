@@ -12,7 +12,6 @@ import qg.qgent.orchestration.worker.WorkerToolExecution;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
-import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -20,8 +19,6 @@ import java.util.UUID;
  */
 @Service
 public class TaskRunWorkerExecutionService {
-    private static final int MAX_FAILURE_REASON_LENGTH = 1_024;
-
     private final TaskRunWorkerExecutionMapper executions;
     private final TaskRunMapper runs;
 
@@ -64,7 +61,7 @@ public class TaskRunWorkerExecutionService {
         stored.setStatus(limit(execution.getStatus(), 24));
         stored.setExitCode(execution.getExitCode());
         stored.setFailureCode(stableCode(execution.getFailureCode()));
-        stored.setFailureReason(safeReason(execution.getFailureReason()));
+        stored.setFailureReason(safeReason(stored.getFailureCode()));
         stored.setStartedAt(timestamp(execution.getStartedAt(), stored.getStartedAt()));
         stored.setFinishedAt(timestamp(execution.getFinishedAt(), stored.getFinishedAt()));
         stored.setUpdatedAt(now);
@@ -87,16 +84,12 @@ public class TaskRunWorkerExecutionService {
     }
 
     private String stableCode(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        String normalized = value.strip().toUpperCase(Locale.ROOT);
-        return normalized.matches("[A-Z][A-Z0-9_]{0,63}") ? normalized : "WORKER_TOOL_FAILED";
+        String publicCode = ExecutionContentSanitizer.publicFailureCode(value);
+        return publicCode == null && value != null && !value.isBlank() ? "FAILED_INFRASTRUCTURE" : publicCode;
     }
 
-    private String safeReason(String value) {
-        return value == null || value.isBlank() ? null : limit(ExecutionContentSanitizer.sanitize(value),
-                MAX_FAILURE_REASON_LENGTH);
+    private String safeReason(String publicFailureCode) {
+        return publicFailureCode == null ? null : ExecutionContentSanitizer.userFailureDescription(publicFailureCode);
     }
 
     private String limit(String value, int max) {

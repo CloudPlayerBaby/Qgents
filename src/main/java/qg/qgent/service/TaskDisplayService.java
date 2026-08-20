@@ -478,12 +478,8 @@ public class TaskDisplayService {
         // FAILED 也是需要展示失败原因的终态；成功、取消等终态不应被历史失败运行污染。
         if (failedRun != null && ("FAILED".equals(status) || !TERMINAL_TASK_STATUSES.contains(status))) {
             String publicCode = ExecutionContentSanitizer.publicFailureCode(failedRun.getFailureCode());
-            String failureReason = failedRun.getFailureReason() == null
-                    ? null : ExecutionContentSanitizer.sanitize(failedRun.getFailureReason()).strip();
-            String summary = publicCode == null
-                    ? (failureReason == null || failureReason.isBlank()
-                    ? ExecutionContentSanitizer.userFailureDescription(null) : failureReason)
-                    : ExecutionContentSanitizer.userFailureDescription(publicCode);
+            // 历史 failureReason 可能是模型/供应商异常原文；任务列表同样只能展示受控文案。
+            String summary = ExecutionContentSanitizer.userFailureDescription(publicCode);
             return new Attention("EXECUTION_FAILED", "执行失败", summary,
                     id(failedRun.getId()), null, null, null,
                     iso(failedRun.getFailureOccurredAt() == null

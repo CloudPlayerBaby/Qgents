@@ -122,7 +122,9 @@ public final class ExecutionContentSanitizer {
             case "TEST_COMMAND_NOT_FOUND" -> "未检测到受支持的项目/测试命令，未执行测试";
             case "REVIEW_ASSERTION_TARGET_NOT_FOUND" -> "审查未找到任务要求的验收目标（文件/函数/接口/选择器等），请补齐后重新审查";
             case "TASK_QUALITY_LOOPS_EXHAUSTED" -> "任务多次未通过质量验证，修复循环已耗尽";
-            case "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
+            case "QUALITY_REPAIR_STEP_UNAVAILABLE" -> "任务没有可写的开发步骤，无法继续修复";
+            case "TASK_FINALIZATION_DIFF" -> "最终 Diff 生成失败";
+            case "FAILED_INFRASTRUCTURE", "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
                     "GIT_BASE_REF_NOT_FOUND", "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
@@ -151,6 +153,7 @@ public final class ExecutionContentSanitizer {
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
                     "TEST_COMMAND_NOT_FOUND", "REVIEW_ASSERTION_TARGET_NOT_FOUND",
+                    "TASK_QUALITY_LOOPS_EXHAUSTED", "QUALITY_REPAIR_STEP_UNAVAILABLE", "TASK_FINALIZATION_DIFF",
                     "GIT_BASE_REF_NOT_FOUND", "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
                     "GIT_STORE_FETCH_FAILED",
                     "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
@@ -179,7 +182,8 @@ public final class ExecutionContentSanitizer {
                     "GIT_BASE_REF_NOT_FOUND", "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
                     "GIT_STORE_FETCH_FAILED",
                     "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
-                    "REVIEW_ASSERTION_TARGET_NOT_FOUND",
+                    "REVIEW_ASSERTION_TARGET_NOT_FOUND", "TASK_QUALITY_LOOPS_EXHAUSTED",
+                    "QUALITY_REPAIR_STEP_UNAVAILABLE", "TASK_FINALIZATION_DIFF",
                     "WORKER_PUSH_FAILED", "DRY_RUN_TIMEOUT" -> true;
             default -> false;
         };

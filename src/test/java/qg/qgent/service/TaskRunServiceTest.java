@@ -235,9 +235,29 @@ class TaskRunServiceTest {
 
         assertEquals("CODING", response.getStage());
         assertEquals("FILE_PATCH_FAILED", response.getFailure().getFailureCode());
-        assertEquals("补丁上下文与文件不一致", response.getFailure().getSummary());
+        assertEquals("补丁无法应用，请重新读取文件后重试", response.getFailure().getSummary());
         assertEquals(executionId.toString(), response.getWorkerExecutions().getFirst().getExecutionId());
         assertEquals(1, response.getWorkerExecutions().size());
+    }
+
+    @Test
+    void diagnosticsNeverExposePersistedUpstreamProviderError() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("FAILED");
+        run.setFailureCode("FAILED_INFRASTRUCTURE");
+        run.setFailureReason("plan agent failed: 400: Access denied; account is in good standing; "
+                + "https://provider.example/error");
+        run.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+
+        TaskRunDiagnosticsResponse response = service.diagnostics(projectId, runId, UUID.randomUUID());
+
+        assertEquals("FAILED_INFRASTRUCTURE", response.getFailure().getFailureCode());
+        assertEquals("执行基础设施暂不可用", response.getFailure().getSummary());
+        assertFalse(response.getFailure().getSummary().contains("Access denied"));
+        assertFalse(response.getFailure().getSummary().contains("provider.example"));
     }
 
     @Test

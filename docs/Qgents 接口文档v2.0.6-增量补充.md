@@ -563,7 +563,8 @@ Authorization: Bearer <user-access-token>
 
 该接口是任务失败后的统一查询入口。无论失败发生在调用 Worker 之前、Agent 协议阶段、
 Worker 工具执行阶段还是测试阶段，均返回 `taskRunId/status/stage/failure/workerExecutions`。
-`failure` 为脱敏主后端失败归因；没有调用 Worker 时 `workerExecutions` 返回空数组，不会因为
+`failure` 为受控主后端失败归因：`failureCode` 仅能是已发布稳定码，`summary` 仅由该码映射生成，
+绝不回显持久化异常原文、第三方 HTTP 响应、账户状态、URL、命令或日志内容；没有调用 Worker 时 `workerExecutions` 返回空数组，不会因为
 不存在 `executionId` 而返回空诊断或 404。
 
 ```json
@@ -577,7 +578,7 @@ Worker 工具执行阶段还是测试阶段，均返回 `taskRunId/status/stage/
       "code": "EXECUTION_FAILED",
       "failureCode": "CODING_NO_ACTUAL_CHANGE",
       "title": "执行失败",
-      "summary": "Coding Agent 未产生实际文件修改",
+      "summary": "代码步骤未产生实际文件变更",
       "retryable": true,
       "occurredAt": "2026-08-19T12:22:52Z"
     },
@@ -599,7 +600,8 @@ Authorization: Bearer <user-access-token>
 ```
 
 该接口是任务失败后的首选查询入口。前端只需已登录的 `projectId` 和 `taskId`，不需要先查询
-`taskRunId` 或 `executionId`。响应中的 `failure` 是主后端持久化的脱敏失败原因，`stage` 表示失败阶段：
+`taskRunId` 或 `executionId`。响应中的 `failure` 是由稳定失败码派生的受控失败原因，`stage` 表示失败阶段。
+历史数据即使曾保存上游原文，也必须在读取时按相同规则覆盖：
 
 ```json
 {
@@ -611,7 +613,7 @@ Authorization: Bearer <user-access-token>
       "code": "EXECUTION_FAILED",
       "failureCode": "FILE_PATCH_FAILED",
       "title": "执行失败",
-      "summary": "补丁上下文与文件不一致",
+      "summary": "补丁无法应用，请重新读取文件后重试",
       "retryable": true,
       "occurredAt": "2026-08-19T12:22:52Z"
     },

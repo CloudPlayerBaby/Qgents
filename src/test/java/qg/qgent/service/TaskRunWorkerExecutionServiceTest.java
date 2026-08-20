@@ -46,4 +46,31 @@ class TaskRunWorkerExecutionServiceTest {
         assertFalse(captured.getValue().getFailureReason().contains("secret"));
         assertFalse(captured.getValue().getFailureReason().contains("C:\\Users"));
     }
+
+    @Test
+    void replacesUnknownWorkerFailureWithStableInfrastructureSummary() {
+        TaskRunWorkerExecutionMapper executions = mock(TaskRunWorkerExecutionMapper.class);
+        TaskRunMapper runs = mock(TaskRunMapper.class);
+        TaskRunWorkerExecutionService service = new TaskRunWorkerExecutionService(executions, runs);
+        UUID runId = UUID.randomUUID();
+        TaskRunEntity run = new TaskRunEntity();
+        run.setId(runId);
+        run.setProjectId(UUID.randomUUID());
+        run.setTaskId(UUID.randomUUID());
+        when(runs.selectById(runId)).thenReturn(run);
+
+        WorkerToolExecution execution = new WorkerToolExecution();
+        execution.setId(UUID.randomUUID());
+        execution.setStatus("FAILED");
+        execution.setFailureCode("WORKER_PROVIDER_ERROR");
+        execution.setFailureReason("Access denied at https://provider.example/error");
+
+        service.record(runId, execution);
+
+        ArgumentCaptor<TaskRunWorkerExecutionEntity> captured =
+                ArgumentCaptor.forClass(TaskRunWorkerExecutionEntity.class);
+        verify(executions).insert(captured.capture());
+        assertEquals("FAILED_INFRASTRUCTURE", captured.getValue().getFailureCode());
+        assertEquals("执行基础设施暂不可用", captured.getValue().getFailureReason());
+    }
 }
