@@ -9873,3 +9873,56 @@ GET /api/v1/projects/{projectId}/dry-runs
 
 - 校验发生在任务异步编排启动的 Sandbox 会话准备阶段（`SandboxSessionManager.acquire` → GitHub 分支解析），**早于任何 TaskRun 创建与 Agent 执行**；失败直接落 Task `FAILED`，不会先进入执行再失败。
 - 结构化错误详情（仓库 `fullName` 与 `branch`）随 `ApiException.details` 传递，仅用于服务端拼装用户可读文案，不进入 SSE 或公开日志。
+
+---
+
+## 41. 任务失败原因展示统一（2026-08-24）
+
+任务详情接口与任务诊断接口的任务级失败原因改为**同一套组装逻辑**（`TaskStatusReasonFactory`），消除同一页面两条链路返回矛盾失败信息的现象；同时修正白名单过滤导致真实原因丢失、质量循环耗尽失败码误导等问题。
+
+### 41.1 统一组装入口
+
+两条链路共用 `TaskStatusReasonFactory.taskFailure(task, hasFailedRun[, failedRunReason])`：
+
+| 链路 | 接口 | 原有行为 | 现行为 |
+|---|---|---|---|
+| 任务详情 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | `code` 恒为 `STARTUP_FAILED`，summary 用通用脱敏文案 | 与诊断链路一致：按失败阶段区分 code，summary 优先持久化 failureReason（脱敏） |
+| 任务诊断 | `GET /api/v1/projects/{projectId}/tasks/{taskId}/diagnostics` | 独立组装 `taskFailureReason` | 复用同一工厂，历史数据回退失败 run 原因 |
+
+`code` 语义：
+
+| 场景 | `code` |
+|---|---|
+| 任务 `FAILED` 且存在 FAILED TaskRun | `EXECUTION_FAILED` |
+| 任务 `FAILED` 且无 TaskRun（启动即失败） | `STARTUP_FAILED` |
+| 任务 `DELIVERY_FAILED` 或失败码属交付阶段（`TASK_FINALIZATION*` / `FINAL_*` / 含 `DIFF`/`DELIVERY`/`MR_`） | `DELIVERY_FAILED` |
+
+### 41.2 summary 组装规则（白名单去副作用）
+
+`failureCode` 仅返回公开稳定码（`ExecutionContentSanitizer.publicFailureCode`）；`summary` 按以下优先级：
+
+1. **持久化 `failureReason`（脱敏后）**：优先展示，保留仓库/分支等真实上下文；
+2. **稳定码受控文案**：持久化值未命中特例且稳定码可映射时，使用 `userFailureDescription`（防内部细节泄漏）；
+3. **通用兜底**：均不可用时返回"任务执行失败，请查看执行记录"。
+
+特例：`GIT_BRANCH_NOT_FOUND` 的持久化 `failureReason`（含仓库与基线分支名）脱敏后直接展示，供前端提供「修改基线分支后重新发起任务」入口；`CODING_NO_ACTUAL_CHANGE` 等稳定码即使持久化值含内部模型细节，也只回显受控文案。
+
+### 41.3 质量循环耗尽失败码
+
+任务多次未通过质量验证、修复循环耗尽时，任务级失败码不再落误导性的 `TASK_FINALIZATION_FAILED`：
+
+| 字段 | 值 |
+|---|---|
+| `failureCode` | `TASK_QUALITY_LOOPS_EXHAUSTED` |
+| `failureReason` | `任务多次未通过质量验证，修复循环已耗尽` |
+| `failureRetryable` | `true` |
+
+- 判定条件：`finishTask` 落 FAILED 时，失败 run 无稳定失败码且质量修复循环计数 > 0。
+- 该码未加入公开稳定码白名单（`publicFailureCode` 返回 null），但 `summary` 保留持久化 `failureReason` 的真实文案。
+- 前端按 `EXECUTION_FAILED` 语义展示（`code=EXECUTION_FAILED`），标题与摘要来自持久化文案。
+
+### 41.4 前端消费
+
+- **统一失败横幅**：任务详情页仅保留 `TaskFailureDiagnostic`（读诊断接口）作为失败展示；启动失败横幅（`TaskStartupFailureAlert`）仅在**没有失败 TaskRun** 时出现（`showStartupFailure={!hasFailedRun}`），避免两横幅并存。
+- **诊断查询时机**：`useTaskDiagnostics` 仅在任务进入失败终态（`FAILED`/`DELIVERY_FAILED`）后查询（`enabled` 条件）；质量修复循环（`RUNNING`）期间不查询，历史失败 run 不再被误报为任务失败。
+- `GIT_BRANCH_NOT_FOUND` 展示：`任务无法启动 / 仓库 / 基线分支 / 原因 / 请修改基线分支后重新发起任务。` + 「重新发起任务」按钮（跳需求群）。

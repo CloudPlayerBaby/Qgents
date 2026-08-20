@@ -92,6 +92,7 @@ public final class ExecutionContentSanitizer {
             case "TOOL_ARGUMENT_INVALID" -> "工具参数无效";
             case "PROCESS_EXIT_NONZERO" -> "工具进程执行失败";
             case "AGENT_RUN_TIMEOUT" -> "Agent 执行超时";
+            case "TASK_QUALITY_LOOPS_EXHAUSTED" -> "任务多次未通过质量验证，修复循环已耗尽";
             case "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",

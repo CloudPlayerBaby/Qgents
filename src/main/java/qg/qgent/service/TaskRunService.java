@@ -195,7 +195,8 @@ public class TaskRunService {
                 .last("LIMIT 1"));
         TaskRunDiagnosticsResponse latestFailedRun = failedRuns == null || failedRuns.isEmpty()
                 ? null : diagnosticsForRun(failedRuns.get(0));
-        TaskStatusReason failure = taskFailureReason(task, latestFailedRun);
+        TaskStatusReason failure = TaskStatusReasonFactory.taskFailure(task, latestFailedRun != null,
+                latestFailedRun == null ? null : latestFailedRun.getFailure());
         String stage = latestFailedRun == null ? taskFailureStage(task) : latestFailedRun.getStage();
         return new TaskDiagnosticsResponse(id(task.getId()), task.getStatus(), stage, failure, latestFailedRun);
     }
@@ -227,27 +228,6 @@ public class TaskRunService {
                 .map(this::toWorkerDiagnostic).toList();
         return new TaskRunDiagnosticsResponse(id(run.getId()), id(run.getTaskId()), run.getStatus(),
                 diagnosticStage(run.getRole()), statusReason(run, List.of(), artifactSummary), workerExecutions);
-    }
-
-    private TaskStatusReason taskFailureReason(TaskEntity task, TaskRunDiagnosticsResponse latestFailedRun) {
-        boolean failedTask = "FAILED".equals(task.getStatus()) || "DELIVERY_FAILED".equals(task.getStatus());
-        if (!failedTask && (task.getFailureCode() == null || task.getFailureCode().isBlank())
-                && latestFailedRun == null) {
-            return null;
-        }
-        if (task.getFailureCode() != null && !task.getFailureCode().isBlank()) {
-            String code = "DELIVERY".equals(taskFailureStage(task)) ? "DELIVERY_FAILED"
-                    : latestFailedRun == null ? "STARTUP_FAILED" : "EXECUTION_FAILED";
-            return new TaskStatusReason(code, task.getFailureCode(), "任务执行失败",
-                    task.getFailureReason() == null || task.getFailureReason().isBlank()
-                            ? "任务执行失败，可查看失败运行" : task.getFailureReason(),
-                    !Boolean.FALSE.equals(task.getFailureRetryable()), iso(task.getFailureOccurredAt()));
-        }
-        if (latestFailedRun != null && latestFailedRun.getFailure() != null) {
-            return latestFailedRun.getFailure();
-        }
-        return new TaskStatusReason("EXECUTION_FAILED", "EXECUTION_FAILED", "任务执行失败",
-                "任务执行失败，可查看失败运行", true, iso(task.getUpdatedAt()));
     }
 
     /**

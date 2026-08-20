@@ -193,7 +193,7 @@ public class TaskDisplayService {
                         .orderByAsc(TaskAcceptanceCriterionEntity::getSequenceNo)));
 
         return new TaskDetailResponse(id(task.getId()), task.getDisplayCode(), id(task.getProjectId()), task.getTitle(),
-                task.getRequirement(), task.getStatus(), taskStatusReason(task), null,
+                task.getRequirement(), task.getStatus(), taskStatusReason(task, allRuns), null,
                 task.getDeliveryMode(), task.getDeliveryReason(),
                 groupSummary(groupById.get(task.getRequirementGroupId())),
                 userSummary(userById.get(task.getCreatedBy())), criteria, execution,
@@ -204,25 +204,15 @@ public class TaskDisplayService {
     }
 
     /**
-     * TaskRun 尚未创建时仍返回启动失败原因；旧任务没有持久化原因则保持 null。
-     * GIT_BRANCH_NOT_FOUND 等带上下文（仓库/分支）的失败优先使用启动时持久化的
-     * failureReason，保证详情页展示「修改基线分支后重试」的具体信息。
+     * 任务级失败原因（与诊断接口共用 {@link TaskStatusReasonFactory}，保证两链路一致）。
+     * <p>
+     * summary 优先使用启动/执行时持久化的 failureReason（含仓库/分支等上下文），
+     * 白名单未定义的内部码也不会把真实原因降级成通用文案。
      */
-    private TaskStatusReason taskStatusReason(TaskEntity task) {
-        if (task == null || !"FAILED".equals(task.getStatus())
-                || task.getFailureCode() == null || task.getFailureCode().isBlank()) {
-            return null;
-        }
-        String failureCode = ExecutionContentSanitizer.publicFailureCode(task.getFailureCode());
-        String summary = ExecutionContentSanitizer.userFailureDescription(failureCode);
-        if (failureCode != null && "GIT_BRANCH_NOT_FOUND".equals(failureCode)
-                && task.getFailureReason() != null && !task.getFailureReason().isBlank()) {
-            summary = task.getFailureReason();
-        }
-        return new TaskStatusReason("STARTUP_FAILED", failureCode,
-                "任务启动失败", summary,
-                ExecutionContentSanitizer.userFailureRetryable(failureCode),
-                iso(task.getFailureOccurredAt()));
+    private TaskStatusReason taskStatusReason(TaskEntity task, List<TaskRunEntity> allRuns) {
+        boolean hasFailedRun = allRuns != null
+                && allRuns.stream().anyMatch(run -> "FAILED".equals(run.getStatus()));
+        return TaskStatusReasonFactory.taskFailure(task, hasFailedRun);
     }
 
     /**

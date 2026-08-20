@@ -851,9 +851,20 @@ public class TaskOrchestrator {
                 code = failedRun.getFailureCode();
                 reason = failedRun.getFailureReason();
             }
-            task.setFailureCode(code == null || code.isBlank() ? "TASK_FINALIZATION_FAILED" : code);
-            task.setFailureReason(reason == null || reason.isBlank()
-                    ? "任务在执行完成阶段失败，可查看任务诊断" : ExecutionContentSanitizer.sanitize(reason));
+            // 失败 run 未携带稳定失败码（如质量循环中的 Test/Review FAILED_QUALITY 无码）时，
+            // 按任务级语义收敛：质量修复循环已耗尽 → 明确「质量循环耗尽」，而不是误导性的
+            // TASK_FINALIZATION_FAILED（交付准备失败）。
+            if (code == null || code.isBlank()) {
+                code = ctx.counters.getQualityFixLoops() > 0 ? "TASK_QUALITY_LOOPS_EXHAUSTED"
+                        : "TASK_FINALIZATION_FAILED";
+                if (reason == null || reason.isBlank()) {
+                    reason = ctx.counters.getQualityFixLoops() > 0
+                            ? "任务多次未通过质量验证，修复循环已耗尽"
+                            : "任务在执行完成阶段失败，可查看任务诊断";
+                }
+            }
+            task.setFailureCode(code);
+            task.setFailureReason(ExecutionContentSanitizer.sanitize(reason));
             task.setFailureRetryable(true);
             task.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
         } else if ("SUCCEEDED".equals(finishing.status()) || "DELIVERING".equals(finishing.status())) {
