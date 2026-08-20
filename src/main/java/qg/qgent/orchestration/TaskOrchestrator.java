@@ -664,6 +664,15 @@ public class TaskOrchestrator {
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
         // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
         artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
+        // 取消收敛：run 可能已在执行中被取消（RUNNING→CANCELLING）。此时结果由用户取消决定，
+        // 不能把 outcome 决定的终态（FAILED/SUCCEEDED）覆盖上去，统一落 CANCELLED。
+        TaskRunEntity latestRun = taskRunService.findById(run.getId());
+        if (latestRun != null && "CANCELLING".equals(latestRun.getStatus())) {
+            taskRunService.complete(run.getId(), "CANCELLED");
+            markStepSettled(task, step, RunOutcome.CANCELLED);
+            finishTask(task, ctx, StateMachineDecision.Action.COMPLETE_CANCELLED);
+            return routeState(state, GraphDefinition.END);
+        }
         taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
                 outcome.getMessage());
         markStepSettled(task, step, outcome.getOutcome());
@@ -1079,6 +1088,19 @@ public class TaskOrchestrator {
      * 落终态；随后以编码 Agent 身份把任务结果卡片回群（失败不阻断编排）。
      */
     private void finishTask(TaskEntity task, TaskExecutionContext ctx, StateMachineDecision.Action action) {
+        // 并发取消护栏：编排器走到终态时，任务可能已被用户取消（CANCELLING/CANCELLED）。
+        // 重查最新状态，避免用启动时缓存的内存对象把刚写入的 CANCELLING 全行覆盖回 FAILED/SUCCEEDED。
+        TaskEntity latest = taskMapper.selectById(task.getId());
+        if (latest != null && ("CANCELLING".equals(latest.getStatus()) || "CANCELLED".equals(latest.getStatus()))) {
+            // 取消后当前正在执行的 run 不再产生真实结果，随任务一并落 CANCELLED 终态，避免遗留 RUNNING。
+            settleRunForCancellation(ctx);
+            if (!"CANCELLED".equals(latest.getStatus())) {
+                // CANCELLING → CANCELLED 收敛：取消已受理且编排到达终态点，落终态。
+                updateTaskStatus(latest, "CANCELLED");
+                sendAgentCard(latest, "task-" + latest.getId(), "CANCELLED", null, "任务已取消");
+            }
+            return;
+        }
         FinishingStatus finishing = switch (action) {
             case COMPLETE_SUCCESS -> completeSuccess(task, ctx);
             case COMPLETE_CANCELLED -> new FinishingStatus("CANCELLED", null, null);
@@ -1142,6 +1164,25 @@ public class TaskOrchestrator {
                     + ctx.testResult.getEnvironmentFailureCode() + "）";
         }
         sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, cardMessage);
+    }
+
+    /**
+     * 取消收敛时把当前正在执行的 run 落 CANCELLED：任务被取消后，其进行中的 run 不再产生
+     * 真实结果，随任务一并收敛，避免 run 永久遗留 RUNNING/CANCELLING。
+     */
+    private void settleRunForCancellation(TaskExecutionContext ctx) {
+        if (ctx == null || ctx.lastRunId == null) {
+            return;
+        }
+        try {
+            TaskRunEntity run = taskRunService.findById(ctx.lastRunId);
+            if (run != null && ("RUNNING".equals(run.getStatus()) || "CANCELLING".equals(run.getStatus()))) {
+                taskRunService.complete(run.getId(), "CANCELLED");
+            }
+        } catch (RuntimeException e) {
+            log.warn("settle cancelled run skipped taskId={} runId={}: {}", ctx.task.getId(), ctx.lastRunId,
+                    e.getMessage());
+        }
     }
 
     /**
