@@ -62,7 +62,7 @@ public class CodingPromptBuilder {
                 - 工具返回基础设施错误时不得伪造成功；停止并在 finalResult.errors 说明。工具返回成功但 changed=false 时也不能声称产生了文件变更。
                 - 只能修改当前步骤允许路径；若工具返回 outside the current TaskStep allowed paths，说明该文件属于其他步骤，不能修改。
                 - 多仓库 Workspace 下，所有工具 path 都必须以当前仓库 workspacePath 开头（例如 repo-2/src/App.vue）；新建目录和新建文件也必须带此前缀，禁止使用无法确定仓库的裸路径（例如 src/App.vue、vue3/）。
-                - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"]}}
+                - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"], "deviations": ["可选的偏差声明"]}}
                 - 收到前一轮反馈或重试上下文（打回重做）时，只有真实产生 changed=true 的文件写入后才能 success=true；只读复核、重复已存在内容、确认现状或空操作不构成完成，应输出 success=false 并在 errors 中说明原因。
                 - 无法完成任务时输出 JSON：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
 
@@ -71,6 +71,7 @@ public class CodingPromptBuilder {
                 - 只能修改工作区内的文件；路径必须为相对路径，禁止绝对路径、.. 或指向工作区外的路径。
                 - apply_patch 的 expectedHash 必须原样取自同一次 read_file 的结果，不得自行计算或伪造。
                 - finalResult 的 summary 不得为空。
+                - deviations 是可选字段：与计划或验收标准存在差异时（如计划要求追加 1 行、实际追加 2 行），必须逐条如实说明"差异 + 理由"，供 Review 判断偏差是否合理；无差异时省略该字段，不得编造。
                 """;
     }
 
@@ -95,13 +96,14 @@ public class CodingPromptBuilder {
                 - 工具返回 ok=false 时读取 errorCode、retryable、nextAction；最多修正参数重试一次，禁止原样重复失败调用。
                 - 如果返回 FILE_PATCH_FAILED 或 TOOL_PATCH_FORMAT_INVALID，先 read_file 再重建 patch；不要凭旧上下文修补 hunk，也不要把新文件交给 apply_patch。
                 - 多仓库 Workspace 下，所有工具 path 都必须以当前仓库 workspacePath 开头（例如 repo-2/src/App.vue）；新建目录和新建文件也必须带此前缀，禁止使用无法确定仓库的裸路径（例如 src/App.vue、vue3/）。
-                - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"]}}
+                - 只有至少一次 write_file/apply_patch 实际改变文件，或 create_directory 实际创建目录后才能 success=true；修改完成并确认无误后输出：{"finalResult": {"success": true, "summary": "变更摘要", "modifiedFiles": ["相对路径"], "modifiedDirectories": ["相对目录"], "changes": ["变更说明"], "deviations": ["可选的偏差声明"]}}
                 - 无法完成任务时输出：{"finalResult": {"success": false, "summary": "失败原因", "errors": ["错误说明"]}}
 
                 约束：
                 - 只能修改工作区内的文件；路径必须为相对路径，禁止绝对路径、.. 或指向工作区外的路径。
                 - apply_patch 的 expectedHash 必须原样取自同一次 read_file 的结果，不得自行计算或伪造。
                 - finalResult 的 summary 不得为空。
+                - deviations 是可选字段：与计划或验收标准存在差异时（如计划要求追加 1 行、实际追加 2 行），必须逐条如实说明"差异 + 理由"，供 Review 判断偏差是否合理；无差异时省略该字段，不得编造。
                 """;
     }
 

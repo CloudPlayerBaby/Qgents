@@ -468,6 +468,138 @@ class TestAgentTest {
         assertThat(test.isNeedsCodingFix()).isTrue();
     }
 
+    private PlanResult.ImplementationStep stepWithAssertions(String file, String type, String value) {
+        PlanResult.ImplementationStep step = new PlanResult.ImplementationStep();
+        step.setTitle("步骤");
+        step.setFiles(List.of(file));
+        PlanResult.Assertion assertion = new PlanResult.Assertion();
+        assertion.setType(type);
+        assertion.setFile(file);
+        assertion.setValue(value);
+        step.setMachineAssertions(List.of(assertion));
+        return step;
+    }
+
+    @Test
+    void machineAssertionSatisfiedIsCapturedWithoutChangingOutcome() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("report.txt"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("report.txt", "a\nb\nc\n", "hash"));
+
+        AgentInput input = input();
+        input.setRequirement("向 report.txt 写入三行内容");
+        input.getCodingResult().setModifiedFiles(List.of("report.txt"));
+        input.getPlanResult().setImplementationSteps(List.of(stepWithAssertions("report.txt", "LINES_EQ", "3")));
+
+        AgentRunOutcome outcome = agent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        TestResult test = outcome.getTestResult();
+        assertThat(test.isSuccess()).isTrue();
+        assertThat(test.getAssertionResults()).hasSize(1);
+        assertThat(test.getAssertionResults().get(0).getType()).isEqualTo("LINES_EQ");
+        assertThat(test.getAssertionResults().get(0).getExpected()).isEqualTo("3");
+        assertThat(test.getAssertionResults().get(0).getActual()).isEqualTo("3");
+        assertThat(test.getAssertionResults().get(0).isPassed()).isTrue();
+    }
+
+    @Test
+    void assertionMismatchIsSignalNotVerdict() {
+        // 计划断言 LINES_EQ=4，实际 5 行：断言未满足，但文件存在且可读，
+        // Test 结论仍为通过——偏离是否构成问题由 Review 结合 Coding 偏差声明判断。
+        when(codeAccess.listFiles(any())).thenReturn(List.of("report.txt"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("report.txt", "a\nb\nc\nd\ne\n", "hash"));
+
+        AgentInput input = input();
+        input.setRequirement("向 report.txt 写入四行内容");
+        input.getCodingResult().setModifiedFiles(List.of("report.txt"));
+        input.getPlanResult().setImplementationSteps(List.of(stepWithAssertions("report.txt", "LINES_EQ", "4")));
+
+        AgentRunOutcome outcome = agent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        TestResult test = outcome.getTestResult();
+        assertThat(test.isSuccess()).isTrue();
+        assertThat(test.getAssertionResults()).hasSize(1);
+        assertThat(test.getAssertionResults().get(0).isPassed()).isFalse();
+        assertThat(test.getAssertionResults().get(0).getActual()).isEqualTo("5");
+    }
+
+    @Test
+    void assertionsOnFilesNotModifiedByCodingAreSkipped() {
+        // 计划预期改 A、Coding 实际改了 B：断言不校验，分歧留给 Review。
+        when(codeAccess.listFiles(any())).thenReturn(List.of("report.txt"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("report.txt", "a\nb\nc\n", "hash"));
+
+        AgentInput input = input();
+        input.setRequirement("写入 report.txt");
+        input.getCodingResult().setModifiedFiles(List.of("report.txt"));
+        input.getPlanResult().setImplementationSteps(List.of(stepWithAssertions("other.txt", "LINES_EQ", "3")));
+
+        AgentRunOutcome outcome = agent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().getAssertionResults()).isEmpty();
+    }
+
+    @Test
+    void emptyAssertionReusesEmptyFileDetection() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("note.txt"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("note.txt", "",
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+
+        AgentInput input = input();
+        input.setRequirement("创建空文件 note.txt");
+        input.getCodingResult().setModifiedFiles(List.of("note.txt"));
+        input.getPlanResult().setImplementationSteps(List.of(stepWithAssertions("note.txt", "EMPTY", null)));
+
+        AgentRunOutcome outcome = agent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().getAssertionResults()).hasSize(1);
+        assertThat(outcome.getTestResult().getAssertionResults().get(0).getType()).isEqualTo("EMPTY");
+        assertThat(outcome.getTestResult().getAssertionResults().get(0).isPassed()).isTrue();
+    }
+
+    @Test
+    void containsAssertionsCheckSubstringPresence() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("config.txt"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("config.txt", "enabled = true\n", "hash"));
+
+        AgentInput input = input();
+        input.setRequirement("写入 config.txt");
+        input.getCodingResult().setModifiedFiles(List.of("config.txt"));
+        input.getPlanResult().setImplementationSteps(List.of(
+                stepWithAssertions("config.txt", "CONTAINS", "enabled = true"),
+                stepWithAssertions("config.txt", "NOT_CONTAINS", "disabled")));
+
+        AgentRunOutcome outcome = agent().run(input);
+
+        List<TestResult.FileAssertion> results = outcome.getTestResult().getAssertionResults();
+        assertThat(results).hasSize(2);
+        assertThat(results).allMatch(TestResult.FileAssertion::isPassed);
+    }
+
+    @Test
+    void noMachineAssertionsLeavesAssertionResultsEmpty() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("report.txt"));
+        when(codeAccess.readFile(any(), anyString()))
+                .thenReturn(WorkspaceFileReadResult.ok("report.txt", "a\nb\nc\n", "hash"));
+
+        AgentInput input = input();
+        input.setRequirement("向 report.txt 写入三行内容");
+        input.getCodingResult().setModifiedFiles(List.of("report.txt"));
+
+        AgentRunOutcome outcome = agent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().getAssertionResults()).isEmpty();
+    }
+
     private AgentInput input() {
         AgentInput input = new AgentInput();
         input.setProjectId(UUID.randomUUID());

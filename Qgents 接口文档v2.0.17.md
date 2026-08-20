@@ -4445,7 +4445,7 @@ Artifact 响应结构：
 
 
 
-`artifactType` 取值为 `PLAN`、`CODING`、`TESTING`、`REVIEWING`。`PLAN` 只关联 `taskId`，因此 `taskRunId` 和 `taskStepId` 为 `null`；其余类型同时关联 Task、TaskRun 与 TaskStep。`summary` 是已脱敏的展示摘要，不包含命令原文、凭据、环境变量或宿主机绝对路径。
+`artifactType` 取值为 `PLAN`、`CODING`、`TESTING`、`REVIEWING`。`PLAN` 只关联 `taskId`，因此 `taskRunId` 和 `taskStepId` 为 `null`；其余类型同时关联 Task、TaskRun 与 TaskStep。`summary` 是已脱敏的展示摘要，不包含命令原文、凭据、环境变量或宿主机绝对路径。PLAN 产物的 `summary.steps` 每步可含 `acceptanceNotes`（该步骤的自然语言验收标准，可选）与 `machineAssertions`（可选的结构化预期断言数组，元素为 `{"type":"EXISTS|EMPTY|LINES_EQ|LINES_GT|LINES_LT|CONTAINS|NOT_CONTAINS","file":"相对路径","value":"…"}`）；二者为预期信号而非最终裁决，不参与服务端通过/失败判定。
 
 
 

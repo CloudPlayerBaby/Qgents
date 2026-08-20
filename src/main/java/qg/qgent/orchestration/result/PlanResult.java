@@ -65,5 +65,33 @@ public class PlanResult {
          * 物化时仍会经候选池校验，池外/非法 id 一律不采信，不绕过既有安全网。
          */
         private UUID suggestedAgentId;
+        /**
+         * 该步骤完成后的自然语言验收标准（一句话），把模糊预期显式化供 Coding 对齐与
+         * Review 判断；可为 null。Plan 仅是用户需求的解读，实际裁决以用户需求为准。
+         */
+        private String acceptanceNotes;
+        /**
+         * 该步骤可选的结构化预期断言（机器可校验信号）。仅当需求足够具体、可量化时由
+         * Plan 输出；模糊/开放式需求不输出。断言不剥夺 Review 的语义裁决权——Coding
+         * 因合理原因偏离时由后续 Test 作为信号、Review 作为最终判断。可为空列表。
+         */
+        private List<Assertion> machineAssertions = new ArrayList<>();
+    }
+
+    /**
+     * 单个结构化预期断言：机器可校验的“计划预期信号”，而非最终裁决。
+     * <p>
+     * type 取值（白名单见 {@code PlanResultParser}）：EXISTS 目标文件存在；EMPTY 内容为空；
+     * LINES_EQ/LINES_GT/LINES_LT 按 \n 统计的行数与 value 比较；CONTAINS/NOT_CONTAINS 内容
+     * 包含/不包含 value 子串。file 为 Workspace 相对路径（多仓库需带 workspacePath 前缀）。
+     */
+    @Data
+    public static class Assertion {
+        /** 断言类型：EXISTS/EMPTY/LINES_EQ/LINES_GT/LINES_LT/CONTAINS/NOT_CONTAINS。 */
+        private String type;
+        /** 断言目标文件（Workspace 相对路径）。 */
+        private String file;
+        /** 断言参数：LINES_* 为整数行数，CONTAINS/NOT_CONTAINS 为子串；EXISTS/EMPTY 可为 null。 */
+        private String value;
     }
 }

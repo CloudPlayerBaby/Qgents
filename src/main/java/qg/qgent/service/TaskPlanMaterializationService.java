@@ -365,9 +365,16 @@ public class TaskPlanMaterializationService {
     }
 
     private String developerInstruction(PlanResult plan, PlanResult.ImplementationStep item) {
-        return "实现目标：" + String.join("；", plan.getObjectives()) + "\n步骤：" + item.getTitle()
-                + "\n涉及文件：" + String.join(", ", item.getFiles())
-                + (item.getDescription() == null || item.getDescription().isBlank() ? "" : "\n说明：" + item.getDescription());
+        StringBuilder sb = new StringBuilder("实现目标：" + String.join("；", plan.getObjectives()))
+                .append("\n步骤：").append(item.getTitle())
+                .append("\n涉及文件：").append(String.join(", ", item.getFiles()));
+        if (item.getDescription() != null && !item.getDescription().isBlank()) {
+            sb.append("\n说明：").append(item.getDescription());
+        }
+        if (item.getAcceptanceNotes() != null && !item.getAcceptanceNotes().isBlank()) {
+            sb.append("\n验收标准：").append(item.getAcceptanceNotes());
+        }
+        return sb.toString();
     }
 
     private Map<String, Object> planSummary(PlanResult plan, DeliveryDecision decision) {
@@ -382,6 +389,8 @@ public class TaskPlanMaterializationService {
             step.put("executionMode", item.getExecutionMode());
             step.put("requiredCapabilities", item.getRequiredCapabilities());
             step.put("suggestedAgentId", item.getSuggestedAgentId() == null ? null : item.getSuggestedAgentId().toString());
+            step.put("acceptanceNotes", item.getAcceptanceNotes());
+            step.put("machineAssertions", item.getMachineAssertions() == null ? List.of() : item.getMachineAssertions());
             return step;
         }).toList());
         result.put("testPlan", plan.getTestPlan());
