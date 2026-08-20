@@ -715,6 +715,23 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void resumingFailedTaskClearsTaskFailedNotification() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        task.setStatus("FAILED");
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        List<TaskStepEntity> all = List.of(planner, developer);
+        fixture.stubPlan(task, planner, all);
+        // 从失败步骤续跑：认领（claimForResume，FAILED→RUNNING）成功后应撤销 TASK_FAILED 通知。
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING)))
+                .orchestrate(task.getProjectId(), task.getId(), developer.getId());
+
+        verify(fixture.notifications).clearTaskFailedNotifications(task.getId().toString());
+    }
+
+    @Test
     void reviewerArtifactSummaryIncludesStructuredFindings() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();

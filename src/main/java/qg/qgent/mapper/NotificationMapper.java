@@ -1,6 +1,7 @@
 package qg.qgent.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -51,4 +52,18 @@ public interface NotificationMapper extends BaseMapper<NotificationEntity> {
     @Update("UPDATE notifications SET is_read = 1, read_at = #{readTime} "
             + "WHERE recipient_user_id = #{userId} AND is_read = 0")
     int markAllRead(@Param("userId") UUID userId, @Param("readTime") LocalDateTime readTime);
+
+    /**
+     * 删除某资源（如任务）的指定类型通知。
+     * <p>
+     * 用于失败补偿：任务从 FAILED 恢复编排后，撤销之前写入的 TASK_FAILED 通知，
+     * 避免「任务已恢复继续执行」后铃铛仍显示任务失败。按 resource_id + kind 幂等删除，
+     * 不涉及已读状态（直接移除，前端铃铛刷新后不再出现）。
+     *
+     * @param resourceId 关联资源 ID（任务 ID 字符串）
+     * @param kind       通知类型（如 TASK_FAILED）
+     * @return 受影响行数
+     */
+    @Delete("DELETE FROM notifications WHERE resource_id = #{resourceId} AND kind = #{kind}")
+    int deleteByResourceAndKind(@Param("resourceId") String resourceId, @Param("kind") String kind);
 }

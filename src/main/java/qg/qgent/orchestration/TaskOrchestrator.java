@@ -177,6 +177,11 @@ public class TaskOrchestrator {
                 throw new IllegalStateException("Task " + taskId + " already claimed or not startable (status="
                         + task.getStatus() + ")");
             }
+            // 失败补偿：任务从 FAILED 恢复编排（用户重试 / 恢复器续跑）后，撤销之前写入的
+            // TASK_FAILED 通知——任务已恢复继续执行，铃铛不应再显示「任务失败」。
+            if (startStepId != null && "FAILED".equals(task.getStatus())) {
+                notificationService.clearTaskFailedNotifications(taskId.toString());
+            }
         }
         TaskExecutionContext ctx = new TaskExecutionContext(task);
         // 续跑来源：首个 TaskRun 的 retryOfTaskRunId 指向被重试的失败运行
