@@ -47,6 +47,15 @@ class TestAgentTest {
     }
 
     @Test
+    void testPromptLimitsNoCodingFixToProvenNonCodeDependencies() {
+        String system = new TestPromptBuilder().buildSystem();
+
+        assertThat(system)
+                .contains("只有已有明确证据", "Android SDK/JDK/Node", "原因尚不能确定时", "必须为 true")
+                .contains("不是对测试是否通过的判断");
+    }
+
+    @Test
     void passingTestYieldsSuccessOutcome() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))

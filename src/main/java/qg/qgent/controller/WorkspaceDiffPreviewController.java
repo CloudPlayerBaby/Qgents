@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RestController;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.WorkspaceDiffPreviewFileResponse;
+import qg.qgent.dto.WorkspaceDiffPreviewFileDetailResponse;
 import qg.qgent.dto.WorkspaceDiffPreviewResponse;
 import qg.qgent.orchestration.preview.WorkspaceDiffPreviewService;
 
@@ -52,6 +53,19 @@ public class WorkspaceDiffPreviewController {
                                 @RequestParam(required = false) Long revision,
                                 @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
         List<WorkspaceDiffPreviewFileResponse> value = service.files(projectId, taskId, actor, revision);
+        return ApiResponse.ok(value, id(request));
+    }
+
+    /**
+     * 查询指定 revision 中单个仓库文件的 patch。
+     */
+    @GetMapping("/file")
+    public ApiResponse<?> file(@PathVariable UUID projectId, @PathVariable UUID taskId,
+                               @RequestParam(required = false) Long revision,
+                               @RequestParam UUID repositoryId, @RequestParam String path,
+                               @AuthenticationPrincipal UUID actor, HttpServletRequest request) {
+        WorkspaceDiffPreviewFileDetailResponse value = service.file(projectId, taskId, actor, revision,
+                repositoryId, path);
         return ApiResponse.ok(value, id(request));
     }
 

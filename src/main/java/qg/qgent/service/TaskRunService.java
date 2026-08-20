@@ -547,8 +547,9 @@ public class TaskRunService {
         run.setFinishedAt(now);
         run.setUpdatedAt(now);
         if ("FAILED".equals(terminalStatus)) {
-            run.setFailureCode(safeFailureCode(failureCode));
-            run.setFailureReason(safeFailureReason(detail));
+            String safeFailureCode = safeFailureCode(failureCode);
+            run.setFailureCode(safeFailureCode);
+            run.setFailureReason(safeFailureReason(safeFailureCode));
             run.setFailureOccurredAt(now);
         } else {
             run.setFailureCode(null);
@@ -944,15 +945,14 @@ public class TaskRunService {
     }
 
     private TaskStatusReason failedReason(TaskRunEntity run, Map<String, Object> failureSummary) {
-        // 诊断链路把脱敏后的失败码/原因持久化到 run 字段（safeFailureCode/safeFailureReason），优先读取；
-        // 历史数据或未持久化时回退到 artifact summary，经 ExecutionContentSanitizer 归一化后才对外展示。
+        // failureReason 属于持久化的内部诊断字段，历史数据可能写入过上游 HTTP/模型原文。
+        // 对外永远只由公开稳定码派生受控文案，详情只保留在受限诊断表中。
         String persistedCode = run.getFailureCode();
         if (persistedCode != null && !persistedCode.isBlank()) {
-            String persistedMessage = run.getFailureReason();
-            return new TaskStatusReason("EXECUTION_FAILED", persistedCode, "执行失败",
-                    persistedMessage == null || persistedMessage.isBlank()
-                            ? "任务运行执行失败，可查看执行记录" : persistedMessage,
-                    ExecutionContentSanitizer.userFailureRetryable(persistedCode),
+            String failureCode = ExecutionContentSanitizer.publicFailureCode(persistedCode);
+            return new TaskStatusReason("EXECUTION_FAILED", failureCode, "执行失败",
+                    ExecutionContentSanitizer.userFailureDescription(failureCode),
+                    ExecutionContentSanitizer.userFailureRetryable(failureCode),
                     iso(run.getFailureOccurredAt() == null ? run.getUpdatedAt() : run.getFailureOccurredAt()));
         }
         String failureCode = ExecutionContentSanitizer.publicFailureCode(text(failureSummary, "failureCode"));
@@ -962,9 +962,11 @@ public class TaskRunService {
     }
 
     private WorkerExecutionDiagnosticResponse toWorkerDiagnostic(TaskRunWorkerExecutionEntity execution) {
+        String failureCode = ExecutionContentSanitizer.publicFailureCode(execution.getFailureCode());
         return new WorkerExecutionDiagnosticResponse(id(execution.getExecutionId()), execution.getToolName(),
-                execution.getStatus(), execution.getExitCode(), execution.getFailureCode(),
-                execution.getFailureReason(), iso(execution.getCreatedAt()), iso(execution.getFinishedAt()));
+                execution.getStatus(), execution.getExitCode(), failureCode,
+                failureCode == null ? null : ExecutionContentSanitizer.userFailureDescription(failureCode),
+                iso(execution.getCreatedAt()), iso(execution.getFinishedAt()));
     }
 
     private String diagnosticStage(String role) {
@@ -978,19 +980,18 @@ public class TaskRunService {
     }
 
     private String safeFailureCode(String code) {
-        if (code == null || code.isBlank()) {
-            return "EXECUTION_FAILED";
+        String publicCode = ExecutionContentSanitizer.publicFailureCode(code);
+        if (publicCode != null) {
+            return publicCode;
         }
-        String normalized = code.strip().toUpperCase(Locale.ROOT);
-        return normalized.matches("[A-Z][A-Z0-9_]{0,63}") ? normalized : "EXECUTION_FAILED";
+        // 未定义内部码不进入项目成员可读的 TaskRun 字段；原码由失败诊断表受限保存。
+        return "FAILED_INFRASTRUCTURE";
     }
 
-    private String safeFailureReason(String detail) {
-        if (detail == null || detail.isBlank()) {
-            return "任务运行执行失败，可查看执行记录";
-        }
-        String value = ExecutionContentSanitizer.sanitize(detail).strip();
-        return value.length() <= 1024 ? value : value.substring(0, 1024) + "…";
+    private String safeFailureReason(String publicFailureCode) {
+        // 禁止持久化 Agent/供应商异常原文到可由项目成员读取的 TaskRun；
+        // 原始失败上下文已经由 TaskRunFailureDiagnosticService 严格脱敏后受限落库。
+        return ExecutionContentSanitizer.userFailureDescription(publicFailureCode);
     }
 
     private String text(Map<String, Object> values, String key) {

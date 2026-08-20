@@ -11,8 +11,8 @@ import java.time.Duration;
  * <p>
  * 本配置只描述接入方式与开关，不包含任何凭证：Worker 内部接口是内网受控面，
  * 主后端只通过 base-url 访问，调用方不提交宿主机路径、Git 远端或凭证。
- * {@code enabled=false}（默认）时编排链路仍走本地 {@code Local*} 端口实现，现状不变；
- * {@code enabled=true} 时由本包内的 Worker 端口实现替代。
+ * {@code enabled} 用于部署配置的显式声明；测试运行等 Worker 依赖能力仍须配置可达的
+ * {@code base-url} 与服务间令牌，不能把该开关误当作本地执行回退。
  */
 @Data
 @ConfigurationProperties(prefix = "app.worker")
@@ -29,7 +29,7 @@ public class SandboxWorkerProperties {
     private String backendServiceToken = "";
 
     /**
-     * 是否启用 Worker 端口实现；false 时保留本地端口，true 时改走 Worker HTTP API。
+     * 是否在部署配置中启用 Worker 集成。远程 Worker 场景必须设置为 true。
      */
     private boolean enabled = false;
 

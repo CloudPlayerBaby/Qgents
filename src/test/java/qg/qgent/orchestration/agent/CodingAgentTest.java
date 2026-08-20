@@ -11,6 +11,7 @@ import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.OrchestrationPhase;
 import qg.qgent.orchestration.RunOutcome;
+import qg.qgent.orchestration.RetryContext;
 import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.CodingResult;
@@ -50,6 +51,7 @@ class CodingAgentTest {
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
     private final WorkspaceCodeWriter writer = mock(WorkspaceCodeWriter.class);
     private final AttachmentMediaLoader attachmentMediaLoader = mock(AttachmentMediaLoader.class);
+    private final ContextService contextService = mock(ContextService.class);
     private final UUID workspaceId = UUID.randomUUID();
 
     @BeforeEach
@@ -60,12 +62,12 @@ class CodingAgentTest {
 
     private CodingAgent nativeAgent() {
         return new CodingAgent(llm, codeAccess, writer, AgentProtocol.nativeDefault(),
-                mock(ContextService.class), new ContextSearchProperties(10), attachmentMediaLoader);
+                contextService, new ContextSearchProperties(10), attachmentMediaLoader);
     }
 
     private CodingAgent legacyAgent() {
         return new CodingAgent(llm, codeAccess, writer, new AgentProtocol("legacy"),
-                mock(ContextService.class), new ContextSearchProperties(10), attachmentMediaLoader);
+                contextService, new ContextSearchProperties(10), attachmentMediaLoader);
     }
 
     // ---------- 原生 Tool Calling（默认协议） ----------
@@ -145,6 +147,31 @@ class CodingAgentTest {
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
         assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory", "list_files", "read_file",
                 "replace_file", "search_chat_history", "search_code", "write_file");
+    }
+
+    @Test
+    void nativeQualityRepairPreloadsReviewerActivatedSkillIntoDeveloperPrompt() {
+        UUID skillId = UUID.randomUUID();
+        qg.qgent.entity.SkillEntity skill = new qg.qgent.entity.SkillEntity();
+        skill.setName("README 规范");
+        skill.setContent("README 最后一行必须为 Hiiii113");
+        AgentInput input = codingInput();
+        RetryContext retry = new RetryContext();
+        retry.setReviewActivatedSkillIds(List.of(skillId));
+        input.setRetryContext(retry);
+        when(contextService.activateSkill(input.getActorId(), input.getProjectId(), skillId)).thenReturn(skill);
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(bareResult(false, "needs repair", null), "stop"));
+
+        nativeAgent().run(input);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Message>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
+        String userMessage = ((UserMessage) historyCaptor.getValue().get(0)).getText();
+        assertThat(userMessage).contains("质量回修必读 Skill", skillId.toString(), "README 最后一行必须为 Hiiii113");
+        verify(contextService).activateSkill(input.getActorId(), input.getProjectId(), skillId);
     }
 
     @Test

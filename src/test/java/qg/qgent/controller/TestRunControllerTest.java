@@ -18,6 +18,7 @@ import qg.qgent.dto.DryRunListItemResponse;
 import qg.qgent.dto.PageMeta;
 import qg.qgent.dto.TestRunListItemResponse;
 import qg.qgent.dto.TestRunResponse;
+import qg.qgent.service.MrPreflightService;
 import qg.qgent.service.PreflightGateService;
 import qg.qgent.service.TestRunService;
 
@@ -41,12 +42,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class TestRunControllerTest {
     private final TestRunService testRunService = mock(TestRunService.class);
     private final PreflightGateService preflightGates = mock(PreflightGateService.class);
+    private final MrPreflightService preflightService = mock(MrPreflightService.class);
     private final UUID userId = UUID.randomUUID();
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        TestRunController controller = new TestRunController(testRunService, preflightGates);
+        TestRunController controller = new TestRunController(testRunService, preflightGates, preflightService);
         mockMvc = MockMvcBuilders
                 .standaloneSetup(controller)
                 .setCustomArgumentResolvers(new AuthenticationPrincipalResolver(userId))
@@ -61,7 +63,7 @@ class TestRunControllerTest {
                 "feat/login-api", List.of(id(UUID.randomUUID())), "QUEUED",
                 summary("QUEUED", null, List.of()),
                 id(userId), "2026-08-15T02:00:00Z",
-                "2026-08-15T02:00:00Z", null, "2026-08-15T02:00:00Z");
+                "2026-08-15T02:00:00Z", null, "2026-08-15T02:00:00Z", null);
         when(testRunService.createTestRun(any(), any(), any())).thenReturn(response);
 
         mockMvc.perform(post("/api/v1/projects/{projectId}/test-runs", projectId)
@@ -84,7 +86,7 @@ class TestRunControllerTest {
                 summary("PASSED", "0123456789012345678901234567890123456789",
                         List.of(result(id(testsetId), "PASSED", 0, 69, null))),
                 id(userId), "2026-08-15T02:00:00Z",
-                "2026-08-15T02:00:00Z", "2026-08-15T02:00:05Z", "2026-08-15T02:00:05Z");
+                "2026-08-15T02:00:00Z", "2026-08-15T02:00:05Z", "2026-08-15T02:00:05Z", 5000L);
         when(testRunService.testRun(any(), any(), any())).thenReturn(response);
 
         mockMvc.perform(get("/api/v1/projects/{projectId}/test-runs/{runId}", projectId, runId))
@@ -92,7 +94,8 @@ class TestRunControllerTest {
                 .andExpect(jsonPath("$.data.summary.status").value("PASSED"))
                 .andExpect(jsonPath("$.data.summary.results[0].testsetId").value(id(testsetId)))
                 .andExpect(jsonPath("$.data.summary.results[0].exitCode").value(0))
-                .andExpect(jsonPath("$.data.summary.results[0].durationMs").value(69));
+                .andExpect(jsonPath("$.data.summary.results[0].durationMs").value(69))
+                .andExpect(jsonPath("$.data.durationMs").value(5000));
     }
 
     @Test
@@ -104,7 +107,7 @@ class TestRunControllerTest {
         when(testRunService.listTestRuns(any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
                 .thenReturn(new ApiPageResponse<>(List.of(new TestRunListItemResponse(
                         id(runId), id(projectId), id(repositoryId), List.of(id(UUID.randomUUID())), null,
-                        "feat/login", "RUNNING", id(userId), "2026-08-19T08:00:00Z", null, null)),
+                        "feat/login", "RUNNING", id(userId), "2026-08-19T08:00:00Z", null, null, 10L)),
                         new PageMeta("next", true), null));
         when(testRunService.listDryRuns(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
                 .thenReturn(new ApiPageResponse<>(List.of(new DryRunListItemResponse(

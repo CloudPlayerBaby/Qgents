@@ -57,6 +57,8 @@ public class DiffReviewBatchService {
     private WorkspaceWriteLeaseService workspaceWriteLeases;
     /** commit/push 前的工作分支 MR 锁定门禁。 */
     private WorkBranchDevelopmentGuard developmentGuard;
+    /** Optional in lightweight tests; production uses it to serialize review decisions with continuations. */
+    private WorkspaceMapper workspaces;
 
     public DiffReviewBatchService(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
             ProjectRepositoryMapper repositories, SandboxWorkerClient worker,
@@ -103,6 +105,11 @@ public class DiffReviewBatchService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setDevelopmentGuard(WorkBranchDevelopmentGuard developmentGuard) {
         this.developmentGuard = developmentGuard;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setWorkspaceMapper(WorkspaceMapper workspaces) {
+        this.workspaces = workspaces;
     }
 
     public DiffReviewBatchResponse get(UUID projectId, UUID taskId, UUID actor) {
@@ -176,9 +183,16 @@ public class DiffReviewBatchService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "DIFF_REJECT_REASON_REQUIRED", "A rejection reason is required");
         }
         DiffReviewBatchEntity batch = transactions.execute(status -> {
+            lockWorkspace(task.getWorkspaceId());
             DiffReviewBatchEntity locked = latestForUpdate(projectId, taskId);
+            DiffReviewBatchEntity pending = latestPendingForWorkspaceForUpdate(task.getWorkspaceId());
+            if (workspaces != null && (pending == null || !pending.getId().equals(locked.getId()))) {
+                throw new ApiException(HttpStatus.CONFLICT, "DIFF_REVIEW_SUPERSEDED",
+                        "This Diff was superseded by a newer change in the same Workspace");
+            }
             if (!"PENDING_CONFIRMATION".equals(locked.getReviewStatus())
-                    || !"NOT_STARTED".equals(locked.getDeliveryStatus())) {
+                    || !"NOT_STARTED".equals(locked.getDeliveryStatus())
+                    || !"USER".equals(locked.getConfirmationSource())) {
                 throw new ApiException(HttpStatus.CONFLICT, "DIFF_REVIEW_NOT_DECIDABLE", "Final Diff is not awaiting review");
             }
             TaskEntity lockedTask = tasks.selectByIdForUpdate(taskId);
@@ -327,13 +341,19 @@ public class DiffReviewBatchService {
     }
 
     private DiffReviewBatchEntity claim(TaskEntity task) {
+        // Lock order is Workspace -> review batch, matching continuation creation.
+        // This prevents a confirm/continuation deadlock under concurrent requests.
+        lockWorkspace(task.getWorkspaceId());
+        DiffReviewBatchEntity pending = latestPendingForWorkspaceForUpdate(task.getWorkspaceId());
         DiffReviewBatchEntity batch = latestForUpdate(task.getProjectId(), task.getId());
+        if (workspaces != null) ensureLatestPendingForWorkspace(batch, pending);
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         boolean recoverable = "DELIVERING".equals(batch.getDeliveryStatus())
                 && batch.getDeliveryLeaseExpiresAt() != null
                 && !batch.getDeliveryLeaseExpiresAt().isAfter(now);
         if (!"PENDING_CONFIRMATION".equals(batch.getReviewStatus())
-                || !("NOT_STARTED".equals(batch.getDeliveryStatus()) || recoverable)) {
+                || !("NOT_STARTED".equals(batch.getDeliveryStatus()) || recoverable)
+                || !"USER".equals(batch.getConfirmationSource())) {
             throw new ApiException(HttpStatus.CONFLICT, "DIFF_REVIEW_NOT_DECIDABLE", "Final Diff is not awaiting confirmation");
         }
         if (batch.getDeliveryOperationId() == null) batch.setDeliveryOperationId(UUID.randomUUID().toString());
@@ -343,6 +363,30 @@ public class DiffReviewBatchService {
         batch.setUpdatedAt(now);
         batches.updateById(batch);
         return batch;
+    }
+
+    /**
+     * A stale Task page may still call confirm after a continuation produced a
+     * newer review in the same Workspace.  The task-level lookup alone cannot
+     * detect that case, so confirmation is additionally gated by the
+     * Workspace-level pending batch.
+     */
+    private void ensureLatestPendingForWorkspace(DiffReviewBatchEntity batch, DiffReviewBatchEntity pending) {
+        if (pending == null || !pending.getId().equals(batch.getId())) {
+            throw new ApiException(HttpStatus.CONFLICT, "DIFF_REVIEW_SUPERSEDED",
+                    "This Diff was superseded by a newer change in the same Workspace");
+        }
+    }
+
+    private DiffReviewBatchEntity latestPendingForWorkspaceForUpdate(UUID workspaceId) {
+        List<DiffReviewBatchEntity> pending = batches.selectPendingByWorkspaceForUpdate(workspaceId);
+        return pending == null || pending.isEmpty() ? null : pending.get(0);
+    }
+
+    private void lockWorkspace(UUID workspaceId) {
+        if (workspaces != null && workspaceId != null) {
+            workspaces.selectByIdForUpdate(workspaceId);
+        }
     }
 
     private DiffReviewBatchEntity claimRetry(UUID projectId, UUID taskId) {

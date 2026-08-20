@@ -105,6 +105,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/projects/*/attachments/*/preview").permitAll()
                         // Worker 内部调用使用独立 service token，由内部 Controller 自行校验。
                         .requestMatchers("/internal/v1/**").permitAll()
+                        // Prometheus 在本地监控端口抓取指标，不携带业务 JWT；只暴露
+                        // 监控所需的只读端点，业务接口仍必须登录。
+                        .requestMatchers("/actuator/prometheus", "/actuator/health", "/actuator/info").permitAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/error").permitAll().anyRequest()
                         .authenticated())
                 // 配置异常处理

@@ -75,7 +75,51 @@ public class TestCommandResolver {
                 return new ResolvedCommand(List.of("npm", "test"), root.isEmpty() ? null : root);
             }
         }
+        // 无 package.json 但有 Node 测试文件（tests/*.test.js / *.spec.js）：直接以 node 执行，
+        // 满足「Planner 明确要求 node tests/todo.test.js」的纯 Node 项目；命令来自文件树白名单，
+        // 不是 Planner 任意 shell 指令。
+        ResolvedCommand node = resolveNodeTestFiles(files, roots, filesByRoot);
+        if (node != null) {
+            return node;
+        }
         return null;
+    }
+
+    /**
+     * 无 package.json 时，从文件树中寻找 Node 测试文件并生成 {@code node <file>} 命令。
+     * 仅接受 {@code tests/} 或 {@code test/} 目录下、以 {@code .test.js} / {@code .spec.js} /
+     * {@code .test.mjs} / {@code .spec.mjs} 结尾的文件；路径来自文件树（白名单），
+     * 禁止从自然语言或 Planner 文本拼命令。
+     */
+    private ResolvedCommand resolveNodeTestFiles(List<String> files, Set<String> roots,
+                                                 Map<String, Set<String>> filesByRoot) {
+        for (String root : roots) {
+            Set<String> names = filesByRoot.get(root);
+            String testFile = names.stream()
+                    .filter(TestCommandResolver::isNodeTestFile)
+                    .sorted()
+                    .findFirst()
+                    .orElse(null);
+            if (testFile != null) {
+                return new ResolvedCommand(List.of("node", testFile), root.isEmpty() ? null : root);
+            }
+        }
+        return null;
+    }
+
+    /** 判断仓库相对路径是否为 Node 测试文件（tests/ 或 test/ 目录下，.test/.spec 后缀）。 */
+    private static boolean isNodeTestFile(String relative) {
+        if (relative == null || relative.isBlank()) {
+            return false;
+        }
+        String normalized = relative.replace('\\', '/');
+        if (!normalized.startsWith("tests/") && !normalized.startsWith("test/")) {
+            return false;
+        }
+        String lower = normalized.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".test.js") || lower.endsWith(".spec.js")
+                || lower.endsWith(".test.mjs") || lower.endsWith(".spec.mjs")
+                || lower.endsWith(".test.jsx") || lower.endsWith(".spec.jsx");
     }
 
     /** 按本次 Coding 实际修改目标筛选命令，避免无关构建文件触发错误的 Gradle/Maven 测试。 */
@@ -98,6 +142,12 @@ public class TestCommandResolver {
                     .map(file -> relative(root, file)).collect(java.util.stream.Collectors.toSet());
             if (hasFile(names, "package.json")) {
                 return new ResolvedCommand(List.of("npm", "test"), root.isEmpty() ? null : root);
+            }
+            // 无 package.json 但有 Node 测试文件：直接 node 执行（文件树白名单）。
+            String testFile = names.stream().filter(TestCommandResolver::isNodeTestFile).sorted().findFirst()
+                    .orElse(null);
+            if (testFile != null) {
+                return new ResolvedCommand(List.of("node", testFile), root.isEmpty() ? null : root);
             }
         }
         return null;
@@ -289,6 +339,15 @@ public class TestCommandResolver {
             if (normalized.endsWith(suffix)) {
                 return normalized.substring(0, normalized.length() - suffix.length());
             }
+        }
+        // Node 测试文件（tests/*.test.js 等）：仓库根 = 去掉 tests/test 段后的目录。
+        // tests/todo.test.js → ""（工作区根）；svc-a/tests/a.test.js → "svc-a"。
+        if (isNodeTestFile(normalized)) {
+            int idx = normalized.indexOf("/tests/");
+            if (idx < 0) {
+                idx = normalized.indexOf("/test/");
+            }
+            return idx < 0 ? "" : normalized.substring(0, idx);
         }
         return root(normalized);
     }

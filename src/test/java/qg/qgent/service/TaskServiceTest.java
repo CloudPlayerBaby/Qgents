@@ -41,6 +41,7 @@ class TaskServiceTest {
     private final ContextService contextService = mock(ContextService.class);
     private final TaskContextSnapshotCodec contextSnapshotCodec = new TaskContextSnapshotCodec(new ObjectMapper());
     private final MergeRequestMapper mergeRequests = mock(MergeRequestMapper.class);
+    private final MrPreflightRequestMapper preflightRequests = mock(MrPreflightRequestMapper.class);
     private final TaskService service = new TaskService(tasks, workspaces, repositories, steps, dependencies, scopes,
             groups, projectRepositories, projects, messages, agents, access, events, eventPublisher, defaultAgents,
             contextService, contextSnapshotCodec);
@@ -247,6 +248,44 @@ class TaskServiceTest {
     }
 
     @Test
+    void createContinuationSupersedesPendingDiffInSameWorkspace() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID continuationTaskId = UUID.randomUUID(), workspaceId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        TaskEntity continuation = task(continuationTaskId, projectId, actor);
+        continuation.setRequirementGroupId(groupId);
+        continuation.setWorkspaceId(workspaceId);
+        WorkspaceEntity workspace = new WorkspaceEntity();
+        workspace.setId(workspaceId);
+        workspace.setProjectId(projectId);
+        when(tasks.selectById(continuationTaskId)).thenReturn(continuation);
+        when(workspaces.selectByIdForUpdate(workspaceId)).thenReturn(workspace);
+        when(projectRepositories.selectById(repositoryId)).thenReturn(repository(repositoryId, projectId));
+        when(repositories.selectByWorkspace(workspaceId))
+                .thenReturn(List.of(worktree(repositoryId, "repo-1", "base", "feat/task-x")));
+
+        DiffReviewBatchMapper reviewBatches = mock(DiffReviewBatchMapper.class);
+        DiffMapper taskDiffs = mock(DiffMapper.class);
+        DiffReviewBatchEntity oldBatch = new DiffReviewBatchEntity();
+        oldBatch.setId(UUID.randomUUID());
+        oldBatch.setWorkspaceId(workspaceId);
+        oldBatch.setReviewStatus("PENDING_CONFIRMATION");
+        when(reviewBatches.selectPendingByWorkspaceForUpdate(workspaceId)).thenReturn(List.of(oldBatch));
+        service.setDiffReviewStateMappers(reviewBatches, taskDiffs);
+
+        TaskCreateRequest request = request(groupId, List.of());
+        request.setWorkspaceId(workspaceId);
+        request.setContinuationOfTaskId(continuationTaskId);
+
+        service.create(projectId, actor, request);
+
+        assertEquals("SUPERSEDED", oldBatch.getReviewStatus());
+        assertEquals("被同一 Workspace 的后续修改取代", oldBatch.getReviewReason());
+        verify(reviewBatches).updateById(oldBatch);
+        verify(taskDiffs).markReviewBatchSuperseded(eq(oldBatch.getId()), any());
+    }
+
+    @Test
     void createContinuationRejectsWorkspaceWithUnmergedMr() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
         UUID continuationTaskId = UUID.randomUUID(), workspaceId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
@@ -267,7 +306,7 @@ class TaskServiceTest {
         blocker.setSourceBranch("feat/task-x");
         blocker.setStatus("OPEN");
         when(mergeRequests.selectOne(any())).thenReturn(blocker);
-        service.setDevelopmentGuard(new WorkBranchDevelopmentGuard(repositories, mergeRequests));
+        service.setDevelopmentGuard(new WorkBranchDevelopmentGuard(repositories, mergeRequests, preflightRequests));
 
         TaskCreateRequest request = request(groupId, List.of());
         request.setWorkspaceId(workspaceId);

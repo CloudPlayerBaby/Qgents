@@ -15,6 +15,9 @@ import java.time.ZoneOffset;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 
 /**
  * 交付中心聚合服务（契约 v1.8.0 §20，成员 B B01/B02）。
@@ -31,6 +34,8 @@ public class DeliveryCenterService {
     private static final int DEFAULT_LIMIT = 30;
     private static final int MAX_LIMIT = 100;
     private static final int EXCERPT_LIMIT = 200;
+    private static final long LIST_CACHE_TTL_MILLIS = 2_000L;
+    private static final int LIST_CACHE_MAX_ENTRIES = 128;
     private static final Set<String> DELIVERY_TYPES = Set.of("CODE", "MEMORY", "SKILL", "AGENT");
 
     private final DiffReviewBatchMapper diffBatches;
@@ -50,6 +55,8 @@ public class DeliveryCenterService {
     private final MemoryMessageSourceMapper memorySources;
     private final MessageMapper messages;
     private final ProjectAccessService access;
+    /** Short-lived request coalescing for duplicate delivery-center refreshes. */
+    private final ConcurrentHashMap<String, CachedPage> listCache = new ConcurrentHashMap<>();
 
     public DeliveryCenterService(DiffReviewBatchMapper diffBatches, DiffMapper diffs, MergeRequestMapper mergeRequests,
                                  TaskMapper tasks, RequirementGroupMapper groups, ProjectRepositoryMapper projectRepositories,
@@ -101,15 +108,22 @@ public class DeliveryCenterService {
         UUID groupUuid = optionalUuid(groupId, "INVALID_GROUP_FILTER");
         UUID repositoryUuid = optionalUuid(repositoryId, "INVALID_REPOSITORY_FILTER");
         UUID creatorUuid = optionalUuid(createdBy, "INVALID_CREATEDBY_FILTER");
-        List<DeliveryItem> all = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid,
-                creatorUuid, keyword);
-
         int size = clampLimit(limit);
         int offset = decodeCursor(cursor);
-        boolean hasMore = offset + size < all.size();
-        List<DeliveryItem> page = all.stream().skip(offset).limit(size).toList();
-        String next = hasMore ? encodeCursor(offset + size) : null;
-        return new PagedApiResponse<>(page, new PageInfo(next, hasMore), requestId);
+        boolean boundedCodePage = "CODE".equalsIgnoreCase(type)
+                && isBlank(groupId) && isBlank(displayStatus) && isBlank(repositoryId)
+                && isBlank(createdBy) && isBlank(keyword) && isBlank(cursor);
+        String cacheKey = listCacheKey(projectId, actor, groupId, type, displayStatus, repositoryId,
+                createdBy, keyword, cursor, size, boundedCodePage);
+        PageData pageData = loadCachedPage(cacheKey, () -> {
+            List<DeliveryItem> all = collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid,
+                    creatorUuid, keyword, boundedCodePage ? size + 1 : null);
+            boolean hasMore = offset + size < all.size();
+            List<DeliveryItem> page = all.stream().skip(offset).limit(size).toList();
+            String next = hasMore ? encodeCursor(offset + size) : null;
+            return new PageData(page, new PageInfo(next, hasMore));
+        });
+        return new PagedApiResponse<>(pageData.data(), pageData.page(), requestId);
     }
 
     /**
@@ -224,10 +238,11 @@ public class DeliveryCenterService {
      * keyword 归一化后对完整组装结果集做不区分大小写包含匹配，分页/统计均基于该结果集。
      */
     private List<DeliveryItem> collect(UUID projectId, UUID actor, UUID groupUuid, String type,
-                                       String displayStatus, UUID repositoryUuid, UUID creatorUuid, String keyword) {
+                                       String displayStatus, UUID repositoryUuid, UUID creatorUuid, String keyword,
+                                       Integer codeLimit) {
         List<DeliveryItem> items = new ArrayList<>();
         if (type == null || "CODE".equals(type)) {
-            items.addAll(codeItems(projectId, actor, groupUuid, displayStatus, repositoryUuid, creatorUuid));
+            items.addAll(codeItems(projectId, actor, groupUuid, displayStatus, repositoryUuid, creatorUuid, codeLimit));
         }
         if (type == null || "MEMORY".equals(type)) {
             items.addAll(memoryItems(projectId, actor, groupUuid, displayStatus, creatorUuid));
@@ -246,10 +261,23 @@ public class DeliveryCenterService {
                 .toList();
     }
 
+    private List<DeliveryItem> collect(UUID projectId, UUID actor, UUID groupUuid, String type,
+                                       String displayStatus, UUID repositoryUuid, UUID creatorUuid, String keyword) {
+        return collect(projectId, actor, groupUuid, type, displayStatus, repositoryUuid, creatorUuid, keyword, null);
+    }
+
     private List<DeliveryItem> codeItems(UUID projectId, UUID actor, UUID groupUuid, String displayStatus,
-                                         UUID repositoryUuid, UUID creatorUuid) {
-        List<DiffReviewBatchEntity> batches = diffBatches.selectList(Wrappers.<DiffReviewBatchEntity>lambdaQuery()
-                .eq(DiffReviewBatchEntity::getProjectId, projectId));
+                                         UUID repositoryUuid, UUID creatorUuid, Integer codeLimit) {
+        var batchQuery = Wrappers.<DiffReviewBatchEntity>lambdaQuery()
+                .eq(DiffReviewBatchEntity::getProjectId, projectId)
+                .orderByDesc(DiffReviewBatchEntity::getUpdatedAt)
+                .orderByDesc(DiffReviewBatchEntity::getId);
+        if (codeLimit != null) {
+            // Only the unfiltered first CODE page uses this bound. Filtered and
+            // summary calls keep the complete aggregation semantics.
+            batchQuery.last("LIMIT " + Math.max(1, Math.min(codeLimit, MAX_LIMIT + 1)));
+        }
+        List<DiffReviewBatchEntity> batches = diffBatches.selectList(batchQuery);
         if (batches.isEmpty()) {
             return List.of();
         }
@@ -662,6 +690,7 @@ public class DeliveryCenterService {
         return switch (batch.getReviewStatus()) {
             case "PENDING_CONFIRMATION" -> "PROCESSING";
             case "REJECTED" -> "REJECTED";
+            case "SUPERSEDED" -> "SUPERSEDED";
             case "ACCEPTED" -> switch (batch.getDeliveryStatus() == null ? "" : batch.getDeliveryStatus()) {
                 case "DELIVERED" -> "DELIVERED";
                 case "PARTIALLY_DELIVERED", "FAILED" -> "FAILED";
@@ -696,8 +725,10 @@ public class DeliveryCenterService {
         caps.setCanOpenResource(true);
         DeliveryCapabilities.DeliveryCapabilityReasons reasons = new DeliveryCapabilities.DeliveryCapabilityReasons();
         reasons.setCanSubmitReview("NOT_SUPPORTED");
-        reasons.setCanApprove(!pendingConfirmation ? "DIFF_REVIEW_NOT_DECIDABLE" : forbid);
-        reasons.setCanReject(!pendingConfirmation ? "DIFF_REVIEW_NOT_DECIDABLE" : forbid);
+        String reviewDisabled = "SUPERSEDED".equals(batch.getReviewStatus())
+                ? "DIFF_REVIEW_SUPERSEDED" : "DIFF_REVIEW_NOT_DECIDABLE";
+        reasons.setCanApprove(!pendingConfirmation ? reviewDisabled : forbid);
+        reasons.setCanReject(!pendingConfirmation ? reviewDisabled : forbid);
         reasons.setCanArchive("NOT_SUPPORTED");
         reasons.setCanRetryDelivery(!retryable ? "DIFF_DELIVERY_NOT_RETRYABLE" : forbid);
         reasons.setCanOpenResource(null);
@@ -1007,6 +1038,79 @@ public class DeliveryCenterService {
         return Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(Integer.toString(offset).getBytes(StandardCharsets.UTF_8));
     }
+
+    private PageData loadCachedPage(String key, java.util.function.Supplier<PageData> loader) {
+        long now = System.currentTimeMillis();
+        CachedPage current = listCache.get(key);
+        if (current != null && current.expiresAt() > now) {
+            return await(current.future());
+        }
+        CachedPage candidate = new CachedPage(new CompletableFuture<>(), now + LIST_CACHE_TTL_MILLIS);
+        if (current == null) {
+            CachedPage previous = listCache.putIfAbsent(key, candidate);
+            current = previous == null ? candidate : previous;
+        } else if (listCache.replace(key, current, candidate)) {
+            current = candidate;
+        } else {
+            current = listCache.get(key);
+        }
+        if (current != candidate) {
+            return await(current.future());
+        }
+        try {
+            PageData value = loader.get();
+            candidate.future().complete(value);
+            trimListCache();
+            return value;
+        } catch (RuntimeException e) {
+            candidate.future().completeExceptionally(e);
+            listCache.remove(key, candidate);
+            throw e;
+        }
+    }
+
+    private PageData await(CompletableFuture<PageData> future) {
+        try {
+            return future.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("delivery list query interrupted", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IllegalStateException("delivery list query failed", cause);
+        }
+    }
+
+    private void trimListCache() {
+        if (listCache.size() <= LIST_CACHE_MAX_ENTRIES) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        listCache.entrySet().removeIf(entry -> entry.getValue().expiresAt() <= now);
+        while (listCache.size() > LIST_CACHE_MAX_ENTRIES) {
+            String key = listCache.keys().hasMoreElements() ? listCache.keys().nextElement() : null;
+            if (key == null || listCache.remove(key) == null) {
+                break;
+            }
+        }
+    }
+
+    private String listCacheKey(Object... values) {
+        return Arrays.stream(values)
+                .map(value -> value == null ? "" : String.valueOf(value))
+                .collect(Collectors.joining("\u001f"));
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private record CachedPage(CompletableFuture<PageData> future, long expiresAt) { }
+
+    private record PageData(List<DeliveryItem> data, PageInfo page) { }
 
     private String id(UUID value) {
         return value == null ? null : value.toString();

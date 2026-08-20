@@ -30,6 +30,9 @@ import java.util.*;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.function.Function;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 
 /**
  * MR 镜像、审查与质量门禁服务。
@@ -45,6 +48,9 @@ import java.util.function.Function;
  */
 @Service
 public class MergeRequestService {
+    private static final long LIST_CACHE_TTL_MILLIS = 2_000L;
+    private static final int LIST_CACHE_MAX_ENTRIES = 128;
+    private final ConcurrentHashMap<String, CachedMrPage> listCache = new ConcurrentHashMap<>();
     private static final Logger log = LoggerFactory.getLogger(MergeRequestService.class);
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 100;
@@ -55,6 +61,9 @@ public class MergeRequestService {
      */
     private static final int MERGEABLE_POLL_ATTEMPTS = 5;
     private static final Duration MERGEABLE_POLL_INTERVAL = Duration.ofSeconds(2);
+    /** PUSH 的一次 HTTP 应答丢失不代表远端未接收；最多重放一次同一 branch/head 的幂等推送。 */
+    private static final int WORKER_PUSH_MAX_ATTEMPTS = 2;
+    private static final long WORKER_PUSH_INITIAL_BACKOFF_MILLIS = 250L;
 
     private final MergeRequestMapper mergeRequestMapper;
     private final MergeRequestGroupMapper mergeRequestGroupMapper;
@@ -180,6 +189,45 @@ public class MergeRequestService {
      */
     public ApiPageResponse<MergeRequestSummaryResponse> list(UUID projectId, UUID userId, UUID repositoryId,
                                                              UUID groupId, String status, String cursor, int limit, String requestId) {
+        int boundedLimit = clampLimit(limit);
+        String key = listCacheKey(projectId, userId, repositoryId, groupId, status, cursor, boundedLimit);
+        CachedMrPage cached = listCache.get(key);
+        long now = System.currentTimeMillis();
+        if (cached != null && cached.expiresAt() > now) {
+            return toResponse(await(cached.future()), requestId);
+        }
+        CachedMrPage candidate = new CachedMrPage(new CompletableFuture<>(), now + LIST_CACHE_TTL_MILLIS);
+        if (cached == null) {
+            CachedMrPage previous = listCache.putIfAbsent(key, candidate);
+            cached = previous == null ? candidate : previous;
+        } else if (listCache.replace(key, cached, candidate)) {
+            cached = candidate;
+        } else {
+            cached = listCache.get(key);
+        }
+        if (cached != candidate) {
+            return toResponse(await(cached.future()), requestId);
+        }
+        try {
+            ApiPageResponse<MergeRequestSummaryResponse> result = listUncached(projectId, userId, repositoryId,
+                    groupId, status, cursor, boundedLimit, requestId);
+            candidate.future().complete(new MrPageData(result.data(), result.page()));
+            trimListCache();
+            return result;
+        } catch (RuntimeException e) {
+            candidate.future().completeExceptionally(e);
+            listCache.remove(key, candidate);
+            throw e;
+        }
+    }
+
+    private ApiPageResponse<MergeRequestSummaryResponse> toResponse(MrPageData page, String requestId) {
+        return new ApiPageResponse<>(page.data(), page.page(), requestId);
+    }
+
+    private ApiPageResponse<MergeRequestSummaryResponse> listUncached(UUID projectId, UUID userId, UUID repositoryId,
+                                                                       UUID groupId, String status, String cursor,
+                                                                       int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
         int size = clampLimit(limit);
         List<UUID> repoIds = projectRepositoryMapper.selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
@@ -621,29 +669,59 @@ public class MergeRequestService {
     private void pushBranch(TaskEntity task, UUID repositoryId, WorkspaceRepositoryEntity worktree,
                             GitHubRepositoryEntity github, GitHubInstallationEntity installation, String mode) {
         String fullName = github.getOwnerLogin() + "/" + github.getName();
-        String grantId = credentialService.generateGrant(installation.getTeamId(), task.getProjectId(),
-                installation.getProviderInstallationId(), fullName, worktree.getSourceBranch(),
-                worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
         log.info("branch push starting projectId={} taskId={} repositoryId={} branch={} mode={} expectedHeadCommit={}",
                 task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(), mode, worktree.getHeadCommit());
-        WorkerGitPushResponse pushed;
+        for (int attempt = 1; attempt <= WORKER_PUSH_MAX_ATTEMPTS; attempt++) {
+            String grantId = credentialService.generateGrant(installation.getTeamId(), task.getProjectId(),
+                    installation.getProviderInstallationId(), fullName, worktree.getSourceBranch(),
+                    worktree.getHeadCommit(), GitCredentialPurpose.PUSH);
+            try {
+                WorkerGitPushResponse pushed = workerClient.pushWorkspaceBranch(task.getWorkspaceId(), repositoryId,
+                        new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
+                                .setCredentialGrantId(grantId));
+                if (pushed == null || !pushed.isVerified() || !worktree.getHeadCommit().equals(pushed.getHeadCommit())) {
+                    throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
+                            "Sandbox Worker push verification failed or HEAD mismatch");
+                }
+                log.info("branch push verified projectId={} taskId={} repositoryId={} branch={} headCommit={} attempt={}",
+                        task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(),
+                        pushed.getHeadCommit(), attempt);
+                return;
+            } catch (ApiException failure) {
+                if ("WORKER_PUSH_VERIFICATION_FAILED".equals(failure.code())) {
+                    throw failure;
+                }
+                if (!isRetryableWorkerPush(failure) || attempt >= WORKER_PUSH_MAX_ATTEMPTS) {
+                    log.warn("branch push failed projectId={} taskId={} repositoryId={} branch={} status={} code={} attempt={}",
+                            task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(),
+                            failure.status(), failure.code(), attempt);
+                    throw new ApiException(failure.status(), "WORKER_PUSH_FAILED",
+                            "Failed to push branch via Sandbox Worker");
+                }
+                sleepBeforeWorkerPushRetry(attempt, failure.code());
+            }
+        }
+        throw new IllegalStateException("Worker push retry loop unexpectedly completed");
+    }
+
+    private boolean isRetryableWorkerPush(ApiException failure) {
+        return switch (failure.code()) {
+            case "SANDBOX_WORKER_UNAVAILABLE", "GIT_REMOTE_NETWORK_FAILED", "GIT_REMOTE_RATE_LIMITED",
+                    "GIT_COMMAND_TIMEOUT" -> true;
+            default -> false;
+        };
+    }
+
+    private void sleepBeforeWorkerPushRetry(int attempt, String code) {
+        long backoff = Math.min(2_000L, WORKER_PUSH_INITIAL_BACKOFF_MILLIS * (1L << (attempt - 1)));
+        long jitter = java.util.concurrent.ThreadLocalRandom.current().nextLong(Math.max(1L, backoff / 4));
+        log.warn("branch push retrying attempt={} code={} backoffMs={}", attempt, code, backoff + jitter);
         try {
-            pushed = workerClient.pushWorkspaceBranch(task.getWorkspaceId(), repositoryId,
-                    new WorkerGitPushRequest().setExpectedHeadCommit(worktree.getHeadCommit())
-                            .setCredentialGrantId(grantId));
-        } catch (ApiException failure) {
-            log.warn("branch push failed projectId={} taskId={} repositoryId={} branch={} status={} code={} message={}",
-                    task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(),
-                    failure.status(), failure.code(), failure.getMessage());
-            throw new ApiException(failure.status(), "WORKER_PUSH_FAILED",
-                    "Failed to push branch via Sandbox Worker: " + failure.getMessage());
+            Thread.sleep(backoff + jitter);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "WORKER_PUSH_RETRY_INTERRUPTED", "代码推送重试被中断");
         }
-        if (pushed == null || !pushed.isVerified() || !worktree.getHeadCommit().equals(pushed.getHeadCommit())) {
-            throw new ApiException(HttpStatus.CONFLICT, "WORKER_PUSH_VERIFICATION_FAILED",
-                    "Sandbox Worker push verification failed or HEAD mismatch");
-        }
-        log.info("branch push verified projectId={} taskId={} repositoryId={} branch={} headCommit={}",
-                task.getProjectId(), task.getId(), repositoryId, worktree.getSourceBranch(), pushed.getHeadCommit());
     }
 
     private void validateRemote(CreateClaim claim, GitHubPullRequestDetails remote) {
@@ -1674,8 +1752,11 @@ public class MergeRequestService {
         if (workspaceIds.isEmpty()) {
             return List.of();
         }
-        List<TaskEntity> tasks = taskMapper.selectList(Wrappers.<TaskEntity>query()
-                .eq("project_id", projectId).in("workspace_id", workspaceIds));
+        QueryWrapper<TaskEntity> taskQuery = Wrappers.<TaskEntity>query()
+                .eq("project_id", projectId).in("workspace_id", workspaceIds)
+                .eq(taskRequiredStatus != null, "status", taskRequiredStatus)
+                .eq(requirementGroupId != null, "requirement_group_id", requirementGroupId);
+        List<TaskEntity> tasks = taskMapper.selectList(taskQuery);
         if (tasks == null) tasks = List.of();
         Map<UUID, TaskEntity> taskByWorkspace = new HashMap<>();
         for (TaskEntity task : tasks) {
@@ -1863,4 +1944,43 @@ public class MergeRequestService {
     private String id(UUID uuid) {
         return uuid == null ? null : uuid.toString();
     }
+
+    private String listCacheKey(Object... values) {
+        return Arrays.stream(values)
+                .map(value -> value == null ? "" : String.valueOf(value))
+                .collect(Collectors.joining("\u001f"));
+    }
+
+    private MrPageData await(CompletableFuture<MrPageData> future) {
+        try {
+            return future.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("merge request list query interrupted", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IllegalStateException("merge request list query failed", cause);
+        }
+    }
+
+    private void trimListCache() {
+        if (listCache.size() <= LIST_CACHE_MAX_ENTRIES) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        listCache.entrySet().removeIf(entry -> entry.getValue().expiresAt() <= now);
+        while (listCache.size() > LIST_CACHE_MAX_ENTRIES) {
+            String key = listCache.keys().hasMoreElements() ? listCache.keys().nextElement() : null;
+            if (key == null || listCache.remove(key) == null) {
+                break;
+            }
+        }
+    }
+
+    private record CachedMrPage(CompletableFuture<MrPageData> future, long expiresAt) { }
+
+    private record MrPageData(List<MergeRequestSummaryResponse> data, PageMeta page) { }
 }

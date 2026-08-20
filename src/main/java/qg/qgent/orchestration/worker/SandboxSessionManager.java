@@ -16,6 +16,7 @@ import qg.qgent.service.WorkBranchDevelopmentGuard;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
 
@@ -466,7 +467,8 @@ public class SandboxSessionManager {
         long cappedInitial = Math.min(30_000L, initialBackoffMillis);
         long backoff = cappedInitial > 30_000L / multiplier
                 ? 30_000L : cappedInitial * multiplier;
-        Thread.sleep(backoff);
+        long jitter = backoff == 0 ? 0 : ThreadLocalRandom.current().nextLong(Math.max(1L, backoff / 4));
+        Thread.sleep(Math.min(30_000L, backoff + jitter));
     }
 
     /**
@@ -475,9 +477,8 @@ public class SandboxSessionManager {
      */
     private boolean isRetryable(ApiException failure) {
         return switch (failure.code()) {
-            case "SANDBOX_WORKER_UNAVAILABLE", "GITHUB_API_UNAVAILABLE", "GIT_STORE_FETCH_FAILED",
-                    "GIT_REMOTE_SHA_MISMATCH", "GIT_BASE_REF_NOT_FOUND", "GIT_STORE_SYNC_INVALID",
-                    "GIT_COMMAND_TIMEOUT", "GIT_COMMAND_FAILED" -> true;
+            case "SANDBOX_WORKER_UNAVAILABLE", "GITHUB_API_UNAVAILABLE", "GIT_REMOTE_NETWORK_FAILED",
+                    "GIT_REMOTE_RATE_LIMITED", "GIT_REMOTE_SHA_MISMATCH", "GIT_COMMAND_TIMEOUT" -> true;
             default -> false;
         };
     }

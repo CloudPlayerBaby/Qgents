@@ -24,8 +24,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link TaskStartedNoticeListener} 单测：手动发起任务（无 triggerMessageId）在需求群插入
- * 「@发起者 您创建的任务已开始」TEXT 提示；@agent/消息触发、编排助手缺失时不插入。
+ * {@link TaskStartedNoticeListener} 单测：任务创建后在需求群插入一次启动确认。
  * 直接调用监听器方法，不验证 @Async/@TransactionalEventListener 的代理行为。
  */
 class TaskStartedNoticeListenerTest {
@@ -70,6 +69,7 @@ class TaskStartedNoticeListenerTest {
         MessageService messages = mock(MessageService.class);
         OrchestratorAgentService agents = mock(OrchestratorAgentService.class);
         TaskEntity task = task(taskId, projectId, groupId, creatorId);
+        task.setDisplayCode("T-42");
         UserEntity creator = new UserEntity();
         creator.setId(creatorId);
         creator.setDisplayName("张三");
@@ -88,7 +88,8 @@ class TaskStartedNoticeListenerTest {
         assertEquals("task-started-" + taskId, captured.getClientMessageId());
         String text = (String) ((Map<?, ?>) captured.getContent()).get("text");
         assertTrue(text.startsWith("@张三"));
-        assertTrue(text.contains("您创建的任务已开始"));
+        assertTrue(text.contains("已收到你的需求"));
+        assertTrue(text.contains("任务 T-42 已开始规划"));
         assertEquals(1, captured.getMentions().size());
         Mention mention = captured.getMentions().getFirst();
         assertEquals("USER", mention.getType());
@@ -96,21 +97,22 @@ class TaskStartedNoticeListenerTest {
     }
 
     @Test
-    void agentTriggeredTaskSkipsNotice() {
+    void agentTriggeredTaskAlsoInsertsStartedNotice() {
         UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), groupId = UUID.randomUUID();
-        UUID creatorId = UUID.randomUUID();
+        UUID creatorId = UUID.randomUUID(), agentId = UUID.randomUUID();
         TaskMapper tasks = mock(TaskMapper.class);
         UserMapper users = mock(UserMapper.class);
         MessageService messages = mock(MessageService.class);
         OrchestratorAgentService agents = mock(OrchestratorAgentService.class);
         TaskEntity task = task(taskId, projectId, groupId, creatorId);
         task.setTriggerMessageId(UUID.randomUUID());
+        when(agents.resolveIdForTask(task)).thenReturn(agentId);
         when(tasks.selectById(taskId)).thenReturn(task);
 
         TaskStartedNoticeListener listener = new TaskStartedNoticeListener(tasks, users, messages, agents);
         listener.onTaskCreated(new TaskCreatedEvent(projectId, taskId));
 
-        verify(messages, never()).sendAsAgent(any(), any(), any());
+        verify(messages).sendAsAgent(any(), any(), any());
     }
 
     @Test

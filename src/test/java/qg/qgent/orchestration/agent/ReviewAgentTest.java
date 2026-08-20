@@ -46,16 +46,17 @@ class ReviewAgentTest {
     private final LlmClient llm = mock(LlmClient.class);
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
     private final WorkspaceDiffAccess diffAccess = mock(WorkspaceDiffAccess.class);
+    private final ContextService contextService = mock(ContextService.class);
     private final UUID workspaceId = UUID.randomUUID();
 
     private ReviewAgent nativeAgent() {
         return new ReviewAgent(llm, codeAccess, diffAccess, AgentProtocol.nativeDefault(),
-                mock(ContextService.class), new ContextSearchProperties(10));
+                contextService, new ContextSearchProperties(10));
     }
 
     private ReviewAgent legacyAgent() {
         return new ReviewAgent(llm, codeAccess, diffAccess, new AgentProtocol("legacy"),
-                mock(ContextService.class), new ContextSearchProperties(10));
+                contextService, new ContextSearchProperties(10));
     }
 
     // ---------- 原生 Tool Calling（默认协议） ----------
@@ -104,6 +105,36 @@ class ReviewAgentTest {
     }
 
     @Test
+    void nativeReviewRecordsActuallyActivatedSkillsForQualityRepair() {
+        UUID skillId = UUID.randomUUID();
+        qg.qgent.entity.SkillEntity skill = new qg.qgent.entity.SkillEntity();
+        skill.setName("README 规范");
+        skill.setContent("末行签名");
+        AgentInput input = input();
+        when(contextService.activateSkill(input.getActorId(), input.getProjectId(), skillId)).thenReturn(skill);
+        when(codeAccess.listFiles(any())).thenReturn(List.of("README.md"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        java.util.concurrent.atomic.AtomicInteger round = new java.util.concurrent.atomic.AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            if (round.getAndIncrement() == 0) {
+                @SuppressWarnings("unchecked")
+                List<org.springframework.ai.tool.ToolCallback> callbacks = invocation.getArgument(2);
+                String response = callbacks.stream().filter(callback -> "activate_skill".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow().call("{\"skillId\":\"" + skillId + "\"}");
+                assertThat(response).contains("\"ok\":true");
+                return toolTurn("activate_skill");
+            }
+            return finalTurn(reviewJson(false, "missing skill requirement",
+                    "[{\"file\":\"README.md\",\"severity\":\"MAJOR\",\"issue\":\"missing\",\"suggestion\":\"fix\"}]"));
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getActivatedSkillIds()).containsExactly(skillId);
+    }
+
+    @Test
     void nativeBlockerWithoutCodingFixIsTerminalFail() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
@@ -118,6 +149,66 @@ class ReviewAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getReviewResult().isSuccess()).isFalse();
+    }
+
+    @Test
+    void nativeMissingAcceptanceTargetCarriesStableFailureCode() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        // 验收目标（DOM 选择器等）经核实不存在：Review 不得臆造目标存在，必须输出
+        // REVIEW_ASSERTION_TARGET_NOT_FOUND 稳定码且 needsCodingFix=true 回到 Coding 补齐。
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":false,\"summary\":\"验收目标不存在\","
+                        + "\"findings\":[{\"file\":\"src/main/resources/template.html\",\"severity\":\"MAJOR\","
+                        + "\"issue\":\"页面缺少任务要求的 #submit 按钮\",\"suggestion\":\"补齐该按钮\"}],"
+                        + "\"suggestions\":[],\"needsCodingFix\":true,"
+                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND\"}}"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getReviewResult().isSuccess()).isFalse();
+        assertThat(outcome.getReviewResult().getFailureCode()).isEqualTo("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+        assertThat(outcome.getReviewResult().isNeedsCodingFix()).isTrue();
+        // 稳定失败码必须传播到 outcome，供 Run/任务级失败语义区分「验收目标缺失」。
+        assertThat(outcome.getFailureCode()).isEqualTo("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+    }
+
+    @Test
+    void nativeUnknownFailureCodeIsIgnoredNotLeaked() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":false,\"summary\":\"boom\","
+                        + "\"findings\":[{\"file\":\"src/main/java/X.java\",\"severity\":\"MAJOR\","
+                        + "\"issue\":\"missing check\",\"suggestion\":\"add check\"}],"
+                        + "\"suggestions\":[],\"needsCodingFix\":true,"
+                        + "\"failureCode\":\"MODEL_INVENTED_INTERNAL_CODE\"}}"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        // 白名单外的失败码被忽略，避免把模型臆造的内部细节作为公开码外泄。
+        assertThat(outcome.getReviewResult().getFailureCode()).isNull();
+        assertThat(outcome.getFailureCode()).isNull();
+    }
+
+    @Test
+    void legacyMissingAcceptanceTargetCarriesStableFailureCode() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"finalResult\":{\"success\":false,\"summary\":\"目标不存在\","
+                        + "\"findings\":[{\"file\":\"src/main/java/X.java\",\"severity\":\"MAJOR\","
+                        + "\"issue\":\"接口方法缺失\",\"suggestion\":\"补齐\"}],"
+                        + "\"suggestions\":[],\"needsCodingFix\":true,"
+                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND\"}}");
+
+        AgentRunOutcome outcome = legacyAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getReviewResult().getFailureCode()).isEqualTo("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+        assertThat(outcome.getFailureCode()).isEqualTo("REVIEW_ASSERTION_TARGET_NOT_FOUND");
     }
 
     @Test
@@ -362,6 +453,7 @@ class ReviewAgentTest {
     private AgentInput input() {
         AgentInput input = new AgentInput();
         input.setProjectId(UUID.randomUUID());
+        input.setActorId(UUID.randomUUID());
         input.setTaskId(UUID.randomUUID());
         input.setTaskTitle("sample task");
         input.setRequirement("implement a calculator");

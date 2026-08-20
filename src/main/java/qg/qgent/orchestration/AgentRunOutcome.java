@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Agent 执行的结构化输出，按相位携带对应的结果对象。
@@ -34,10 +35,31 @@ public class AgentRunOutcome {
      */
     private String failureCode;
     /**
+     * 仅用于内部失败诊断表的原始分类码；不会进入 TaskRun、执行产物、SSE 或公开接口。
+     */
+    private String diagnosticFailureCode;
+    /**
+     * 仅用于内部失败诊断表的来源标签；用于区分 Agent、超时与编排启动等失败边界。
+     */
+    private String diagnosticSource;
+    /**
+     * 仅用于内部失败诊断表的异常类型；不保存堆栈。
+     */
+    private String diagnosticExceptionType;
+    /**
+     * 仅用于内部失败诊断表的待脱敏详情；调用方不得写入命令、原始输出或凭据。
+     */
+    private String diagnosticDetail;
+    /**
      * 本相位每次模型调用的脱敏观测（阶段 A）：随 Run 产物摘要落库，失败时可定位错误码。
      * 缺失时为 null（PLAN/LEGACY 或未执行模型调用），落库侧做空值兼容。
      */
     private List<LlmObservation> observations;
+    /**
+     * 本次运行实际通过 activate_skill 读取的 Skill ID。仅用于紧随其后的质量回修重新校验并注入；
+     * 不携带 Skill 正文，不能作为跨 Project 或跨 Task 的授权凭据。
+     */
+    private List<UUID> activatedSkillIds = new ArrayList<>();
     /** Coding 工具按相对路径累计的连续 patch 失败次数，供下一次 TaskRun 继承。 */
     private Map<String, Integer> patchFailureCounts = new LinkedHashMap<>();
     /**

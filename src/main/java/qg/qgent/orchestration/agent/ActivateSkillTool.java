@@ -8,6 +8,8 @@ import qg.qgent.service.ContextService;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -16,7 +18,7 @@ import java.util.UUID;
  * 运行时 Skill 激活工具。
  * <p>
  * 每个实例只服务一条 TaskRun，因此已激活 Skill 集合不会跨运行继承。完整正文仅作为本次
- * 原生工具调用的返回内容进入模型历史，不写入默认上下文或日志。
+ * 原生工具调用的返回内容、或质量回修运行受控注入的正文进入模型历史，不写入默认上下文或日志。
  */
 @Slf4j
 public class ActivateSkillTool {
@@ -79,6 +81,44 @@ public class ActivateSkillTool {
         log.info("skill activated projectId={} skillId={} used={}", projectId, parsedSkillId,
                 activatedSkillIds.size());
         return result;
+    }
+
+    /**
+     * 供质量回修的写 Agent 重新激活上一轮审查实际使用过的 Skill。
+     * <p>
+     * 这里只传递并重新校验 Skill ID，绝不跨 TaskRun 缓存或搬运正文；因此发布状态、项目归属和
+     * 当前用户可见性仍由 {@link ContextService#activateSkill} 在本次运行中校验。预加载同样计入
+     * 当前运行的 5 条预算，之后模型重复调用同一 Skill 不会重复消耗预算。
+     */
+    public List<ActivatedSkill> preloadForQualityRepair(Collection<UUID> skillIds) {
+        if (skillIds == null || skillIds.isEmpty()) {
+            return List.of();
+        }
+        List<ActivatedSkill> result = new java.util.ArrayList<>();
+        for (UUID skillId : skillIds) {
+            if (skillId == null || result.size() >= MAX_ACTIVATIONS) {
+                continue;
+            }
+            Map<String, Object> activated = activateSkill(skillId.toString());
+            if (!Boolean.TRUE.equals(activated.get("ok")) || Boolean.TRUE.equals(activated.get("alreadyActivated"))) {
+                continue;
+            }
+            Object name = activated.get("name");
+            Object content = activated.get("content");
+            if (name instanceof String skillName && content instanceof String skillContent) {
+                result.add(new ActivatedSkill(skillId, skillName, skillContent));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    /** 当前运行已实际通过服务端校验并读取的 Skill ID，不包含正文。 */
+    public List<UUID> activatedSkillIds() {
+        return List.copyOf(activatedSkillIds);
+    }
+
+    /** 仅供当前模型上下文组装的已激活 Skill，不得持久化正文。 */
+    public record ActivatedSkill(UUID skillId, String name, String content) {
     }
 
     private Map<String, Object> error(Map<String, Object> result, String message) {

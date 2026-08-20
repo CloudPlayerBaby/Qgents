@@ -587,6 +587,31 @@ public class GitHubRepositoryService {
     }
 
     /**
+     * 处理 GitHub Configure 页的 setup_action=update 回调。
+     * GitHub 从 Configure 页回调时不会携带首次安装 URL 中的 state；只有已经在
+     * Qgents 绑定过的 Installation 才允许走这条恢复路径。
+     */
+    public GitHubInstallationState handleInstallationUpdateCallback(long providerInstallationId) {
+        log.info("Handling GitHub App installation update callback. providerInstallationId: {}", providerInstallationId);
+        GitHubInstallationEntity existing = installationMapper.selectOne(
+                new LambdaQueryWrapper<GitHubInstallationEntity>()
+                        .eq(GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
+        if (existing == null || existing.getTeamId() == null) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GITHUB_INSTALLATION_NOT_BOUND",
+                    "GitHub Installation 尚未绑定到 Qgents 团队，请从平台重新发起安装");
+        }
+        Object callbackLock = INSTALLATION_CALLBACK_LOCKS.computeIfAbsent(providerInstallationId, ignored -> new Object());
+        synchronized (callbackLock) {
+            try {
+                syncInstallation(existing.getTeamId(), providerInstallationId);
+                return new GitHubInstallationState(existing.getTeamId(), GitHubClient.WEB);
+            } finally {
+                INSTALLATION_CALLBACK_LOCKS.remove(providerInstallationId, callbackLock);
+            }
+        }
+    }
+
+    /**
      * 校验 installation 是否已被其他团队占用：返回 null 表示可绑定，否则返回冲突错误码。
      * 回调场景使用，避免冲突直接抛异常导致网关把 409 转成 502。
      */

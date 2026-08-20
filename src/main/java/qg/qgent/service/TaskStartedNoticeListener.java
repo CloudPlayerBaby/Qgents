@@ -18,13 +18,12 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 手动发起任务后的群聊提示：任务创建事务提交后，以编排助手身份向需求群插入一句
- * 「@发起者 您创建的任务已开始」文本消息（不新增消息类型，复用 TEXT）。
+ * 任务创建后的群聊确认：任务创建事务提交后，以编排助手身份向需求群插入一句
+ * 「@发起者 已收到你的需求，任务 T-xx 已开始规划。」文本消息（不新增消息类型，复用 TEXT）。
  * <p>
- * 仅在任务由用户手动发起（{@code triggerMessageId} 为空，非 @agent 自动触发 / 显式
- * 消息触发）时插入，避免与 @agent 消息本身重复提示。异步 AFTER_COMMIT 执行，不占
- * 任务创建事务与群行锁；发送失败只记日志，不阻断任务。编排助手缺失时跳过并告警，
- * 不降级为 SYSTEM（系统消息通道只承接 DIFF/TASK_STATUS 卡片）。
+ * 无论任务是通过创建任务接口还是消息中的结构化 {@code AGENT} mention 触发，均发送一次确认。
+ * 异步 AFTER_COMMIT 执行，不占任务创建事务与群行锁；发送失败只记日志，不阻断任务。
+ * 编排助手缺失时跳过并告警，不降级为 SYSTEM（系统消息通道只承接 DIFF/TASK_STATUS 卡片）。
  */
 @Component
 public class TaskStartedNoticeListener {
@@ -45,13 +44,13 @@ public class TaskStartedNoticeListener {
     }
 
     /**
-     * 任务创建提交后异步插入「任务已开始」提示；手动发起（无触发消息）才插入。
+     * 任务创建提交后异步插入一次启动确认；通过固定 clientMessageId 保证重复事件幂等。
      */
     @Async("taskOrchestratorExecutor")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onTaskCreated(TaskCreatedEvent event) {
         TaskEntity task = taskMapper.selectById(event.taskId());
-        if (task == null || task.getTriggerMessageId() != null) {
+        if (task == null) {
             return;
         }
         UUID agentId = orchestratorAgents.resolveIdForTask(task);
@@ -62,7 +61,9 @@ public class TaskStartedNoticeListener {
         String creatorName = creatorDisplayName(task.getCreatedBy());
         MessageSendRequest body = new MessageSendRequest();
         body.setType("TEXT");
-        body.setContent(Map.of("text", "@" + creatorName + " 您创建的任务已开始"));
+        String taskCode = task.getDisplayCode() == null || task.getDisplayCode().isBlank()
+                ? task.getId().toString() : task.getDisplayCode();
+        body.setContent(Map.of("text", "@" + creatorName + " 已收到你的需求，任务 " + taskCode + " 已开始规划。"));
         Mention mention = new Mention();
         mention.setType("USER");
         mention.setId(task.getCreatedBy());

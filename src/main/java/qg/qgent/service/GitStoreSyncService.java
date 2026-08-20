@@ -1,6 +1,8 @@
 package qg.qgent.service;
 
 import org.springframework.http.HttpStatus;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import qg.qgent.api.ApiException;
 import qg.qgent.entity.GitCredentialPurpose;
@@ -23,6 +25,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 将远端目标分支同步到 Worker Git Store 并固定为真实提交。
@@ -32,11 +35,14 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Service
 public class GitStoreSyncService {
+    private static final Logger log = LoggerFactory.getLogger(GitStoreSyncService.class);
     /**
      * source 分支 head 刷新的最小间隔：MR-first 轮询每 15s 触发一次，冲突未解决期间
      * 不需要每次轮询都打 GitHub/Worker，仅在超过该间隔后重新探测远端是否已推进。
      */
     private static final long SOURCE_HEAD_REFRESH_MIN_INTERVAL_MS = 60_000L;
+    private static final int TARGET_SYNC_MAX_ATTEMPTS = 3;
+    private static final long TARGET_SYNC_INITIAL_BACKOFF_MILLIS = 200L;
 
     private final GitHubRepositoryMapper githubRepositories;
     private final GitHubInstallationMapper installations;
@@ -75,6 +81,23 @@ public class GitStoreSyncService {
                 || installation.getProviderInstallationId() == null || installation.getTeamId() == null) {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_UNAVAILABLE", "GitHub 安装不可用于同步目标分支");
         }
+        for (int attempt = 1; attempt <= TARGET_SYNC_MAX_ATTEMPTS; attempt++) {
+            try {
+                return refreshTargetBranchOnce(projectId, repository, branch, githubRepository, installation);
+            } catch (ApiException failure) {
+                if (!isRetryableTargetSyncFailure(failure) || attempt >= TARGET_SYNC_MAX_ATTEMPTS) {
+                    throw failure;
+                }
+                sleepBeforeTargetSyncRetry(attempt, failure.code());
+            }
+        }
+        throw new IllegalStateException("目标分支同步重试循环意外结束");
+    }
+
+    /** 每次重试均重新查询远端 HEAD 并签发新的单次 FETCH grant，禁止复用已兑换的 grant。 */
+    private String refreshTargetBranchOnce(UUID projectId, ProjectRepositoryEntity repository, String branch,
+                                           GitHubRepositoryEntity githubRepository,
+                                           GitHubInstallationEntity installation) {
         GitHubBranchDetails remote = github.getBranch(installation.getProviderInstallationId(),
                 githubRepository.getOwnerLogin(), githubRepository.getName(), branch);
         String expectedCommit = validSha(remote == null ? null : remote.commitSha(), "GITHUB_BRANCH_SHA_INVALID",
@@ -101,6 +124,27 @@ public class GitStoreSyncService {
                     "Worker 目标分支引用未刷新到 GitHub 当前提交");
         }
         return expectedCommit;
+    }
+
+    private boolean isRetryableTargetSyncFailure(ApiException failure) {
+        return switch (failure.code()) {
+            case "GITHUB_API_UNAVAILABLE", "SANDBOX_WORKER_UNAVAILABLE", "GIT_REMOTE_NETWORK_FAILED",
+                    "GIT_REMOTE_RATE_LIMITED", "GIT_REMOTE_SHA_MISMATCH",
+                    "GIT_BASE_REF_NOT_SYNCED", "GIT_COMMAND_TIMEOUT" -> true;
+            default -> false;
+        };
+    }
+
+    private void sleepBeforeTargetSyncRetry(int attempt, String code) {
+        long exponential = Math.min(2_000L, TARGET_SYNC_INITIAL_BACKOFF_MILLIS * (1L << (attempt - 1)));
+        long jitter = ThreadLocalRandom.current().nextLong(Math.max(1L, exponential / 4));
+        log.warn("git target branch sync retrying attempt={} code={} backoffMs={}", attempt, code, exponential + jitter);
+        try {
+            Thread.sleep(exponential + jitter);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GIT_SYNC_RETRY_INTERRUPTED", "Git 同步重试被中断");
+        }
     }
 
     /**

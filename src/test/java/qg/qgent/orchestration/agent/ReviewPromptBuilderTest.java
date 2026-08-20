@@ -93,6 +93,17 @@ class ReviewPromptBuilderTest {
     }
 
     @Test
+    void systemPromptLimitsNoCodingFixToProvenNonCodeDependencies() {
+        String nativeSystem = promptBuilder.buildSystem(true);
+        String legacySystem = promptBuilder.buildSystem(false);
+
+        assertThat(nativeSystem)
+                .contains("只有已有明确证据", "不可能通过修改仓库内代码或配置解决", "尚无法确定根因", "必须为 true");
+        assertThat(legacySystem)
+                .contains("外部审批", "Sandbox/Worker 故障", "不得为了结束任务");
+    }
+
+    @Test
     void userPromptRendersDeviationsAndAssertionSignals() {
         AgentInput input = new AgentInput();
         input.setTaskTitle("append config");

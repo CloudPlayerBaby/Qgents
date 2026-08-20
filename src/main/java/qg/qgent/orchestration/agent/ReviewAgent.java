@@ -89,6 +89,7 @@ public class ReviewAgent implements Agent {
         log.info("review agent start phase={} workspaceId={} protocol={}",
                 input.getPhase(), input.getWorkspaceId(), protocol.isNative() ? "native" : "legacy");
         List<LlmObservation> observations = new ArrayList<>();
+        List<java.util.UUID> activatedSkillIds = new ArrayList<>();
         try {
             GitDiffResult diff = diffAccess.diff(input.getWorkspaceId());
             if (!diff.ok()) {
@@ -97,7 +98,7 @@ public class ReviewAgent implements Agent {
                 return infraFailure(input, "git diff unavailable: " + diff.error(), observations);
             }
             ReviewResult review = protocol.isNative()
-                    ? executeReviewNative(input, diff, observations)
+                    ? executeReviewNative(input, diff, observations, activatedSkillIds)
                     : executeReviewLegacy(input, diff);
             ReviewVerdictComputer.Verdict verdict = verdictComputer.compute(review.getFindings());
             boolean success = verdict.passed();
@@ -109,7 +110,13 @@ public class ReviewAgent implements Agent {
             outcome.setOutcome(success ? RunOutcome.SUCCEEDED
                     : (review.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
             outcome.setMessage(success ? review.getSummary() : firstFinding(review));
+            // 稳定失败码（如 REVIEW_ASSERTION_TARGET_NOT_FOUND）随 Run 落库，供任务级失败语义
+            // 区分「验收目标缺失」等确定性原因，避免回退到笼统的审查未通过。
+            if (!success && review.getFailureCode() != null && !review.getFailureCode().isBlank()) {
+                outcome.setFailureCode(review.getFailureCode());
+            }
             outcome.setObservations(observations);
+            outcome.setActivatedSkillIds(activatedSkillIds);
             log.info("review agent done phase={} workspaceId={} outcome={} observations={}",
                     input.getPhase(), input.getWorkspaceId(), outcome.getOutcome(), observations.size());
             return outcome;
@@ -128,7 +135,8 @@ public class ReviewAgent implements Agent {
      * 原生 Tool Calling 只读循环：每轮把历史回传给模型，直到输出 finalResult；每轮写入观测。
      */
     private ReviewResult executeReviewNative(AgentInput input, GitDiffResult diff,
-                                             List<LlmObservation> observations) {
+                                             List<LlmObservation> observations,
+                                             List<java.util.UUID> activatedSkillIds) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         List<Message> history = new ArrayList<>();
         history.add(new UserMessage(promptBuilder.buildUser(input, files, diff)));
@@ -139,49 +147,53 @@ public class ReviewAgent implements Agent {
         ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
                 input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
         List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
-        for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
-            List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round);
-            Instant turnStartedAt = Instant.now();
-            ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
-            observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
-                    turnStartedAt, Instant.now()));
-            if (turn.isInfraAbort()) {
-                log.error("REVIEW_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
-                        input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
-                throw new IllegalStateException(turn.infraFailure());
-            }
-            if ("length".equalsIgnoreCase(turn.finishReason())) {
-                return finalizeReview(system, requestHistory, turn, observations, round, input.getPhase().name(),
-                        ProtocolFailureCode.LLM_FINISH_LENGTH);
-            }
-            if (turn.continuesToolLoop()) {
-                history = turn.history();
-                if (round == MAX_TOOL_ROUNDS) {
+        try {
+            for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
+                List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round);
+                Instant turnStartedAt = Instant.now();
+                ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
+                observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
+                        turnStartedAt, Instant.now()));
+                if (turn.isInfraAbort()) {
+                    log.error("REVIEW_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
+                            input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
+                    throw new IllegalStateException(turn.infraFailure());
+                }
+                if ("length".equalsIgnoreCase(turn.finishReason())) {
                     return finalizeReview(system, requestHistory, turn, observations, round, input.getPhase().name(),
-                            ProtocolFailureCode.LLM_CONTEXT_LIMIT);
+                            ProtocolFailureCode.LLM_FINISH_LENGTH);
                 }
-                continue;
-            }
-            if (turn.isFinalText()) {
-                log.info("review agent round {} finalResult phase={} workspaceId={}",
-                        round, input.getPhase(), input.getWorkspaceId());
-                try {
-                    return parser.parse(turn.text());
-                } catch (ReviewParseException malformed) {
-                    log.warn("review agent final output not valid JSON, repairing phase={} workspaceId={} round={} code={}",
-                            input.getPhase(), input.getWorkspaceId(), round, malformed.getCode());
-                    String repaired = repairJson(system, turn.text(), malformed.getMessage(), observations, round, input);
-                    if (repaired != null) {
-                        return parser.parse(repaired);
+                if (turn.continuesToolLoop()) {
+                    history = turn.history();
+                    if (round == MAX_TOOL_ROUNDS) {
+                        return finalizeReview(system, requestHistory, turn, observations, round, input.getPhase().name(),
+                                ProtocolFailureCode.LLM_CONTEXT_LIMIT);
                     }
-                    throw malformed;
+                    continue;
                 }
+                if (turn.isFinalText()) {
+                    log.info("review agent round {} finalResult phase={} workspaceId={}",
+                            round, input.getPhase(), input.getWorkspaceId());
+                    try {
+                        return parser.parse(turn.text());
+                    } catch (ReviewParseException malformed) {
+                        log.warn("review agent final output not valid JSON, repairing phase={} workspaceId={} round={} code={}",
+                                input.getPhase(), input.getWorkspaceId(), round, malformed.getCode());
+                        String repaired = repairJson(system, turn.text(), malformed.getMessage(), observations, round, input);
+                        if (repaired != null) {
+                            return parser.parse(repaired);
+                        }
+                        throw malformed;
+                    }
+                }
+                throw new ReviewParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
+                        "review tool turn returned no text, history or infra failure");
             }
-            throw new ReviewParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
-                    "review tool turn returned no text, history or infra failure");
+            throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
+                    "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+        } finally {
+            activatedSkillIds.addAll(activateSkillTool.activatedSkillIds());
         }
-        throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
-                "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
     }
 
     private ReviewResult finalizeReview(String system, List<Message> requestHistory, ToolTurnResult trigger,
@@ -195,7 +207,8 @@ public class ReviewAgent implements Agent {
                                 + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,"
                                 + "\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\",\"issue\":\"问题\","
                                 + "\"suggestion\":\"建议\"}],\"suggestions\":[\"建议\"],"
-                                + "\"needsCodingFix\":true|false}"));
+                                + "\"needsCodingFix\":true|false,"
+                                + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND（可选，仅验收目标缺失时输出）\"}"));
         observations.add(LlmObservation.of(phase, round + 1, finalization,
                 finalizationStartedAt, Instant.now()));
         if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
@@ -215,12 +228,14 @@ public class ReviewAgent implements Agent {
                 "{\"success\":true|false,\"summary\":\"审查摘要\","
                         + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
                         + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
-                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false}" );
+                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false,"
+                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND（可选）\"}" );
         String repaired = JsonRepairSupport.repairOnce(llm, system, raw, errorMessage,
                 "{\"success\":true|false,\"summary\":\"审查摘要\","
                         + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
                         + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
-                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false}");
+                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false,"
+                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND（可选）\"}");
         String repairedSha = repaired == null ? null
                 : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
         observations.add(new LlmObservation(input.getPhase().name(), round + 1,

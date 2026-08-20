@@ -405,6 +405,21 @@ public class TaskDisplayService {
                                      DiffReviewBatchEntity batch, List<DiffEntity> batchDiffs) {
         String status = task.getStatus();
         if ("WAITING_DIFF_CONFIRMATION".equals(status)) {
+            if (batch != null && "SUPERSEDED".equals(batch.getReviewStatus())) {
+                return new Attention("DIFF_REVIEW_SUPERSEDED", "Diff 已被后续修改取代",
+                        "请查看同一 Workspace 的最新 Diff，旧 Diff 不能再确认", null, null,
+                        id(batch.getId()), null, iso(task.getUpdatedAt()));
+            }
+            // 仅 DIFF_FIRST + USER 确认的批次才需要用户确认；MR_FIRST 为系统自动授权
+            // （ACCEPTED+SYSTEM），不应让前端误以为等待用户确认。
+            boolean userConfirmation = "DIFF_FIRST".equals(task.getDeliveryMode())
+                    && batch != null
+                    && "PENDING_CONFIRMATION".equals(batch.getReviewStatus())
+                    && "USER".equals(batch.getConfirmationSource());
+            if (!userConfirmation) {
+                return new Attention("DELIVERING", "自动交付中", "MR_FIRST 已自动授权交付，无需用户确认",
+                        null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
+            }
             return new Attention("DIFF_CONFIRMATION_REQUIRED", "等待确认最终 Diff", "已生成多仓库总 Diff，等待确认",
                     null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
         }
@@ -463,12 +478,8 @@ public class TaskDisplayService {
         // FAILED 也是需要展示失败原因的终态；成功、取消等终态不应被历史失败运行污染。
         if (failedRun != null && ("FAILED".equals(status) || !TERMINAL_TASK_STATUSES.contains(status))) {
             String publicCode = ExecutionContentSanitizer.publicFailureCode(failedRun.getFailureCode());
-            String failureReason = failedRun.getFailureReason() == null
-                    ? null : ExecutionContentSanitizer.sanitize(failedRun.getFailureReason()).strip();
-            String summary = publicCode == null
-                    ? (failureReason == null || failureReason.isBlank()
-                    ? ExecutionContentSanitizer.userFailureDescription(null) : failureReason)
-                    : ExecutionContentSanitizer.userFailureDescription(publicCode);
+            // 历史 failureReason 可能是模型/供应商异常原文；任务列表同样只能展示受控文案。
+            String summary = ExecutionContentSanitizer.userFailureDescription(publicCode);
             return new Attention("EXECUTION_FAILED", "执行失败", summary,
                     id(failedRun.getId()), null, null, null,
                     iso(failedRun.getFailureOccurredAt() == null
@@ -497,11 +508,18 @@ public class TaskDisplayService {
                 : (!ownerOrAdmin ? "TASK_FORBIDDEN"
                    : (!hasPendingStep ? "NO_PENDING_STEP" : "TASK_TERMINATED"));
 
-        boolean reviewDecidable = batch != null && "PENDING_CONFIRMATION".equals(batch.getReviewStatus());
+        // 仅 DIFF_FIRST + PENDING_CONFIRMATION + USER（用户发起确认）的批次可确认/拒绝；
+        // MR_FIRST 为系统自动授权（ACCEPTED+SYSTEM），不存在用户确认环节。
+        boolean reviewDecidable = "DIFF_FIRST".equals(task.getDeliveryMode())
+                && batch != null
+                && "PENDING_CONFIRMATION".equals(batch.getReviewStatus())
+                && "USER".equals(batch.getConfirmationSource());
         boolean canConfirm = ownerOrAdmin && reviewDecidable;
         String confirmReason = canConfirm ? null
                 : (!ownerOrAdmin ? "DIFF_REVIEW_FORBIDDEN"
-                   : (batch == null ? "DIFF_REVIEW_NOT_FOUND" : "DIFF_REVIEW_NOT_DECIDABLE"));
+                   : (batch == null ? "DIFF_REVIEW_NOT_FOUND"
+                   : ("SUPERSEDED".equals(batch.getReviewStatus()) ? "DIFF_REVIEW_SUPERSEDED"
+                   : "DIFF_REVIEW_NOT_DECIDABLE")));
         boolean canReject = canConfirm;
         String rejectReason = confirmReason;
 

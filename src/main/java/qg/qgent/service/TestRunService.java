@@ -16,6 +16,7 @@ import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitResolveRequest;
 import qg.qgent.orchestration.worker.WorkerGitResolveResponse;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -268,18 +269,17 @@ public class TestRunService {
     }
 
     /**
-     * 为 MR_FIRST 自动发起一条仓库级 Dry Run。
+     * 为 MR_FIRST / DIFF_FIRST 自动发起一条仓库级 Dry Run。
      * <p>
      * 该入口只由内部自动化调用，不暴露给 Controller。它复用公开 Dry Run 的完整校验和
      * Testset 快照逻辑，并在 Worker/GitHub 调用前检查同一 Task、仓库、HEAD 和目标分支的
-     * 活跃运行，避免 delivery.started 重复投递导致重复测试。
+     * 活跃运行，避免 delivery.started 或重复预检申请导致重复测试。
      */
     public DryRunResponse createAutomaticDryRun(UUID projectId, UUID taskId, UUID repositoryId,
                                                 String targetBranch) {
         TaskEntity task = taskMapper.selectById(taskId);
         if (task == null || !projectId.equals(task.getProjectId()) || task.getWorkspaceId() == null
-                || !"MR_FIRST".equals(task.getDeliveryMode())
-                || !"WAITING_PREFLIGHT".equals(task.getStatus())) {
+                || !isAutomaticDryRunActionable(task)) {
             return null;
         }
         WorkspaceRepositoryEntity worktree = workspaceRepositoryMapper.selectByWorkspace(task.getWorkspaceId()).stream()
@@ -359,6 +359,17 @@ public class TestRunService {
                 .eq(DryRunEntity::getHeadCommit, headCommit)
                 .eq(DryRunEntity::getTargetBranch, targetBranch)
                 .orderByDesc(DryRunEntity::getCreatedAt).last("LIMIT 1"));
+    }
+
+    /**
+     * 自动 Dry Run 只服务于仍可创建 MR 的已交付代码快照：MR_FIRST 已完成全部仓库 Push 并
+     * 等待预检，DIFF_FIRST 已由用户确认并 Push。与 {@code PreflightGateService} 的可预检
+     * 判定保持一致，避免为执行中或已失败的任务启动测试。
+     */
+    private boolean isAutomaticDryRunActionable(TaskEntity task) {
+        return ("MR_FIRST".equals(task.getDeliveryMode())
+                && ("WAITING_PREFLIGHT".equals(task.getStatus()) || "SUCCEEDED".equals(task.getStatus())))
+                || ("DIFF_FIRST".equals(task.getDeliveryMode()) && "SUCCEEDED".equals(task.getStatus()));
     }
 
     /**
@@ -448,6 +459,39 @@ public class TestRunService {
             executionDispatcher.dispatchDryRun(retry.getId());
         });
         return toDryRun(retry);
+    }
+
+    /**
+     * 为 CQ 拒绝后的重新预检创建全新 Dry Run。
+     * <p>
+     * 复用与 {@link #retryDryRun} 相同的固定上下文校验，但不再要求来源 Dry Run 为基础设施失败：
+     * CQ 被拒绝时 Dry Run 本身是 PASSED，用户修改意见并不改变代码快照，重新预检必须创建新的
+     * Dry Run ID 并让绑定旧 Dry Run 的 CQ+1 失效。目标分支推进导致上下文过期时拒绝重试。
+     */
+    public DryRunResponse retryPreflightDryRun(UUID projectId, UUID dryRunId, UUID userId) {
+        projectAccess.requireProjectMember(projectId, userId);
+        DryRunEntity source = dryRunMapper.selectById(dryRunId);
+        if (source == null || !projectId.equals(source.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "DRY_RUN_NOT_FOUND", "试运行不存在或不可见");
+        }
+        TaskEntity task = taskMapper.selectById(source.getTaskId());
+        if (task == null || !isAutomaticDryRunActionable(task)) {
+            throw new ApiException(HttpStatus.CONFLICT, "PREFLIGHT_TASK_NOT_READY",
+                    "Task 已不在可重新预检的稳定状态");
+        }
+        ProjectRepositoryEntity repository = requireRepository(projectId, source.getProjectRepositoryId());
+        String branch = gitStores.normalizeTargetBranch(source.getTargetBranch());
+        String currentTarget = gitStores.refreshTargetBranch(projectId, repository, branch);
+        if (!currentTarget.equalsIgnoreCase(source.getResolvedTargetCommit())) {
+            throw new ApiException(HttpStatus.CONFLICT, "PREFLIGHT_CONTEXT_STALE",
+                    "目标分支已推进，请重新发起预检");
+        }
+        DryRunCreateRequest request = new DryRunCreateRequest();
+        request.setRepositoryId(source.getProjectRepositoryId());
+        request.setTaskId(source.getTaskId());
+        request.setSourceRef(source.getHeadCommit());
+        request.setTargetBranch(branch);
+        return createDryRunWithoutAccessCheck(projectId, userId, request, source.getId(), "CQ_REJECTED");
     }
 
     // ---------- 私有辅助 ----------
@@ -629,7 +673,7 @@ public class TestRunService {
         return new TestRunResponse(id(run.getId()), id(run.getProjectId()), id(run.getProjectRepositoryId()),
                 run.getRef(), run.getTestsetIds(), run.getStatus(), run.getSummary(),
                 id(run.getCreatedBy()), iso(run.getCreatedAt()),
-                iso(run.getStartedAt()), iso(run.getFinishedAt()), iso(run.getUpdatedAt()));
+                iso(run.getStartedAt()), iso(run.getFinishedAt()), iso(run.getUpdatedAt()), durationMs(run));
     }
 
     private DryRunResponse toDryRun(DryRunEntity run) {
@@ -643,7 +687,22 @@ public class TestRunService {
                 id(run.getProjectRepositoryId()), run.getTestsetIds() == null ? List.of() : run.getTestsetIds(),
                 id(run.getTaskId()), run.getRef() == null ? run.getExecutionSourceRef() : run.getRef(),
                 run.getStatus(), id(run.getCreatedBy()), iso(run.getCreatedAt()), iso(run.getStartedAt()),
-                iso(run.getFinishedAt()));
+                iso(run.getFinishedAt()), durationMs(run));
+    }
+
+    /**
+     * 测试运行的时间均由数据库 UTC 时间戳派生，避免客户端把 UTC 字符串误按本地时区相减。
+     * RUNNING 返回查询瞬间的快照；出现时钟异常时不返回负值。
+     */
+    private Long durationMs(TestRunEntity run) {
+        if (run.getStartedAt() == null) {
+            return null;
+        }
+        LocalDateTime end = run.getFinishedAt() == null ? LocalDateTime.now(ZoneOffset.UTC) : run.getFinishedAt();
+        if (end.isBefore(run.getStartedAt())) {
+            return null;
+        }
+        return Duration.between(run.getStartedAt(), end).toMillis();
     }
 
     private DryRunListItemResponse toDryRunListItem(DryRunEntity run) {

@@ -235,9 +235,29 @@ class TaskRunServiceTest {
 
         assertEquals("CODING", response.getStage());
         assertEquals("FILE_PATCH_FAILED", response.getFailure().getFailureCode());
-        assertEquals("补丁上下文与文件不一致", response.getFailure().getSummary());
+        assertEquals("补丁无法应用，请重新读取文件后重试", response.getFailure().getSummary());
         assertEquals(executionId.toString(), response.getWorkerExecutions().getFirst().getExecutionId());
         assertEquals(1, response.getWorkerExecutions().size());
+    }
+
+    @Test
+    void diagnosticsNeverExposePersistedUpstreamProviderError() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("FAILED");
+        run.setFailureCode("FAILED_INFRASTRUCTURE");
+        run.setFailureReason("plan agent failed: 400: Access denied; account is in good standing; "
+                + "https://provider.example/error");
+        run.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
+        when(runs.selectById(runId)).thenReturn(run);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+
+        TaskRunDiagnosticsResponse response = service.diagnostics(projectId, runId, UUID.randomUUID());
+
+        assertEquals("FAILED_INFRASTRUCTURE", response.getFailure().getFailureCode());
+        assertEquals("执行基础设施暂不可用", response.getFailure().getSummary());
+        assertFalse(response.getFailure().getSummary().contains("Access denied"));
+        assertFalse(response.getFailure().getSummary().contains("provider.example"));
     }
 
     @Test
@@ -492,6 +512,24 @@ class TaskRunServiceTest {
         assertTrue(log.getValue().getContent().contains("CODING_NO_ACTUAL_CHANGE"));
         assertTrue(log.getValue().getContent().contains("代码步骤未产生实际文件变更"));
         assertFalse(log.getValue().getContent().contains("internal model error"));
+    }
+
+    @Test
+    void terminalFailurePersistsInternalGitCategoryAsStableClientCode() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("RUNNING");
+        when(runs.selectById(runId)).thenReturn(run);
+        when(logs.nextSequence(runId)).thenReturn(0L);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+
+        service.complete(runId, "FAILED", "GIT_REMOTE_AUTH_FAILED", "远程 Git 认证失败");
+
+        assertEquals("GIT_STORE_FETCH_FAILED", run.getFailureCode());
+        var log = org.mockito.ArgumentCaptor.forClass(ExecutionLogEntity.class);
+        verify(logs).insert(log.capture());
+        assertTrue(log.getValue().getContent().contains("GIT_STORE_FETCH_FAILED"));
+        assertFalse(log.getValue().getContent().contains("GIT_REMOTE_AUTH_FAILED"));
     }
 
     @Test

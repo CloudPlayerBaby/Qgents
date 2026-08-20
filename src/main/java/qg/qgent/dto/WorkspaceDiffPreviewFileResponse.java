@@ -14,6 +14,11 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class WorkspaceDiffPreviewFileResponse {
+    /**
+     * 项目仓库绑定 ID（project_repositories.id）。多仓库 Preview 中用于把
+     * Workspace 内的 repositoryPath 映射回真实仓库；旧快照无法解析时可为空。
+     */
+    private String repositoryId;
     private String path;
     private String changeType;
     private Integer additions;

@@ -88,10 +88,11 @@ public class GenericCustomAgent implements Agent {
         log.info("custom agent start agentId={} role={} write={} phase={} workspaceId={}",
                 entity.getId(), entity.getRole(), writeCapable, input.getPhase(), input.getWorkspaceId());
         List<LlmObservation> observations = new ArrayList<>();
+        List<java.util.UUID> activatedSkillIds = new ArrayList<>();
         ChangedWriteFactLedger observedWrites = new ChangedWriteFactLedger(
                 input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts());
         try {
-            CustomResult result = executeCustom(input, observations, writeCapable, observedWrites);
+            CustomResult result = executeCustom(input, observations, writeCapable, observedWrites, activatedSkillIds);
             if (executionMode.requireChange() && result.success() && !observedWrites.hasChangedWrite()) {
                 // 目标已满足：本步骤声明的目标文件已存在于 Workspace（前序步骤越界完成或历史提交覆盖），
                 // 零写入是本步骤职责已被满足的幂等结果，按 SUCCEEDED 收敛，不判为模型行为错误。
@@ -106,6 +107,7 @@ public class GenericCustomAgent implements Agent {
                             : (result.summary() == null || result.summary().isBlank()
                                     ? "目标已由前序步骤满足，本步骤无新增写入" : result.summary()));
                     satisfied.setObservations(observations);
+                    satisfied.setActivatedSkillIds(activatedSkillIds);
                     satisfied.setPatchFailureCounts(observedWrites.patchFailureCounts());
                     return satisfied;
                 }
@@ -130,6 +132,7 @@ public class GenericCustomAgent implements Agent {
                         + observedWrites.recoveryHint())
                         + (patchUnrecoverable ? "；连续补丁失败后的 replace_file 也未完成" : ""));
                 failure.setObservations(observations);
+                failure.setActivatedSkillIds(activatedSkillIds);
                 failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
                 return failure;
             }
@@ -146,6 +149,7 @@ public class GenericCustomAgent implements Agent {
             outcome.setMessage(pickMessage(result)
                     + (patchUnrecoverable ? "；补丁连续失败且 replace_file 未完成，无法继续自动修复" : ""));
             outcome.setObservations(observations);
+            outcome.setActivatedSkillIds(activatedSkillIds);
             outcome.setPatchFailureCounts(observedWrites.patchFailureCounts());
             // 写角色成功且本次确实产生变更时，回填最小 CodingResult；目录与文件分开记录。
             if (result.success() && writeCapable && lastCodingTools != null
@@ -168,6 +172,7 @@ public class GenericCustomAgent implements Agent {
             failure.setFailureCode(e.code());
             failure.setMessage("custom agent failed: " + e.getMessage());
             failure.setObservations(observations);
+            failure.setActivatedSkillIds(activatedSkillIds);
             failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
             return failure;
         } catch (RuntimeException e) {
@@ -181,6 +186,7 @@ public class GenericCustomAgent implements Agent {
             }
             failure.setMessage("custom agent failed: " + e.getMessage());
             failure.setObservations(observations);
+            failure.setActivatedSkillIds(activatedSkillIds);
             failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
             return failure;
         }
@@ -192,10 +198,9 @@ public class GenericCustomAgent implements Agent {
      * 统一转为 FAILED_INFRASTRUCTURE。
      */
     private CustomResult executeCustom(AgentInput input, List<LlmObservation> observations, boolean writeCapable,
-                                       ChangedWriteFactLedger observedWrites) {
+                                       ChangedWriteFactLedger observedWrites,
+                                       List<java.util.UUID> activatedSkillIds) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
-        List<Message> history = new ArrayList<>();
-        history.add(new UserMessage(buildUser(input, files)));
         boolean contextToolsAvailable = input.getTaskRunId() != null
                 && input.getPhase() != qg.qgent.orchestration.OrchestrationPhase.PLAN
                 && input.getPhase() != qg.qgent.orchestration.OrchestrationPhase.TESTING;
@@ -208,9 +213,10 @@ public class GenericCustomAgent implements Agent {
                     input.getTaskId(), input.getTaskRunId());
             this.lastCodingTools = codingTools;
         }
+        ActivateSkillTool activateSkillTool = null;
         List<ToolCallback> callbacks;
         if (contextToolsAvailable) {
-            ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
+            activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
                     input.getProjectId());
             ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
                     input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
@@ -218,6 +224,11 @@ public class GenericCustomAgent implements Agent {
         } else {
             callbacks = List.of(ToolCallbacks.from(tools));
         }
+        String qualityRepairSkills = writeCapable
+                ? QualityRepairSkillContext.preloadAndRender(activateSkillTool, input.getRetryContext()) : "";
+        List<Message> history = new ArrayList<>();
+        history.add(new UserMessage(buildUser(input, files, qualityRepairSkills)));
+        try {
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round,
                     observedWrites.changedPaths(), observedWrites.changedDirectories());
@@ -268,6 +279,11 @@ public class GenericCustomAgent implements Agent {
         }
         throw new GenericParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+        } finally {
+            if (activateSkillTool != null) {
+                activatedSkillIds.addAll(activateSkillTool.activatedSkillIds());
+            }
+        }
     }
 
     private CustomResult finalizeCustom(String system, List<Message> requestHistory, ToolTurnResult trigger,
@@ -342,7 +358,7 @@ public class GenericCustomAgent implements Agent {
     /**
      * 用户消息：任务上下文 + 步骤指令 + 结构化计划（如有）+ 工作区文件树。
      */
-    private String buildUser(AgentInput input, List<String> files) {
+    private String buildUser(AgentInput input, List<String> files, String qualityRepairSkills) {
         StringBuilder sb = new StringBuilder();
         sb.append("任务标题：").append(nullToBlank(input.getTaskTitle()));
         sb.append("\n任务描述：").append(nullToBlank(input.getRequirement()));
@@ -358,6 +374,9 @@ public class GenericCustomAgent implements Agent {
         }
         sb.append("\n\n工作区文件树：\n").append(renderTree(files));
         sb.append(ContextPromptRenderer.render(input));
+        if (qualityRepairSkills != null && !qualityRepairSkills.isBlank()) {
+            sb.append(qualityRepairSkills);
+        }
         return sb.toString();
     }
 

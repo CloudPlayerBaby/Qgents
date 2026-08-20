@@ -10,14 +10,17 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.WorkspaceDiffPreviewFileResponse;
+import qg.qgent.dto.WorkspaceDiffPreviewFileDetailResponse;
 import qg.qgent.dto.WorkspaceDiffPreviewResponse;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.WorkspaceDiffPreviewEntity;
 import qg.qgent.entity.WorkspaceDiffPreviewRevisionEntity;
+import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.handler.UuidBinaryTypeHandler;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.WorkspaceDiffPreviewMapper;
 import qg.qgent.mapper.WorkspaceDiffPreviewRevisionMapper;
+import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 import qg.qgent.service.DiffSnapshotStorage;
@@ -57,6 +60,7 @@ class WorkspaceDiffPreviewServiceTest {
     private static final UUID WORKSPACE_ID = UUID.randomUUID();
     private static final UUID GROUP_ID = UUID.randomUUID();
     private static final UUID ACTOR = UUID.randomUUID();
+    private static final UUID REPOSITORY_ID = UUID.randomUUID();
     private static final String PATCH = "diff --git a/A.java b/A.java\n@@ -1 +1 @@\n+new line\n";
     private static final String TREE_HASH =
             "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -67,6 +71,7 @@ class WorkspaceDiffPreviewServiceTest {
     private final DiffSnapshotStorage snapshots = mock(DiffSnapshotStorage.class);
     private final WorkspaceDiffPreviewMapper previewMapper = mock(WorkspaceDiffPreviewMapper.class);
     private final WorkspaceDiffPreviewRevisionMapper revisionMapper = mock(WorkspaceDiffPreviewRevisionMapper.class);
+    private final WorkspaceRepositoryMapper workspaceRepositories = mock(WorkspaceRepositoryMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final GroupService groups = mock(GroupService.class);
     private final TaskMapper tasks = mock(TaskMapper.class);
@@ -86,11 +91,13 @@ class WorkspaceDiffPreviewServiceTest {
 
     private WorkspaceDiffPreviewService enabled() {
         return new WorkspaceDiffPreviewService(diffAccess, eventService, snapshots, previewMapper, revisionMapper,
+                workspaceRepositories,
                 access, groups, tasks, true);
     }
 
     private WorkspaceDiffPreviewService disabled() {
         return new WorkspaceDiffPreviewService(diffAccess, eventService, snapshots, previewMapper, revisionMapper,
+                workspaceRepositories,
                 access, groups, tasks, false);
     }
 
@@ -119,6 +126,14 @@ class WorkspaceDiffPreviewServiceTest {
         rev.setDeletions(1);
         rev.setCreatedAt(LocalDateTime.of(2026, 8, 16, 10, 0).atOffset(ZoneOffset.UTC).toLocalDateTime());
         return rev;
+    }
+
+    private WorkspaceRepositoryEntity repository(String workspacePath, UUID repositoryId) {
+        WorkspaceRepositoryEntity repository = new WorkspaceRepositoryEntity();
+        repository.setWorkspaceId(WORKSPACE_ID);
+        repository.setWorkspacePath(workspacePath);
+        repository.setProjectRepositoryId(repositoryId);
+        return repository;
     }
 
     @Test
@@ -441,6 +456,43 @@ class WorkspaceDiffPreviewServiceTest {
     }
 
     @Test
+    void filesAttachRepositoryIdForMultipleRepositories() {
+        UUID backendRepositoryId = UUID.randomUUID();
+        when(tasks.selectById(TASK_ID)).thenReturn(task());
+        when(workspaceRepositories.selectByWorkspace(WORKSPACE_ID)).thenReturn(List.of(
+                repository("frontend", REPOSITORY_ID),
+                repository("backend", backendRepositoryId)));
+        when(revisionMapper.selectOne(any())).thenReturn(revision(2, SNAPSHOT_KEY));
+        when(snapshots.load(SNAPSHOT_KEY)).thenReturn(
+                "===== frontend =====\n"
+                        + "diff --git a/src/App.tsx b/src/App.tsx\n"
+                        + "+new frontend line\n"
+                        + "===== backend =====\n"
+                        + "diff --git a/src/App.java b/src/App.java\n"
+                        + "+new backend line\n");
+
+        List<WorkspaceDiffPreviewFileResponse> files = enabled().files(PROJECT_ID, TASK_ID, ACTOR, null);
+
+        assertThat(files).extracting(WorkspaceDiffPreviewFileResponse::getRepositoryId)
+                .containsExactly(REPOSITORY_ID.toString(), backendRepositoryId.toString());
+    }
+
+    @Test
+    void filesAttachOnlyRepositoryIdForSingleRepositoryWithoutSeparator() {
+        when(tasks.selectById(TASK_ID)).thenReturn(task());
+        when(workspaceRepositories.selectByWorkspace(WORKSPACE_ID))
+                .thenReturn(List.of(repository("repo", REPOSITORY_ID)));
+        when(revisionMapper.selectOne(any())).thenReturn(revision(2, SNAPSHOT_KEY));
+        when(snapshots.load(SNAPSHOT_KEY)).thenReturn(PATCH);
+
+        List<WorkspaceDiffPreviewFileResponse> files = enabled().files(PROJECT_ID, TASK_ID, ACTOR, null);
+
+        assertThat(files).singleElement()
+                .extracting(WorkspaceDiffPreviewFileResponse::getRepositoryId)
+                .isEqualTo(REPOSITORY_ID.toString());
+    }
+
+    @Test
     void filesEmptyWhenNoSnapshot() {
         when(tasks.selectById(TASK_ID)).thenReturn(task());
         when(revisionMapper.selectOne(any())).thenReturn(revision(1, null));
@@ -448,5 +500,33 @@ class WorkspaceDiffPreviewServiceTest {
         List<WorkspaceDiffPreviewFileResponse> files = enabled().files(PROJECT_ID, TASK_ID, ACTOR, null);
 
         assertThat(files).isEmpty();
+    }
+
+    @Test
+    void fileReturnsOnlySelectedRepositoryFilePatch() {
+        when(tasks.selectById(TASK_ID)).thenReturn(task());
+        when(workspaceRepositories.selectByWorkspace(WORKSPACE_ID))
+                .thenReturn(List.of(repository("repo", REPOSITORY_ID)));
+        when(revisionMapper.selectOne(any())).thenReturn(revision(2, SNAPSHOT_KEY));
+        when(snapshots.load(SNAPSHOT_KEY)).thenReturn(QUERY_PATCH);
+
+        WorkspaceDiffPreviewFileDetailResponse response = enabled().file(PROJECT_ID, TASK_ID, ACTOR,
+                2L, REPOSITORY_ID, "src/main/java/A.java");
+
+        assertThat(response.getRevision()).isEqualTo(2L);
+        assertThat(response.getRepositoryId()).isEqualTo(REPOSITORY_ID.toString());
+        assertThat(response.getPath()).isEqualTo("src/main/java/A.java");
+        assertThat(response.getPatch()).contains("diff --git a/src/main/java/A.java")
+                .doesNotContain("src/main/java/B.java");
+    }
+
+    @Test
+    void fileRejectsPathTraversalBeforeDatabaseLookup() {
+        Throwable thrown = catchThrowable(() -> enabled().file(PROJECT_ID, TASK_ID, ACTOR,
+                null, REPOSITORY_ID, "../secret.txt"));
+
+        assertThat(thrown).isInstanceOf(ApiException.class);
+        assertThat(((ApiException) thrown).code()).isEqualTo("INVALID_REQUEST");
+        verify(tasks, never()).selectById(any());
     }
 }

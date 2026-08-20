@@ -2,6 +2,7 @@ package qg.qgent.orchestration;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import qg.qgent.dto.GroupContext;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.entity.DiffEntity;
@@ -21,9 +22,11 @@ import qg.qgent.service.MessageService;
 import qg.qgent.service.NotificationService;
 import qg.qgent.service.OrchestratorAgentService;
 import qg.qgent.service.TaskExecutionArtifactService;
+import qg.qgent.service.TaskRunFailureDiagnosticService;
 import qg.qgent.service.TaskPlanMaterializationService;
 import qg.qgent.service.TaskRunService;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,7 +68,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void plannerCreatesNoTaskRunAndFormalGraphStartsAtDeveloper() {
+    void plannerCreatesItsOwnRunAndFormalGraphStartsAtDeveloper() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -79,9 +82,10 @@ class TaskOrchestratorTest {
 
         fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
 
-        verify(fixture.taskRuns, times(3)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
+        // Planner 也有自己的持久化 Run（用于心跳与启动失败记录），正式图从 Developer 开始。
+        verify(fixture.taskRuns, times(4)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
                 anyString(), any(), any(), any());
-        verify(fixture.taskRuns, never()).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
+        verify(fixture.taskRuns).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
                 anyString(), any(), any(), any());
         verify(fixture.materialization).materialize(eq(task), any(PlanResult.class));
         assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
@@ -176,6 +180,30 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void testQualityFailureResetsReworkChainToPending() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+        AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
+        TestResult testResult = new TestResult();
+        testResult.setSuccess(false);
+        testResult.setNeedsCodingFix(true);
+        failedTest.setTestResult(testResult);
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), failedTest,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.captureStepStatuses()).contains(developer.getId() + "=PENDING", tester.getId() + "=PENDING",
+                reviewer.getId() + "=PENDING");
+    }
+
+    @Test
     void verifyDeveloperStepUsesTestingPhaseAndQualityFailureReturnsToLastMutableStep() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
@@ -228,6 +256,8 @@ class TaskOrchestratorTest {
         verify(fixture.taskRuns, never()).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(reviewer.getId()), anyString(), any(), any(), any());
         assertThat(fixture.updatedStatuses()).contains("FAILED");
+        assertThat(task.getFailureCode()).isEqualTo("QUALITY_REPAIR_STEP_UNAVAILABLE");
+        assertThat(task.getFailureReason()).contains("没有可写");
     }
 
     @Test
@@ -287,7 +317,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void failedPlannerDoesNotEnterFormalGraphOrCreateTaskRun() {
+    void failedPlannerCreatesOnlyItsOwnRunNotFormalGraph() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -297,7 +327,9 @@ class TaskOrchestratorTest {
                 .orchestrate(task.getProjectId(), task.getId());
 
         verify(fixture.materialization, never()).materialize(any(), any());
-        verifyNoInteractions(fixture.taskRuns);
+        // Planner 失败仍持久化自己的 Run，但不物化正式步骤、不进入 Developer 等正式图。
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
+                anyString(), any(), any(), any());
         assertThat(fixture.updatedStatuses()).contains("FAILED");
     }
 
@@ -314,7 +346,10 @@ class TaskOrchestratorTest {
         fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess()))
                 .orchestrate(task.getProjectId(), task.getId());
 
-        verifyNoInteractions(fixture.taskRuns);
+        // 物化失败：Planner Run 仍被持久化并落 FAILED，但不再创建 Developer 等正式 Run。
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
+                anyString(), any(), any(), any());
+        verify(fixture.taskRuns).complete(any(), eq("FAILED"), eq("FAILED_INFRASTRUCTURE"), any());
         assertThat(planner.getStatus()).isEqualTo("FAILED");
         verify(fixture.steps, times(2)).updateById(planner);
         assertThat(fixture.updatedStatuses()).contains("FAILED");
@@ -427,7 +462,8 @@ class TaskOrchestratorTest {
         fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
 
         verify(fixture.materialization).materialize(eq(task), any(PlanResult.class));
-        verify(fixture.taskRuns, times(3)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
+        // Planner 重试两轮各创建一次 Run，随后 Developer/Tester/Reviewer 三个正式 Run。
+        verify(fixture.taskRuns, times(5)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
                 anyString(), any(), any(), any());
         assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
         assertThat(fixture.feedbacksFor(OrchestrationPhase.PLAN)).hasSize(2);
@@ -463,6 +499,58 @@ class TaskOrchestratorTest {
         assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly(null, failedReview);
         assertThat(fixture.feedbacksFor(OrchestrationPhase.TESTING)).containsExactly(null, null);
         assertThat(fixture.feedbacksFor(OrchestrationPhase.REVIEWING)).containsExactly(null, failedReview);
+        ArgumentCaptor<String> reviewRunMessage = ArgumentCaptor.forClass(String.class);
+        verify(fixture.taskRuns, atLeastOnce()).complete(any(), eq("FAILED"), isNull(), reviewRunMessage.capture());
+        assertThat(reviewRunMessage.getAllValues()).anySatisfy(message ->
+                assertThat(message).contains("已安排第1/3次质量修复"));
+    }
+
+    @Test
+    void reviewQualityFailureResetsPreviouslySuccessfulTesterForRevalidation() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        failedReview.setReviewResult(reviewResult);
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING), failedReview,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.captureStepStatuses()).contains(developer.getId() + "=PENDING", tester.getId() + "=PENDING",
+                reviewer.getId() + "=PENDING");
+    }
+
+    @Test
+    void reviewQualityFeedbackTargetsLastMutableCustomStep() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity customWriter = fixture.step(task, "SECURITY", 2);
+        customWriter.setExecutionMode("MUTATE");
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 3);
+        fixture.stubPlan(task, planner, List.of(planner, customWriter, reviewer));
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        failedReview.setReviewResult(reviewResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.TESTING), failedReview,
+                fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.feedbacksForStep(customWriter.getId())).containsExactly(null, failedReview);
+        assertThat(fixture.feedbacksForStep(reviewer.getId())).containsExactly(null, failedReview);
     }
 
     @Test
@@ -731,9 +819,12 @@ class TaskOrchestratorTest {
                 .orchestrate(task.getProjectId(), task.getId());
 
         verify(fixture.materialization).materialize(eq(task), any(PlanResult.class));
-        // 认领失败后不再进入正式图：不创建任何 TaskRun，也不触碰运行产物
-        verifyNoInteractions(fixture.taskRuns);
-        verify(fixture.artifacts, never()).createRunArtifact(any(), any(), any(), any(), any());
+        // 认领失败后不再进入正式图：仅 Planner Run 与 PLAN 产物已落库，不创建 Developer 等正式 Run。
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
+                anyString(), any(), any(), any());
+        verify(fixture.taskRuns).complete(any(), eq("SUCCEEDED"));
+        verify(fixture.artifacts, times(1)).createRunArtifact(any(), any(), any(), eq("PLAN"), any());
+        verify(fixture.artifacts, never()).createRunArtifact(any(), any(), any(), eq("CODING"), any());
     }
 
     @Test
@@ -778,8 +869,32 @@ class TaskOrchestratorTest {
         verify(fixture.artifacts, atLeastOnce()).createRunArtifact(any(), any(), any(), eq("CODING"), summary.capture());
         assertThat(summary.getAllValues()).anySatisfy(s ->
                 assertThat(s.get("failureCode")).isEqualTo("AGENT_RUN_TIMEOUT"));
+        InOrder persistedBeforeTerminal = inOrder(fixture.failureDiagnostics, fixture.artifacts, fixture.taskRuns);
+        persistedBeforeTerminal.verify(fixture.failureDiagnostics, atLeastOnce()).record(eq(task), any(), eq(developer),
+                eq(OrchestrationPhase.CODING), any());
+        persistedBeforeTerminal.verify(fixture.artifacts, atLeastOnce()).createRunArtifact(eq(task), any(),
+                eq(developer), eq("CODING"), any());
+        persistedBeforeTerminal.verify(fixture.taskRuns, atLeastOnce()).complete(any(), eq("FAILED"),
+                eq("AGENT_RUN_TIMEOUT"), any());
         assertThat(fixture.updatedStatuses()).contains("FAILED");
         driver.shutdownNow();
+    }
+
+    @Test
+    void resumingFailedTaskClearsTaskFailedNotification() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        task.setStatus("FAILED");
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        List<TaskStepEntity> all = List.of(planner, developer);
+        fixture.stubPlan(task, planner, all);
+        // 从失败步骤续跑：认领（claimForResume，FAILED→RUNNING）成功后应撤销 TASK_FAILED 通知。
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING)))
+                .orchestrate(task.getProjectId(), task.getId(), developer.getId());
+
+        verify(fixture.notifications).clearTaskFailedNotifications(task.getId().toString());
     }
 
     @Test
@@ -865,6 +980,7 @@ class TaskOrchestratorTest {
         private final FinalDiffBundleService diffs = mock(FinalDiffBundleService.class);
         private final EventService events = mock(EventService.class);
         private final TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
+        private final TaskRunFailureDiagnosticService failureDiagnostics = mock(TaskRunFailureDiagnosticService.class);
         private final DiffMapper diffMapper = mock(DiffMapper.class);
         private final MessageService messages = mock(MessageService.class);
         private final NotificationService notifications = mock(NotificationService.class);
@@ -873,6 +989,7 @@ class TaskOrchestratorTest {
         private final java.util.concurrent.ExecutorService timeoutExecutor =
                 java.util.concurrent.Executors.newSingleThreadExecutor();
         private final ThreadLocal<Agent> currentAgent = new ThreadLocal<>();
+        private final List<String> stepStatusHistory = new ArrayList<>();
 
         TaskEntity task() {
             TaskEntity task = new TaskEntity();
@@ -910,6 +1027,11 @@ class TaskOrchestratorTest {
             when(steps.selectList(any())).thenReturn(all);
             when(steps.selectById(any())).thenAnswer(invocation -> all.stream()
                     .filter(step -> step.getId().equals(invocation.getArgument(0))).findFirst().orElse(null));
+            doAnswer(invocation -> {
+                TaskStepEntity saved = invocation.getArgument(0);
+                stepStatusHistory.add(saved.getId() + "=" + saved.getStatus());
+                return 1;
+            }).when(steps).updateById(any(TaskStepEntity.class));
             when(registry.resolve(any(), any())).thenAnswer(invocation -> Optional.of(currentAgent.get()));
             when(registry.resolve(any(), any(), any())).thenAnswer(invocation -> Optional.of(currentAgent.get()));
             when(context.buildGroupContext(task)).thenReturn(mock(GroupContext.class));
@@ -928,7 +1050,7 @@ class TaskOrchestratorTest {
             currentAgent.set(agent);
             return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry, context,
                     taskRuns, tasks, steps, events,
-                    notifications, sessions, artifacts, diffs,
+                    notifications, sessions, artifacts, failureDiagnostics, diffs,
                     diffMapper, messages, orchestratorAgents,
                     materialization, timeoutExecutor, timeout);
         }
@@ -963,6 +1085,11 @@ class TaskOrchestratorTest {
         List<String> updatedStatuses() {
             return mockingDetails(tasks).getInvocations().stream().filter(invocation -> invocation.getMethod().getName()
                     .equals("updateById")).map(invocation -> ((TaskEntity) invocation.getArgument(0)).getStatus()).toList();
+        }
+
+        /** 步骤状态更新序列（按 updateById 调用顺序），供质量修复重置断言使用。 */
+        List<String> captureStepStatuses() {
+            return List.copyOf(stepStatusHistory);
         }
 
         List<AgentRunOutcome> feedbacksFor(OrchestrationPhase phase) {

@@ -275,7 +275,7 @@ public class AgentService {
         }
         if (!"ACTIVE".equals(agent.getStatus()) || !"PRIVATE".equals(agent.getVisibility())) {
             throw new ApiException(HttpStatus.CONFLICT, "AGENT_STATE_CONFLICT",
-                    "只有 PRIVATE 且 ACTIVE 的 Agent 可以提交发布审核");
+                    "只有 PRIVATE 且 ACTIVE 的 Agent 可以发布");
         }
         if (isTeamOwner(teamId, actor)) {
             agent.setVisibility("TEAM");
@@ -337,7 +337,7 @@ public class AgentService {
     }
 
     /**
-     * 收回发布已废弃：TEAM 发布需 Team Owner 审核批准，批准后不可再变回 PRIVATE（只能归档）。
+     * 收回发布已废弃：TEAM Agent 无论由 Team Owner 直接发布还是审核批准，均不可再变回 PRIVATE（只能归档）。
      * 保留端点返回 409 明确语义，避免客户端误以为可自由切换。
      */
     @Transactional

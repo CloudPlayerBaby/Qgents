@@ -8,9 +8,11 @@ import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.*;
+import qg.qgent.service.MrPreflightService;
 import qg.qgent.service.PreflightGateService;
 import qg.qgent.service.TestRunService;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -22,10 +24,13 @@ import java.util.UUID;
 public class TestRunController {
     private final TestRunService testRunService;
     private final PreflightGateService preflightGates;
+    private final MrPreflightService preflightService;
 
-    public TestRunController(TestRunService testRunService, PreflightGateService preflightGates) {
+    public TestRunController(TestRunService testRunService, PreflightGateService preflightGates,
+                             MrPreflightService preflightService) {
         this.testRunService = testRunService;
         this.preflightGates = preflightGates;
+        this.preflightService = preflightService;
     }
 
     /**
@@ -113,6 +118,17 @@ public class TestRunController {
     public ApiResponse<?> retryDryRun(@PathVariable UUID projectId, @PathVariable UUID dryRunId,
                                       @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         return ok(testRunService.retryDryRun(projectId, dryRunId, userId), request);
+    }
+
+    /**
+     * 按 Task 获取全部仓库的分支级 MR 预检状态（多仓库任务逐仓库返回）。
+     */
+    @GetMapping("/tasks/{taskId}/merge-request-preflight")
+    public ApiResponse<?> taskMergeRequestPreflight(@PathVariable UUID projectId, @PathVariable UUID taskId,
+                                                    @AuthenticationPrincipal UUID userId,
+                                                    HttpServletRequest request) {
+        List<MergeRequestPreflightResponse> data = preflightService.getTaskPreflight(projectId, taskId, userId);
+        return ok(data, request);
     }
 
     /**

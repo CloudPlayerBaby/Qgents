@@ -196,15 +196,21 @@ public class TestAgent implements Agent {
         test.setSummary("未检测到受支持的项目/测试命令，未执行测试");
         TestResult.Failure failure = new TestResult.Failure();
         failure.setName("no testable build tool");
-        failure.setReason("工作区未检测到 pom.xml / build.gradle / package.json 之一，无法确定安全测试命令");
+        failure.setReason("工作区未检测到 pom.xml / build.gradle / package.json 或 tests/*.test.js 等受支持的测试入口，"
+                + "无法确定安全测试命令");
         failure.setSeverity("ERROR");
         test.setFailures(List.of(failure));
+        // 项目未配置测试是确定性配置问题，不是 Coding 可修复的代码缺陷，也不属于基础设施故障：
+        // needsCodingFix=false 终止质量循环（不反复退回 Developer 修复），
+        // failureCode=TEST_COMMAND_NOT_FOUND 供任务级失败语义区分「项目未配置测试」与执行失败。
+        test.setNeedsCodingFix(false);
 
         AgentRunOutcome outcome = new AgentRunOutcome();
         outcome.setPhase(input.getPhase());
         outcome.setOutcome(RunOutcome.FAILED);
         outcome.setTestResult(test);
         outcome.setMessage(test.getSummary());
+        outcome.setFailureCode("TEST_COMMAND_NOT_FOUND");
         return outcome;
     }
 

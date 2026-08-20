@@ -393,6 +393,12 @@ public class AgentContextAssembler {
         if (!failures.isEmpty()) {
             context.setFailures(failures.stream().limit(20).toList());
         }
+        if (outcome != null && outcome.getPhase() == OrchestrationPhase.REVIEWING
+                && outcome.getActivatedSkillIds() != null
+                && !outcome.getActivatedSkillIds().isEmpty()) {
+            context.setReviewActivatedSkillIds(outcome.getActivatedSkillIds().stream()
+                    .filter(java.util.Objects::nonNull).distinct().limit(5).toList());
+        }
         CodingResult coding = outcome == null ? null : outcome.getCodingResult();
         if (coding != null && coding.getModifiedFiles() != null) {
             context.setModifiedFiles(coding.getModifiedFiles().stream().map(value -> limit(value, 300)).limit(100).toList());

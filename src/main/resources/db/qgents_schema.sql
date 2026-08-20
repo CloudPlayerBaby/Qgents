@@ -411,6 +411,7 @@ CREATE TABLE IF NOT EXISTS
             status,
             provider_updated_at
         ),
+        KEY idx_mr_repository_status_id (project_repository_id, status, id),
         CONSTRAINT fk_mr_repo FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'GitHub Pull Request业务镜像';
 
@@ -576,7 +577,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_task_display_code(project_id,display_code),
     UNIQUE KEY uk_task_trigger_message(trigger_message_id),
-    KEY idx_task_project(project_id,status), KEY idx_task_group(requirement_group_id), KEY idx_task_workspace(workspace_id),
+    KEY idx_task_project(project_id,status), KEY idx_task_project_workspace_updated(project_id,workspace_id,updated_at,id),
+    KEY idx_task_group(requirement_group_id), KEY idx_task_workspace(workspace_id),
     CONSTRAINT fk_task_project FOREIGN KEY(project_id) REFERENCES projects(id),
     CONSTRAINT fk_task_group FOREIGN KEY(requirement_group_id) REFERENCES requirement_groups(id),
     CONSTRAINT fk_task_message FOREIGN KEY(trigger_message_id) REFERENCES messages(id),
@@ -592,6 +594,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     write_lease_expires_at DATETIME(6) NULL COMMENT 'UTC write lease expiry',
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_workspace_storage(storage_key),
+    KEY idx_workspace_project_id (project_id, id),
     KEY idx_workspace_write_lease (write_lease_expires_at),
     CONSTRAINT fk_workspace_project FOREIGN KEY(project_id) REFERENCES projects(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Persistent project development workspace';
@@ -703,6 +706,30 @@ CREATE TABLE IF NOT EXISTS task_run_worker_executions (
     CONSTRAINT fk_run_worker_execution_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TaskRun 与 Worker 工具执行的脱敏诊断关联';
 
+CREATE TABLE IF NOT EXISTS task_run_failure_diagnostics (
+    id BINARY(16) PRIMARY KEY COMMENT '内部失败诊断 UUIDv7',
+    project_id BINARY(16) NOT NULL COMMENT '所属项目ID，仅用于受控运维查询与隔离校验',
+    task_id BINARY(16) NOT NULL COMMENT '所属任务ID',
+    task_run_id BINARY(16) NOT NULL COMMENT '所属失败任务运行ID，每个Run至多一条',
+    task_step_id BINARY(16) NOT NULL COMMENT '所属任务步骤ID',
+    phase VARCHAR(32) NOT NULL COMMENT '编排相位：PLAN/CODING/TESTING/REVIEWING',
+    source VARCHAR(32) NOT NULL COMMENT '内部失败来源标签',
+    failure_code VARCHAR(64) NOT NULL COMMENT '原始归一化内部失败码，未知码仅在本表保留',
+    public_failure_code VARCHAR(64) NOT NULL COMMENT '与客户端一致的稳定公开失败码',
+    exception_type VARCHAR(255) NULL COMMENT '异常简单类型名，不保存堆栈',
+    failure_detail TEXT NOT NULL COMMENT '已脱敏且限长的内部失败上下文，禁止命令、原始输出、环境变量、路径和凭据',
+    detail_fingerprint CHAR(64) NOT NULL COMMENT 'failure_detail 的 SHA-256 指纹，用于聚合定位',
+    occurred_at DATETIME(6) NOT NULL COMMENT '失败发生时间（UTC）',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+    UNIQUE KEY uk_task_run_failure_diagnostic_run (task_run_id),
+    KEY idx_task_run_failure_diagnostic_project (project_id, public_failure_code, occurred_at),
+    KEY idx_task_run_failure_diagnostic_task (task_id, occurred_at),
+    CONSTRAINT fk_task_run_failure_diagnostic_project FOREIGN KEY (project_id) REFERENCES projects (id),
+    CONSTRAINT fk_task_run_failure_diagnostic_task FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE,
+    CONSTRAINT fk_task_run_failure_diagnostic_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE,
+    CONSTRAINT fk_task_run_failure_diagnostic_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仅供后端受控查询的TaskRun基础设施失败诊断';
+
 CREATE TABLE IF NOT EXISTS
     execution_logs (
         id BINARY(16) PRIMARY KEY COMMENT '日志UUIDv7',
@@ -757,7 +784,7 @@ CREATE TABLE IF NOT EXISTS diff_review_batches (
     task_id BINARY(16) NOT NULL COMMENT '任务ID',
     workspace_id BINARY(16) NOT NULL COMMENT '工作区ID',
     final_coding_task_run_id BINARY(16) NOT NULL COMMENT '最终成功的代码编写Run ID',
-    review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING_CONFIRMATION' COMMENT '审核状态：PENDING_CONFIRMATION/ACCEPTED/REJECTED',
+    review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING_CONFIRMATION' COMMENT '审核状态：PENDING_CONFIRMATION/ACCEPTED/REJECTED/SUPERSEDED',
     confirmation_source VARCHAR(16) NOT NULL DEFAULT 'USER' COMMENT '交付授权来源：USER=用户确认 / SYSTEM=MR_FIRST 系统自动授权',
     delivery_status VARCHAR(32) NOT NULL DEFAULT 'NOT_STARTED' COMMENT '交付状态：NOT_STARTED/DELIVERING/PARTIALLY_DELIVERED/DELIVERED/FAILED',
     delivery_operation_id VARCHAR(64) NULL COMMENT '批次交付幂等操作ID',
@@ -771,6 +798,7 @@ CREATE TABLE IF NOT EXISTS diff_review_batches (
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间(UTC)',
     UNIQUE KEY uk_diff_batch_task_run (task_id, final_coding_task_run_id),
     KEY idx_diff_batch_project (project_id),
+    KEY idx_diff_batch_project_updated (project_id, updated_at, id),
     KEY idx_diff_batch_recovery (delivery_status, delivery_lease_expires_at),
     CONSTRAINT fk_diff_batch_project FOREIGN KEY (project_id) REFERENCES projects(id),
     CONSTRAINT fk_diff_batch_task FOREIGN KEY (task_id) REFERENCES tasks(id),
@@ -806,6 +834,7 @@ CREATE TABLE IF NOT EXISTS
         updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
         KEY idx_diff_project (project_id), KEY idx_diff_task(task_id,status), KEY idx_diff_task_run(task_run_id),
         KEY idx_diff_review_batch(review_batch_id),
+        KEY idx_diff_review_batch_repository (review_batch_id, project_repository_id),
         CONSTRAINT fk_diff_project FOREIGN KEY (project_id) REFERENCES projects (id),
         CONSTRAINT fk_diff_task FOREIGN KEY(task_id) REFERENCES tasks(id),
         CONSTRAINT fk_diff_task_run FOREIGN KEY(task_run_id) REFERENCES task_runs(id),
@@ -979,6 +1008,50 @@ CREATE TABLE IF NOT EXISTS
         CONSTRAINT fk_preflight_cq_reviewer FOREIGN KEY (reviewer_user_id) REFERENCES users (id),
         CHECK (decision IN ('APPROVED', 'REJECTED'))
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '绑定固定提交的MR创建前CQ审查事实';
+
+CREATE TABLE IF NOT EXISTS mr_preflight_requests (
+    id BINARY(16) PRIMARY KEY COMMENT '预检申请UUIDv7',
+    project_id BINARY(16) NOT NULL COMMENT '所属项目ID',
+    trigger_task_id BINARY(16) NOT NULL COMMENT '触发申请的任务ID；分支级重试/汇总可为任一覆盖任务',
+    project_repository_id BINARY(16) NOT NULL COMMENT '项目仓库绑定ID',
+    workspace_id BINARY(16) NOT NULL COMMENT '来源Workspace ID',
+    source_branch VARCHAR(512) NOT NULL COMMENT '源分支',
+    target_branch VARCHAR(512) NOT NULL COMMENT '目标分支（来自Workspace baseRef，客户端不可覆盖）',
+    context_hash CHAR(64) NOT NULL COMMENT 'repository/source/target/head/targetCommit 的 SHA-256 幂等键',
+    head_commit VARCHAR(128) NOT NULL COMMENT '申请时固定的源提交SHA',
+    target_commit VARCHAR(128) NOT NULL COMMENT '申请时由Git Store解析固定的目标提交SHA',
+    dry_run_id BINARY(16) NULL COMMENT '本次预检关联的Dry Run ID',
+    status VARCHAR(32) NOT NULL COMMENT '状态：REQUESTED/DRY_RUN_QUEUED/DRY_RUN_RUNNING/WAITING_CQ/CQ_REJECTED/CREATING_MR/MR_CREATED/FAILED/STALE',
+    requested_by BINARY(16) NOT NULL COMMENT '发起用户ID（MR_FIRST 为Task创建人）',
+    idempotency_key VARCHAR(128) NULL COMMENT '客户端幂等键，同一键返回同一预检',
+    failure_code VARCHAR(128) NULL COMMENT '稳定失败分类码',
+    failure_reason VARCHAR(1000) NULL COMMENT '用户可读失败原因',
+    merge_request_id BINARY(16) NULL COMMENT '最终真实MR镜像ID',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    UNIQUE KEY uk_mr_preflight_context_hash (context_hash),
+    UNIQUE KEY uk_mr_preflight_idempotency (idempotency_key),
+    KEY idx_mr_preflight_task (project_id, trigger_task_id, created_at),
+    KEY idx_mr_preflight_dry_run (dry_run_id),
+    KEY idx_mr_preflight_status (status, updated_at),
+    CONSTRAINT fk_mr_preflight_project FOREIGN KEY (project_id) REFERENCES projects (id),
+    CONSTRAINT fk_mr_preflight_task FOREIGN KEY (trigger_task_id) REFERENCES tasks (id),
+    CONSTRAINT fk_mr_preflight_repository FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id),
+    CONSTRAINT fk_mr_preflight_workspace FOREIGN KEY (workspace_id) REFERENCES workspaces (id),
+    CONSTRAINT fk_mr_preflight_dry_run FOREIGN KEY (dry_run_id) REFERENCES dry_runs (id),
+    CONSTRAINT fk_mr_preflight_requester FOREIGN KEY (requested_by) REFERENCES users (id),
+    CONSTRAINT fk_mr_preflight_result FOREIGN KEY (merge_request_id) REFERENCES merge_requests (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='分支级MR预检申请事实';
+
+CREATE TABLE IF NOT EXISTS mr_preflight_tasks (
+    preflight_id BINARY(16) NOT NULL COMMENT '预检申请ID',
+    task_id BINARY(16) NOT NULL COMMENT '覆盖的Task ID',
+    role VARCHAR(32) NOT NULL COMMENT 'TRIGGER/COVERED',
+    PRIMARY KEY (preflight_id, task_id),
+    KEY idx_mr_preflight_tasks_task (task_id),
+    CONSTRAINT fk_mr_preflight_tasks_preflight FOREIGN KEY (preflight_id) REFERENCES mr_preflight_requests (id),
+    CONSTRAINT fk_mr_preflight_tasks_task FOREIGN KEY (task_id) REFERENCES tasks (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='分支级预检覆盖的Task关联事实';
 
 CREATE TABLE IF NOT EXISTS
     events (
