@@ -36,6 +36,8 @@ import java.util.concurrent.ConcurrentMap;
 @Slf4j
 public class GitHubRepositoryService {
     private static final ConcurrentMap<Long, Object> INSTALLATION_CALLBACK_LOCKS = new ConcurrentHashMap<>();
+    private static final int PERSONAL_REPOSITORY_AUTHORIZATION_ATTEMPTS = 3;
+    private static final long PERSONAL_REPOSITORY_AUTHORIZATION_BACKOFF_MILLIS = 250L;
     private final GitHubInstallationMapper installationMapper;
     private final GitHubRepositoryMapper repositoryMapper;
     private final ProjectRepositoryMapper projectRepositoryMapper;
@@ -44,14 +46,18 @@ public class GitHubRepositoryService {
     private final TeamMemberMapper teamMemberMapper;
     private final TaskMapper taskMapper;
     private final GitHubAppClient gitHubClient;
+    private final GitHubOAuthService githubOAuthService;
+    private final GitHubOAuthClient githubOAuthClient;
     private final Clock clock;
     private final TransactionTemplate required;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public GitHubRepositoryService(GitHubInstallationMapper installationMapper, GitHubRepositoryMapper repositoryMapper,
                                    ProjectRepositoryMapper projectRepositoryMapper,
                                    ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
                                    TeamMemberMapper teamMemberMapper, TaskMapper taskMapper,
-                                   GitHubAppClient gitHubClient, Clock clock,
+                                   GitHubAppClient gitHubClient, GitHubOAuthService githubOAuthService,
+                                   GitHubOAuthClient githubOAuthClient, Clock clock,
                                    PlatformTransactionManager transactionManager) {
         this.installationMapper = installationMapper;
         this.repositoryMapper = repositoryMapper;
@@ -61,9 +67,22 @@ public class GitHubRepositoryService {
         this.teamMemberMapper = teamMemberMapper;
         this.taskMapper = taskMapper;
         this.gitHubClient = gitHubClient;
+        this.githubOAuthService = githubOAuthService;
+        this.githubOAuthClient = githubOAuthClient;
         this.clock = clock;
         this.required = new TransactionTemplate(transactionManager);
         this.required.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+    }
+
+    /** 兼容单元测试及旧调用方的构造器；生产 Bean 使用带 OAuth 依赖的构造器。 */
+    public GitHubRepositoryService(GitHubInstallationMapper installationMapper, GitHubRepositoryMapper repositoryMapper,
+                                   ProjectRepositoryMapper projectRepositoryMapper,
+                                   ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
+                                   TeamMemberMapper teamMemberMapper, TaskMapper taskMapper,
+                                   GitHubAppClient gitHubClient, Clock clock,
+                                   PlatformTransactionManager transactionManager) {
+        this(installationMapper, repositoryMapper, projectRepositoryMapper, projectMapper, projectMemberMapper,
+                teamMemberMapper, taskMapper, gitHubClient, null, null, clock, transactionManager);
     }
 
     /**
@@ -288,15 +307,58 @@ public class GitHubRepositoryService {
     public RemoteRepositoryCreation createRemoteRepository(UUID actorId, UUID teamId, NewProjectRepositoryRequest request) {
         requireTeamOwner(actorId, teamId);
         GitHubInstallationEntity installation = resolveInstallationForCreate(teamId, request.getInstallationId());
-        GitHubRepositoryDetails created = gitHubClient.createRepository(
-                installation.getProviderInstallationId(), installation.getAccountType(), installation.getAccountLogin(),
-                new GitHubRepositoryCreateRequest(request.getName(), request.getDescription(),
-                        request.getIsPrivate() == null || request.getIsPrivate(), true));
+        boolean privateRepository = request.getIsPrivate() == null || request.getIsPrivate();
+        GitHubRepositoryCreateRequest createRequest = new GitHubRepositoryCreateRequest(request.getName(),
+                request.getDescription(), privateRepository, true);
+        String personalAccessToken = null;
+        GitHubRepositoryDetails created;
+        if ("USER".equalsIgnoreCase(installation.getAccountType())) {
+            if (githubOAuthService == null || githubOAuthClient == null) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY,
+                        "GITHUB_PERSONAL_REPOSITORY_CREATION_NOT_SUPPORTED",
+                        "个人仓库创建需要接入 GitHub OAuth");
+            }
+            GitHubOAuthService.PersonalCredential credential = githubOAuthService.requirePersonalCredential(actorId);
+            if (installation.getAccountLogin() == null
+                    || !installation.getAccountLogin().equalsIgnoreCase(credential.githubLogin())) {
+                throw new ApiException(HttpStatus.CONFLICT, "GITHUB_OAUTH_ACCOUNT_MISMATCH",
+                        "当前 OAuth 账号与 GitHub App 安装账号不一致");
+            }
+            if (privateRepository && !credential.hasScope("repo")) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "GITHUB_OAUTH_SCOPE_INSUFFICIENT",
+                        "创建私有个人仓库需要 GitHub repo 授权范围");
+            }
+            personalAccessToken = credential.accessToken();
+            try {
+                created = githubOAuthClient.createPersonalRepository(personalAccessToken, createRequest);
+            } catch (ApiException exception) {
+                // 401：OAuth Token 已在 GitHub 侧失效，回写本地授权，避免状态接口继续显示已授权。
+                if ("GITHUB_OAUTH_REVOKED".equals(exception.code())) {
+                    githubOAuthService.markInvalid(actorId, "GITHUB_OAUTH_REVOKED");
+                }
+                throw exception;
+            }
+            if (created == null || created.getOwnerLogin() == null
+                    || !created.getOwnerLogin().equalsIgnoreCase(credential.githubLogin())) {
+                cleanupCreatedPersonalRepository(personalAccessToken, created);
+                throw new ApiException(HttpStatus.CONFLICT, "GITHUB_OAUTH_ACCOUNT_MISMATCH",
+                        "GitHub 创建仓库返回的 owner 与当前 OAuth 账号不一致");
+            }
+            verifyPersonalRepositoryAuthorized(installation, created, personalAccessToken);
+        } else {
+            created = gitHubClient.createRepository(installation.getProviderInstallationId(),
+                    installation.getAccountType(), installation.getAccountLogin(), createRequest);
+        }
         if (created == null || created.getDefaultBranch() == null || created.getDefaultBranch().isBlank()) {
             if (created != null && created.getOwnerLogin() != null && created.getName() != null) {
                 try {
-                    gitHubClient.deleteRepository(installation.getProviderInstallationId(), created.getOwnerLogin(),
-                            created.getName());
+                    if (personalAccessToken == null) {
+                        gitHubClient.deleteRepository(installation.getProviderInstallationId(), created.getOwnerLogin(),
+                                created.getName());
+                    } else {
+                        githubOAuthClient.deletePersonalRepository(personalAccessToken, created.getOwnerLogin(),
+                                created.getName());
+                    }
                 } catch (RuntimeException cleanupFailure) {
                     log.error("自动建仓返回不完整元数据，补偿删除失败，repository={}/{}",
                             created.getOwnerLogin(), created.getName(), cleanupFailure);
@@ -305,7 +367,63 @@ public class GitHubRepositoryService {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_REPOSITORY_METADATA_INCOMPLETE",
                     "GitHub 创建仓库未返回可用的默认分支");
         }
-        return new RemoteRepositoryCreation(installation, created);
+        // 个人 OAuth Token 只随 RemoteRepositoryCreation 存活到本地落库完成，用于补偿删除；不进入日志或持久化。
+        return new RemoteRepositoryCreation(actorId, installation, created, personalAccessToken);
+    }
+
+    /**
+     * GitHub OAuth 建仓与 GitHub App 可见性是两条独立授权链路。只有 App 能按真实仓库 id
+     * 查到新仓库，后续 Worker 才能 clone/push/MR；GitHub 的安装仓库列表存在短暂最终一致性，
+     * 因此这里做有限次重试。查询本身失败时保留原始上游错误，不伪装成“仓库未授权”。
+     */
+    private void verifyPersonalRepositoryAuthorized(GitHubInstallationEntity installation,
+                                                     GitHubRepositoryDetails created,
+                                                     String personalAccessToken) {
+        ApiException lastUpstreamFailure = null;
+        for (int attempt = 1; attempt <= PERSONAL_REPOSITORY_AUTHORIZATION_ATTEMPTS; attempt++) {
+            try {
+                List<GitHubRepositoryDetails> repositories = gitHubClient
+                        .listRepositories(installation.getProviderInstallationId());
+                boolean visible = repositories != null && repositories.stream()
+                        .anyMatch(repository -> repository != null
+                                && repository.getRepositoryId() == created.getRepositoryId());
+                if (visible) {
+                    return;
+                }
+            } catch (ApiException exception) {
+                lastUpstreamFailure = exception;
+                break;
+            }
+            if (attempt < PERSONAL_REPOSITORY_AUTHORIZATION_ATTEMPTS) {
+                try {
+                    Thread.sleep(PERSONAL_REPOSITORY_AUTHORIZATION_BACKOFF_MILLIS * attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    lastUpstreamFailure = new ApiException(HttpStatus.BAD_GATEWAY,
+                            "GITHUB_API_UNAVAILABLE", "GitHub 仓库授权状态查询被中断");
+                    break;
+                }
+            }
+        }
+        cleanupCreatedPersonalRepository(personalAccessToken, created);
+        if (lastUpstreamFailure != null) {
+            throw lastUpstreamFailure;
+        }
+        throw new ApiException(HttpStatus.FORBIDDEN, "GITHUB_REPOSITORY_NOT_AUTHORIZED",
+                "GitHub App 尚未授权访问新建的个人仓库，请先在 GitHub App 设置中授权该仓库");
+    }
+
+    private void cleanupCreatedPersonalRepository(String accessToken, GitHubRepositoryDetails created) {
+        if (created == null || created.getOwnerLogin() == null || created.getName() == null
+                || accessToken == null || accessToken.isBlank() || githubOAuthClient == null) {
+            return;
+        }
+        try {
+            githubOAuthClient.deletePersonalRepository(accessToken, created.getOwnerLogin(), created.getName());
+        } catch (RuntimeException cleanupFailure) {
+            log.error("个人仓库授权校验失败，补偿删除远端仓库失败，repository={}/{}",
+                    created.getOwnerLogin(), created.getName(), cleanupFailure);
+        }
     }
 
     /**
@@ -349,8 +467,21 @@ public class GitHubRepositoryService {
     public void deleteRemoteRepository(RemoteRepositoryCreation creation) {
         GitHubInstallationEntity installation = creation.installation();
         GitHubRepositoryDetails repository = creation.repository();
-        gitHubClient.deleteRepository(installation.getProviderInstallationId(), repository.getOwnerLogin(),
-                repository.getName());
+        if (!"USER".equalsIgnoreCase(installation.getAccountType())) {
+            gitHubClient.deleteRepository(installation.getProviderInstallationId(), repository.getOwnerLogin(),
+                    repository.getName());
+        } else {
+            if (githubOAuthService == null || githubOAuthClient == null || creation.actorId() == null) {
+                throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "GITHUB_OAUTH_NOT_CONFIGURED",
+                        "无法解析个人 GitHub 授权以执行补偿删除");
+            }
+            // 优先使用本次建仓的 OAuth Token 执行补偿删除，避免用户在落库间隙撤销授权导致删除失效。
+            String accessToken = creation.personalAccessToken();
+            if (accessToken == null || accessToken.isBlank()) {
+                accessToken = githubOAuthService.requirePersonalCredential(creation.actorId()).accessToken();
+            }
+            githubOAuthClient.deletePersonalRepository(accessToken, repository.getOwnerLogin(), repository.getName());
+        }
     }
 
     /**
@@ -1041,9 +1172,27 @@ public class GitHubRepositoryService {
     }
 
     /**
-     * 自动建仓的事务外结果：所用安装记录 + 新建仓库元数据。
+     * 自动建仓的事务外结果：所用安装记录 + 新建仓库元数据 + 本次建仓使用的个人 OAuth Token。
+     * personalAccessToken 仅存活于当前操作对象，用于本地落库失败时的补偿删除；不进入日志、SSE 或持久化，
+     * toString 对该字段脱敏。
      */
-    public record RemoteRepositoryCreation(GitHubInstallationEntity installation, GitHubRepositoryDetails repository) {
+    public record RemoteRepositoryCreation(UUID actorId, GitHubInstallationEntity installation,
+                                           GitHubRepositoryDetails repository, String personalAccessToken) {
+        public RemoteRepositoryCreation(UUID actorId, GitHubInstallationEntity installation,
+                                        GitHubRepositoryDetails repository) {
+            this(actorId, installation, repository, null);
+        }
+
+        public RemoteRepositoryCreation(GitHubInstallationEntity installation, GitHubRepositoryDetails repository) {
+            this(null, installation, repository, null);
+        }
+
+        @Override
+        public String toString() {
+            return "RemoteRepositoryCreation[actorId=" + actorId + ", installationId="
+                    + (installation == null ? "null" : installation.getId())
+                    + ", repository=" + repository + ", personalAccessToken=<redacted>]";
+        }
     }
 
     private record BranchContext(ProjectRepositoryEntity binding, GitHubRepositoryEntity repository,

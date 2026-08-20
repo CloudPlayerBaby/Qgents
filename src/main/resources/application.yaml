@@ -59,6 +59,18 @@ github:
     private-key-path: ${GITHUB_APP_PRIVATE_KEY_PATH:}
     callback-url: ${GITHUB_APP_CALLBACK_URL:}
     state-secret: ${GITHUB_APP_STATE_SECRET:}
+  oauth:
+    enabled: ${GITHUB_OAUTH_ENABLED:false}
+    client-id: ${GITHUB_OAUTH_CLIENT_ID:}
+    client-secret: ${GITHUB_OAUTH_CLIENT_SECRET:}
+    authorize-url: ${GITHUB_OAUTH_AUTHORIZE_URL:https://github.com/login/oauth/authorize}
+    token-url: ${GITHUB_OAUTH_TOKEN_URL:https://github.com/login/oauth/access_token}
+    user-url: ${GITHUB_OAUTH_USER_URL:https://api.github.com/user}
+    callback-url: ${GITHUB_OAUTH_CALLBACK_URL:}
+    state-secret: ${GITHUB_OAUTH_STATE_SECRET:}
+    token-encryption-key: ${GITHUB_OAUTH_TOKEN_ENCRYPTION_KEY:}
+    scopes: ${GITHUB_OAUTH_SCOPES:repo}
+    state-ttl-seconds: ${GITHUB_OAUTH_STATE_TTL_SECONDS:600}
   # Webhook 验签 Secret；只从环境变量注入，未配置时 Webhook 接口返回 503 fail-closed
   webhook:
     secret: ${GITHUB_WEBHOOK_SECRET:}
