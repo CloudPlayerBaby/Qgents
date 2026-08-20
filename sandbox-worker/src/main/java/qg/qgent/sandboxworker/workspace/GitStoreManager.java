@@ -7,9 +7,13 @@ import org.springframework.stereotype.Service;
 import qg.qgent.sandboxworker.api.WorkerException;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -56,7 +60,14 @@ public class GitStoreManager {
                                         "+refs/heads/" + request.getRemoteBranch() + ":refs/heads/"
                                                 + request.getRemoteBranch()), environment);
                         if (result.exitCode() != 0) {
-                            throw classifyFetchFailure(result);
+                            WorkerException failure = classifyFetchFailure(result);
+                            // sandbox-worker.log 会持久化 exit code、分类码与 stderr 指纹，供运维关联同类
+                            // 失败；原始 stderr 可能含授权信息，禁止写入日志或向主后端回传。
+                            log.warn("git fetch command failed repositoryId={} repository={} branch={} gitExitCode={} "
+                                            + "failureCode={} stderrBytes={} stderrFingerprint={}",
+                                    repositoryId, repositoryFullName, request.getRemoteBranch(), result.exitCode(),
+                                    failure.getCode(), stderrBytes(result.stderr()), stderrFingerprint(result.stderr()));
+                            throw failure;
                         }
                         return null;
                     });
@@ -160,6 +171,19 @@ public class GitStoreManager {
 
     private String failureCode(RuntimeException failure) {
         return failure instanceof WorkerException worker ? worker.getCode() : "UNCLASSIFIED";
+    }
+
+    private int stderrBytes(String stderr) {
+        return stderr == null ? 0 : stderr.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private String stderrFingerprint(String stderr) {
+        try {
+            byte[] bytes = (stderr == null ? "" : stderr).getBytes(StandardCharsets.UTF_8);
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 不可用", exception);
+        }
     }
 
     private void verifyBareStore(Path store) {
