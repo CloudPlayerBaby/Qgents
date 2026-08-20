@@ -191,6 +191,14 @@ public class CodingTools {
         result.put("path", path);
         result.put("content", read.getContent());
         result.put("sha256", read.getSha256());
+        // 末尾换行与换行风格：content 可能因按行重组丢失/保留了尾部换行，显式给出元数据，
+        // 避免模型改写文件时误删末尾换行或改变换行风格。
+        if (read.getEndsWithNewline() != null) {
+            result.put("endsWithNewline", read.getEndsWithNewline());
+        }
+        if (read.getNewlineStyle() != null) {
+            result.put("newlineStyle", read.getNewlineStyle());
+        }
         return result;
     }
 
@@ -412,6 +420,48 @@ public class CodingTools {
         }
         String message = result.getError() == null ? "write failed" : result.getError();
         recordOutcome("write_file", path, false, false, classifyError(result.getFailureCode(), message),
+                isRetryable(result.getFailureCode(), message), message);
+        return error(result.getFailureCode(), message);
+    }
+
+    @Tool(name = "ensure_trailing_newline", description = "确保已有文本文件以换行结尾：文件当前不以换行结尾时，按 read_file 返回的 expectedHash 校验后追加一个换行（保持原换行风格）；已在文件末尾时幂等返回 changed=false")
+    public Map<String, Object> ensureTrailingNewline(
+            @ToolParam(description = "工作区内的相对路径") String path,
+            @ToolParam(description = "read_file 返回的 64 位十六进制 sha256") String expectedHash) {
+        if (path == null || path.isBlank()) {
+            return error("ensure_trailing_newline requires non-empty 'path'");
+        }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(denied);
+        }
+        if (expectedHash == null || !expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return error("ensure_trailing_newline requires 64-char hex 'expectedHash' from read_file");
+        }
+        WorkspaceWriteResult result = writer.ensureTrailingNewline(workspaceId, path, expectedHash);
+        if (result.isOk()) {
+            patchFailuresByPath.remove(path);
+            lastToolError = null;
+            latestSha256.put(path, result.getNewSha256());
+            if (result.isChanged()) {
+                modifiedFiles.add(path);
+                notifyChange(result);
+            }
+            recordOutcome("ensure_trailing_newline", path, true, result.isChanged(), null, false, null);
+            Map<String, Object> ok = new LinkedHashMap<>();
+            ok.put("ok", true);
+            ok.put("path", path);
+            ok.put("changed", result.isChanged());
+            ok.put("newSha", result.getNewSha256());
+            return ok;
+        }
+        if (result.isInfrastructureFailure()) {
+            throw new WorkspaceInfraException("ensure_trailing_newline infrastructure failure: "
+                    + (result.getError() == null ? "workspace unavailable" : result.getError()));
+        }
+        String message = result.getError() == null ? "ensure trailing newline failed" : result.getError();
+        recordOutcome("ensure_trailing_newline", path, false, false,
+                classifyError(result.getFailureCode(), message),
                 isRetryable(result.getFailureCode(), message), message);
         return error(result.getFailureCode(), message);
     }

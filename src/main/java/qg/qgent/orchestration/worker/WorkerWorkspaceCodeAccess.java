@@ -73,6 +73,8 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
             return WorkspaceFileReadResult.fail(path, "path does not map to a workspace repository");
         }
         String sha256 = null;
+        Boolean endsWithNewline = null;
+        String newlineStyle = null;
         List<String> allLines = new ArrayList<>();
         int startLine = 1;
         while (true) {
@@ -87,6 +89,14 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
             if (sha256 == null) {
                 Object sha = result.get("sha256");
                 sha256 = sha == null ? null : String.valueOf(sha);
+            }
+            if (endsWithNewline == null) {
+                Object nl = result.get("endsWithNewline");
+                endsWithNewline = nl instanceof Boolean b ? b : null;
+            }
+            if (newlineStyle == null) {
+                Object style = result.get("newlineStyle");
+                newlineStyle = style == null ? null : String.valueOf(style);
             }
             Object lines = result.get("lines");
             if (!(lines instanceof List<?> page)) {
@@ -103,11 +113,16 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
                 return WorkspaceFileReadResult.fail(path, "file too large to read");
             }
         }
-        String content = String.join("\n", allLines);
-        if (content.getBytes(StandardCharsets.UTF_8).length > MAX_READ_BYTES) {
+        // 按行重组会丢失末尾换行：真实文件以换行结尾时补回，让模型看到与磁盘一致的内容，
+        // 避免 replace_file/apply_patch 误删末尾换行。换行风格信息随结果传给模型保持原样改写。
+        StringBuilder content = new StringBuilder(String.join("\n", allLines));
+        if (Boolean.TRUE.equals(endsWithNewline) && !content.isEmpty()) {
+            content.append('\n');
+        }
+        if (content.toString().getBytes(StandardCharsets.UTF_8).length > MAX_READ_BYTES) {
             return WorkspaceFileReadResult.fail(path, "file exceeds 64KB read limit");
         }
-        return WorkspaceFileReadResult.ok(path, content, sha256);
+        return WorkspaceFileReadResult.ok(path, content.toString(), sha256, endsWithNewline, newlineStyle);
     }
 
     @Override

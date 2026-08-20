@@ -275,6 +275,49 @@ class FilePatchToolTest {
         return new FilePatchTool(new RepositoryFileResolver());
     }
 
+    @Test
+    void newFileWithoutNoNewlineMarkerKeepsTrailingNewline() throws Exception {
+        // 旧文件最后一行无换行，但 patch 在 + 行后没有 "\ No newline" 标记 → 新文件应有换行。
+        Path file = repository.resolve("no-nl.txt");
+        Files.writeString(file, "first\nlast", StandardCharsets.UTF_8);
+        String patch = """
+                --- a/no-nl.txt
+                +++ b/no-nl.txt
+                @@ -2 +2 @@
+                -last
+                +last changed
+                """;
+
+        ToolResult result = tool().execute(context(), Map.of("path", "no-nl.txt",
+                "expectedHash", FileReadTool.sha256(Files.readAllBytes(file)),
+                "patch", patch));
+
+        // 新文件必须以换行结尾：只有新侧明确标记 no-newline 才会写成无换行。
+        assertEquals("first\nlast changed\n", Files.readString(file));
+        assertEquals(Boolean.TRUE, result.getResult().get("changed"));
+    }
+
+    @Test
+    void noNewlineMarkerOnNewSideSuppressesTrailingNewline() throws Exception {
+        // + 行后带 "\ No newline at end of file" → 新文件最后一行确实无换行。
+        Path file = repository.resolve("nl.txt");
+        Files.writeString(file, "first\nlast\n", StandardCharsets.UTF_8);
+        String patch = """
+                --- a/nl.txt
+                +++ b/nl.txt
+                @@ -2 +2 @@
+                -last
+                +last
+                \\ No newline at end of file
+                """;
+
+        tool().execute(context(), Map.of("path", "nl.txt",
+                "expectedHash", FileReadTool.sha256(Files.readAllBytes(file)),
+                "patch", patch));
+
+        assertEquals("first\nlast", Files.readString(file));
+    }
+
     private ToolContext context() {
         return new ToolContext(null, null, repository, "/workspace/example", null);
     }

@@ -115,15 +115,16 @@ public class PlanResult {
      * <p>
      * type 取值（白名单见 {@code PlanResultParser}）：EXISTS 目标文件存在；EMPTY 内容为空；
      * LINES_EQ/LINES_GT/LINES_LT 按 \n 统计的行数与 value 比较；CONTAINS/NOT_CONTAINS 内容
-     * 包含/不包含 value 子串。file 为 Workspace 相对路径（多仓库需带 workspacePath 前缀）。
+     * 包含/不包含 value 子串；ENDS_WITH_NEWLINE 内容是否以换行符结尾（value 为 true/false）。
+     * file 为 Workspace 相对路径（多仓库需带 workspacePath 前缀）。
      */
     @Data
     public static class Assertion {
-        /** 断言类型：EXISTS/EMPTY/LINES_EQ/LINES_GT/LINES_LT/CONTAINS/NOT_CONTAINS。 */
+        /** 断言类型：EXISTS/EMPTY/LINES_EQ/LINES_GT/LINES_LT/CONTAINS/NOT_CONTAINS/ENDS_WITH_NEWLINE。 */
         private String type;
         /** 断言目标文件（Workspace 相对路径）。 */
         private String file;
-        /** 断言参数：LINES_* 为整数行数，CONTAINS/NOT_CONTAINS 为子串；EXISTS/EMPTY 可为 null。 */
+        /** 断言参数：LINES_* 为整数行数，CONTAINS/NOT_CONTAINS 为子串；EXISTS/EMPTY 可为 null；ENDS_WITH_NEWLINE 为 true/false。 */
         private String value;
     }
 }

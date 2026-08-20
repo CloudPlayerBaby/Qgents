@@ -65,7 +65,10 @@ public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
                 return WorkspaceFileReadResult.fail(path, "file exceeds 64KB read limit");
             }
             byte[] bytes = Files.readAllBytes(file);
-            return WorkspaceFileReadResult.ok(path, new String(bytes, StandardCharsets.UTF_8), Sha256.hex(bytes));
+            String content = new String(bytes, StandardCharsets.UTF_8);
+            boolean endsWithNewline = bytes.length > 0 && bytes[bytes.length - 1] == '\n';
+            return WorkspaceFileReadResult.ok(path, content, Sha256.hex(bytes), endsWithNewline,
+                    detectNewlineStyle(bytes));
         } catch (IOException e) {
             return WorkspaceFileReadResult.fail(path, "file read failed");
         }
@@ -138,5 +141,21 @@ public class LocalWorkspaceCodeAccess implements WorkspaceCodeAccess {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /**
+     * 检测文件换行风格：含 CRLF 序列记为 CRLF；否则含 LF 记为 LF；都不含记为 NONE。
+     */
+    private static String detectNewlineStyle(byte[] bytes) {
+        boolean hasLf = false;
+        for (int i = 0; i < bytes.length; i++) {
+            if (bytes[i] == '\n') {
+                if (i > 0 && bytes[i - 1] == '\r') {
+                    return "CRLF";
+                }
+                hasLf = true;
+            }
+        }
+        return hasLf ? "LF" : "NONE";
     }
 }

@@ -45,7 +45,8 @@ public class PlanResultParser {
     private static final int MAX_VERIFICATION_COMMANDS = 8;
     private static final Pattern CAPABILITY = Pattern.compile("[a-z0-9]+(?:-[a-z0-9]+)*");
     private static final Set<String> ASSERTION_TYPES = Set.of(
-            "EXISTS", "EMPTY", "LINES_EQ", "LINES_GT", "LINES_LT", "CONTAINS", "NOT_CONTAINS");
+            "EXISTS", "EMPTY", "LINES_EQ", "LINES_GT", "LINES_LT", "CONTAINS", "NOT_CONTAINS",
+            "ENDS_WITH_NEWLINE");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 

@@ -141,14 +141,22 @@ public class FilePatchTool implements SandboxTool {
                 index++;
                 List<String> oldLines = new ArrayList<>();
                 List<String> newLines = new ArrayList<>();
-                boolean noNewline = false;
+                // old/new 侧末尾是否以换行结尾：unified diff 中 "\ No newline at end of file" 紧跟
+                // 在最后一行后，标记该侧最后一行无换行。区分两侧，避免旧文件无换行时把新文件也写成无换行。
+                boolean oldEndsWithNewline = true;
+                boolean newEndsWithNewline = true;
+                char lastMark = ' ';
                 while (index < raw.size() && !raw.get(index).startsWith("@@")) {
                     String bodyLine = raw.get(index++);
                     if (bodyLine.isEmpty()) {
                         continue;
                     }
                     if (bodyLine.equals("\\ No newline at end of file")) {
-                        noNewline = true;
+                        if (lastMark == '-') {
+                            oldEndsWithNewline = false;
+                        } else if (lastMark == '+') {
+                            newEndsWithNewline = false;
+                        }
                         continue;
                     }
                     char mark = bodyLine.charAt(0);
@@ -163,11 +171,12 @@ public class FilePatchTool implements SandboxTool {
                     } else {
                         throw patchFailed("hunk 包含非法行");
                     }
+                    lastMark = mark;
                 }
                 if (oldLines.size() != header.old().count() || newLines.size() != header.new_().count()) {
                     throw patchFailed("hunk 声明行数与正文不一致");
                 }
-                hunks.add(new Hunk(header.old().start(), oldLines, newLines, noNewline));
+                hunks.add(new Hunk(header.old().start(), oldLines, newLines, oldEndsWithNewline, newEndsWithNewline));
             }
             return hunks;
         }
@@ -213,7 +222,6 @@ public class FilePatchTool implements SandboxTool {
             List<Hunk> ordered = new ArrayList<>(hunks);
             ordered.sort(Comparator.comparingInt((Hunk hunk) -> hunk.oldStart()).reversed());
             boolean endsWithNewline = content.endsWith("\n");
-            boolean bottomHunk = true;
             for (Hunk hunk : ordered) {
                 int from = Math.max(0, hunk.oldStart() - 1);
                 int to = from + hunk.oldLines().size();
@@ -223,10 +231,14 @@ public class FilePatchTool implements SandboxTool {
                 }
                 lines.subList(from, to).clear();
                 lines.addAll(from, hunk.newLines());
-                if (bottomHunk && hunk.noNewline()) {
-                    endsWithNewline = false;
+            }
+            // 底部 hunk（oldStart 最大、位于文件末尾）显式声明新文件末尾是否换行；无则保留现状。
+            int bottomOldStart = ordered.stream().mapToInt(h -> h.oldStart()).max().orElse(-1);
+            for (Hunk hunk : ordered) {
+                if (hunk.oldStart() == bottomOldStart) {
+                    endsWithNewline = hunk.newEndsWithNewline();
+                    break;
                 }
-                bottomHunk = false;
             }
             StringBuilder result = new StringBuilder();
             for (int i = 0; i < lines.size(); i++) {
@@ -274,7 +286,8 @@ public class FilePatchTool implements SandboxTool {
         private record Header(Position old, Position new_) {
         }
 
-        private record Hunk(int oldStart, List<String> oldLines, List<String> newLines, boolean noNewline) {
+        private record Hunk(int oldStart, List<String> oldLines, List<String> newLines,
+                            boolean oldEndsWithNewline, boolean newEndsWithNewline) {
         }
     }
 }

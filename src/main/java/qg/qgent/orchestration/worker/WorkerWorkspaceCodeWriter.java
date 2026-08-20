@@ -180,6 +180,31 @@ public class WorkerWorkspaceCodeWriter extends AbstractWorkerToolPort implements
         }
     }
 
+    @Override
+    public WorkspaceWriteResult ensureTrailingNewline(UUID workspaceId, String path, String expectedHash) {
+        if (path == null || path.isBlank()) {
+            return WorkspaceWriteResult.fail(null, "path must not be blank");
+        }
+        if (expectedHash == null || !expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return WorkspaceWriteResult.fail(path, "expectedHash must be 64 hex chars");
+        }
+        WorkerPathResolver.Target target = WorkerPathResolver.resolve(session(workspaceId), path);
+        if (target == null) {
+            return WorkspaceWriteResult.fail(path, "path does not map to a workspace repository");
+        }
+        try {
+            WorkerToolExecution execution = executeTool(workspaceId, target.repositoryId(),
+                    "file.ensure_trailing_newline",
+                    Map.of("path", target.relativePath(), "expectedHash", expectedHash), TOOL_TIMEOUT);
+            if ("SUCCEEDED".equals(execution.getStatus())) {
+                return okResult(path, execution, expectedHash);
+            }
+            return writeFailure(path, execution, "ensure trailing newline failed", "file.ensure_trailing_newline");
+        } catch (RuntimeException e) {
+            return WorkspaceWriteResult.infraFail(path, "ensure trailing newline failed: " + exceptionDetail(e));
+        }
+    }
+
     /**
      * 透传 Worker file.write / file.patch 成功结果中的新 sha256 与 changed；
      * 兼容旧 Worker 缺少 changed 字段的情况，用写入前后的 SHA 做保守推断。

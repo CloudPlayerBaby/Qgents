@@ -52,6 +52,12 @@ public class ReviewTools {
         result.put("path", path);
         result.put("content", read.getContent());
         result.put("sha256", read.getSha256());
+        if (read.getEndsWithNewline() != null) {
+            result.put("endsWithNewline", read.getEndsWithNewline());
+        }
+        if (read.getNewlineStyle() != null) {
+            result.put("newlineStyle", read.getNewlineStyle());
+        }
         return result;
     }
 

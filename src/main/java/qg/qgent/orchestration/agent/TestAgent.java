@@ -634,6 +634,18 @@ public class TestAgent implements Agent {
                 result.setActual(contains ? "包含" : "不包含");
                 result.setPassed(passed);
             }
+            case "ENDS_WITH_NEWLINE" -> {
+                WorkspaceFileReadResult read = codeAccess.readFile(workspaceId, file);
+                String content = read == null || !read.isOk() || read.getContent() == null ? "" : read.getContent();
+                // 优先用 Worker 返回的换行元数据（按行重组后 content 可能丢失尾部换行）；缺失时回退内容判断。
+                boolean endsWithNewline = read != null && read.isOk() && read.getEndsWithNewline() != null
+                        ? read.getEndsWithNewline()
+                        : content.endsWith("\n");
+                boolean expected = assertion.getValue() == null || !"false".equalsIgnoreCase(assertion.getValue().trim());
+                boolean passed = endsWithNewline == expected;
+                result.setActual(endsWithNewline ? "以换行结尾" : "不以换行结尾");
+                result.setPassed(passed);
+            }
             default -> {
                 result.setActual("不支持的类型");
                 result.setPassed(false);
