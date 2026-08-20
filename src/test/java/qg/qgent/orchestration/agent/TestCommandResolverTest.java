@@ -74,4 +74,48 @@ class TestCommandResolverTest {
         assertThat(resolver.resolveCommand(List.of("gradlew", "build.gradle", "src/Main.java"), List.of("src/Main.java")))
                 .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("sh", "./gradlew", "test"), null));
     }
+
+    @Test
+    void runsNodeTestFileWhenPackageJsonIsAbsent() {
+        // 无 package.json 但存在 tests/*.test.js：直接 node 执行（Planner 要求 node tests/todo.test.js）。
+        assertThat(resolver.resolveCommand(List.of("tests/todo.test.js", "src/todo.js")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("node", "tests/todo.test.js"), null));
+    }
+
+    @Test
+    void runsNodeSpecFileWhenPackageJsonIsAbsent() {
+        assertThat(resolver.resolveCommand(List.of("tests/calc.spec.js", "src/calc.js")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("node", "tests/calc.spec.js"), null));
+    }
+
+    @Test
+    void bindsNodeTestFileToItsRepositoryInMultiRepoWorkspace() {
+        TestCommandResolver.ResolvedCommand command = resolver.resolveCommand(List.of(
+                "frontend/package.json", "backend/tests/api.test.js", "backend/src/api.js"));
+
+        // package.json 优先于裸 node 文件：frontend 命中 npm test。
+        assertThat(command.repositoryPath()).isEqualTo("frontend");
+        assertThat(command.command()).containsExactly("npm", "test");
+    }
+
+    @Test
+    void bindsBareNodeTestFileToRepositoryWithoutPackageJson() {
+        TestCommandResolver.ResolvedCommand command = resolver.resolveCommand(List.of(
+                "svc-a/src/a.js", "svc-a/tests/a.test.js", "svc-b/src/b.js"));
+
+        assertThat(command.repositoryPath()).isEqualTo("svc-a");
+        assertThat(command.command()).containsExactly("node", "tests/a.test.js");
+    }
+
+    @Test
+    void ignoresNonTestNodeFilesUnderTestsDirectory() {
+        assertThat(resolver.resolveCommand(List.of("tests/util.js", "src/todo.js")))
+                .isNull();
+    }
+
+    @Test
+    void prefersPackageJsonTestOverBareNodeTestFile() {
+        assertThat(resolver.resolveCommand(List.of("package.json", "tests/todo.test.js", "src/todo.js")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("npm", "test"), null));
+    }
 }

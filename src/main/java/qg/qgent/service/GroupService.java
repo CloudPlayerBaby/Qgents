@@ -389,6 +389,7 @@ public class GroupService {
      * 移出群聊（契约 2026-08-17 群成员选择与管理；与 leave「退出项目」语义不同，本接口只移出群）。
      * <p>
      * 权限：群创建者或 Project Admin；群创建者本人不可被移出（422 GROUP_CREATOR_NOT_REMOVABLE）；
+     * 目标为项目管理员时 403 PROJECT_ADMIN_CANNOT_REMOVE_MANAGER；
      * 目标不在群内 404 GROUP_MEMBER_NOT_FOUND；PROJECT_MAIN 主群 422 SYSTEM_GROUP_MANAGED；
      * Agent 不在此接口管理。
      * 移出后该成员失去该群（及其消息/任务卡片）的访问权限，但保留项目成员身份。
@@ -410,6 +411,11 @@ public class GroupService {
         if (group.getCreatedBy().equals(userId)) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "GROUP_CREATOR_NOT_REMOVABLE",
                     "群创建者不可被移出");
+        }
+        ProjectMemberEntity targetMember = projectMemberMapper.selectByProjectAndUser(projectId, userId);
+        if (targetMember != null && "PROJECT_ADMIN".equals(targetMember.getRole())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "PROJECT_ADMIN_CANNOT_REMOVE_MANAGER",
+                    "项目管理员不可被移出群聊");
         }
         if (groupMemberMapper.deleteMember(groupId, userId) == 0) {
             throw new ApiException(HttpStatus.NOT_FOUND, "GROUP_MEMBER_NOT_FOUND", "目标用户不在群内");

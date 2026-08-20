@@ -34,6 +34,12 @@ public class ReviewResult {
      * 是否需要 Coding Agent 修复；false 且未通过时不可自动修复。
      */
     private boolean needsCodingFix;
+    /**
+     * 稳定失败分类码（如 REVIEW_ASSERTION_TARGET_NOT_FOUND），仅当审查因可分类的
+     * 确定性原因失败时由模型输出；供任务级失败语义区分「验收目标缺失」等具体原因，
+     * 而不是回退到笼统的「审查未通过」。仅在未通过时非空。
+     */
+    private String failureCode;
 
     /**
      * 单个审查发现。

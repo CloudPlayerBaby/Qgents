@@ -119,6 +119,8 @@ public final class ExecutionContentSanitizer {
             case "TOOL_ARGUMENT_INVALID" -> "工具参数无效";
             case "PROCESS_EXIT_NONZERO" -> "工具进程执行失败";
             case "AGENT_RUN_TIMEOUT" -> "Agent 执行超时";
+            case "TEST_COMMAND_NOT_FOUND" -> "未检测到受支持的项目/测试命令，未执行测试";
+            case "REVIEW_ASSERTION_TARGET_NOT_FOUND" -> "审查未找到任务要求的验收目标（文件/函数/接口/选择器等），请补齐后重新审查";
             case "TASK_QUALITY_LOOPS_EXHAUSTED" -> "任务多次未通过质量验证，修复循环已耗尽";
             case "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
@@ -148,6 +150,7 @@ public final class ExecutionContentSanitizer {
                     "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
+                    "TEST_COMMAND_NOT_FOUND", "REVIEW_ASSERTION_TARGET_NOT_FOUND",
                     "GIT_BASE_REF_NOT_FOUND", "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
                     "GIT_STORE_FETCH_FAILED",
                     "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
@@ -176,6 +179,7 @@ public final class ExecutionContentSanitizer {
                     "GIT_BASE_REF_NOT_FOUND", "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
                     "GIT_STORE_FETCH_FAILED",
                     "GIT_STORE_SYNC_INVALID", "GIT_REMOTE_SHA_MISMATCH", "GITHUB_API_UNAVAILABLE",
+                    "REVIEW_ASSERTION_TARGET_NOT_FOUND",
                     "WORKER_PUSH_FAILED", "DRY_RUN_TIMEOUT" -> true;
             default -> false;
         };

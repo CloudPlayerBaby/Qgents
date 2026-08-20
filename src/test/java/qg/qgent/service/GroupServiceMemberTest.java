@@ -222,6 +222,20 @@ class GroupServiceMemberTest {
     }
 
     @Test
+    void removeMemberBlocksProjectAdminTarget() {
+        ProjectMemberEntity admin = projectMember();
+        admin.setUserId(memberA);
+        admin.setRole("PROJECT_ADMIN");
+        when(projectMemberMapper.selectByProjectAndUser(projectId, memberA)).thenReturn(admin);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.removeMember(creator, projectId, groupId, memberA));
+
+        assertEquals("PROJECT_ADMIN_CANNOT_REMOVE_MANAGER", error.code());
+        verify(groupMemberMapper, never()).deleteMember(groupId, memberA);
+    }
+
+    @Test
     void requireGroupMemberAllowsCreatorAndBlocksOutsider() {
         // 创建者兜底为成员
         when(groupMemberMapper.countMember(groupId, creator)).thenReturn(0);

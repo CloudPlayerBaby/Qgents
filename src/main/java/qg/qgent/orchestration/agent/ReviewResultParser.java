@@ -18,11 +18,13 @@ import java.util.Set;
  *   "summary": "...",
  *   "findings": [{"file":"...","line":12,"severity":"MAJOR","issue":"...","suggestion":"..."}],
  *   "suggestions": ["..."],
- *   "needsCodingFix": true
+ *   "needsCodingFix": true,
+ *   "failureCode": "REVIEW_ASSERTION_TARGET_NOT_FOUND"
  * }
  * </pre>
  * 校验规则：success 必须存在且为布尔，summary 非空；每个 finding 的 severity 必须属于
- * BLOCKER/MAJOR/MINOR/INFO，issue 非空；findings/suggestions 有数量上限。解析失败抛
+ * BLOCKER/MAJOR/MINOR/INFO，issue 非空；findings/suggestions 有数量上限。failureCode 仅接受
+ * 已发布的稳定码（当前仅 REVIEW_ASSERTION_TARGET_NOT_FOUND），其他值忽略。解析失败抛
  * {@link ReviewParseException}，由 ReviewAgent 按基础设施失败处理（同相位重试）。
  * BLOCKER/MAJOR 强制 FAIL 的最终判定由 ReviewAgent 依据 severity 策略给出，不在本类判定。
  */
@@ -31,6 +33,7 @@ public class ReviewResultParser {
     private static final int MAX_FINDINGS = 100;
     private static final int MAX_SUGGESTIONS = 50;
     private static final Set<String> SEVERITIES = Set.of("BLOCKER", "MAJOR", "MINOR", "INFO");
+    private static final Set<String> STABLE_FAILURE_CODES = Set.of("REVIEW_ASSERTION_TARGET_NOT_FOUND");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -82,6 +85,14 @@ public class ReviewResultParser {
         JsonNode fixNode = node.get("needsCodingFix");
         if (fixNode != null && fixNode.isBoolean()) {
             result.setNeedsCodingFix(fixNode.asBoolean());
+        }
+        // 稳定失败码只在白名单内接受；未知值忽略，避免模型把内部细节作为公开码外泄。
+        JsonNode codeNode = node.get("failureCode");
+        if (codeNode != null && codeNode.isTextual() && !codeNode.asText().isBlank()) {
+            String normalized = codeNode.asText().strip().toUpperCase(java.util.Locale.ROOT);
+            if (STABLE_FAILURE_CODES.contains(normalized)) {
+                result.setFailureCode(normalized);
+            }
         }
         return result;
     }

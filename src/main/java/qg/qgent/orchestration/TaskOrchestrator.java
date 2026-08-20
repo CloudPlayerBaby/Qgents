@@ -633,6 +633,7 @@ public class TaskOrchestrator {
                 route = "next";
             }
             case REQUEUE_CODING -> {
+                resetStepsForQualityRework(task, ctx.steps, ctx.repairCodingStepId());
                 ctx.retryOf = ctx.lastRunId;
                 route = "requeue";
             }
@@ -922,6 +923,44 @@ public class TaskOrchestrator {
     private boolean hasMutableStep(List<TaskStepEntity> steps) {
         return steps.stream().anyMatch(step -> TaskStepExecutionMode
                 .resolve(step.getExecutionMode(), step.getRole()) == TaskStepExecutionMode.MUTATE);
+    }
+
+    /**
+     * 质量失败进入修复闭环后，先撤销本轮以及后续验证步骤的展示终态。TaskRun 仍保留
+     * 不可变的历史成功/失败事实；TaskStep 仅表达当前代码版本下一轮尚待执行的状态。
+     */
+    private void resetStepsForQualityRework(TaskEntity task, List<TaskStepEntity> steps, UUID repairStepId) {
+        if (repairStepId == null) {
+            log.warn("quality rework skipped step reset because no mutable step exists, taskId={}", task.getId());
+            return;
+        }
+        int startIndex = indexOfStepId(steps, repairStepId);
+        if (startIndex < 0) {
+            log.warn("quality rework skipped step reset because repair step is absent, taskId={}, stepId={}",
+                    task.getId(), repairStepId);
+            return;
+        }
+        for (int index = startIndex; index < steps.size(); index++) {
+            TaskStepEntity latest = stepMapper.selectById(steps.get(index).getId());
+            if (latest == null) {
+                log.warn("quality rework skipped missing step, taskId={}, stepId={}", task.getId(),
+                        steps.get(index).getId());
+                continue;
+            }
+            latest.setStatus("PENDING");
+            latest.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+            stepMapper.updateById(latest);
+            publishStepUpdated(task, latest);
+        }
+    }
+
+    private int indexOfStepId(List<TaskStepEntity> steps, UUID stepId) {
+        for (int index = 0; index < steps.size(); index++) {
+            if (stepId.equals(steps.get(index).getId())) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     private void markStepRunning(TaskEntity task, TaskStepEntity step) {

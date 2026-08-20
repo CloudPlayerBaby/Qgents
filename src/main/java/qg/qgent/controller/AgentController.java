@@ -180,7 +180,7 @@ public class AgentController {
     }
 
     /**
-     * 契约 §11.1（接口补充 v2.0.3 §5）：收回发布已废弃——TEAM 发布需审核且批准后不可回私有，
+     * 契约 §11.1：收回发布已废弃——TEAM Agent 无论直接发布还是审核批准均不可回私有，
      * 返回 409 AGENT_UNPUBLISH_DISALLOWED（保留端点兼容旧客户端，仅能归档）。
      */
     @PostMapping("/teams/{teamId}/agents/{agentId}/unpublish")

@@ -8,6 +8,7 @@ import qg.qgent.api.ApiException;
 import qg.qgent.dto.CreateProjectRequest;
 import qg.qgent.dto.AddProjectMemberRequest;
 import qg.qgent.dto.ProjectMembershipView;
+import qg.qgent.dto.ProjectMemberResponse;
 import qg.qgent.dto.UpdateProjectMemberRequest;
 import qg.qgent.dto.UpdateProjectRequest;
 import qg.qgent.entity.ProjectEntity;
@@ -156,7 +157,7 @@ class ProjectServiceTest {
     }
 
     @Test
-    void cannotDowngradeLastProjectAdmin() {
+    void cannotDowngradeProjectAdmin() {
         UUID projectId = UUID.randomUUID();
         UUID admin = UUID.randomUUID();
         UUID teamId = UUID.randomUUID();
@@ -166,18 +167,59 @@ class ProjectServiceTest {
         when(projects.selectByIdForUpdate(projectId)).thenReturn(project);
         when(members.selectByProjectAndUser(projectId, admin)).thenReturn(projectMember(projectId, admin,
                 "PROJECT_ADMIN"));
-        when(members.countAdmins(projectId)).thenReturn(1);
         UpdateProjectMemberRequest request = new UpdateProjectMemberRequest();
         request.setRole("PROJECT_MEMBER");
 
         ApiException error = assertThrows(ApiException.class,
                 () -> service.updateMember(admin, projectId, admin, request));
 
-        assertEquals("LAST_PROJECT_ADMIN_REQUIRED", error.code());
+        assertEquals("PROJECT_ADMIN_IMMUTABLE", error.code());
+        verify(members, never()).updateRole(eq(projectId), eq(admin), any());
     }
 
     @Test
-    void cannotRemoveLastProjectAdmin() {
+    void promoteMemberToAdminCallsUpdateRole() {
+        UUID projectId = UUID.randomUUID();
+        UUID admin = UUID.randomUUID();
+        UUID member = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        ProjectEntity project = project(projectId, teamId, "ACTIVE");
+        when(projects.selectById(projectId)).thenReturn(project);
+        when(teams.selectByIdForUpdate(teamId)).thenReturn(team(teamId, UUID.randomUUID()));
+        when(projects.selectByIdForUpdate(projectId)).thenReturn(project);
+        when(members.selectByProjectAndUser(projectId, member)).thenReturn(projectMember(projectId, member,
+                "PROJECT_MEMBER"));
+        UpdateProjectMemberRequest request = new UpdateProjectMemberRequest();
+        request.setRole("PROJECT_ADMIN");
+
+        ProjectMemberResponse response = service.updateMember(admin, projectId, member, request);
+
+        assertEquals("PROJECT_ADMIN", response.getRole());
+        verify(members).updateRole(projectId, member, "PROJECT_ADMIN");
+    }
+
+    @Test
+    void rePromoteAdminIsIdempotent() {
+        UUID projectId = UUID.randomUUID();
+        UUID admin = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        ProjectEntity project = project(projectId, teamId, "ACTIVE");
+        when(projects.selectById(projectId)).thenReturn(project);
+        when(teams.selectByIdForUpdate(teamId)).thenReturn(team(teamId, UUID.randomUUID()));
+        when(projects.selectByIdForUpdate(projectId)).thenReturn(project);
+        when(members.selectByProjectAndUser(projectId, admin)).thenReturn(projectMember(projectId, admin,
+                "PROJECT_ADMIN"));
+        UpdateProjectMemberRequest request = new UpdateProjectMemberRequest();
+        request.setRole("PROJECT_ADMIN");
+
+        ProjectMemberResponse response = service.updateMember(admin, projectId, admin, request);
+
+        assertEquals("PROJECT_ADMIN", response.getRole());
+        verify(members, never()).updateRole(eq(projectId), eq(admin), any());
+    }
+
+    @Test
+    void cannotRemoveProjectAdmin() {
         UUID projectId = UUID.randomUUID();
         UUID admin = UUID.randomUUID();
         UUID teamId = UUID.randomUUID();
@@ -187,12 +229,13 @@ class ProjectServiceTest {
         when(projects.selectByIdForUpdate(projectId)).thenReturn(project);
         when(members.selectByProjectAndUser(projectId, admin))
                 .thenReturn(projectMember(projectId, admin, "PROJECT_ADMIN"));
-        when(members.countAdmins(projectId)).thenReturn(1);
 
         ApiException error = assertThrows(ApiException.class,
                 () -> service.removeMember(admin, projectId, admin));
 
-        assertEquals("LAST_PROJECT_ADMIN_REQUIRED", error.code());
+        assertEquals("PROJECT_ADMIN_CANNOT_REMOVE_MANAGER", error.code());
+        verify(groupMembers, never()).deleteByProjectAndUser(projectId, admin);
+        verify(members, never()).deleteByProjectAndUser(projectId, admin);
     }
 
     @Test
