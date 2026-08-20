@@ -6,7 +6,9 @@ scrape_configs:
   - job_name: qgents-backend
     metrics_path: /actuator/prometheus
     static_configs:
-      # WSL 通过 Docker Desktop/WSL 主机名访问 Windows 上运行的后端。
-      - targets: ["host.docker.internal:8081"]
+      # Prometheus 在 WSL 中运行，后端在 Windows 中运行。
+      # 当前 WSL 默认网关为 172.22.80.1；WSL 重启后如网段变化，
+      # 用 `ip route | awk '/default/ {print $3}'` 获取新网关并更新此处。
+      - targets: ["172.22.80.1:8081"]
         labels:
           service: qgents-backend

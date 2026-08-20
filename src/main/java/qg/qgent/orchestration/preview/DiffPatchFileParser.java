@@ -148,7 +148,7 @@ public final class DiffPatchFileParser {
         if (current == null || current.path == null || current.path.isBlank()) {
             return;
         }
-        files.add(new WorkspaceDiffPreviewFileResponse(current.path, current.changeType,
+        files.add(new WorkspaceDiffPreviewFileResponse(null, current.path, current.changeType,
                 current.additions, current.deletions, current.binary, repositoryPath));
     }
 

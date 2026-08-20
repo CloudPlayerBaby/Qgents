@@ -32,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Workspace 实时 Diff Preview 服务（阶段 D）：Coding 每次成功写后调用
@@ -218,7 +219,57 @@ public class WorkspaceDiffPreviewService {
         TaskEntity task = requireTask(projectId, taskId);
         requireGroupVisible(projectId, task, actor);
         WorkspaceDiffPreviewRevisionEntity rev = requireRevision(projectId, taskId, task.getWorkspaceId(), revision);
-        return DiffPatchFileParser.parse(loadQuietly(rev.getSnapshotKey()));
+        List<WorkspaceDiffPreviewFileResponse> files = DiffPatchFileParser.parse(loadQuietly(rev.getSnapshotKey()));
+        return attachRepositoryIds(task.getWorkspaceId(), files);
+    }
+
+    /**
+     * 把 patch 中的 Workspace 相对目录映射为项目仓库绑定 ID。
+     * Worker 的聚合 diff 只携带受控的 workspacePath 分隔符；项目仓库 ID
+     * 必须从当前 Workspace 的持久化映射解析，不能由客户端或 patch 文本推断。
+     * 单仓库旧快照没有分隔符时，唯一仓库仍可安全补齐其 ID。
+     */
+    private List<WorkspaceDiffPreviewFileResponse> attachRepositoryIds(UUID workspaceId,
+                                                                         List<WorkspaceDiffPreviewFileResponse> files) {
+        if (files.isEmpty()) {
+            return files;
+        }
+        List<WorkspaceRepositoryEntity> repositories = workspaceRepositories.selectByWorkspace(workspaceId);
+        if (repositories == null || repositories.isEmpty()) {
+            return files;
+        }
+        Map<String, String> repositoryIdsByPath = repositories.stream()
+                .filter(repository -> repository.getProjectRepositoryId() != null)
+                .filter(repository -> normalizedPath(repository.getWorkspacePath()) != null)
+                .collect(Collectors.toMap(
+                        repository -> normalizedPath(repository.getWorkspacePath()),
+                        repository -> repository.getProjectRepositoryId().toString(),
+                        (left, right) -> left,
+                        LinkedHashMap::new));
+        String soleRepositoryId = repositories.size() == 1 && repositories.get(0).getProjectRepositoryId() != null
+                ? repositories.get(0).getProjectRepositoryId().toString() : null;
+        for (WorkspaceDiffPreviewFileResponse file : files) {
+            String repositoryId = repositoryIdsByPath.get(normalizedPath(file.getRepositoryPath()));
+            if (repositoryId == null && (file.getRepositoryPath() == null || file.getRepositoryPath().isBlank())) {
+                repositoryId = soleRepositoryId;
+            }
+            file.setRepositoryId(repositoryId);
+        }
+        return files;
+    }
+
+    private String normalizedPath(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.replace('\\', '/');
+        while (normalized.startsWith("/")) {
+            normalized = normalized.substring(1);
+        }
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized.isBlank() ? null : normalized;
     }
 
     /**

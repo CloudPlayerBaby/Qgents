@@ -456,6 +456,43 @@ class WorkspaceDiffPreviewServiceTest {
     }
 
     @Test
+    void filesAttachRepositoryIdForMultipleRepositories() {
+        UUID backendRepositoryId = UUID.randomUUID();
+        when(tasks.selectById(TASK_ID)).thenReturn(task());
+        when(workspaceRepositories.selectByWorkspace(WORKSPACE_ID)).thenReturn(List.of(
+                repository("frontend", REPOSITORY_ID),
+                repository("backend", backendRepositoryId)));
+        when(revisionMapper.selectOne(any())).thenReturn(revision(2, SNAPSHOT_KEY));
+        when(snapshots.load(SNAPSHOT_KEY)).thenReturn(
+                "===== frontend =====\n"
+                        + "diff --git a/src/App.tsx b/src/App.tsx\n"
+                        + "+new frontend line\n"
+                        + "===== backend =====\n"
+                        + "diff --git a/src/App.java b/src/App.java\n"
+                        + "+new backend line\n");
+
+        List<WorkspaceDiffPreviewFileResponse> files = enabled().files(PROJECT_ID, TASK_ID, ACTOR, null);
+
+        assertThat(files).extracting(WorkspaceDiffPreviewFileResponse::getRepositoryId)
+                .containsExactly(REPOSITORY_ID.toString(), backendRepositoryId.toString());
+    }
+
+    @Test
+    void filesAttachOnlyRepositoryIdForSingleRepositoryWithoutSeparator() {
+        when(tasks.selectById(TASK_ID)).thenReturn(task());
+        when(workspaceRepositories.selectByWorkspace(WORKSPACE_ID))
+                .thenReturn(List.of(repository("repo", REPOSITORY_ID)));
+        when(revisionMapper.selectOne(any())).thenReturn(revision(2, SNAPSHOT_KEY));
+        when(snapshots.load(SNAPSHOT_KEY)).thenReturn(PATCH);
+
+        List<WorkspaceDiffPreviewFileResponse> files = enabled().files(PROJECT_ID, TASK_ID, ACTOR, null);
+
+        assertThat(files).singleElement()
+                .extracting(WorkspaceDiffPreviewFileResponse::getRepositoryId)
+                .isEqualTo(REPOSITORY_ID.toString());
+    }
+
+    @Test
     void filesEmptyWhenNoSnapshot() {
         when(tasks.selectById(TASK_ID)).thenReturn(task());
         when(revisionMapper.selectOne(any())).thenReturn(revision(1, null));
