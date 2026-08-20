@@ -75,7 +75,9 @@ public class ReviewPromptBuilder {
                 - 合理超额实现（方向一致、量级或措辞与计划略有出入，如要求追加 1 行实际追加 2 行且符合用户意图）应记为 MINOR/INFO 或建议项，不得判 MAJOR/BLOCKER；仅当违背用户明确约束（明确的行数、格式、禁改文件）或关键功能缺失/错误时才判 MAJOR。
                 - 收到计划断言冲突或 Coding 偏差声明时，先核实偏差理由是否成立、断言是否真正反映用户需求，再定严重度。
                 - 存在上一轮审查反馈时，优先复核其中的旧 finding；只报告当前仍未解决的可执行缺陷，不重复已修复问题或纯风格建议。
-                - summary 不得为空；findings 可为空数组；needsCodingFix 表示问题是否可由 Coding Agent 修复（默认 true）。
+                - summary 不得为空；findings 可为空数组。needsCodingFix 只表示当前未通过是否应回到 Coding Agent 修改仓库内代码/配置后重新审查，默认 true。
+                - 只有已有明确证据表明问题不可能通过修改仓库内代码或配置解决时，needsCodingFix 才能为 false，例如外部审批、Sandbox/Worker 故障、外部服务不可用或缺失运行环境；summary 必须说明该非代码依赖及处理方。
+                - 需求遗漏、实现缺陷、安全/权限问题、测试失败、仓库内配置错误，或尚无法确定根因的审查问题，needsCodingFix 必须为 true；不得为了结束任务、暂时无法定位或认为问题与本轮改动无关而填 false。
                 """;
     }
 
@@ -110,7 +112,9 @@ public class ReviewPromptBuilder {
                 - 合理超额实现（方向一致、量级或措辞与计划略有出入，如要求追加 1 行实际追加 2 行且符合用户意图）应记为 MINOR/INFO 或建议项，不得判 MAJOR/BLOCKER；仅当违背用户明确约束（明确的行数、格式、禁改文件）或关键功能缺失/错误时才判 MAJOR。
                 - 收到计划断言冲突或 Coding 偏差声明时，先核实偏差理由是否成立、断言是否真正反映用户需求，再定严重度。
                 - 存在上一轮审查反馈时，优先复核其中的旧 finding；只报告当前仍未解决的可执行缺陷，不重复已修复问题或纯风格建议。
-                - summary 不得为空；findings 可为空数组；needsCodingFix 表示问题是否可由 Coding Agent 修复（默认 true）。
+                - summary 不得为空；findings 可为空数组。needsCodingFix 只表示当前未通过是否应回到 Coding Agent 修改仓库内代码/配置后重新审查，默认 true。
+                - 只有已有明确证据表明问题不可能通过修改仓库内代码或配置解决时，needsCodingFix 才能为 false，例如外部审批、Sandbox/Worker 故障、外部服务不可用或缺失运行环境；summary 必须说明该非代码依赖及处理方。
+                - 需求遗漏、实现缺陷、安全/权限问题、测试失败、仓库内配置错误，或尚无法确定根因的审查问题，needsCodingFix 必须为 true；不得为了结束任务、暂时无法定位或认为问题与本轮改动无关而填 false。
                 """;
     }
 

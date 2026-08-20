@@ -33,7 +33,9 @@ public class TestPromptBuilder {
                   "failures": [{"name": "失败用例或位置", "reason": "失败原因", "severity": "ERROR"}],
                   "needsCodingFix": true
                 }
-                - summary 不得为空；failures 可为空数组；needsCodingFix 表示该失败是否可由 Coding Agent 修复（默认 true）。
+                - summary 不得为空；failures 可为空数组。needsCodingFix 只表示“本次失败是否应回到 Coding Agent 修改仓库内代码/配置后再验证”，默认 true；它不是对测试是否通过的判断，也不用于掩盖未知原因。
+                - 只有已有明确证据表明修改仓库内代码或配置也无法解决时，needsCodingFix 才能为 false：例如 Sandbox/Worker 不可用、缺失或错误的 Android SDK/JDK/Node 等运行环境、依赖仓库或外部服务不可达、命令/Wrapper 无法启动、PATH 或执行权限不足。此时失败原因必须明确说明是非代码问题及需要由环境维护者处理的事项，不得要求 Coding Agent 修改业务代码。
+                - 代码断言失败、编译错误、测试用例失败、需求未实现、仓库内构建配置错误或原因尚不能确定时，needsCodingFix 必须为 true；不得仅因“不是本轮修改直接造成”或“不确定如何修复”而填 false。
                 - 如果 stderr/stdout 表明命令不存在、找不到 PATH、Wrapper 无法启动、权限不足或 exit code 为 126/127，必须将其归类为测试环境/基础设施问题：needsCodingFix 必须为 false，失败原因中明确写出原始命令和建议使用工作区相对路径（例如 sh ./gradlew test、sh ./mvnw test），不得要求 Coding Agent 修改业务代码。
                 - 当验证方式为 FILE_ASSERTION 时，必须以文件存在性、可读性和明确的内容/大小断言为准，不得因为没有 Maven/Gradle/npm 命令就判定失败。
                 - 当任务只修改了非代码文件（README/markdown/txt/json/yaml/资源/目录等文档或配置文件）时，不应运行 gradle/mvn/npm 测试，直接以文件断言结果为准。
