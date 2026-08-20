@@ -2,6 +2,7 @@ package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -11,6 +12,7 @@ import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitDiff;
+import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -59,11 +61,13 @@ public class DiffReviewBatchService {
     private WorkBranchDevelopmentGuard developmentGuard;
     /** Optional in lightweight tests; production uses it to serialize review decisions with continuations. */
     private WorkspaceMapper workspaces;
+    /** MR 前预检的进程内触发，不再经由 SSE eventType 桥接。 */
+    private final ApplicationEventPublisher domainEvents;
 
     public DiffReviewBatchService(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
             ProjectRepositoryMapper repositories, SandboxWorkerClient worker,
             MergeRequestService mergeRequests, ProjectAccessService access, EventService events,
-            TransactionTemplate transactions, DiffSnapshotStorage snapshots, DiffDeliveryService deliveryService,
+            ApplicationEventPublisher domainEvents, TransactionTemplate transactions, DiffSnapshotStorage snapshots, DiffDeliveryService deliveryService,
             MergeRequestMapper mergeRequestMapper, GitHubRepositoryMapper githubRepositories,
             NotificationService notificationService) {
         this.batches = batches;
@@ -74,6 +78,7 @@ public class DiffReviewBatchService {
         this.mergeRequests = mergeRequests;
         this.access = access;
         this.events = events;
+        this.domainEvents = domainEvents;
         this.transactions = transactions;
         this.snapshots = snapshots;
         this.deliveryService = deliveryService;
@@ -553,6 +558,7 @@ public class DiffReviewBatchService {
             }
             if (statusChanged && "WAITING_PREFLIGHT".equals(nextTaskStatus)) {
                 // 只发布内部预检意图；Dry Run 的目标分支、Testset 和提交 SHA 由异步服务重新读取。
+                domainEvents.publishEvent(new MrFirstPreflightRequestedDomainEvent(task.getProjectId(), task.getId()));
                 events.publish(task.getProjectId(), task.getRequirementGroupId(), "mr-first.preflight.requested",
                         task.getId().toString(), Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
                                 "deliveryMode", "MR_FIRST"));

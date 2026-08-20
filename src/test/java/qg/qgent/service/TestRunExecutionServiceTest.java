@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.entity.DryRunEntity;
@@ -12,6 +13,7 @@ import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TestRunMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.orchestration.worker.*;
+import qg.qgent.service.event.DryRunConflictCandidateDomainEvent;
 
 import java.util.List;
 import java.util.Map;
@@ -27,8 +29,10 @@ class TestRunExecutionServiceTest {
     private final TaskMapper tasks = mock(TaskMapper.class);
     private final ProjectRepositoryMapper projectRepositories = mock(ProjectRepositoryMapper.class);
     private final GitStoreSyncService gitStores = mock(GitStoreSyncService.class);
+    private final ApplicationEventPublisher domainEvents = mock(ApplicationEventPublisher.class);
     private final TestRunExecutionService service = new TestRunExecutionService(testRuns, dryRuns, worker,
-            mock(EventService.class), tasks, projectRepositories, gitStores);
+            mock(EventService.class), tasks, projectRepositories, gitStores,
+            domainEvents);
 
     @Test
     void testRunSuccessPersistsStructuredResultsWithTestsetFacts() {
@@ -251,6 +255,7 @@ class TestRunExecutionServiceTest {
         UUID runId = UUID.randomUUID(), testsetId = UUID.randomUUID();
         DryRunEntity run = new DryRunEntity();
         run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setTaskId(UUID.randomUUID());
         run.setStatus("RUNNING"); run.setSourceRef("feat/login"); run.setHeadCommit("head");
         run.setTargetBranch("main"); run.setResolvedTargetCommit("target");
         run.setTestsetSnapshot(List.of(Map.of("testsetId", testsetId.toString(), "command", "mvn test",
@@ -348,12 +353,18 @@ class TestRunExecutionServiceTest {
         UUID runId = UUID.randomUUID(), testsetId = UUID.randomUUID();
         DryRunEntity run = new DryRunEntity();
         run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setTaskId(UUID.randomUUID());
         run.setStatus("RUNNING"); run.setSourceRef("feat/login"); run.setHeadCommit("head");
         run.setTargetBranch("main"); run.setResolvedTargetCommit("target");
         run.setTestsetSnapshot(List.of(Map.of("testsetId", testsetId.toString(), "command", "mvn test",
                 "timeoutSeconds", 60, "passRuleType", "EXIT_CODE", "expectedExitCode", 0)));
         when(dryRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
-        when(dryRuns.selectById(runId)).thenReturn(run);
+        DryRunEntity completed = new DryRunEntity();
+        completed.setId(runId); completed.setProjectId(run.getProjectId());
+        completed.setProjectRepositoryId(run.getProjectRepositoryId()); completed.setTaskId(run.getTaskId());
+        completed.setStatus("FAILED"); completed.setHeadCommit("head"); completed.setTargetBranch("main");
+        completed.setResolvedTargetCommit("target");
+        when(dryRuns.selectById(runId)).thenReturn(run, run, completed);
         WorkerMergePreviewResponse preview = new WorkerMergePreviewResponse();
         preview.setMergeable(false); preview.setResolvedHeadCommit("head"); preview.setResolvedTargetCommit("target");
         preview.setConflicts(List.of("a.ts: conflict"));
@@ -367,6 +378,8 @@ class TestRunExecutionServiceTest {
                         && "SKIPPED".equals(((Map<?, ?>) report.get("tests")).get("status"))
                         && "MERGE_CONFLICT".equals(((Map<?, ?>) report.get("tests")).get("reason"))), eq("head"));
         verify(worker, never()).executeTests(any());
+        verify(domainEvents).publishEvent(new DryRunConflictCandidateDomainEvent(run.getProjectId(), runId,
+                run.getTaskId()));
     }
 
     @Test

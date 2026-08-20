@@ -2,6 +2,7 @@ package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -17,6 +18,7 @@ import qg.qgent.mapper.TaskRunMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitDiff;
+import qg.qgent.service.event.DeliveryStartedDomainEvent;
 
 import java.util.List;
 import java.util.Map;
@@ -41,6 +43,7 @@ class FinalDiffBundleServiceTest {
         SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
         DiffSnapshotStorage snapshots = mock(DiffSnapshotStorage.class);
         EventService events = mock(EventService.class);
+        ApplicationEventPublisher domainEvents = mock(ApplicationEventPublisher.class);
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         UUID workspaceId = UUID.randomUUID();
@@ -73,7 +76,7 @@ class FinalDiffBundleServiceTest {
         when(snapshots.store(any(), any())).thenReturn("snapshot-key");
 
         FinalDiffBundleService service = new FinalDiffBundleService(tasks, runs, worktrees, batches, diffs,
-                mock(DiffFileMapper.class), worker, snapshots, events, immediateTransactions());
+                mock(DiffFileMapper.class), worker, snapshots, events, domainEvents, immediateTransactions());
 
         UUID batchId = service.createSystemAcceptedBatch(projectId, taskId, coding.getId());
 
@@ -88,6 +91,10 @@ class FinalDiffBundleServiceTest {
         verify(events).publish(eq(projectId), any(), eq("delivery.started"), eq(taskId.toString()), payload.capture());
         assertEquals(batchId, payload.getValue().get("reviewBatchId"));
         assertEquals(batch.getValue().getDeliveryOperationId(), payload.getValue().get("operationId"));
+        ArgumentCaptor<DeliveryStartedDomainEvent> domainEvent = ArgumentCaptor.forClass(DeliveryStartedDomainEvent.class);
+        verify(domainEvents).publishEvent(domainEvent.capture());
+        assertEquals(batchId, domainEvent.getValue().reviewBatchId());
+        assertEquals(batch.getValue().getDeliveryOperationId(), domainEvent.getValue().operationId());
     }
 
     @SuppressWarnings("unchecked")

@@ -5,13 +5,13 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -36,10 +36,6 @@ import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.mapper.TeamMapper;
 import qg.qgent.mapper.UserMapper;
-import qg.qgent.service.event.DeliveryStartedDomainEvent;
-import qg.qgent.service.event.DryRunConflictCandidateDomainEvent;
-import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
-import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 import qg.qgent.websocket.RealtimeFrame;
 
 import java.io.IOException;
@@ -47,6 +43,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -63,8 +60,8 @@ import java.util.stream.Collectors;
  * 项目级实时事件（SSE 数据源）服务。
  * 写接口在状态变更时调用 {@link #publish} 持久化事件，客户端通过项目事件流订阅；
  * 事件至少保留 24 小时，支持 Last-Event-ID 断线续传，游标过期返回 409 EVENT_CURSOR_EXPIRED。
- * publish 的序号分配并发安全：事务内先对 projects 行加排他锁（FOR UPDATE）串行化同项目
- * 事件写入，再以锁定读（{@code EventMapper#nextSequence}）取当前已提交的最大序号 + 1，
+ * publish 在业务事务提交后才以独立短事务写入；序号分配并发安全：短事务内先对 projects 行加
+ * 排他锁（FOR UPDATE）串行化同项目事件写入，再以锁定读（{@code EventMapper#nextSequence}）取当前已提交的最大序号 + 1，
  * 避免并发「MAX+1」撞 {@code uk_event_seq(project_id, sequence_no)} 唯一键 500；
  * stream 用独立轮询线程拉取增量事件，通过 SseEmitter 推送，
  * 客户端断开时以 send 失败退出线程并自动清理。
@@ -103,7 +100,6 @@ public class EventService {
     private final NotificationEventMapper notificationEventMapper;
     private final TeamEventMapper teamEventMapper;
     private final ExecutorService executor;
-    private final ApplicationEventPublisher publisher;
     private final RealtimeHub realtimeHub;
     private final ProjectMemberMapper projectMemberMapper;
     private final TeamMemberMapper teamMemberMapper;
@@ -114,12 +110,14 @@ public class EventService {
     private final TeamMapper teamMapper;
     private final TransactionTemplate eventTransaction;
     private final PerformanceMetrics metrics;
+    /** 每个 EventService Bean 专用的事务同步资源键，保存待提交的项目事件队列。 */
+    private final Object projectEventQueueResource = new Object();
     private final AtomicInteger activeSseConnections = new AtomicInteger();
 
     @Autowired
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
                         NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
-                        ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
+                        RealtimeHub realtimeHub,
                         ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
                         RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
                         ProjectMapper projectMapper, UserMapper userMapper, TeamMapper teamMapper,
@@ -128,7 +126,6 @@ public class EventService {
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
         this.teamEventMapper = teamEventMapper;
-        this.publisher = publisher;
         this.realtimeHub = realtimeHub;
         this.projectMemberMapper = projectMemberMapper;
         this.teamMemberMapper = teamMemberMapper;
@@ -138,6 +135,10 @@ public class EventService {
         this.userMapper = userMapper;
         this.teamMapper = teamMapper;
         this.eventTransaction = transactionManager == null ? null : new TransactionTemplate(transactionManager);
+        if (this.eventTransaction != null) {
+            // 事件不能加入已经写入 TaskRun/TaskStep 的业务事务。死锁重试必须从完整的新事务开始。
+            this.eventTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        }
         this.metrics = metrics;
         // SSE 泵线程执行期间保留提交线程的 MDC（requestId），便于按请求串联日志
         MdcTaskDecorator mdcDecorator = new MdcTaskDecorator();
@@ -161,11 +162,11 @@ public class EventService {
      */
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
                         NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
-                        ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
+                        RealtimeHub realtimeHub,
                         ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
                         RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
                         ProjectMapper projectMapper) {
-        this(eventMapper, projectAccess, notificationEventMapper, teamEventMapper, publisher, realtimeHub,
+        this(eventMapper, projectAccess, notificationEventMapper, teamEventMapper, realtimeHub,
                 projectMemberMapper, teamMemberMapper, groupMapper, groupMemberMapper, projectMapper,
                 null, null, null, null);
     }
@@ -173,11 +174,11 @@ public class EventService {
     /** 保留测试与既有直接构造调用的完整构造器，不启用生产事务重试。 */
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
                         NotificationEventMapper notificationEventMapper, TeamEventMapper teamEventMapper,
-                        ApplicationEventPublisher publisher, RealtimeHub realtimeHub,
+                        RealtimeHub realtimeHub,
                         ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
                         RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
                         ProjectMapper projectMapper, UserMapper userMapper, TeamMapper teamMapper) {
-        this(eventMapper, projectAccess, notificationEventMapper, teamEventMapper, publisher, realtimeHub,
+        this(eventMapper, projectAccess, notificationEventMapper, teamEventMapper, realtimeHub,
                 projectMemberMapper, teamMemberMapper, groupMapper, groupMemberMapper, projectMapper,
                 userMapper, teamMapper, null, null);
     }
@@ -198,57 +199,109 @@ public class EventService {
      */
     public void publish(UUID projectId, UUID groupId, String eventType, String resourceId,
                         Map<String, Object> payload) {
-        // 已处于业务事务时保持原子性，由调用方事务统一回滚；编排器等非事务调用则由本服务
-        // 开启短事务，并在死锁回滚后使用全新事务重试，避免在 rollback-only 事务中原地重试。
-        if (TransactionSynchronizationManager.isActualTransactionActive() || eventTransaction == null) {
-            publishInTransaction(projectId, groupId, eventType, resourceId, payload);
+        EventRequest request = new EventRequest(projectId, groupId, eventType, resourceId, payload);
+        // 业务事实提交后才允许事件落库。这样 events 的行锁、外键检查或重试耗尽都不会把
+        // TaskRun/Task 等已经完成的业务写入标记为 rollback-only。
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            enqueueAfterCommit(request);
             return;
         }
-        RuntimeException last = null;
-        for (int attempt = 0; attempt < EVENT_DEADLOCK_RETRIES; attempt++) {
-            try {
-                eventTransaction.executeWithoutResult(status ->
-                        publishInTransaction(projectId, groupId, eventType, resourceId, payload));
-                return;
-            } catch (RuntimeException failure) {
-                last = failure;
-                if (!isDeadlock(failure) || attempt + 1 >= EVENT_DEADLOCK_RETRIES) {
-                    throw failure;
-                }
-                long backoff = EVENT_DEADLOCK_BACKOFF_MS << attempt;
-                log.warn("event publish deadlocked; retrying projectId={} eventType={} attempt={} backoffMs={}",
-                        projectId, eventType, attempt + 1, backoff);
-                sleepBackoff(backoff);
-            }
-        }
-        throw last == null ? new IllegalStateException("event publish failed") : last;
+        persistAfterCommit(request);
     }
 
-    /** 在当前事务中分配项目序号并写入事件。 */
-    private void publishInTransaction(UUID projectId, UUID groupId, String eventType, String resourceId,
-                                      Map<String, Object> payload) {
+    /** 将同一业务事务中的事件按调用顺序批量挂到唯一的 afterCommit 回调。 */
+    private void enqueueAfterCommit(EventRequest request) {
+        EventQueue queue = (EventQueue) TransactionSynchronizationManager.getResource(projectEventQueueResource);
+        if (queue == null) {
+            queue = new EventQueue();
+            TransactionSynchronizationManager.bindResource(projectEventQueueResource, queue);
+            EventQueue queued = queue;
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    // 单条事件的失败已经在 persistAfterCommit 中被隔离；继续投递同批后续事件。
+                    for (EventRequest item : queued.requests) {
+                        persistAfterCommit(item);
+                    }
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    if (TransactionSynchronizationManager.hasResource(projectEventQueueResource)) {
+                        TransactionSynchronizationManager.unbindResource(projectEventQueueResource);
+                    }
+                }
+            });
+        }
+        queue.requests.add(request);
+    }
+
+    /** 使用全新短事务写入一条已提交业务事实对应的 SSE 事件，并在成功提交后 fan-out。 */
+    private void persistAfterCommit(EventRequest request) {
+        for (int attempt = 0; attempt < EVENT_DEADLOCK_RETRIES; attempt++) {
+            try {
+                PendingFan pending = eventTransaction == null
+                        ? persistInNewTransaction(request)
+                        : eventTransaction.execute(status -> persistInNewTransaction(request));
+                if (pending != null) {
+                    // TransactionTemplate 已在返回前完成 commit；不得让浏览器看到领先于数据库的刷新信号。
+                    broadcast(pending.userIds, "project", id(request.projectId), id(request.groupId), null, null,
+                            request.resourceId, request.eventType, request.payload);
+                }
+                return;
+            } catch (RuntimeException failure) {
+                boolean deadlock = isDeadlock(failure);
+                if (!deadlock || attempt + 1 >= EVENT_DEADLOCK_RETRIES) {
+                    if (metrics != null) {
+                        metrics.increment("qgents.sse.event.persist.failures", "event_persist",
+                                deadlock ? "deadlock_exhausted" : "failed");
+                    }
+                    // 事件只承担前端刷新提示；业务事实已经提交，不能因其失败被误报为 Agent 失败。
+                    log.warn("project event persistence skipped projectId={} eventType={} attempts={} exceptionType={}",
+                            request.projectId, request.eventType, attempt + 1, failure.getClass().getSimpleName());
+                    return;
+                }
+                long backoff = EVENT_DEADLOCK_BACKOFF_MS << attempt;
+                if (metrics != null) {
+                    metrics.increment("qgents.sse.event.persist.retries", "event_persist", "deadlock_retry");
+                }
+                log.warn("event publish deadlocked; retrying projectId={} eventType={} attempt={} backoffMs={}",
+                        request.projectId, request.eventType, attempt + 1, backoff);
+                if (!sleepBackoff(backoff)) {
+                    if (metrics != null) {
+                        metrics.increment("qgents.sse.event.persist.failures", "event_persist", "interrupted");
+                    }
+                    log.warn("project event persistence interrupted projectId={} eventType={} attempts={}",
+                            request.projectId, request.eventType, attempt + 1);
+                    return;
+                }
+            }
+        }
+    }
+
+    /** 在 REQUIRES_NEW 事务中分配项目序号、写入事件并返回提交后 fan-out 所需的信息。 */
+    private PendingFan persistInNewTransaction(EventRequest request) {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         EventEntity event = new EventEntity();
         event.setId(UuidV7.next());
-        event.setProjectId(projectId);
-        event.setRequirementGroupId(groupId);
+        event.setProjectId(request.projectId);
+        event.setRequirementGroupId(request.groupId);
         // 并发安全：先持有项目行锁，把同项目事件写入串行化；再以锁定读取当前已提交的
         // 最大序号 + 1。缺少项目行锁时，REPEATABLE READ 的普通快照 MAX 会读到旧值，
         // 多个并发发布撞 uk_event_seq 唯一键 → 整体 500（群成员多选邀请等场景）。
-        lockProject(projectId);
-        event.setSequenceNo(eventMapper.nextSequence(projectId));
-        event.setEventType(eventType);
-        event.setResourceId(resourceId);
-        event.setPayload(payload);
+        lockProject(request.projectId);
+        event.setSequenceNo(eventMapper.nextSequence(request.projectId));
+        event.setEventType(request.eventType);
+        event.setResourceId(request.resourceId);
+        event.setPayload(request.payload);
         event.setCreatedAt(now);
         eventMapper.insert(event);
-        publishDomainEvent(projectId, eventType, resourceId, payload);
         // 推送目标（契约 2026-08-17 群成员可见性收紧）：
         //   groupId 为空（项目级事件）→ 本项目全部成员；
         //   groupId 为主群 → 本项目全部成员（主群不写入 group_members）；
         //   groupId 为需求群 → 仅该群显式成员。
-        Set<UUID> members = broadcastMembers(projectId, groupId);
-        fan(members, "project", id(projectId), id(groupId), null, null, resourceId, eventType, payload);
+        return new PendingFan(broadcastMembers(request.projectId, request.groupId));
     }
 
     private boolean isDeadlock(Throwable failure) {
@@ -266,12 +319,13 @@ public class EventService {
         return false;
     }
 
-    private void sleepBackoff(long millis) {
+    private boolean sleepBackoff(long millis) {
         try {
             Thread.sleep(millis);
+            return true;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("event publish retry interrupted", interrupted);
+            return false;
         }
     }
 
@@ -280,7 +334,7 @@ public class EventService {
      * <p>
      * {@code uk_event_seq(project_id, sequence_no)} 是项目级作用域，因此锁必须升到
      * 项目级，与消息发送 {@code lockGroup}（群行锁保证消息 sequence 单调）同思路。
-     * 调用方须处于事务内（{@code publish} 已标注 {@code @Transactional}）；项目不存在时
+     * 本方法只由项目事件的独立短事务调用；项目不存在时
      * 返回 null（锁对不存在的行不生效），由后续事件插入的外键/唯一约束兜底。
      */
     private void lockProject(UUID projectId) {
@@ -305,40 +359,6 @@ public class EventService {
     private Set<UUID> projectMembers(UUID projectId) {
         return projectMemberMapper.selectMembers(projectId).stream()
                 .map(m -> m.getUserId()).collect(Collectors.toSet());
-    }
-
-    /**
-     * 事件落库后发布进程内领域事件，供主后端内部模块在事务提交后消费（如 MR_FIRST 交付执行器）。
-     * 与浏览器 SSE 同源但用途分离：SSE 面向前端展示，领域事件面向内部执行，互为补充。
-     * 事务边界由 {@code @TransactionalEventListener(AFTER_COMMIT)} 负责：事务内发布会在提交后消费，
-     * 非事务调用则由监听器的 fallbackExecution 立即消费。不得在 afterCommit 回调中再次发布事件，
-     * 否则事务监听器没有可注册的事务上下文。
-     */
-    private void publishDomainEvent(UUID projectId, String eventType, String resourceId, Map<String, Object> payload) {
-        if ("delivery.started".equals(eventType) && resourceId != null && payload instanceof Map<?, ?> map
-                && map.get("taskId") != null && map.get("operationId") != null) {
-            DeliveryStartedDomainEvent domainEvent = new DeliveryStartedDomainEvent(projectId,
-                    UUID.fromString(String.valueOf(map.get("taskId"))),
-                    payload.get("reviewBatchId") == null ? null : UUID.fromString(String.valueOf(map.get("reviewBatchId"))),
-                    String.valueOf(map.get("operationId")));
-            publisher.publishEvent(domainEvent);
-        }
-        if ("mr-first.preflight.requested".equals(eventType) && resourceId != null
-                && payload instanceof Map<?, ?> map && map.get("taskId") != null) {
-            publisher.publishEvent(new MrFirstPreflightRequestedDomainEvent(projectId,
-                    UUID.fromString(String.valueOf(map.get("taskId")))));
-        }
-        if ("preflight.updated".equals(eventType) && payload != null
-                && "APPROVED".equals(String.valueOf(payload.get("decision")))
-                && resourceId != null) {
-            publisher.publishEvent(new PreflightCqApprovedDomainEvent(projectId, UUID.fromString(resourceId)));
-        }
-        if ("dry-run.updated".equals(eventType) && payload != null
-                && "FAILED".equals(String.valueOf(payload.get("status")))
-                && resourceId != null && payload.get("taskId") != null) {
-            publisher.publishEvent(new DryRunConflictCandidateDomainEvent(projectId,
-                    UUID.fromString(resourceId), UUID.fromString(String.valueOf(payload.get("taskId")))));
-        }
     }
 
     /**
@@ -691,6 +711,20 @@ public class EventService {
 
     private String id(UUID value) {
         return value == null ? null : value.toString();
+    }
+
+    /** 单条待持久化的项目 SSE 事件；仅在当前线程的事务同步生命周期内保存。 */
+    private record EventRequest(UUID projectId, UUID groupId, String eventType, String resourceId,
+                                Map<String, Object> payload) {
+    }
+
+    /** 同一业务事务内按调用顺序投递的项目事件集合。 */
+    private static final class EventQueue {
+        private final List<EventRequest> requests = new ArrayList<>();
+    }
+
+    /** 数据库提交后 WebSocket fan-out 所需的已解析目标成员。 */
+    private record PendingFan(Set<UUID> userIds) {
     }
 
     /**

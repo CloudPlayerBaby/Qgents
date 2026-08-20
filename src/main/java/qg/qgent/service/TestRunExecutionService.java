@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.entity.DryRunEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.TaskEntity;
@@ -11,6 +12,7 @@ import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TestRunMapper;
 import qg.qgent.orchestration.worker.*;
 import qg.qgent.orchestration.ExecutionContentSanitizer;
+import qg.qgent.service.event.DryRunConflictCandidateDomainEvent;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -31,10 +33,13 @@ public class TestRunExecutionService {
     private final TaskMapper tasks;
     private final ProjectRepositoryMapper projectRepositories;
     private final GitStoreSyncService gitStores;
+    /** Dry Run 失败后的冲突续跑触发，不再通过 SSE eventType 反向派生。 */
+    private final ApplicationEventPublisher domainEvents;
 
     public TestRunExecutionService(TestRunMapper testRuns, DryRunMapper dryRuns,
                                    SandboxWorkerClient worker, EventService events, TaskMapper tasks,
-                                   ProjectRepositoryMapper projectRepositories, GitStoreSyncService gitStores) {
+                                   ProjectRepositoryMapper projectRepositories, GitStoreSyncService gitStores,
+                                   ApplicationEventPublisher domainEvents) {
         this.testRuns = testRuns;
         this.dryRuns = dryRuns;
         this.worker = worker;
@@ -42,6 +47,7 @@ public class TestRunExecutionService {
         this.tasks = tasks;
         this.projectRepositories = projectRepositories;
         this.gitStores = gitStores;
+        this.domainEvents = domainEvents;
     }
 
     /**
@@ -344,6 +350,11 @@ public class TestRunExecutionService {
         payload.put("targetBranch", run.getTargetBranch());
         payload.put("targetCommit", run.getResolvedTargetCommit());
         payload.put("timestamp", Instant.now().toString());
+        if ("FAILED".equals(run.getStatus()) && run.getTaskId() != null) {
+            // complete() 已返回成功，监听器以 fallbackExecution 立即消费；事务调用时则 AFTER_COMMIT 消费。
+            domainEvents.publishEvent(new DryRunConflictCandidateDomainEvent(run.getProjectId(), run.getId(),
+                    run.getTaskId()));
+        }
         events.publish(run.getProjectId(), null, "dry-run.updated", run.getId().toString(), payload);
     }
 

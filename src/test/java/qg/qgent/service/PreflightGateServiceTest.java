@@ -1,6 +1,11 @@
 package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 import qg.qgent.api.ApiException;
 import qg.qgent.entity.DryRunEntity;
 import qg.qgent.entity.PreflightCqReviewEntity;
@@ -11,6 +16,7 @@ import qg.qgent.mapper.PreflightCqReviewMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 
 import java.util.UUID;
 
@@ -20,8 +26,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -32,7 +40,8 @@ class PreflightGateServiceTest {
     private final WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
     private final ProjectRepositoryMapper repositories = mock(ProjectRepositoryMapper.class);
     private final PreflightGateService service = new PreflightGateService(dryRuns, cqReviews, tasks, worktrees,
-            repositories, mock(ProjectAccessService.class), mock(GitStoreSyncService.class), mock(EventService.class));
+            repositories, mock(ProjectAccessService.class), mock(GitStoreSyncService.class), mock(EventService.class),
+            mock(ApplicationEventPublisher.class), immediateTransactions());
 
     @Test
     void blocksMrWhenCurrentDryRunHasNoIndependentCqApproval() {
@@ -168,6 +177,50 @@ class PreflightGateServiceTest {
         verify(cqReviews, never()).insert(any(PreflightCqReviewEntity.class));
     }
 
+    @Test
+    void approvalPublishesDomainEventBeforeTheSseRefreshInsideTheNarrowTransaction() {
+        DryRunMapper localDryRuns = mock(DryRunMapper.class);
+        PreflightCqReviewMapper localReviews = mock(PreflightCqReviewMapper.class);
+        TaskMapper localTasks = mock(TaskMapper.class);
+        WorkspaceRepositoryMapper localWorktrees = mock(WorkspaceRepositoryMapper.class);
+        ProjectRepositoryMapper localRepositories = mock(ProjectRepositoryMapper.class);
+        GitStoreSyncService localGitStores = mock(GitStoreSyncService.class);
+        EventService events = mock(EventService.class);
+        ApplicationEventPublisher domainEvents = mock(ApplicationEventPublisher.class);
+        PreflightGateService local = new PreflightGateService(localDryRuns, localReviews, localTasks, localWorktrees,
+                localRepositories, mock(ProjectAccessService.class), localGitStores, events, domainEvents,
+                immediateTransactions());
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), dryRunId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID(), reviewerId = UUID.randomUUID();
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId); task.setProjectId(projectId); task.setCreatedBy(UUID.randomUUID());
+        task.setDeliveryMode("MR_FIRST"); task.setStatus("WAITING_PREFLIGHT"); task.setWorkspaceId(UUID.randomUUID());
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setProjectRepositoryId(repositoryId); worktree.setHeadCommit("source");
+        DryRunEntity dryRun = new DryRunEntity();
+        dryRun.setId(dryRunId); dryRun.setProjectId(projectId); dryRun.setTaskId(taskId);
+        dryRun.setProjectRepositoryId(repositoryId); dryRun.setStatus("PASSED"); dryRun.setHeadCommit("source");
+        dryRun.setTargetBranch("main"); dryRun.setResolvedTargetCommit("target");
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId); repository.setProjectId(projectId);
+        PreflightCqReviewEntity approved = new PreflightCqReviewEntity();
+        approved.setDecision("APPROVED"); approved.setSourceCommit("source"); approved.setTargetCommit("target");
+        approved.setReviewerUserId(reviewerId);
+        when(localDryRuns.selectById(dryRunId)).thenReturn(dryRun);
+        when(localTasks.selectById(taskId)).thenReturn(task);
+        when(localWorktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(java.util.List.of(worktree));
+        when(localRepositories.selectById(repositoryId)).thenReturn(repository);
+        when(localGitStores.refreshTargetBranch(projectId, repository, "main")).thenReturn("target");
+        when(localDryRuns.selectOne(any())).thenReturn(dryRun);
+        when(localReviews.selectOne(any())).thenReturn(approved);
+
+        local.approve(projectId, dryRunId, reviewerId, "looks good");
+
+        InOrder order = inOrder(domainEvents, events);
+        order.verify(domainEvents).publishEvent(new PreflightCqApprovedDomainEvent(projectId, dryRunId));
+        order.verify(events).publish(eq(projectId), any(), eq("preflight.updated"), eq(dryRunId.toString()), any());
+    }
+
     private Context context() {
         UUID projectId = UUID.randomUUID();
         UUID repositoryId = UUID.randomUUID();
@@ -184,6 +237,16 @@ class PreflightGateServiceTest {
         dryRun.setHeadCommit("source-commit");
         dryRun.setResolvedTargetCommit("target-commit");
         return new Context(repositoryId, task, worktree, dryRun);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static TransactionTemplate immediateTransactions() {
+        TransactionTemplate transactions = mock(TransactionTemplate.class);
+        when(transactions.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<Object> callback = invocation.getArgument(0);
+            return callback.doInTransaction(mock(TransactionStatus.class));
+        });
+        return transactions;
     }
 
     private record Context(UUID repositoryId, TaskEntity task, WorkspaceRepositoryEntity worktree, DryRunEntity dryRun) {

@@ -1,8 +1,10 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.PreflightGateResponse;
@@ -16,6 +18,7 @@ import qg.qgent.mapper.PreflightCqReviewMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -39,10 +42,15 @@ public class PreflightGateService {
     private final ProjectAccessService access;
     private final GitStoreSyncService gitStores;
     private final EventService events;
+    /** CQ 自动建 MR 的领域事件；与用于浏览器刷新的 SSE 保持独立。 */
+    private final ApplicationEventPublisher domainEvents;
+    /** 只包裹 CQ 落库和事件发布，绝不在事务中调用 GitHub 或 Worker。 */
+    private final TransactionTemplate transactions;
 
     public PreflightGateService(DryRunMapper dryRuns, PreflightCqReviewMapper cqReviews, TaskMapper tasks,
                                 WorkspaceRepositoryMapper worktrees, ProjectRepositoryMapper repositories,
-                                ProjectAccessService access, GitStoreSyncService gitStores, EventService events) {
+                                ProjectAccessService access, GitStoreSyncService gitStores, EventService events,
+                                ApplicationEventPublisher domainEvents, TransactionTemplate transactions) {
         this.dryRuns = dryRuns;
         this.cqReviews = cqReviews;
         this.tasks = tasks;
@@ -51,6 +59,8 @@ public class PreflightGateService {
         this.access = access;
         this.gitStores = gitStores;
         this.events = events;
+        this.domainEvents = domainEvents;
+        this.transactions = transactions;
     }
 
     public PreflightGateResponse get(UUID projectId, UUID taskId, UUID repositoryId, String targetBranch, UUID actor) {
@@ -164,9 +174,11 @@ public class PreflightGateService {
         review.setReason(normalizeReason(reason));
         review.setReviewedAt(now);
         review.setCreatedAt(now);
-        cqReviews.insert(review);
-        publishUpdated(task, dryRun, decision);
-        return evaluate(task, worktree, dryRun.getProjectRepositoryId(), dryRun.getTargetBranch(), currentTarget);
+        return transactions.execute(status -> {
+            cqReviews.insert(review);
+            publishUpdated(task, dryRun, decision);
+            return evaluate(task, worktree, dryRun.getProjectRepositoryId(), dryRun.getTargetBranch(), currentTarget);
+        });
     }
 
     private PreflightGateResponse evaluate(TaskEntity task, WorkspaceRepositoryEntity worktree, UUID repositoryId,
@@ -247,6 +259,9 @@ public class PreflightGateService {
     }
 
     private void publishUpdated(TaskEntity task, DryRunEntity dryRun, String decision) {
+        if ("APPROVED".equals(decision)) {
+            domainEvents.publishEvent(new PreflightCqApprovedDomainEvent(task.getProjectId(), dryRun.getId()));
+        }
         events.publish(task.getProjectId(), task.getRequirementGroupId(), "preflight.updated", dryRun.getId().toString(),
                 java.util.Map.of("projectId", task.getProjectId(), "taskId", task.getId(),
                         "repositoryId", dryRun.getProjectRepositoryId(), "dryRunId", dryRun.getId(),

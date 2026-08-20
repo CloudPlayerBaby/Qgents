@@ -37,7 +37,7 @@ class DiffReviewBatchServiceTest {
         ProjectAccessService access = mock(ProjectAccessService.class);
         DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, mock(TaskMapper.class),
                 repositories, mock(SandboxWorkerClient.class), mock(MergeRequestService.class), access,
-                mock(EventService.class), mock(TransactionTemplate.class), mock(DiffSnapshotStorage.class),
+                mock(EventService.class), mock(org.springframework.context.ApplicationEventPublisher.class), mock(TransactionTemplate.class), mock(DiffSnapshotStorage.class),
                 mock(DiffDeliveryService.class), mergeRequests, githubRepositories,
                 mock(NotificationService.class));
         UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), batchId = UUID.randomUUID();
@@ -125,7 +125,7 @@ class DiffReviewBatchServiceTest {
 
         DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
                 mock(ProjectRepositoryMapper.class), worker, mock(MergeRequestService.class),
-                access, events, transactions, mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class),
+                access, events, mock(org.springframework.context.ApplicationEventPublisher.class), transactions, mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class),
                 mock(MergeRequestMapper.class), mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
 
         service.reject(projectId, taskId, actor, "需要补充异常场景");
@@ -247,7 +247,7 @@ class DiffReviewBatchServiceTest {
                 "DIFF_SNAPSHOT_STALE", "workspace changed after final Diff"));
         DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
                 mock(ProjectRepositoryMapper.class), worker, mergeRequests, mock(ProjectAccessService.class),
-                mock(EventService.class), transactions, mock(DiffSnapshotStorage.class), deliveries,
+                mock(EventService.class), mock(org.springframework.context.ApplicationEventPublisher.class), transactions, mock(DiffSnapshotStorage.class), deliveries,
                 mock(MergeRequestMapper.class), mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
 
         service.deliverSystemAcceptedBatch(projectId, taskId, batchId, "claim");
@@ -292,7 +292,7 @@ class DiffReviewBatchServiceTest {
         when(worker.createWorkspaceGitDiff(workspaceId, repositoryId)).thenReturn(current);
         DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
                 mock(ProjectRepositoryMapper.class), worker, mock(MergeRequestService.class),
-                mock(ProjectAccessService.class), mock(EventService.class), transactions,
+                mock(ProjectAccessService.class), mock(EventService.class), mock(org.springframework.context.ApplicationEventPublisher.class), transactions,
                 mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class), mock(MergeRequestMapper.class),
                 mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
         WorkspaceWriteLeaseService writeLeases = mock(WorkspaceWriteLeaseService.class);
@@ -342,7 +342,7 @@ class DiffReviewBatchServiceTest {
         }).when(diffs).markPushed(eq(committed.getId()), any());
         DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
                 mock(ProjectRepositoryMapper.class), worker, mergeRequests, access, mock(EventService.class),
-                immediateTransactions(), mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class), immediateTransactions(), mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class),
                 mock(MergeRequestMapper.class), mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
 
         service.retryDelivery(projectId, taskId, actor);
@@ -387,7 +387,7 @@ class DiffReviewBatchServiceTest {
                 .when(mergeRequests).pushAcceptedBranch(projectId, taskId, repositoryId);
         DiffReviewBatchService service = new DiffReviewBatchService(batches, diffs, tasks,
                 mock(ProjectRepositoryMapper.class), worker, mergeRequests, access, mock(EventService.class),
-                immediateTransactions(), mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class), immediateTransactions(), mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class),
                 mock(MergeRequestMapper.class), mock(GitHubRepositoryMapper.class), mock(NotificationService.class));
 
         service.retryDelivery(projectId, taskId, actor);
@@ -517,15 +517,18 @@ class DiffReviewBatchServiceTest {
         when(diffs.selectList(any())).thenReturn(List.of(diff));
         MessageService messages = mock(MessageService.class);
         OrchestratorAgentService orchestratorAgents = mock(OrchestratorAgentService.class);
+        org.springframework.context.ApplicationEventPublisher domainEvents =
+                mock(org.springframework.context.ApplicationEventPublisher.class);
         when(orchestratorAgents.resolveIdForTask(task)).thenReturn(orchestratorId);
         DiffReviewBatchService service = service(batches, diffs, tasks, mock(SandboxWorkerClient.class),
-                mock(ProjectAccessService.class), transactions, notifications);
+                mock(ProjectAccessService.class), transactions, notifications, domainEvents);
         service.setMessageService(messages);
         service.setOrchestratorAgents(orchestratorAgents);
 
         org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "finish", task, batchId, "claim");
 
         assertEquals("WAITING_PREFLIGHT", task.getStatus());
+        verify(domainEvents).publishEvent(new qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent(projectId, taskId));
         verify(notifications, never()).notify(any(), any(), any(), any(), any(), any(), any());
         verify(messages).upsertTaskStatusCard(eq(groupId), eq(orchestratorId), argThat(body ->
                 "TASK_STATUS".equals(body.getType())
@@ -582,8 +585,15 @@ class DiffReviewBatchServiceTest {
     private DiffReviewBatchService service(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
             SandboxWorkerClient worker, ProjectAccessService access, TransactionTemplate transactions,
             NotificationService notifications) {
+        return service(batches, diffs, tasks, worker, access, transactions, notifications,
+                mock(org.springframework.context.ApplicationEventPublisher.class));
+    }
+
+    private DiffReviewBatchService service(DiffReviewBatchMapper batches, DiffMapper diffs, TaskMapper tasks,
+            SandboxWorkerClient worker, ProjectAccessService access, TransactionTemplate transactions,
+            NotificationService notifications, org.springframework.context.ApplicationEventPublisher domainEvents) {
         return new DiffReviewBatchService(batches, diffs, tasks, mock(ProjectRepositoryMapper.class), worker,
-                mock(MergeRequestService.class), access, mock(EventService.class), transactions,
+                mock(MergeRequestService.class), access, mock(EventService.class), domainEvents, transactions,
                 mock(DiffSnapshotStorage.class), mock(DiffDeliveryService.class), mock(MergeRequestMapper.class),
                 mock(GitHubRepositoryMapper.class), notifications);
     }

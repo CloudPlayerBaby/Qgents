@@ -4,8 +4,6 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.api.ApiException;
 import qg.qgent.entity.TaskEntity;
@@ -480,11 +478,8 @@ public class TaskPlanMaterializationService {
     }
 
     private void registerStepEvent(TaskEntity task, TaskStepEntity step) {
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void afterCommit() {
-                events.publish(task.getProjectId(), task.getRequirementGroupId(), "task-step.updated", step.getId().toString(),
-                        TaskEventPayloads.taskStepUpdated(task.getProjectId(), step));
-            }
-        });
+        // EventService 会在当前业务事务提交后统一投递，避免 afterCommit 中再次注册事务同步。
+        events.publish(task.getProjectId(), task.getRequirementGroupId(), "task-step.updated", step.getId().toString(),
+                TaskEventPayloads.taskStepUpdated(task.getProjectId(), step));
     }
 }

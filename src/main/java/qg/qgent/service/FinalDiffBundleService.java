@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -11,6 +12,7 @@ import qg.qgent.mapper.*;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitDiff;
 import qg.qgent.orchestration.worker.WorkerGitDiffFile;
+import qg.qgent.service.event.DeliveryStartedDomainEvent;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -39,10 +41,13 @@ public class FinalDiffBundleService {
     private final EventService events;
     private final TransactionTemplate transactions;
     private WorkspaceMapper workspaces;
+    /** 交付领域事件与浏览器 SSE 分离。 */
+    private final ApplicationEventPublisher domainEvents;
 
     public FinalDiffBundleService(TaskMapper tasks, TaskRunMapper runs, WorkspaceRepositoryMapper worktrees,
                                   DiffReviewBatchMapper batches, DiffMapper diffs, DiffFileMapper files, SandboxWorkerClient worker,
-                                  DiffSnapshotStorage snapshots, EventService events, TransactionTemplate transactions) {
+                                  DiffSnapshotStorage snapshots, EventService events, ApplicationEventPublisher domainEvents,
+                                  TransactionTemplate transactions) {
         this.tasks = tasks;
         this.runs = runs;
         this.worktrees = worktrees;
@@ -52,6 +57,7 @@ public class FinalDiffBundleService {
         this.worker = worker;
         this.snapshots = snapshots;
         this.events = events;
+        this.domainEvents = domainEvents;
         this.transactions = transactions;
     }
 
@@ -206,6 +212,9 @@ public class FinalDiffBundleService {
             started.put("reason", task.getDeliveryReason());
         }
         started.put("operationId", batch.getDeliveryOperationId());
+        // 由当前 TransactionTemplate 的 AFTER_COMMIT 监听器驱动交付，不能依赖 SSE 成功落库。
+        domainEvents.publishEvent(new DeliveryStartedDomainEvent(task.getProjectId(), task.getId(), batch.getId(),
+                batch.getDeliveryOperationId()));
         events.publish(task.getProjectId(), task.getRequirementGroupId(), "delivery.started",
                 task.getId().toString(), started);
         return batch.getId();

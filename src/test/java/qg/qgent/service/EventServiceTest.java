@@ -1,7 +1,13 @@
 package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DeadlockLoserDataAccessException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import qg.qgent.entity.EventEntity;
 import qg.qgent.entity.NotificationEventEntity;
 import qg.qgent.entity.TeamEventEntity;
@@ -15,11 +21,8 @@ import qg.qgent.mapper.TeamEventMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.mapper.UserMapper;
 import qg.qgent.mapper.TeamMapper;
-import qg.qgent.service.event.DeliveryStartedDomainEvent;
-import qg.qgent.service.event.DryRunConflictCandidateDomainEvent;
-import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
-import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -28,6 +31,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -73,26 +78,33 @@ class EventServiceTest {
     }
 
     @Test
-    void deliveryStartedPublishesTypedDomainEventWithThePersistedBatchId() {
+    void publishDefersBusinessTransactionEventsUntilAfterCommitAndPreservesOrder() {
         EventMapper events = mock(EventMapper.class);
-        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
         ProjectMapper projects = mock(ProjectMapper.class);
         UUID projectId = UUID.randomUUID();
-        UUID taskId = UUID.randomUUID();
-        UUID batchId = UUID.randomUUID();
-        when(events.nextSequence(projectId)).thenReturn(1L);
-        EventService service = service(events, projects, publisher);
+        when(events.nextSequence(projectId)).thenReturn(1L, 2L);
+        EventService service = service(events, projects);
 
-        service.publish(projectId, null, "delivery.started", taskId.toString(), Map.of(
-                "taskId", taskId, "reviewBatchId", batchId, "operationId", "operation-1"));
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            service.publish(projectId, null, "task.updated", "task-1", Map.of("status", "RUNNING"));
+            service.publish(projectId, null, "task-step.updated", "step-1", Map.of("status", "RUNNING"));
 
-        org.mockito.ArgumentCaptor<Object> captured = org.mockito.ArgumentCaptor.forClass(Object.class);
-        verify(publisher).publishEvent(captured.capture());
-        DeliveryStartedDomainEvent event = (DeliveryStartedDomainEvent) captured.getValue();
-        assertEquals(projectId, event.projectId());
-        assertEquals(taskId, event.taskId());
-        assertEquals(batchId, event.reviewBatchId());
-        assertEquals("operation-1", event.operationId());
+            verify(events, never()).insert(any(EventEntity.class));
+            List<TransactionSynchronization> synchronizations = TransactionSynchronizationManager.getSynchronizations();
+            assertEquals(1, synchronizations.size());
+            synchronizations.forEach(TransactionSynchronization::afterCommit);
+
+            org.mockito.ArgumentCaptor<EventEntity> captured = org.mockito.ArgumentCaptor.forClass(EventEntity.class);
+            verify(events, org.mockito.Mockito.times(2)).insert(captured.capture());
+            assertEquals(List.of("task.updated", "task-step.updated"),
+                    captured.getAllValues().stream().map(EventEntity::getEventType).toList());
+            synchronizations.forEach(sync -> sync.afterCompletion(TransactionSynchronization.STATUS_COMMITTED));
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test
@@ -132,69 +144,45 @@ class EventServiceTest {
     }
 
     @Test
-    void mrFirstPreflightAndCqApprovalPublishTypedDomainEvents() {
+    void deadlockIsRetriedInRequiresNewTransactionsAndDoesNotReachCaller() {
         EventMapper events = mock(EventMapper.class);
-        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
         ProjectMapper projects = mock(ProjectMapper.class);
         UUID projectId = UUID.randomUUID();
-        UUID taskId = UUID.randomUUID();
-        UUID dryRunId = UUID.randomUUID();
-        when(events.nextSequence(projectId)).thenReturn(1L, 2L);
-        EventService service = service(events, projects, publisher);
+        PlatformTransactionManager transactions = mock(PlatformTransactionManager.class);
+        when(transactions.getTransaction(any(TransactionDefinition.class))).thenReturn(new SimpleTransactionStatus());
+        doNothing().when(transactions).commit(any(TransactionStatus.class));
+        doThrow(new DeadlockLoserDataAccessException("deadlock", null))
+                .doThrow(new DeadlockLoserDataAccessException("deadlock", null))
+                .doNothing().when(events).insert(any(EventEntity.class));
+        when(events.nextSequence(projectId)).thenReturn(1L);
+        EventService service = productionService(events, projects, transactions);
 
-        service.publish(projectId, null, "mr-first.preflight.requested", taskId.toString(),
-                Map.of("taskId", taskId));
-        service.publish(projectId, null, "preflight.updated", dryRunId.toString(),
-                Map.of("taskId", taskId, "decision", "APPROVED"));
+        service.publish(projectId, null, "task-run.updated", "run-1", Map.of("status", "FAILED"));
 
-        org.mockito.ArgumentCaptor<Object> captured = org.mockito.ArgumentCaptor.forClass(Object.class);
-        verify(publisher, org.mockito.Mockito.times(2)).publishEvent(captured.capture());
-        assertEquals(taskId, ((MrFirstPreflightRequestedDomainEvent) captured.getAllValues().get(0)).taskId());
-        PreflightCqApprovedDomainEvent approval = (PreflightCqApprovedDomainEvent) captured.getAllValues().get(1);
-        assertEquals(projectId, approval.projectId());
-        assertEquals(dryRunId, approval.dryRunId());
-    }
-
-    @Test
-    void dryRunFailurePublishesConflictCandidateDomainEventOnlyWhenFailed() {
-        EventMapper events = mock(EventMapper.class);
-        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
-        ProjectMapper projects = mock(ProjectMapper.class);
-        UUID projectId = UUID.randomUUID();
-        UUID taskId = UUID.randomUUID();
-        UUID dryRunId = UUID.randomUUID();
-        when(events.nextSequence(projectId)).thenReturn(1L, 2L);
-        EventService service = service(events, projects, publisher);
-
-        // FAILED 且带 taskId → 桥接候选事件；PASSED → 不发布。
-        service.publish(projectId, null, "dry-run.updated", dryRunId.toString(),
-                Map.of("taskId", taskId, "status", "FAILED"));
-        service.publish(projectId, null, "dry-run.updated", dryRunId.toString(),
-                Map.of("taskId", taskId, "status", "PASSED"));
-
-        org.mockito.ArgumentCaptor<Object> captured = org.mockito.ArgumentCaptor.forClass(Object.class);
-        verify(publisher, org.mockito.Mockito.times(1)).publishEvent(captured.capture());
-        DryRunConflictCandidateDomainEvent event = (DryRunConflictCandidateDomainEvent) captured.getValue();
-        assertEquals(projectId, event.projectId());
-        assertEquals(dryRunId, event.dryRunId());
-        assertEquals(taskId, event.taskId());
+        verify(transactions, org.mockito.Mockito.times(3)).getTransaction(any(TransactionDefinition.class));
+        verify(events, org.mockito.Mockito.times(3)).insert(any(EventEntity.class));
+        verify(projects, org.mockito.Mockito.times(3)).selectByIdForUpdate(projectId);
     }
 
     private EventService service(EventMapper events, ProjectMapper projects) {
-        return service(events, projects, mock(ApplicationEventPublisher.class));
-    }
-
-    private EventService service(EventMapper events, ProjectMapper projects, ApplicationEventPublisher publisher) {
         return new EventService(events, mock(ProjectAccessService.class), mock(NotificationEventMapper.class),
-                mock(TeamEventMapper.class), publisher, mock(RealtimeHub.class),
+                mock(TeamEventMapper.class), mock(RealtimeHub.class),
                 mock(ProjectMemberMapper.class), mock(TeamMemberMapper.class),
                 mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class), projects);
+    }
+
+    private EventService productionService(EventMapper events, ProjectMapper projects,
+                                           PlatformTransactionManager transactions) {
+        return new EventService(events, mock(ProjectAccessService.class), mock(NotificationEventMapper.class),
+                mock(TeamEventMapper.class), mock(RealtimeHub.class),
+                mock(ProjectMemberMapper.class), mock(TeamMemberMapper.class), mock(RequirementGroupMapper.class),
+                mock(GroupMemberMapper.class), projects, null, null, transactions, null);
     }
 
     private EventService fullService(EventMapper events, NotificationEventMapper notifications,
                                      TeamEventMapper teams, UserMapper users, TeamMapper teamRows) {
         return new EventService(events, mock(ProjectAccessService.class), notifications, teams,
-                mock(ApplicationEventPublisher.class), mock(RealtimeHub.class), mock(ProjectMemberMapper.class),
+                mock(RealtimeHub.class), mock(ProjectMemberMapper.class),
                 mock(TeamMemberMapper.class), mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class),
                 mock(ProjectMapper.class), users, teamRows);
     }
