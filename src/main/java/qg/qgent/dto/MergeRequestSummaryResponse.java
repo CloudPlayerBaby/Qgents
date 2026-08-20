@@ -21,6 +21,8 @@ public class MergeRequestSummaryResponse {
     private String sourceBranch;
     private String targetBranch;
     private String status;
+    /** 合并操作状态：RUNNING、COMPLETED、FAILED；未发起时为 null。 */
+    private String mergeOperationStatus;
     private String headCommit;
     /**
      * GitHub 是否可合并；null 表示 GitHub 尚未计算完成。

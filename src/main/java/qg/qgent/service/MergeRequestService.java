@@ -33,6 +33,8 @@ import java.util.function.Function;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * MR 镜像、审查与质量门禁服务。
@@ -86,6 +88,8 @@ public class MergeRequestService {
     private final MergeRequestDeliveryOperationMapper deliveryOperationMapper;
     private final TransactionTemplate transactions;
     private final DiffMapper diffMapper;
+    /** GitHub 合并属于慢速外部 IO，生产环境复用编排线程池异步执行。 */
+    private Executor mergeExecutor;
     /**
      * PR 创建成功后的检查写入/通知钩子。@Autowired setter 注入：避免主构造器继续膨胀，
      * 也保持既有纯 Mockito 测试构造器兼容（未注入时钩子静默跳过）。
@@ -129,6 +133,11 @@ public class MergeRequestService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setRepositoryContextService(TaskStatusRepositoryContextService repositoryContextService) {
         this.repositoryContextService = repositoryContextService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setMergeExecutor(@org.springframework.beans.factory.annotation.Qualifier("taskOrchestratorExecutor") Executor mergeExecutor) {
+        this.mergeExecutor = mergeExecutor;
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -1046,7 +1055,8 @@ public class MergeRequestService {
     }
 
     private record MergeClaim(MergeRequestEntity mergeRequest, GitHubRepositoryEntity githubRepository,
-                              GitHubInstallationEntity installation, String operationId, boolean alreadyCompleted) {
+                              GitHubInstallationEntity installation, String operationId, boolean alreadyCompleted,
+                              boolean alreadyInProgress) {
     }
 
     /**
@@ -1136,14 +1146,32 @@ public class MergeRequestService {
     }
 
     /**
-     * 请求真实 GitHub 合并。数据库只在认领和落库阶段持有短事务，网络调用始终在事务外执行。
+     * 受理真实 GitHub 合并。数据库只在认领阶段持有短事务，慢速网络调用放入后台执行。
+     * 测试环境未注入执行器时保留同步执行，便于维持服务层单元测试的确定性。
      */
     public MergeRequestSummaryResponse merge(UUID projectId, UUID mergeRequestId, UUID userId) {
         projectAccess.requireProjectAdmin(projectId, userId);
         MergeClaim claim = inTransaction(() -> claimMerge(projectId, mergeRequestId));
-        if (claim.alreadyCompleted()) {
+        if (claim.alreadyCompleted() || claim.alreadyInProgress()) {
             return summary(claim.mergeRequest());
         }
+        boolean synchronous = mergeExecutor == null;
+        Runnable operation = () -> executeMerge(projectId, mergeRequestId, claim, synchronous);
+        if (mergeExecutor != null) {
+            try {
+                mergeExecutor.execute(operation);
+            } catch (RejectedExecutionException rejected) {
+                inTransaction(() -> failMerge(mergeRequestId, claim.operationId()));
+                throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "MERGE_EXECUTOR_UNAVAILABLE",
+                        "合并任务当前排队已满，请稍后重试");
+            }
+            return summary(claim.mergeRequest());
+        }
+        operation.run();
+        return summary(inTransaction(() -> mergeRequestMapper.selectById(mergeRequestId)));
+    }
+
+    private void executeMerge(UUID projectId, UUID mergeRequestId, MergeClaim claim, boolean propagateFailure) {
         try {
             GitHubPullRequestDetails remote = githubClient.getPullRequest(
                     claim.installation().getProviderInstallationId(), claim.githubRepository().getOwnerLogin(),
@@ -1170,13 +1198,16 @@ public class MergeRequestService {
             MergeRequestEntity merged = inTransaction(() -> completeMerge(projectId, mergeRequestId,
                     claim.operationId()));
             publishUpdated(merged);
-            return summary(merged);
         } catch (RuntimeException failure) {
-            inTransaction(() -> {
-                failMerge(mergeRequestId, claim.operationId());
-                return null;
-            });
-            throw failure;
+            MergeRequestEntity failed = inTransaction(() -> failMerge(mergeRequestId, claim.operationId()));
+            if (failed != null) {
+                publishUpdated(failed);
+            }
+            log.warn("GitHub merge failed asynchronously, projectId={}, mergeRequestId={}, operationId={}: {}",
+                    projectId, mergeRequestId, claim.operationId(), failure.getMessage());
+            if (propagateFailure) {
+                throw failure;
+            }
         }
     }
 
@@ -1192,7 +1223,7 @@ public class MergeRequestService {
         GitHubRepositoryEntity githubRepository = requireGitHubRepository(projectId, mr.getProjectRepositoryId());
         GitHubInstallationEntity installation = requireInstallation(githubRepository);
         if ("MERGED".equals(mr.getStatus()) && "COMPLETED".equals(mr.getMergeOperationStatus())) {
-            return new MergeClaim(mr, githubRepository, installation, mr.getMergeOperationId(), true);
+            return new MergeClaim(mr, githubRepository, installation, mr.getMergeOperationId(), true, false);
         }
         if (!"OPEN".equals(mr.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "MERGE_REQUEST_NOT_OPEN",
@@ -1204,7 +1235,7 @@ public class MergeRequestService {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         if ("RUNNING".equals(mr.getMergeOperationStatus()) && mr.getMergeLeaseExpiresAt() != null
                 && mr.getMergeLeaseExpiresAt().isAfter(now)) {
-            throw new ApiException(HttpStatus.CONFLICT, "MERGE_REQUEST_MERGE_IN_PROGRESS", "该 MR 正在合并中");
+            return new MergeClaim(mr, githubRepository, installation, mr.getMergeOperationId(), false, true);
         }
         String operationId = mr.getMergeOperationId();
         if (operationId == null || operationId.isBlank()) {
@@ -1214,7 +1245,7 @@ public class MergeRequestService {
         mr.setMergeOperationStatus("RUNNING");
         mr.setMergeLeaseExpiresAt(now.plus(MERGE_OPERATION_LEASE));
         mergeRequestMapper.updateById(mr);
-        return new MergeClaim(mr, githubRepository, installation, operationId, false);
+        return new MergeClaim(mr, githubRepository, installation, operationId, false, false);
     }
 
     private MergeRequestEntity completeMerge(UUID projectId, UUID mergeRequestId, String operationId) {
@@ -1236,15 +1267,16 @@ public class MergeRequestService {
         return current;
     }
 
-    private void failMerge(UUID mergeRequestId, String operationId) {
+    private MergeRequestEntity failMerge(UUID mergeRequestId, String operationId) {
         MergeRequestEntity current = mergeRequestMapper.selectByIdForUpdate(mergeRequestId);
         if (current == null || !operationId.equals(current.getMergeOperationId())
                 || "COMPLETED".equals(current.getMergeOperationStatus())) {
-            return;
+            return current;
         }
         current.setMergeOperationStatus("FAILED");
         current.setMergeLeaseExpiresAt(null);
         mergeRequestMapper.updateById(current);
+        return current;
     }
 
     // ---------- 私有辅助 ----------
@@ -1877,6 +1909,7 @@ public class MergeRequestService {
         response.setSourceBranch(mr.getSourceBranch());
         response.setTargetBranch(mr.getTargetBranch());
         response.setStatus(mr.getStatus());
+        response.setMergeOperationStatus(mr.getMergeOperationStatus());
         response.setHeadCommit(mr.getHeadCommit());
         response.setMergeable(mr.getMergeable());
         response.setMergeableState(mr.getMergeableState());
