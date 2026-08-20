@@ -1077,7 +1077,7 @@ merge-request.updated        -> { projectId, mergeRequestId, repositoryId, numbe
 
         Sandbox、工作流图等启动阶段发生意外失败时，Task 会置为 `FAILED`。客户端通过既有 `task.updated`、`message.created`（失败 `TASK_STATUS` 卡片）和 `notification.created`（`kind=TASK_FAILED`）获知结果；断线重连或收到乱序事件后，仍应以 Task、消息和通知查询接口返回的数据为准。
 
-    - **显式触发**：`POST /projects/{projectId}/groups/{groupId}/messages/{messageId}/trigger-task`，对已发送消息显式创建 Task（项目成员；body 为 `TaskTriggerRequest`，缺省字段由服务端从消息文本/群信息提取，需 `Idempotency-Key`）。
+    - **显式触发**：`POST /projects/{projectId}/groups/{groupId}/messages/{messageId}/trigger-task`，对已发送消息显式创建 Task（项目成员；body 为 `TaskTriggerRequest`，缺省字段由服务端从消息文本/群信息提取，需 `Idempotency-Key`）。创建成功后，服务端以当前用户身份在同一需求群追加一条普通 `TEXT` 消息，正文为“`@编排助手 ` + 最终 Task requirement”；该文本不携带结构化 `AGENT` 提及（`mentions=[]`），因此不会重复创建 Task。消息使用服务端固定 `clientMessageId=manual-task-trigger-{taskId}` 幂等复用。
 
 
 

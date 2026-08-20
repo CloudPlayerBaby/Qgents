@@ -73,7 +73,7 @@ class MessageServiceTest {
 
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class), mock(ProjectAccessService.class),
-                mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class),
+                mock(GroupService.class), new ObjectMapper(), mock(EventService.class),
                 mock(NotificationService.class), mock(AttachmentService.class),
                 mock(ApplicationEventPublisher.class));
         MessageSendRequest request = new MessageSendRequest();
@@ -103,7 +103,7 @@ class MessageServiceTest {
         when(groups.selectOne(any())).thenReturn(group);
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class), mock(ProjectAccessService.class),
-                mock(GroupService.class), mock(TaskTriggerService.class), new ObjectMapper(), mock(EventService.class),
+                mock(GroupService.class), new ObjectMapper(), mock(EventService.class),
                 mock(NotificationService.class), mock(AttachmentService.class),
                 mock(ApplicationEventPublisher.class));
         MessageSendRequest request = new MessageSendRequest();
@@ -136,7 +136,7 @@ class MessageServiceTest {
         when(groups.selectOne(any())).thenReturn(group);
         when(projects.selectById(projectId)).thenReturn(project);
         MessageService service = new MessageService(messages, groups, groupAgents, mock(UserMapper.class), agents,
-                projects, mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                projects, mock(ProjectAccessService.class), mock(GroupService.class),
                 new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class),
                 mock(ApplicationEventPublisher.class));
         MessageSendRequest request = new MessageSendRequest();
@@ -199,7 +199,7 @@ class MessageServiceTest {
         when(messages.selectById(any())).thenAnswer(invocation -> inserted.get());
         when(groupAgents.insertAgent(groupId, agentId)).thenReturn(1);
         MessageService service = new MessageService(messages, groups, groupAgents, mock(UserMapper.class), agents,
-                projects, mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                projects, mock(ProjectAccessService.class), mock(GroupService.class),
                 new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class),
                 mock(ApplicationEventPublisher.class));
         MessageSendRequest request = new MessageSendRequest();
@@ -234,7 +234,7 @@ class MessageServiceTest {
 
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
-                mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                mock(ProjectAccessService.class), mock(GroupService.class),
                 new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class),
                 mock(ApplicationEventPublisher.class));
 
@@ -261,6 +261,43 @@ class MessageServiceTest {
         assertThat(((Map<?, ?>) changed.getContent().get("plan")).get("summary"))
                 .isEqualTo("分析权限");
         verify(messages).updateById(any(MessageEntity.class));
+    }
+
+    @Test
+    void userMessageWithSameClientMessageIdIsWrittenOnlyOnce() {
+        UUID projectId = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        RequirementGroupEntity group = new RequirementGroupEntity();
+        group.setId(groupId);
+        group.setProjectId(projectId);
+        MessageMapper messages = mock(MessageMapper.class);
+        RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
+        when(groups.selectOne(any())).thenReturn(group);
+        when(messages.nextSequence(groupId)).thenReturn(1L);
+        AtomicReference<MessageEntity> stored = new AtomicReference<>();
+        when(messages.selectOne(any())).thenAnswer(invocation -> stored.get());
+        when(messages.insert(any(MessageEntity.class))).thenAnswer(invocation -> {
+            stored.set(invocation.getArgument(0));
+            return 1;
+        });
+        when(messages.selectById(any())).thenAnswer(invocation -> stored.get());
+        MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
+                mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
+                mock(ProjectAccessService.class), mock(GroupService.class), new ObjectMapper(),
+                mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class),
+                mock(ApplicationEventPublisher.class));
+        MessageSendRequest request = new MessageSendRequest();
+        request.setType("TEXT");
+        request.setContent(Map.of("text", "@编排助手 补齐邮箱登录功能"));
+        request.setMentions(List.of());
+        request.setClientMessageId("manual-task-trigger-" + UUID.randomUUID());
+
+        MessageResponse first = service.send(actor, projectId, groupId, request);
+        MessageResponse second = service.send(actor, projectId, groupId, request);
+
+        assertThat(second.getId()).isEqualTo(first.getId());
+        verify(messages, times(1)).insert(any(MessageEntity.class));
     }
 
     @Test
@@ -295,7 +332,7 @@ class MessageServiceTest {
         when(projects.selectById(group.getProjectId())).thenReturn(project);
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), agents, projects,
-                mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                mock(ProjectAccessService.class), mock(GroupService.class),
                 new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class),
                 mock(ApplicationEventPublisher.class));
 
@@ -354,7 +391,7 @@ class MessageServiceTest {
         when(projects.selectById(group.getProjectId())).thenReturn(project);
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), agents, projects,
-                mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                mock(ProjectAccessService.class), mock(GroupService.class),
                 new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class),
                 mock(ApplicationEventPublisher.class));
 
@@ -389,7 +426,7 @@ class MessageServiceTest {
 
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
-                mock(ProjectAccessService.class), groupService, mock(TaskTriggerService.class),
+                mock(ProjectAccessService.class), groupService,
                 new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class),
                 mock(ApplicationEventPublisher.class));
 
@@ -413,7 +450,7 @@ class MessageServiceTest {
         when(groups.selectById(groupId)).thenReturn(group);
         MessageService service = new MessageService(messages, groups, mock(GroupAgentMapper.class),
                 mock(UserMapper.class), mock(AgentMapper.class), mock(ProjectMapper.class),
-                mock(ProjectAccessService.class), mock(GroupService.class), mock(TaskTriggerService.class),
+                mock(ProjectAccessService.class), mock(GroupService.class),
                 new ObjectMapper(), mock(EventService.class), mock(NotificationService.class), mock(AttachmentService.class),
                 mock(ApplicationEventPublisher.class));
 

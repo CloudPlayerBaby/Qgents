@@ -44,7 +44,6 @@ public class MessageService {
     private final ProjectMapper projectMapper;
     private final ProjectAccessService access;
     private final GroupService groupService;
-    private final TaskTriggerService taskTriggerService;
     private final ObjectMapper mapper;
     private final EventService eventService;
     private final NotificationService notificationService;
@@ -54,7 +53,7 @@ public class MessageService {
     public MessageService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                           GroupAgentMapper groupAgentMapper, UserMapper userMapper, AgentMapper agentMapper,
                           ProjectMapper projectMapper, ProjectAccessService access, GroupService groupService,
-                          TaskTriggerService taskTriggerService, ObjectMapper mapper,
+                          ObjectMapper mapper,
                           EventService eventService, NotificationService notificationService,
                           AttachmentService attachmentService, ApplicationEventPublisher eventPublisher) {
         this.messageMapper = messageMapper;
@@ -65,7 +64,6 @@ public class MessageService {
         this.projectMapper = projectMapper;
         this.access = access;
         this.groupService = groupService;
-        this.taskTriggerService = taskTriggerService;
         this.mapper = mapper;
         this.eventService = eventService;
         this.notificationService = notificationService;

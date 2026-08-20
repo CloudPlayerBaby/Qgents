@@ -3,8 +3,10 @@ package qg.qgent.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.Mention;
+import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.dto.TaskCreateRequest;
 import qg.qgent.dto.TaskResponse;
 import qg.qgent.dto.TaskTriggerRequest;
@@ -34,11 +36,12 @@ class TaskTriggerServiceTest {
     private final TaskMapper tasks = mock(TaskMapper.class);
     private final DiffMapper diffs = mock(DiffMapper.class);
     private final TaskService taskService = mock(TaskService.class);
+    private final MessageService messageService = mock(MessageService.class);
     private final GroupService groupService = mock(GroupService.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final ObjectMapper mapper = new ObjectMapper();
     private final TaskTriggerService service = new TaskTriggerService(messages, groups, groupRepos, tasks, diffs,
-            taskService, groupService, access, mapper);
+            taskService, messageService, groupService, access, mapper);
 
     @Test
     void triggerAssemblesRequestFromMessageAndGroup() {
@@ -52,9 +55,30 @@ class TaskTriggerServiceTest {
 
         TaskTriggerRequest body = new TaskTriggerRequest();
         body.setTitle("实现邮箱登录");
+        TaskResponse task = taskResponse(UUID.randomUUID(), "实现邮箱登录");
+        when(taskService.create(eq(projectId), eq(actor), any())).thenReturn(task);
         service.trigger(actor, projectId, groupId, messageId, body);
 
         verify(taskService).create(eq(projectId), eq(actor), any());
+        verifyManualTriggerMessage(actor, projectId, groupId, task);
+    }
+
+    @Test
+    void triggerReusesSameManualMessageWhenTaskAlreadyExists() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID();
+        MessageEntity message = message(groupId, messageId, "{\"text\":\"实现邮箱登录\"}");
+        TaskResponse existing = taskResponse(UUID.randomUUID(), "补齐邮箱登录功能");
+        when(messages.selectById(messageId)).thenReturn(message);
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(taskService.findByTriggerMessage(projectId, messageId, actor)).thenReturn(existing);
+
+        TaskTriggerRequest body = new TaskTriggerRequest();
+        body.setTitle("实现邮箱登录");
+
+        assertSame(existing, service.trigger(actor, projectId, groupId, messageId, body));
+        verify(taskService, never()).create(any(), any(), any());
+        verifyManualTriggerMessage(actor, projectId, groupId, existing);
     }
 
     @Test
@@ -121,6 +145,7 @@ class TaskTriggerServiceTest {
         service.triggerFromMention(actor, projectId, groupId, message, mentions);
 
         verify(taskService).create(eq(projectId), eq(actor), any());
+        verifyNoInteractions(messageService);
     }
 
     @Test
@@ -309,7 +334,7 @@ class TaskTriggerServiceTest {
         MessageEntity message = message(groupId, messageId, "{\"text\":\"@agent 做登录\"}");
         when(messages.selectById(messageId)).thenReturn(message);
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
-        TaskResponse existing = mock(TaskResponse.class);
+        TaskResponse existing = taskResponse(UUID.randomUUID(), "补齐邮箱登录功能");
         when(taskService.findByTriggerMessage(projectId, messageId, actor)).thenReturn(existing);
 
         TaskTriggerRequest body = new TaskTriggerRequest();
@@ -318,6 +343,45 @@ class TaskTriggerServiceTest {
 
         assertSame(existing, result);
         verify(taskService, never()).create(any(), any(), any());
+        verifyManualTriggerMessage(actor, projectId, groupId, existing);
+    }
+
+    @Test
+    void triggerDoesNotSendManualMessageWhenTaskCreationFails() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID(), repoId = UUID.randomUUID();
+        MessageEntity message = message(groupId, messageId, "{\"text\":\"实现邮箱登录\"}");
+        when(messages.selectById(messageId)).thenReturn(message);
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(taskService.create(eq(projectId), eq(actor), any()))
+                .thenThrow(new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "TASK_REJECTED", "任务创建失败"));
+
+        TaskTriggerRequest body = new TaskTriggerRequest();
+        body.setTitle("实现邮箱登录");
+
+        assertThrows(ApiException.class, () -> service.trigger(actor, projectId, groupId, messageId, body));
+        verifyNoInteractions(messageService);
+    }
+
+    @Test
+    void triggerPropagatesManualMessageFailureAfterCreatingTask() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID(), repoId = UUID.randomUUID();
+        MessageEntity message = message(groupId, messageId, "{\"text\":\"实现邮箱登录\"}");
+        TaskResponse task = taskResponse(UUID.randomUUID(), "补齐邮箱登录功能");
+        when(messages.selectById(messageId)).thenReturn(message);
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(taskService.create(eq(projectId), eq(actor), any())).thenReturn(task);
+        doThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "MESSAGE_SEND_FAILED", "消息发送失败"))
+                .when(messageService).send(eq(actor), eq(projectId), eq(groupId), any());
+
+        TaskTriggerRequest body = new TaskTriggerRequest();
+        body.setTitle("实现邮箱登录");
+
+        assertThrows(ApiException.class, () -> service.trigger(actor, projectId, groupId, messageId, body));
+        verifyManualTriggerMessage(actor, projectId, groupId, task);
     }
 
     /** 并发兜底：唯一约束冲突（同消息被并发建 Task）时返回已有任务，不再次创建。 */
@@ -332,7 +396,7 @@ class TaskTriggerServiceTest {
         // 并发另一请求先插入成功：本请求 create 抛唯一键冲突，findByTriggerMessage 返回已有任务
         when(taskService.create(eq(projectId), eq(actor), any()))
                 .thenThrow(new org.springframework.dao.DuplicateKeyException("uk_task_trigger_message"));
-        TaskResponse existing = mock(TaskResponse.class);
+        TaskResponse existing = taskResponse(UUID.randomUUID(), "补齐邮箱登录功能");
         when(taskService.findByTriggerMessage(projectId, messageId, actor)).thenReturn(existing);
 
         TaskTriggerRequest body = new TaskTriggerRequest();
@@ -341,6 +405,7 @@ class TaskTriggerServiceTest {
 
         assertSame(existing, result);
         verify(taskService).findByTriggerMessage(projectId, messageId, actor);
+        verifyManualTriggerMessage(actor, projectId, groupId, existing);
     }
 
     /** 并发兜底：唯一键冲突但查不到已有任务（异常态）时不得静默吞掉，抛回原异常。 */
@@ -366,6 +431,24 @@ class TaskTriggerServiceTest {
         ArgumentCaptor<TaskCreateRequest> captor = ArgumentCaptor.forClass(TaskCreateRequest.class);
         verify(taskService).create(eq(projectId), eq(actor), captor.capture());
         return captor.getValue();
+    }
+
+    private TaskResponse taskResponse(UUID taskId, String requirement) {
+        TaskResponse response = new TaskResponse();
+        response.setId(taskId.toString());
+        response.setRequirement(requirement);
+        return response;
+    }
+
+    private void verifyManualTriggerMessage(UUID actor, UUID projectId, UUID groupId, TaskResponse task) {
+        ArgumentCaptor<MessageSendRequest> captor = ArgumentCaptor.forClass(MessageSendRequest.class);
+        verify(messageService).send(eq(actor), eq(projectId), eq(groupId), captor.capture());
+        MessageSendRequest message = captor.getValue();
+        assertEquals("TEXT", message.getType());
+        assertEquals("@编排助手 " + task.getRequirement(), message.getContent().get("text"));
+        assertEquals(List.of(), message.getMentions());
+        assertEquals("manual-task-trigger-" + task.getId(), message.getClientMessageId());
+        assertNull(message.getReplyToId());
     }
 
     private MessageEntity diffMessage(UUID groupId, UUID id, UUID diffId) {
