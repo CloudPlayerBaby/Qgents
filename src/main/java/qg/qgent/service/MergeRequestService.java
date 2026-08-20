@@ -88,6 +88,8 @@ public class MergeRequestService {
     /** 已确认创建真实 MR 后的群聊回卡依赖；发送失败不得改变远端 MR 事实。 */
     private MessageService messageService;
     private OrchestratorAgentService orchestratorAgents;
+    /** TASK_STATUS 卡片仓库映射；通知增强失败不得改变真实 MR 状态。 */
+    private TaskStatusRepositoryContextService repositoryContextService;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setQualityGates(MrQualityGateService qualityGates) {
@@ -112,6 +114,11 @@ public class MergeRequestService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setOrchestratorAgents(OrchestratorAgentService orchestratorAgents) {
         this.orchestratorAgents = orchestratorAgents;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setRepositoryContextService(TaskStatusRepositoryContextService repositoryContextService) {
+        this.repositoryContextService = repositoryContextService;
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -741,6 +748,7 @@ public class MergeRequestService {
         content.put("phase", "DELIVERY");
         content.put("message", "Merge Request 已创建");
         if (mr.getProjectRepositoryId() != null) content.put("repositoryId", mr.getProjectRepositoryId().toString());
+        addRepositoryContext(content, task, mr.getProjectRepositoryId());
         content.put("mergeRequest", mergeRequest);
         MessageSendRequest body = new MessageSendRequest();
         body.setType("TASK_STATUS");
@@ -756,6 +764,20 @@ public class MergeRequestService {
         } catch (RuntimeException failure) {
             log.warn("merge request card skipped taskId={} mergeRequestId={}: {}",
                     task.getId(), mr.getId(), failure.getMessage());
+        }
+    }
+
+    private void addRepositoryContext(Map<String, Object> content, TaskEntity task, UUID repositoryId) {
+        if (repositoryContextService == null || content == null || task == null) return;
+        try {
+            content.put("repositoryMappings", repositoryContextService.allRepositories(task));
+            content.put("currentRepositoryPaths", repositoryId == null
+                    ? List.of() : repositoryContextService.pathsForRepositories(task, List.of(repositoryId)));
+        } catch (RuntimeException failure) {
+            log.warn("repository context omitted from MR card taskId={} mrId={}: {}",
+                    task.getId(), content.get("repositoryId"), failure.getMessage());
+            content.put("repositoryMappings", List.of());
+            content.put("currentRepositoryPaths", List.of());
         }
     }
 
