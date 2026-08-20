@@ -4,6 +4,7 @@ import qg.qgent.dto.WorkspaceDiffPreviewFileResponse;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * 把 git 统一 diff 文本解析为结构化文件列表（Preview {@code /files} 接口用，阶段 E）。
@@ -54,6 +55,55 @@ public final class DiffPatchFileParser {
         }
         close(current, files, repositoryPath);
         return files;
+    }
+
+    /**
+     * 从聚合 patch 中提取指定仓库、指定路径的完整 unified diff。
+     * 聚合 patch 使用 {@code ===== workspacePath =====} 标记仓库边界；没有标记的
+     * 单仓库旧快照只允许以 {@code repositoryPath == null} 查询。
+     */
+    public static Optional<ParsedFile> find(String patch, String repositoryPath, String path) {
+        if (patch == null || patch.isBlank() || path == null || path.isBlank()) {
+            return Optional.empty();
+        }
+        String currentRepository = null;
+        StringBuilder block = new StringBuilder();
+        List<ParsedFile> candidates = new ArrayList<>();
+        for (String raw : patch.split("\\n", -1)) {
+            String line = raw.replace("\r", "");
+            if (line.startsWith("=====")) {
+                collect(block, currentRepository, candidates);
+                block.setLength(0);
+                currentRepository = repositoryPathOf(line);
+            } else if (line.startsWith("diff --git ")) {
+                collect(block, currentRepository, candidates);
+                block.setLength(0);
+                block.append(line).append('\n');
+            } else if (block.length() > 0) {
+                block.append(line).append('\n');
+            }
+        }
+        collect(block, currentRepository, candidates);
+        return candidates.stream()
+                .filter(file -> path.equals(file.file().getPath()))
+                .filter(file -> repositoryPath == null
+                        ? file.repositoryPath() == null
+                        : repositoryPath.equals(file.repositoryPath()))
+                .findFirst();
+    }
+
+    private static void collect(StringBuilder block, String repositoryPath, List<ParsedFile> candidates) {
+        if (block.length() == 0) {
+            return;
+        }
+        String text = block.toString();
+        List<WorkspaceDiffPreviewFileResponse> parsed = parse(text);
+        if (!parsed.isEmpty()) {
+            candidates.add(new ParsedFile(parsed.get(0), repositoryPath, text));
+        }
+    }
+
+    public record ParsedFile(WorkspaceDiffPreviewFileResponse file, String repositoryPath, String patch) {
     }
 
     /**
