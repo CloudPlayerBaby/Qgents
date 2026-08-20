@@ -70,6 +70,7 @@ public class TaskOrchestrator {
     private final NotificationService notificationService;
     private final SandboxSessionManager sandboxSessionManager;
     private final TaskExecutionArtifactService artifactService;
+    private final TaskRunFailureDiagnosticService failureDiagnostics;
     private final FinalDiffBundleService finalDiffBundles;
     private final DiffMapper diffMapper;
     private final MessageService messageService;
@@ -90,7 +91,8 @@ public class TaskOrchestrator {
                             TaskRunService taskRunService, TaskMapper taskMapper, TaskStepMapper stepMapper,
                             EventService eventService,
                             NotificationService notificationService, SandboxSessionManager sandboxSessionManager,
-                            TaskExecutionArtifactService artifactService, FinalDiffBundleService finalDiffBundles,
+                            TaskExecutionArtifactService artifactService, TaskRunFailureDiagnosticService failureDiagnostics,
+                            FinalDiffBundleService finalDiffBundles,
                             DiffMapper diffMapper, MessageService messageService,
                             OrchestratorAgentService orchestratorAgents, TaskPlanMaterializationService planMaterialization,
                             java.util.concurrent.ExecutorService taskRunTimeoutExecutor, OrchestrationTimeoutProperties orchestrationTimeout) {
@@ -105,6 +107,7 @@ public class TaskOrchestrator {
         this.notificationService = notificationService;
         this.sandboxSessionManager = sandboxSessionManager;
         this.artifactService = artifactService;
+        this.failureDiagnostics = failureDiagnostics;
         this.finalDiffBundles = finalDiffBundles;
         this.diffMapper = diffMapper;
         this.messageService = messageService;
@@ -313,6 +316,9 @@ public class TaskOrchestrator {
                 try {
                     planMaterialization.materialize(task, outcome.getPlanResult());
                 } catch (ApiException e) {
+                    AgentRunOutcome materializationFailure = infrastructureFailure(OrchestrationPhase.PLAN,
+                            "plan materialization failed", stableFailureCode(e), "PLAN_MATERIALIZATION", e);
+                    recordInfrastructureFailure(task, run, planner, materializationFailure);
                     taskRunService.complete(run.getId(), "FAILED", stableFailureCode(e), e.getMessage());
                     markStepSettled(task, planner, RunOutcome.FAILED);
                     failTaskIfStartable(task, e);
@@ -328,10 +334,12 @@ public class TaskOrchestrator {
                 return true;
             }
             if (decision.getAction() == StateMachineDecision.Action.RETRY_PHASE) {
+                recordInfrastructureFailure(task, run, planner, outcome);
                 taskRunService.complete(run.getId(), "FAILED", stableFailureCode(outcome), outcome.getMessage());
                 markStepSettled(task, planner, outcome.getOutcome());
                 continue;
             }
+            recordInfrastructureFailure(task, run, planner, outcome);
             taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
                     outcome.getMessage());
             markStepSettled(task, planner, outcome.getOutcome());
@@ -356,7 +364,8 @@ public class TaskOrchestrator {
      * （落库 + task.updated 事件 + TASK_FAILED 通知）并以编排助手身份回群失败卡片。
      */
     private void failStartup(TaskEntity task, TaskExecutionContext ctx, RuntimeException cause) {
-        log.error("orchestration aborted by unexpected failure, taskId={}", task.getId(), cause);
+        log.error("orchestration aborted by unexpected failure, taskId={} exceptionType={} detail={}", task.getId(),
+                cause.getClass().getSimpleName(), ExecutionContentSanitizer.sanitizeDiagnosticDetail(cause.getMessage()));
         TaskEntity latest = taskMapper.selectById(task.getId());
         if (latest == null || !STARTABLE_TASK_STATUSES.contains(latest.getStatus())) {
             log.warn("startup failure not persisted, task already left startable states, taskId={} status={}",
@@ -364,11 +373,14 @@ public class TaskOrchestrator {
             return;
         }
         StartupFailure failure = startupFailure(cause);
+        AgentRunOutcome startupOutcome = infrastructureFailure(OrchestrationPhase.PLAN, failure.reason(), failure.code(),
+                "ORCHESTRATOR_STARTUP", cause);
         // Sandbox 获取、上下文组装等异常可能发生在 Planner 调用前。仍然创建一条失败的
         // Planner Run，保证 diagnostics 能通过 latestFailedRun 返回可追踪的根因。
         if (ctx != null && ctx.lastRunId != null) {
             TaskRunEntity run = taskRunService.findById(ctx.lastRunId);
             if (run != null && "RUNNING".equals(run.getStatus())) {
+                recordInfrastructureFailure(task, run, stepMapper.selectById(run.getTaskStepId()), startupOutcome);
                 taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
             }
         } else {
@@ -383,6 +395,7 @@ public class TaskOrchestrator {
                         planner.getRole(), planner.getAssignedAgentId(), task.getCreatedBy(),
                         ctx == null ? null : ctx.retryOf);
                 taskRunService.markRunning(run.getId());
+                recordInfrastructureFailure(task, run, planner, startupOutcome);
                 taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
             }
         }
@@ -596,6 +609,7 @@ public class TaskOrchestrator {
         }
         ctx.recordOutcome(step.getId(), phase, outcome);
         outcome.setMessage(runCompletionMessage(outcome.getMessage(), decision, ctx.counters));
+        recordInfrastructureFailure(task, run, step, outcome);
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
         // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
         artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
@@ -743,26 +757,50 @@ public class TaskOrchestrator {
             future.cancel(true); // 尽力中断；阻塞 HTTP 未必被打断，由网络超时兜底
             log.warn("agent run timed out phase={} limit={}ms", phase, limit.toMillis());
             return infrastructureFailure(phase, "agent run timed out after " + limit.toSeconds() + "s",
-                    "AGENT_RUN_TIMEOUT");
+                    "AGENT_RUN_TIMEOUT", "AGENT_TIMEOUT", e);
         } catch (java.util.concurrent.ExecutionException e) {
             Throwable cause = e.getCause();
             return infrastructureFailure(phase, "agent execution failed: "
-                    + (cause == null ? e.getMessage() : cause.getMessage()), null);
+                    + (cause == null ? e.getMessage() : cause.getMessage()), null, "AGENT_EXECUTION",
+                    cause == null ? e : cause);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return infrastructureFailure(phase, "agent run interrupted", null);
+            return infrastructureFailure(phase, "agent run interrupted", null, "AGENT_INTERRUPTED", e);
         } catch (RuntimeException e) {
-            return infrastructureFailure(phase, "agent execution failed: " + e.getMessage(), null);
+            return infrastructureFailure(phase, "agent execution failed: " + e.getMessage(), null,
+                    "AGENT_EXECUTION", e);
         }
     }
 
     private AgentRunOutcome infrastructureFailure(OrchestrationPhase phase, String message, String failureCode) {
+        return infrastructureFailure(phase, message, failureCode, "AGENT_OUTCOME", null);
+    }
+
+    private AgentRunOutcome infrastructureFailure(OrchestrationPhase phase, String message, String failureCode,
+                                                  String source, Throwable cause) {
         AgentRunOutcome failure = new AgentRunOutcome();
         failure.setPhase(phase);
         failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
         failure.setMessage(message);
         failure.setFailureCode(failureCode);
+        failure.setDiagnosticSource(source);
+        failure.setDiagnosticFailureCode(cause instanceof ApiException api ? api.code() : failureCode);
+        failure.setDiagnosticExceptionType(cause == null ? null : cause.getClass().getSimpleName());
+        failure.setDiagnosticDetail(cause == null ? message : cause.getMessage());
         return failure;
+    }
+
+    /**
+     * 失败诊断必须在执行产物和 Run 终态之前完成；仅基础设施失败会真正落库。
+     */
+    private void recordInfrastructureFailure(TaskEntity task, TaskRunEntity run, TaskStepEntity step,
+                                             AgentRunOutcome outcome) {
+        if (step == null) {
+            log.warn("failure diagnostic skipped because task step is missing, taskRunId={}",
+                    run == null ? null : run.getId());
+            return;
+        }
+        failureDiagnostics.record(task, run, step, outcome == null ? null : outcome.getPhase(), outcome);
     }
 
     private String terminalStatus(RunOutcome outcome) {

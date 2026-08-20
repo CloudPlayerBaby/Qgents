@@ -703,6 +703,30 @@ CREATE TABLE IF NOT EXISTS task_run_worker_executions (
     CONSTRAINT fk_run_worker_execution_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TaskRun 与 Worker 工具执行的脱敏诊断关联';
 
+CREATE TABLE IF NOT EXISTS task_run_failure_diagnostics (
+    id BINARY(16) PRIMARY KEY COMMENT '内部失败诊断 UUIDv7',
+    project_id BINARY(16) NOT NULL COMMENT '所属项目ID，仅用于受控运维查询与隔离校验',
+    task_id BINARY(16) NOT NULL COMMENT '所属任务ID',
+    task_run_id BINARY(16) NOT NULL COMMENT '所属失败任务运行ID，每个Run至多一条',
+    task_step_id BINARY(16) NOT NULL COMMENT '所属任务步骤ID',
+    phase VARCHAR(32) NOT NULL COMMENT '编排相位：PLAN/CODING/TESTING/REVIEWING',
+    source VARCHAR(32) NOT NULL COMMENT '内部失败来源标签',
+    failure_code VARCHAR(64) NOT NULL COMMENT '原始归一化内部失败码，未知码仅在本表保留',
+    public_failure_code VARCHAR(64) NOT NULL COMMENT '与客户端一致的稳定公开失败码',
+    exception_type VARCHAR(255) NULL COMMENT '异常简单类型名，不保存堆栈',
+    failure_detail TEXT NOT NULL COMMENT '已脱敏且限长的内部失败上下文，禁止命令、原始输出、环境变量、路径和凭据',
+    detail_fingerprint CHAR(64) NOT NULL COMMENT 'failure_detail 的 SHA-256 指纹，用于聚合定位',
+    occurred_at DATETIME(6) NOT NULL COMMENT '失败发生时间（UTC）',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
+    UNIQUE KEY uk_task_run_failure_diagnostic_run (task_run_id),
+    KEY idx_task_run_failure_diagnostic_project (project_id, public_failure_code, occurred_at),
+    KEY idx_task_run_failure_diagnostic_task (task_id, occurred_at),
+    CONSTRAINT fk_task_run_failure_diagnostic_project FOREIGN KEY (project_id) REFERENCES projects (id),
+    CONSTRAINT fk_task_run_failure_diagnostic_task FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE,
+    CONSTRAINT fk_task_run_failure_diagnostic_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE,
+    CONSTRAINT fk_task_run_failure_diagnostic_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仅供后端受控查询的TaskRun基础设施失败诊断';
+
 CREATE TABLE IF NOT EXISTS
     execution_logs (
         id BINARY(16) PRIMARY KEY COMMENT '日志UUIDv7',

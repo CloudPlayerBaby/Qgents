@@ -2,6 +2,7 @@ package qg.qgent.orchestration;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import qg.qgent.dto.GroupContext;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.entity.DiffEntity;
@@ -21,6 +22,7 @@ import qg.qgent.service.MessageService;
 import qg.qgent.service.NotificationService;
 import qg.qgent.service.OrchestratorAgentService;
 import qg.qgent.service.TaskExecutionArtifactService;
+import qg.qgent.service.TaskRunFailureDiagnosticService;
 import qg.qgent.service.TaskPlanMaterializationService;
 import qg.qgent.service.TaskRunService;
 
@@ -701,6 +703,13 @@ class TaskOrchestratorTest {
         verify(fixture.artifacts, atLeastOnce()).createRunArtifact(any(), any(), any(), eq("CODING"), summary.capture());
         assertThat(summary.getAllValues()).anySatisfy(s ->
                 assertThat(s.get("failureCode")).isEqualTo("AGENT_RUN_TIMEOUT"));
+        InOrder persistedBeforeTerminal = inOrder(fixture.failureDiagnostics, fixture.artifacts, fixture.taskRuns);
+        persistedBeforeTerminal.verify(fixture.failureDiagnostics, atLeastOnce()).record(eq(task), any(), eq(developer),
+                eq(OrchestrationPhase.CODING), any());
+        persistedBeforeTerminal.verify(fixture.artifacts, atLeastOnce()).createRunArtifact(eq(task), any(),
+                eq(developer), eq("CODING"), any());
+        persistedBeforeTerminal.verify(fixture.taskRuns, atLeastOnce()).complete(any(), eq("FAILED"),
+                eq("AGENT_RUN_TIMEOUT"), any());
         assertThat(fixture.updatedStatuses()).contains("FAILED");
         driver.shutdownNow();
     }
@@ -750,6 +759,7 @@ class TaskOrchestratorTest {
         private final FinalDiffBundleService diffs = mock(FinalDiffBundleService.class);
         private final EventService events = mock(EventService.class);
         private final TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
+        private final TaskRunFailureDiagnosticService failureDiagnostics = mock(TaskRunFailureDiagnosticService.class);
         private final DiffMapper diffMapper = mock(DiffMapper.class);
         private final MessageService messages = mock(MessageService.class);
         private final NotificationService notifications = mock(NotificationService.class);
@@ -813,7 +823,7 @@ class TaskOrchestratorTest {
             currentAgent.set(agent);
             return new TaskOrchestrator(new OrchestrationStateMachine(), new WorkflowGraphBuilder(), registry, context,
                     taskRuns, tasks, steps, events,
-                    notifications, sessions, artifacts, diffs,
+                    notifications, sessions, artifacts, failureDiagnostics, diffs,
                     diffMapper, messages, orchestratorAgents,
                     materialization, timeoutExecutor, timeout);
         }

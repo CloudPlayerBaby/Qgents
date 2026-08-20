@@ -36,4 +36,19 @@ class ExecutionContentSanitizerTest {
         // 未知内部码不应再被误映射为 GIT_BRANCH_NOT_FOUND
         assertThat(ExecutionContentSanitizer.publicFailureCode("UNKNOWN_INTERNAL_CODE")).isNull();
     }
+
+    @Test
+    void sanitizesDiagnosticOnlyValuesWithoutChangingPublicFailureMapping() {
+        String detail = ExecutionContentSanitizer.sanitizeDiagnosticDetail(
+                "TOKEN=secret-value endpoint=https://worker.internal/run path=C:\\worker\\secret "
+                        + "command=./gradlew test\nProcess failed running ./gradlew test\n"
+                        + "    at qg.qgent.Worker.execute(Worker.java:12)\nstderr=raw tool output");
+
+        assertThat(detail).contains("[environment omitted]", "[endpoint omitted]", "[host path omitted]",
+                "[command omitted]", "[stack frame omitted]", "[raw output omitted]");
+        assertThat(detail).doesNotContain("secret-value", "worker.internal", "C:\\worker", "./gradlew", "raw tool output",
+                "Worker.execute");
+        assertThat(ExecutionContentSanitizer.infrastructureDescription("ANDROID_SDK_PATH_MISSING"))
+                .isEqualTo("执行基础设施暂不可用");
+    }
 }
