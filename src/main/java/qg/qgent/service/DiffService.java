@@ -10,14 +10,20 @@ import qg.qgent.dto.*;
 import qg.qgent.entity.DiffCommentEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.DiffFileEntity;
+import qg.qgent.entity.DiffReviewBatchEntity;
 import qg.qgent.entity.TaskEntity;
+import qg.qgent.entity.TaskRunEntity;
+import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.entity.UserEntity;
 import qg.qgent.mapper.*;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -28,10 +34,21 @@ import java.util.stream.Collectors;
  */
 @Service
 public class DiffService {
+    /** 群聊卡片单文件预览的最大行数。 */
+    private static final int PREVIEW_LINE_LIMIT = 200;
+    /** 群聊卡片文件标签的最大数量，避免单条消息展开造成超大响应。 */
+    private static final int PREVIEW_FILE_LIMIT = 100;
+    /** 单条代码行可返回的最大 Unicode 字符数。 */
+    private static final int PREVIEW_LINE_CONTENT_LIMIT = 4_000;
+    private static final Set<String> PREVIEW_LINE_TYPES = Set.of("CONTEXT", "DELETE", "ADD");
+
     private final DiffMapper diffs;
     private final DiffFileMapper files;
     private final DiffCommentMapper comments;
+    private final DiffReviewBatchMapper batches;
     private final TaskMapper tasks;
+    private final TaskRunMapper taskRuns;
+    private final TaskStepMapper taskSteps;
     private final WorkspaceMapper workspaces;
     private final ProjectAccessService access;
     private final EventService eventService;
@@ -39,14 +56,19 @@ public class DiffService {
     private final DiffDeliveryService deliveryService;
     private final UserMapper users;
 
-    public DiffService(DiffMapper diffs, DiffFileMapper files, DiffCommentMapper comments, TaskMapper tasks,
+    public DiffService(DiffMapper diffs, DiffFileMapper files, DiffCommentMapper comments,
+                       DiffReviewBatchMapper batches, TaskMapper tasks, TaskRunMapper taskRuns,
+                       TaskStepMapper taskSteps,
                        WorkspaceMapper workspaces, ProjectAccessService access, EventService eventService,
                        NotificationService notificationService, DiffDeliveryService deliveryService,
                        UserMapper users) {
         this.diffs = diffs;
         this.files = files;
         this.comments = comments;
+        this.batches = batches;
         this.tasks = tasks;
+        this.taskRuns = taskRuns;
+        this.taskSteps = taskSteps;
         this.workspaces = workspaces;
         this.access = access;
         this.eventService = eventService;
@@ -107,6 +129,35 @@ public class DiffService {
     public DiffResponse get(UUID projectId, UUID diffId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         return detail(requireDiff(projectId, diffId));
+    }
+
+    /**
+     * 返回群聊卡片使用的最终 Diff 轻量预览。
+     *
+     * <p>普通 Diff、TaskRun 过程 Diff 和未关联任务级 DiffReviewBatch 的 Diff 一律拒绝，避免群聊
+     * 将内部执行产物误展示成用户最终交付。每个文件最多 200 条结构化行，文件标签同样最多 100 个；
+     * 超限时只返回截断标记和完整详情页路径。</p>
+     */
+    public FinalDiffPreviewResponse finalPreview(UUID projectId, UUID diffId, UUID selectedFileId, UUID actor) {
+        access.requireProjectMember(projectId, actor);
+        DiffEntity diff = requireDiff(projectId, diffId);
+        requireFinalTaskDiff(projectId, diff);
+
+        long totalFileCount = files.selectCount(Wrappers.<DiffFileEntity>lambdaQuery()
+                .eq(DiffFileEntity::getDiffId, diff.getId()));
+        List<DiffFileEntity> rows = files.selectPreviewFileSummaries(diff.getId(), PREVIEW_FILE_LIMIT + 1);
+        boolean filesTruncated = rows.size() > PREVIEW_FILE_LIMIT;
+        List<DiffFileEntity> visibleFiles = filesTruncated ? rows.subList(0, PREVIEW_FILE_LIMIT) : rows;
+
+        DiffFileEntity selected = selectedPreviewFile(diff.getId(), selectedFileId, visibleFiles, filesTruncated);
+        PreviewLines preview = selected == null ? PreviewLines.empty() : previewLines(selected);
+        List<DiffPreviewFileResponse> summaries = visibleFiles.stream().map(this::previewFile).toList();
+
+        return new FinalDiffPreviewResponse(diff.getId().toString(),
+                "/app/projects/" + projectId + "/code/diff/" + diff.getId(), PREVIEW_LINE_LIMIT, totalFileCount,
+                filesTruncated, summaries, selected == null ? null : selected.getId().toString(), preview.lineCount(),
+                preview.lines(), preview.truncated(),
+                filesTruncated || preview.truncated() || preview.contentTruncated());
     }
 
     /**
@@ -215,6 +266,147 @@ public class DiffService {
             throw new ApiException(HttpStatus.NOT_FOUND,
                     "DIFF_NOT_FOUND", "Diff does not exist or is not visible");
         return value;
+    }
+
+    /** 校验 Diff 是当前项目、任务和最终审核批次一致的最终快照。 */
+    private void requireFinalTaskDiff(UUID projectId, DiffEntity diff) {
+        if (diff.getReviewBatchId() == null) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "DIFF_PREVIEW_FINAL_ONLY",
+                    "群聊仅支持展开任务最终 Diff");
+        }
+        DiffReviewBatchEntity batch = batches.selectById(diff.getReviewBatchId());
+        TaskEntity task = tasks.selectById(diff.getTaskId());
+        TaskRunEntity finalRun = batch == null || batch.getFinalCodingTaskRunId() == null ? null
+                : taskRuns.selectById(batch.getFinalCodingTaskRunId());
+        TaskStepEntity finalStep = finalRun == null || finalRun.getTaskStepId() == null ? null
+                : taskSteps.selectById(finalRun.getTaskStepId());
+        if (batch == null || task == null || !projectId.equals(batch.getProjectId())
+                || !projectId.equals(task.getProjectId()) || !Objects.equals(diff.getTaskId(), batch.getTaskId())
+                || !Objects.equals(diff.getTaskId(), task.getId())
+                || !Objects.equals(diff.getWorkspaceId(), batch.getWorkspaceId())
+                || !Objects.equals(diff.getWorkspaceId(), task.getWorkspaceId())
+                || !Objects.equals(diff.getTaskRunId(), batch.getFinalCodingTaskRunId())
+                || finalRun == null || !projectId.equals(finalRun.getProjectId())
+                || !Objects.equals(finalRun.getTaskId(), task.getId())
+                || !"DEVELOPER".equals(finalRun.getRole()) || !"SUCCEEDED".equals(finalRun.getStatus())
+                || finalStep == null || !Objects.equals(finalStep.getTaskId(), task.getId())
+                || !"DEVELOPER".equals(finalStep.getRole())
+                || !Objects.equals(finalStep.getId(), finalRun.getTaskStepId())
+                || !Objects.equals(diff.getTaskStepId(), finalStep.getId())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "DIFF_PREVIEW_CONTEXT_INVALID",
+                    "最终 Diff 上下文不一致");
+        }
+    }
+
+    /** 选择卡片当前文件；显式指定的文件必须属于同一个 Diff。 */
+    private DiffFileEntity selectedPreviewFile(UUID diffId, UUID selectedFileId, List<DiffFileEntity> visibleFiles,
+                                               boolean filesTruncated) {
+        UUID resolvedFileId = selectedFileId;
+        if (resolvedFileId == null) {
+            resolvedFileId = visibleFiles.isEmpty() ? null : visibleFiles.getFirst().getId();
+            if (resolvedFileId == null) {
+                return null;
+            }
+        }
+        DiffFileEntity selected = files.selectById(resolvedFileId);
+        if (selected == null || !diffId.equals(selected.getDiffId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "DIFF_FILE_NOT_FOUND", "Diff 文件不存在或不属于当前 Diff");
+        }
+        UUID checkedFileId = resolvedFileId;
+        if (filesTruncated && visibleFiles.stream().noneMatch(file -> checkedFileId.equals(file.getId()))) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "DIFF_PREVIEW_FILE_LIMIT",
+                    "群聊 Diff 卡仅可预览前 100 个文件，请查看详情");
+        }
+        return selected;
+    }
+
+    private DiffPreviewFileResponse previewFile(DiffFileEntity file) {
+        String fileName = fileName(file.getPath());
+        return new DiffPreviewFileResponse(id(file.getId()), file.getSequenceNo(), file.getPath(), fileName,
+                extension(fileName), file.getChangeType(), file.getAdditions(), file.getDeletions(),
+                file.getBinaryFlag());
+    }
+
+    /**
+     * 将 Worker 持久化的 hunk JSON 容错转换为群聊所需的扁平结构化行。
+     * 仅检查第 201 条有效行，以严格限制 CPU、内存和响应体积。
+     */
+    private PreviewLines previewLines(DiffFileEntity file) {
+        if (Boolean.TRUE.equals(file.getBinaryFlag()) || file.getHunks() == null || file.getHunks().isEmpty()) {
+            return PreviewLines.empty();
+        }
+        List<DiffPreviewLineResponse> result = new ArrayList<>();
+        int lineCount = 0;
+        boolean contentTruncated = false;
+        for (Object hunk : file.getHunks()) {
+            if (!(hunk instanceof Map<?, ?> hunkMap) || !(hunkMap.get("lines") instanceof Collection<?> rows)) {
+                continue;
+            }
+            for (Object row : rows) {
+                if (!(row instanceof Map<?, ?> values)) {
+                    continue;
+                }
+                String type = text(values.get("type"));
+                if (type == null || !PREVIEW_LINE_TYPES.contains(type)) {
+                    continue;
+                }
+                lineCount++;
+                if (lineCount > PREVIEW_LINE_LIMIT) {
+                    return new PreviewLines(lineCount, result, true, contentTruncated);
+                }
+                LineContent content = previewContent(values.get("content"));
+                contentTruncated |= content.truncated();
+                result.add(new DiffPreviewLineResponse(type, number(values.get("oldLineNo")),
+                        number(values.get("newLineNo")), content.value(), content.truncated()));
+            }
+        }
+        return new PreviewLines(lineCount, result, false, contentTruncated);
+    }
+
+    private String fileName(String path) {
+        if (path == null || path.isBlank()) {
+            return "未命名文件";
+        }
+        String normalized = path.replace('\\', '/');
+        int slash = normalized.lastIndexOf('/');
+        String name = slash < 0 ? normalized : normalized.substring(slash + 1);
+        return name.isBlank() ? normalized : name;
+    }
+
+    private String extension(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        return dot > 0 && dot < fileName.length() - 1 ? fileName.substring(dot + 1) : null;
+    }
+
+    private String text(Object value) {
+        return value instanceof String string ? string : null;
+    }
+
+    private LineContent previewContent(Object value) {
+        String content = text(value);
+        if (content == null || content.isEmpty()) {
+            return new LineContent("", false);
+        }
+        int codePoints = content.codePointCount(0, content.length());
+        if (codePoints <= PREVIEW_LINE_CONTENT_LIMIT) {
+            return new LineContent(content, false);
+        }
+        int end = content.offsetByCodePoints(0, PREVIEW_LINE_CONTENT_LIMIT);
+        return new LineContent(content.substring(0, end), true);
+    }
+
+    private Integer number(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
+
+    private record PreviewLines(int lineCount, List<DiffPreviewLineResponse> lines, boolean truncated,
+                                boolean contentTruncated) {
+        private static PreviewLines empty() {
+            return new PreviewLines(0, List.of(), false, false);
+        }
+    }
+
+    private record LineContent(String value, boolean truncated) {
     }
 
     private DiffResponse detail(DiffEntity d) {

@@ -4,9 +4,14 @@ import org.junit.jupiter.api.Test;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.ApiPageResponse;
 import qg.qgent.dto.DiffListItemResponse;
+import qg.qgent.dto.FinalDiffPreviewResponse;
 import qg.qgent.dto.DiffResponse;
+import qg.qgent.entity.DiffFileEntity;
+import qg.qgent.entity.DiffReviewBatchEntity;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.TaskEntity;
+import qg.qgent.entity.TaskRunEntity;
+import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.mapper.*;
 
 import java.util.List;
@@ -25,8 +30,12 @@ class DiffServiceTest {
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final EventService events = mock(EventService.class);
     private final DiffDeliveryService delivery = mock(DiffDeliveryService.class);
-    private final DiffService service = new DiffService(diffs, mock(DiffFileMapper.class),
-            mock(DiffCommentMapper.class), tasks, workspaces, access, events,
+    private final DiffFileMapper files = mock(DiffFileMapper.class);
+    private final DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+    private final TaskRunMapper taskRuns = mock(TaskRunMapper.class);
+    private final TaskStepMapper taskSteps = mock(TaskStepMapper.class);
+    private final DiffService service = new DiffService(diffs, files, mock(DiffCommentMapper.class), batches, tasks,
+            taskRuns, taskSteps, workspaces, access, events,
             mock(NotificationService.class), delivery, mock(UserMapper.class));
 
     @Test
@@ -99,9 +108,198 @@ class DiffServiceTest {
         verify(events).publish(eq(projectId), any(), eq("diff.created"), any(), any(Map.class));
     }
 
+    @Test
+    void finalPreviewReturnsSelectedFileAndCapsLinesAtOneHundred() {
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        DiffEntity diff = diff(projectId, taskId);
+        diff.setWorkspaceId(workspaceId);
+        diff.setReviewBatchId(UUID.randomUUID());
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setId(diff.getReviewBatchId()); batch.setProjectId(projectId); batch.setTaskId(taskId);
+        batch.setWorkspaceId(workspaceId); batch.setFinalCodingTaskRunId(UUID.randomUUID());
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        stubFinalRun(projectId, diff, batch, task);
+        DiffFileEntity file = previewFile(diff.getId(), 1L, "src/App.tsx", 201);
+        when(diffs.selectById(diff.getId())).thenReturn(diff);
+        when(batches.selectById(diff.getReviewBatchId())).thenReturn(batch);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(files.selectCount(any())).thenReturn(1L);
+        when(files.selectPreviewFileSummaries(diff.getId(), 101)).thenReturn(List.of(file));
+        when(files.selectById(file.getId())).thenReturn(file);
+
+        FinalDiffPreviewResponse response = service.finalPreview(projectId, diff.getId(), null, UUID.randomUUID());
+
+        assertEquals("/app/projects/" + projectId + "/code/diff/" + diff.getId(), response.getDetailPath());
+        assertEquals(200, response.getPreviewLineLimit());
+        assertEquals(file.getId().toString(), response.getSelectedFileId());
+        assertEquals("App.tsx", response.getFiles().getFirst().getFileName());
+        assertEquals("tsx", response.getFiles().getFirst().getExtension());
+        assertEquals(201, response.getTotalLineCount());
+        assertEquals(200, response.getLines().size());
+        assertTrue(response.getTruncated());
+        assertTrue(response.getViewDetailsRequired());
+        assertEquals("DELETE", response.getLines().getFirst().getType());
+    }
+
+    @Test
+    void finalPreviewRejectsDiffOutsideFinalReviewBatch() {
+        UUID projectId = UUID.randomUUID();
+        DiffEntity intermediate = diff(projectId, UUID.randomUUID());
+        when(diffs.selectById(intermediate.getId())).thenReturn(intermediate);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.finalPreview(projectId, intermediate.getId(), null, UUID.randomUUID()));
+
+        assertEquals("DIFF_PREVIEW_FINAL_ONLY", error.code());
+        verifyNoInteractions(files, batches);
+    }
+
+    @Test
+    void finalPreviewAllowsSwitchingToAnotherFileOfSameDiff() {
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        DiffEntity diff = diff(projectId, taskId);
+        diff.setWorkspaceId(workspaceId); diff.setReviewBatchId(UUID.randomUUID());
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setProjectId(projectId); batch.setTaskId(taskId); batch.setWorkspaceId(workspaceId);
+        batch.setFinalCodingTaskRunId(UUID.randomUUID());
+        TaskEntity task = new TaskEntity(); task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        stubFinalRun(projectId, diff, batch, task);
+        DiffFileEntity first = previewFile(diff.getId(), 1L, "a.txt", 1);
+        DiffFileEntity selected = previewFile(diff.getId(), 2L, "nested/Login.java", 1);
+        when(diffs.selectById(diff.getId())).thenReturn(diff);
+        when(batches.selectById(diff.getReviewBatchId())).thenReturn(batch);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(files.selectCount(any())).thenReturn(2L);
+        when(files.selectPreviewFileSummaries(diff.getId(), 101)).thenReturn(List.of(first, selected));
+        when(files.selectById(selected.getId())).thenReturn(selected);
+
+        FinalDiffPreviewResponse response = service.finalPreview(projectId, diff.getId(), selected.getId(), UUID.randomUUID());
+
+        assertEquals(selected.getId().toString(), response.getSelectedFileId());
+        assertEquals("Login.java", response.getFiles().get(1).getFileName());
+        assertEquals("java", response.getFiles().get(1).getExtension());
+        assertEquals("delete 0", response.getLines().getFirst().getContent());
+    }
+
+    @Test
+    void finalPreviewCapsFileTabsAndRejectsFilesBeyondTheCardLimit() {
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        DiffEntity diff = diff(projectId, taskId);
+        diff.setWorkspaceId(workspaceId); diff.setReviewBatchId(UUID.randomUUID());
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setProjectId(projectId); batch.setTaskId(taskId); batch.setWorkspaceId(workspaceId);
+        batch.setFinalCodingTaskRunId(UUID.randomUUID());
+        TaskEntity task = new TaskEntity(); task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        stubFinalRun(projectId, diff, batch, task);
+        java.util.List<DiffFileEntity> fileRows = new java.util.ArrayList<>();
+        for (int index = 0; index <= 100; index++) {
+            fileRows.add(previewFile(diff.getId(), index + 1L, "src/File" + index + ".java", 1));
+        }
+        DiffFileEntity hidden = fileRows.getLast();
+        when(diffs.selectById(diff.getId())).thenReturn(diff);
+        when(batches.selectById(diff.getReviewBatchId())).thenReturn(batch);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(files.selectCount(any())).thenReturn(101L);
+        when(files.selectPreviewFileSummaries(diff.getId(), 101)).thenReturn(fileRows);
+        when(files.selectById(fileRows.getFirst().getId())).thenReturn(fileRows.getFirst());
+        when(files.selectById(hidden.getId())).thenReturn(hidden);
+
+        FinalDiffPreviewResponse response = service.finalPreview(projectId, diff.getId(), null, UUID.randomUUID());
+
+        assertEquals(100, response.getFiles().size());
+        assertTrue(response.getFilesTruncated());
+        assertTrue(response.getViewDetailsRequired());
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.finalPreview(projectId, diff.getId(), hidden.getId(), UUID.randomUUID()));
+        assertEquals("DIFF_PREVIEW_FILE_LIMIT", error.code());
+    }
+
+    @Test
+    void finalPreviewRejectsDiffThatWasNotProducedByTheFinalCodingRun() {
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        DiffEntity diff = diff(projectId, taskId);
+        diff.setWorkspaceId(workspaceId); diff.setReviewBatchId(UUID.randomUUID());
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setProjectId(projectId); batch.setTaskId(taskId); batch.setWorkspaceId(workspaceId);
+        batch.setFinalCodingTaskRunId(UUID.randomUUID());
+        TaskEntity task = new TaskEntity(); task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        stubFinalRun(projectId, diff, batch, task);
+        diff.setTaskRunId(UUID.randomUUID());
+        when(diffs.selectById(diff.getId())).thenReturn(diff);
+        when(batches.selectById(diff.getReviewBatchId())).thenReturn(batch);
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.finalPreview(projectId, diff.getId(), null, UUID.randomUUID()));
+
+        assertEquals("DIFF_PREVIEW_CONTEXT_INVALID", error.code());
+        verifyNoInteractions(files);
+    }
+
+    @Test
+    void finalPreviewTruncatesAnOversizedSingleLine() {
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        DiffEntity diff = diff(projectId, taskId);
+        diff.setWorkspaceId(workspaceId); diff.setReviewBatchId(UUID.randomUUID());
+        DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
+        batch.setProjectId(projectId); batch.setTaskId(taskId); batch.setWorkspaceId(workspaceId);
+        batch.setFinalCodingTaskRunId(UUID.randomUUID());
+        TaskEntity task = new TaskEntity(); task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        stubFinalRun(projectId, diff, batch, task);
+        DiffFileEntity file = previewFile(diff.getId(), 1L, "long.txt", 1);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> row = (Map<String, Object>) ((List<?>) ((Map<?, ?>) file.getHunks().getFirst())
+                .get("lines")).getFirst();
+        row.put("content", "x".repeat(4_001));
+        when(diffs.selectById(diff.getId())).thenReturn(diff);
+        when(batches.selectById(diff.getReviewBatchId())).thenReturn(batch);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(files.selectCount(any())).thenReturn(1L);
+        when(files.selectPreviewFileSummaries(diff.getId(), 101)).thenReturn(List.of(file));
+        when(files.selectById(file.getId())).thenReturn(file);
+
+        FinalDiffPreviewResponse response = service.finalPreview(projectId, diff.getId(), null, UUID.randomUUID());
+
+        assertEquals(4_000, response.getLines().getFirst().getContent().codePointCount(0,
+                response.getLines().getFirst().getContent().length()));
+        assertTrue(response.getLines().getFirst().getContentTruncated());
+        assertTrue(response.getViewDetailsRequired());
+    }
+
     private DiffEntity diff(UUID projectId, UUID taskId) {
         DiffEntity diff = new DiffEntity(); diff.setId(UUID.randomUUID()); diff.setProjectId(projectId);
         diff.setTaskId(taskId); diff.setWorkspaceId(UUID.randomUUID()); diff.setProjectRepositoryId(UUID.randomUUID());
         diff.setStatus("PENDING_REVIEW"); diff.setWorkingTreeHash("tree-hash"); return diff;
+    }
+
+    private DiffFileEntity previewFile(UUID diffId, long sequence, String path, int lineCount) {
+        DiffFileEntity file = new DiffFileEntity();
+        file.setId(UUID.randomUUID()); file.setDiffId(diffId); file.setSequenceNo(sequence); file.setPath(path);
+        file.setChangeType("MODIFIED"); file.setAdditions(lineCount); file.setDeletions(lineCount); file.setBinaryFlag(false);
+        java.util.List<Object> lines = new java.util.ArrayList<>();
+        for (int index = 0; index < lineCount; index++) {
+            Map<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put("type", index % 2 == 0 ? "DELETE" : "ADD");
+            row.put("oldLineNo", index % 2 == 0 ? index + 1 : null);
+            row.put("newLineNo", index % 2 == 0 ? null : index + 1);
+            row.put("content", (index % 2 == 0 ? "delete " : "add ") + index);
+            lines.add(row);
+        }
+        file.setHunks(List.of(Map.of("lines", lines)));
+        return file;
+    }
+
+    private void stubFinalRun(UUID projectId, DiffEntity diff, DiffReviewBatchEntity batch, TaskEntity task) {
+        UUID runId = batch.getFinalCodingTaskRunId();
+        UUID stepId = UUID.randomUUID();
+        diff.setTaskRunId(runId); diff.setTaskStepId(stepId);
+        TaskRunEntity run = new TaskRunEntity();
+        run.setId(runId); run.setProjectId(projectId); run.setTaskId(task.getId()); run.setTaskStepId(stepId);
+        run.setRole("DEVELOPER"); run.setStatus("SUCCEEDED");
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(stepId); step.setTaskId(task.getId()); step.setRole("DEVELOPER");
+        when(taskRuns.selectById(runId)).thenReturn(run);
+        when(taskSteps.selectById(stepId)).thenReturn(step);
     }
 }

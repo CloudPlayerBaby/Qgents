@@ -82,6 +82,46 @@ class TaskTriggerServiceTest {
     }
 
     @Test
+    void triggerWithoutRepositoriesThrowsWhenGroupHasNoRepositories() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID();
+        MessageEntity message = message(groupId, messageId, "{\"text\":\"实现邮箱登录\"}");
+        RequirementGroupEntity group = group(groupId, projectId, "REQUIREMENT", "ACTIVE");
+        when(messages.selectById(messageId)).thenReturn(message);
+        when(groups.selectById(groupId)).thenReturn(group);
+        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of());
+
+        // 请求未传 repositoryIds，需求群也未绑仓库：必须给前端独立错误码指引绑定仓库，
+        // 不得静默回退到项目全部仓库或落到模糊的 TASK_REPOSITORY_REQUIRED。
+        TaskTriggerRequest body = new TaskTriggerRequest();
+        body.setTitle("实现邮箱登录");
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.trigger(actor, projectId, groupId, messageId, body));
+
+        assertEquals("REQUIREMENT_GROUP_NO_REPOSITORIES", error.code());
+        verify(taskService, never()).create(any(), any(), any());
+    }
+
+    @Test
+    void triggerFallsBackToGroupRepositoriesWhenRepositoryIdsOmitted() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID(), repoA = UUID.randomUUID(), repoB = UUID.randomUUID();
+        MessageEntity message = message(groupId, messageId, "{\"text\":\"实现邮箱登录\"}");
+        when(messages.selectById(messageId)).thenReturn(message);
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoA, repoB));
+
+        TaskTriggerRequest body = new TaskTriggerRequest();
+        body.setTitle("实现邮箱登录");
+        body.setBaseRef("main");
+        service.trigger(actor, projectId, groupId, messageId, body);
+
+        TaskCreateRequest request = capturedCreateRequest(projectId, actor);
+        assertEquals(List.of(repoA, repoB), request.getRepositoryIds());
+        assertEquals("main", request.getBaseRef());
+    }
+
+    @Test
     void triggerRejectsMessageNotInGroup() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
         UUID messageId = UUID.randomUUID(), otherGroup = UUID.randomUUID();

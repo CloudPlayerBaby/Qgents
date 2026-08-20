@@ -171,10 +171,18 @@ public class TaskRunService {
     /**
      * 以 Task 为入口查询失败诊断。前端不需要先拿 executionId；服务端按项目和群成员权限
      * 找出最近失败的 TaskRun，并在 Planner/编排尚未创建 TaskRun 时返回 Task 级失败原因。
+     * <p>
+     * 仅任务处于失败终态（FAILED/DELIVERY_FAILED）时返回失败诊断：Test/Review 质量失败
+     * 退回 Developer 修复期间任务仍为 RUNNING，历史上那条 FAILED 的 TaskRun 只是修复循环
+     * 中的一次失败，不是任务失败，不应让前端展示「任务失败」横幅。
      */
     public TaskDiagnosticsResponse taskDiagnostics(UUID projectId, UUID taskId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
         TaskEntity task = requireTaskVisible(projectId, taskId, userId);
+        boolean terminalFailure = "FAILED".equals(task.getStatus()) || "DELIVERY_FAILED".equals(task.getStatus());
+        if (!terminalFailure) {
+            return new TaskDiagnosticsResponse(id(task.getId()), task.getStatus(), taskFailureStage(task), null, null);
+        }
         List<TaskRunEntity> failedRuns = taskRunMapper.selectList(Wrappers.<TaskRunEntity>lambdaQuery()
                 .eq(TaskRunEntity::getProjectId, projectId)
                 .eq(TaskRunEntity::getTaskId, taskId)
@@ -210,8 +218,13 @@ public class TaskRunService {
                         Wrappers.<TaskRunWorkerExecutionEntity>lambdaQuery()
                                 .eq(TaskRunWorkerExecutionEntity::getProjectId, run.getProjectId())
                                 .eq(TaskRunWorkerExecutionEntity::getTaskRunId, run.getId())
-                                .orderByAsc(TaskRunWorkerExecutionEntity::getCreatedAt)))
-                .orElse(List.of()).stream().map(this::toWorkerDiagnostic).toList();
+                                .eq(TaskRunWorkerExecutionEntity::getStatus, "FAILED")
+                                .orderByDesc(TaskRunWorkerExecutionEntity::getCreatedAt)
+                                .last("LIMIT 1")))
+                .orElse(List.of()).stream()
+                .filter(execution -> "FAILED".equals(execution.getStatus()))
+                .limit(1)
+                .map(this::toWorkerDiagnostic).toList();
         return new TaskRunDiagnosticsResponse(id(run.getId()), id(run.getTaskId()), run.getStatus(),
                 diagnosticStage(run.getRole()), statusReason(run, List.of(), artifactSummary), workerExecutions);
     }
@@ -1096,7 +1109,7 @@ public class TaskRunService {
      * 原始 failureReason 仅保留在 Worker 内网诊断记录，不能进入项目成员可见的 REST 或 SSE 日志。
      */
     public void appendWorkerToolExecution(TaskRunEntity run, WorkerToolExecution execution) {
-        if (execution == null || execution.getId() == null) {
+        if (execution == null || execution.getId() == null || !"FAILED".equals(execution.getStatus())) {
             return;
         }
         StringBuilder content = new StringBuilder("executionId=").append(execution.getId())

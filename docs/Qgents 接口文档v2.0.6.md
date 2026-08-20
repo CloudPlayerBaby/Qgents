@@ -5278,3 +5278,75 @@ interface WorkspaceDiffPreviewFile {
 - Worker 停止时 Task 不因 Preview 失败而失败，前端显示“实时预览暂不可用”。
 - 正式 Diff 仍只在 Task 完成后生成；确认前不 commit/push/MR。
 - SSE 断线重连后按游标恢复并重新查询最新 Preview。
+
+---
+
+## 37. 群聊最终 Diff 卡预览（2026-08-20）
+
+群聊只展开 Task 级最终 Diff，不展示 TaskStep 或 TaskRun 的过程 Diff。前端从 `DIFF` 消息的
+`content.diffId` 取得 Diff ID，在用户展开卡片或切换文件时按需请求：
+
+```http
+GET /api/v1/projects/{projectId}/diffs/{diffId}/preview?fileId={diffFileId}
+Authorization: Bearer <user-access-token>
+```
+
+- `fileId` 可选；不传时返回顺序最早的文件，切换标签时传 `files[].fileId`。
+- 调用者必须是 Project 成员，服务端校验 Diff、Task、Workspace、DiffReviewBatch、最终
+  `DEVELOPER` TaskRun/TaskStep 的项目和任务归属。TaskRun 必须是批次的
+  `finalCodingTaskRunId` 且状态为 `SUCCEEDED`。
+- 普通或中间 Diff 返回 `422 DIFF_PREVIEW_FINAL_ONLY`；最终上下文不一致返回
+  `422 DIFF_PREVIEW_CONTEXT_INVALID`；文件不属于该 Diff 返回 `404 DIFF_FILE_NOT_FOUND`。
+- `files` 按 sequence 升序且最多 100 项，`filesTruncated=true` 表示还有文件。指定第 101 个及
+  后续文件时返回 `422 DIFF_PREVIEW_FILE_LIMIT`。
+- `lines` 是当前文件的结构化 Diff 行，`type` 为 `CONTEXT`、`DELETE` 或 `ADD`，最多 200 条。
+  超限时 `truncated=true`，且 `totalLineCount=201` 表示至少 201 行；未截断时该字段是准确值。
+- 单行 `content` 不含 unified diff 的前缀，最多 4,000 个 Unicode 字符；超限时
+  `contentTruncated=true`。二进制文件只返回摘要，不返回正文行。
+- `viewDetailsRequired = filesTruncated || truncated || lines[].contentTruncated`。为 `true` 时前端显示“查看详情”，跳转响应
+  `detailPath`：`/app/projects/{projectId}/code/diff/{diffId}`。这是前端页面路由，接口仍以
+  `/api/v1` 开头。
+
+响应关键结构：
+
+```json
+{
+  "data": {
+    "diffId": "01...",
+    "detailPath": "/app/projects/01.../code/diff/01...",
+    "previewLineLimit": 200,
+    "totalFileCount": 2,
+    "filesTruncated": false,
+    "files": [
+      {
+        "fileId": "01...",
+        "sequence": 1,
+        "path": "src/auth/LoginController.java",
+        "fileName": "LoginController.java",
+        "extension": "java",
+        "changeType": "MODIFIED",
+        "additions": 12,
+        "deletions": 3,
+        "binary": false
+      }
+    ],
+    "selectedFileId": "01...",
+    "totalLineCount": 15,
+    "lines": [
+      {
+        "type": "ADD",
+        "oldLineNo": null,
+        "newLineNo": 18,
+        "content": "return newValue;",
+        "contentTruncated": false
+      }
+    ],
+    "truncated": false,
+    "viewDetailsRequired": false
+  },
+  "requestId": "req_..."
+}
+```
+
+前端不得把文件列表或 Diff 行写回群消息内容，也不得从 TaskRun 日志拼装最终 Diff。卡片折叠时
+不请求；展开和文件切换时分别请求本接口。群消息分页、增量拉取与 `message.updated` 契约不变。

@@ -30,6 +30,8 @@
 12. [团队头像与成员头像（§5.1 补充）](#12-团队头像与成员头像)（含项目头像 §12.5、PATCH 语义 §12.4）
 13. [自定义 Agent 发布审核（§11.1/§20 补充）](#13-自定义-agent-发布审核)
 14. [Dry Run 前端实施要求（§28 补充）](#14-dry-run-前端实施要求)
+15. [Worker 日志定位与数据库初始化（§15）](#15-worker-日志定位与数据库初始化2026-08-19)
+16. [群聊最终 Diff 卡预览（§7/§23 增量）](#16-群聊最终-diff-卡预览2026-08-20)
 
 ---
 
@@ -580,8 +582,9 @@ Worker 工具执行阶段还是测试阶段，均返回 `taskRunId/status/stage/
 }
 ```
 
-`workerExecutions` 中的每项只返回 `executionId/tool/status/exitCode/failureCode/failureSummary`
-及时间字段。该关联在主后端收到 Worker 入队回执后立即持久化，不能依赖解析日志文本，因而
+`workerExecutions` 至多返回最新一条状态为 `FAILED` 的 Worker 执行；该项只返回
+`executionId/tool/status/exitCode/failureCode/failureSummary` 及时间字段，成功、排队中、执行中和更早失败的
+Worker 均不暴露 `executionId`。该关联在主后端收到 Worker 入队回执后立即持久化，不能依赖解析日志文本，因而
 即使后续轮询超时或主后端线程中断，也能按 `taskRunId` 找到已经创建的 Worker 执行。
 
 ### 15.1.1 Task 级统一失败诊断入口（前端首选）
@@ -694,3 +697,90 @@ mysql --protocol=tcp -h <mysql-host> -u <admin-user> -p \
 `diagnostics` 返回的主后端失败阶段和摘要；如果 `workerExecutions` 非空，后端支持/运维再使用
 其中的 `executionId` 调用 Worker 内网接口。不把 `executionId` 当作可直接访问的公网 URL，
 也不把 Worker 服务令牌放入前端。Worker 数据库日志不走 `docker logs`，容器销毁不会删除已落库的执行记录。
+
+---
+
+## 16. 群聊最终 Diff 卡预览（2026-08-20）
+
+群聊中的 `DIFF` 卡只允许展开 Task 级最终 Diff。最终 Diff 的判定以 `diff.reviewBatchId` 关联的
+`DiffReviewBatch` 为准；TaskRun 过程 Diff、普通 Diff 或上下文不一致的 Diff 不能在群聊中展开。
+TaskStep 和 TaskRun 的执行产物不是群聊 Diff 交付物，前端不得把它们渲染为 Diff 卡。
+
+### 16.1 按需获取卡片预览
+
+```http
+GET /api/v1/projects/{projectId}/diffs/{diffId}/preview?fileId={diffFileId}
+Authorization: Bearer <user-access-token>
+```
+
+- 项目成员可调用；服务端继续依据项目成员身份和 Diff 的 `projectId` 校验，不信任客户端传入的任务、群或仓库 ID。
+- `diffId` 来自群消息 `type=DIFF` 的 `content.diffId`。前端只能为群聊里的 DIFF 卡调用本接口。
+- `fileId` 可选。不传时选择 Diff 内顺序最早的文件；切换文件时带上响应 `files[].fileId` 重新请求。
+- 仅接受关联真实 Task 级 `DiffReviewBatch` 的最终 Diff。该 Diff 必须由批次记录的
+  `finalCodingTaskRunId` 产生，且对应 TaskRun/TaskStep 均为同一 Task 的 `DEVELOPER` 执行，TaskRun
+  状态必须为 `SUCCEEDED`；普通或中间 Diff 返回 `422 DIFF_PREVIEW_FINAL_ONLY`，批次、Task、
+  TaskRun、TaskStep、Workspace 或 Project 关联异常返回 `422 DIFF_PREVIEW_CONTEXT_INVALID`。
+- 文件不属于指定 Diff 时返回 `404 DIFF_FILE_NOT_FOUND`。
+
+响应示例：
+
+```json
+{
+  "data": {
+    "diffId": "01...",
+    "detailPath": "/app/projects/{projectId}/code/diff/01...",
+    "previewLineLimit": 200,
+    "totalFileCount": 2,
+    "filesTruncated": false,
+    "files": [
+      {
+        "fileId": "01...",
+        "sequence": 1,
+        "path": "src/auth/LoginController.java",
+        "fileName": "LoginController.java",
+        "extension": "java",
+        "changeType": "MODIFIED",
+        "additions": 12,
+        "deletions": 3,
+        "binary": false
+      }
+    ],
+    "selectedFileId": "01...",
+    "totalLineCount": 15,
+    "lines": [
+      { "type": "DELETE", "oldLineNo": 18, "newLineNo": null, "content": "return oldValue;", "contentTruncated": false },
+      { "type": "ADD", "oldLineNo": null, "newLineNo": 18, "content": "return newValue;", "contentTruncated": false }
+    ],
+    "truncated": false,
+    "viewDetailsRequired": false
+  },
+  "requestId": "req_..."
+}
+```
+
+`lines[].type` 固定为 `CONTEXT`、`DELETE` 或 `ADD`，`content` 不带 unified diff 的空格、`-` 或 `+`
+前缀；前端按 `type` 渲染上下文、红色删除和绿色新增行。二进制文件返回 `binary=true`、空 `lines`，
+前端不尝试展示二进制正文。单行 `content` 最多返回 4,000 个 Unicode 字符，超出时截断并设置
+`contentTruncated=true`。
+
+### 16.2 卡片容量与前端行为
+
+- 单次所选文件最多返回 **200** 条结构化 Diff 行。若该文件解析行数超过 200，`truncated=true`，
+  `lines` 仅含前 200 条，`totalLineCount=201` 表示“至少 201 行”，前端显示“查看详情”；
+  `truncated=false` 时 `totalLineCount` 才是准确值。
+- 文件标签同样最多返回前 100 项；当 `filesTruncated=true` 时，前端显示“查看详情”，不伪造未返回的文件标签。
+- `filesTruncated=true` 时，只能切换响应 `files[]` 中已返回的文件；传入第 101 个及之后文件的 `fileId`
+  返回 `422 DIFF_PREVIEW_FILE_LIMIT`，前端直接跳转 `detailPath`。
+- `viewDetailsRequired = truncated || filesTruncated || lines[].contentTruncated`，是前端显示“查看详情”的唯一机器判断；详情跳转到
+  `detailPath`，即 `/app/projects/{projectId}/code/diff/{diffId}`。这是前端页面路由；后端 API 仍以
+  `/api/v1` 开头。
+- 未截断时，前端仍可将“查看详情”作为普通次级入口，但不能因为显示了 200 行而猜测完整内容已加载。
+- 群消息分页、增量拉取和 `message.updated` 的行为不变。卡片折叠时不请求预览；用户展开卡片或切换文件时才调用本接口，避免把 Diff 内容塞进群消息列表响应。
+
+### 16.3 前端实施边界
+
+1. 从已加载的 `DIFF` 消息读取 `content.diffId`，展开时请求本节接口；不要把 Diff 行或文件数组写回消息内容。
+2. 使用 `files[].fileName` 作为文件标签文本，`extension` 可作为后缀样式或图标判断；保留 `path` 供同名文件区分。
+3. 点击 `files[]` 中另一文件时，以它的 `fileId` 重请求本接口，使用返回的 `selectedFileId` 和 `lines` 替换当前预览。
+4. `viewDetailsRequired=true` 时显示“查看详情”，并跳转 `detailPath`；不要继续请求更多行、拼接分页或尝试从 TaskRun 日志恢复完整 Diff。
+5. 接口返回 `DIFF_PREVIEW_FINAL_ONLY`、`DIFF_PREVIEW_CONTEXT_INVALID` 或 `DIFF_PREVIEW_FILE_LIMIT` 时关闭卡片预览或直接跳转 `detailPath`；不得退化展示任何内部执行产物。
