@@ -411,6 +411,7 @@ CREATE TABLE IF NOT EXISTS
             status,
             provider_updated_at
         ),
+        KEY idx_mr_repository_status_id (project_repository_id, status, id),
         CONSTRAINT fk_mr_repo FOREIGN KEY (project_repository_id) REFERENCES project_repositories (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'GitHub Pull Request业务镜像';
 
@@ -576,7 +577,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_task_display_code(project_id,display_code),
     UNIQUE KEY uk_task_trigger_message(trigger_message_id),
-    KEY idx_task_project(project_id,status), KEY idx_task_group(requirement_group_id), KEY idx_task_workspace(workspace_id),
+    KEY idx_task_project(project_id,status), KEY idx_task_project_workspace_updated(project_id,workspace_id,updated_at,id),
+    KEY idx_task_group(requirement_group_id), KEY idx_task_workspace(workspace_id),
     CONSTRAINT fk_task_project FOREIGN KEY(project_id) REFERENCES projects(id),
     CONSTRAINT fk_task_group FOREIGN KEY(requirement_group_id) REFERENCES requirement_groups(id),
     CONSTRAINT fk_task_message FOREIGN KEY(trigger_message_id) REFERENCES messages(id),
@@ -592,6 +594,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     write_lease_expires_at DATETIME(6) NULL COMMENT 'UTC write lease expiry',
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_workspace_storage(storage_key),
+    KEY idx_workspace_project_id (project_id, id),
     KEY idx_workspace_write_lease (write_lease_expires_at),
     CONSTRAINT fk_workspace_project FOREIGN KEY(project_id) REFERENCES projects(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Persistent project development workspace';
@@ -795,6 +798,7 @@ CREATE TABLE IF NOT EXISTS diff_review_batches (
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间(UTC)',
     UNIQUE KEY uk_diff_batch_task_run (task_id, final_coding_task_run_id),
     KEY idx_diff_batch_project (project_id),
+    KEY idx_diff_batch_project_updated (project_id, updated_at, id),
     KEY idx_diff_batch_recovery (delivery_status, delivery_lease_expires_at),
     CONSTRAINT fk_diff_batch_project FOREIGN KEY (project_id) REFERENCES projects(id),
     CONSTRAINT fk_diff_batch_task FOREIGN KEY (task_id) REFERENCES tasks(id),
@@ -830,6 +834,7 @@ CREATE TABLE IF NOT EXISTS
         updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
         KEY idx_diff_project (project_id), KEY idx_diff_task(task_id,status), KEY idx_diff_task_run(task_run_id),
         KEY idx_diff_review_batch(review_batch_id),
+        KEY idx_diff_review_batch_repository (review_batch_id, project_repository_id),
         CONSTRAINT fk_diff_project FOREIGN KEY (project_id) REFERENCES projects (id),
         CONSTRAINT fk_diff_task FOREIGN KEY(task_id) REFERENCES tasks(id),
         CONSTRAINT fk_diff_task_run FOREIGN KEY(task_run_id) REFERENCES task_runs(id),
