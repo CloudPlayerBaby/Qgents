@@ -1,4 +1,4 @@
-# Qgents 接口文档v2\.0\.17
+﻿# Qgents 接口文档v2\.0\.17
 
 # Qgents 接口文档v2\.0\.17
 
@@ -10011,3 +10011,37 @@ data: {
 未识别 `SUPERSEDED` 的旧客户端仍可通过 `capabilities` 看到确认按钮，但服务端会拒绝实际请求；
 升级后的客户端应消费该状态或事件以即时刷新页面。该规则不新增接口、不新增数据库字段，现有
 字符串状态字段即可承载 `SUPERSEDED`。
+
+---
+
+## 42. 任务失败通知的恢复补偿（2026-08-24）
+
+任务可能因质量循环耗尽 / 基础设施失败短暂进入 `FAILED` 并写入 `TASK_FAILED` 通知；若随后被**用户重试或恢复器续跑**成功继续执行（`FAILED` → `RUNNING` → … → `WAITING_PREFLIGHT`/`SUCCEEDED`），铃铛里的「任务失败」通知已与真实状态矛盾。本次补充**失败通知恢复补偿**：任务从 `FAILED` 恢复编排时，自动撤销该任务的 `TASK_FAILED` 通知。
+
+### 42.1 触发时机
+
+| 场景 | 行为 |
+|---|---|
+| 用户点击重试失败运行（`POST .../task-runs/{id}/retry` → 受理 → `orchestrate(projectId, taskId, startStepId)`） | `claimForResume` 将 `FAILED`→`RUNNING` 成功后，删除该任务 `TASK_FAILED` 通知 |
+| 恢复器续跑卡死任务（`TaskRunRecoveryScheduler` → 发布续跑事件 → `orchestrate`） | 同上 |
+| 任务首次编排（`PLANNING`/`PENDING` → `RUNNING`） | 不触发（无失败通知可撤） |
+
+实现位置：`TaskOrchestrator.orchestrate` 认领成功后，当 `startStepId != null` 且原任务状态为 `FAILED` 时调用 `NotificationService.clearTaskFailedNotifications(taskId)`。
+
+### 42.2 数据语义
+
+- **删除对象**：`notifications` 表中 `resource_id = 任务ID` 且 `kind = 'TASK_FAILED'` 的记录（幂等；无记录时不影响任何数据）。
+- **保留对象**：通知级 SSE 投递记录（`notification_events`）**不删除**——该表是用户游标式增量事件，删除会破坏游标连续性；移动端/前端通过 `GET /notifications` 拉取列表，删除后铃铛刷新即不再展示「任务失败」。
+- 该补偿只针对「恢复成功继续执行」的失败通知；任务**真正终态失败**（不再恢复）的 `TASK_FAILED` 通知保留，语义不变。
+
+### 42.3 前端/移动端配合
+
+- **无需改动**：移动端与 Web 端均消费 `GET /notifications`（+ `notification.created` SSE 实时提醒）；后端删除后，铃铛/任务消息页刷新即消失。
+- 若希望「任务已恢复」有正向提示，可在恢复点额外发一条 `TASK_RUN_RESUMED` 类通知（当前未实现，按需扩展）。
+
+### 42.4 验证方式
+
+1. 触发一次会失败的任务（如基线分支缺失 / Worker 不可达），确认收到 `TASK_FAILED` 通知；
+2. 修复条件后重试任务，任务从 `FAILED` 恢复执行；
+3. 确认铃铛中该任务的「任务失败」通知被清除，任务最终状态（如 `WAITING_PREFLIGHT`/`SUCCEEDED`）正常展示。
+

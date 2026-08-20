@@ -58,6 +58,15 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
+        <!-- 运行状态与性能指标；端点通过 application.yaml 明确暴露并受现有鉴权/网络边界保护。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <!-- WebSocket 实时通道：单连接用户级聚合推送（SSE 保留兼容，见 RealtimeWsConfig） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

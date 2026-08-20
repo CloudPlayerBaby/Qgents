@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: qgents-backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # WSL 通过 Docker Desktop/WSL 主机名访问 Windows 上运行的后端。
+      - targets: ["host.docker.internal:8081"]
+        labels:
+          service: qgents-backend
