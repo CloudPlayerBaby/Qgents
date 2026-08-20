@@ -41,7 +41,8 @@ import java.util.List;
  *   <li>git_diff 由 {@link WorkspaceDiffAccess} 预取并嵌入初始上下文，审查循环只暴露
  *       list_files/read_file/search_code；diff 不可用（未就绪）→ FAILED_INFRASTRUCTURE；</li>
  *   <li>success 的最终判定依据 severity 策略：存在 BLOCKER/MAJOR 时强制 FAIL，
- *       只有 MINOR/INFO 时方可采纳 LLM 的 success；不得只凭 LLM 声称通过；</li>
+ *       仅 MINOR/INFO（含空 findings）时必 PASS；LLM 的 success/needsCodingFix
+ *       布尔值不参与通过判定，严重度归一化由 {@link ReviewVerdictComputer} 完成；</li>
  *   <li>阶段 B 起默认走原生 Tool Calling（{@code app.agent.protocol=native}），legacy 手写 JSON
  *       协议仅灰度期保留，协议稳定后删除；输出非法、缺必填字段、severity 非法、超循环上限等抛
  *       {@link ReviewParseException}，统一转为 FAILED_INFRASTRUCTURE 同相位重试。</li>
@@ -61,6 +62,7 @@ public class ReviewAgent implements Agent {
     private final AgentProtocol protocol;
     private final ReviewPromptBuilder promptBuilder = new ReviewPromptBuilder();
     private final ReviewResultParser parser = new ReviewResultParser();
+    private final ReviewVerdictComputer verdictComputer = new ReviewVerdictComputer();
     private final ObjectMapper objectMapper = new ObjectMapper();
     /**
      * 运行时 Skill 激活与当前群历史聊天检索的服务端入口。
@@ -98,9 +100,10 @@ public class ReviewAgent implements Agent {
             ReviewResult review = protocol.isNative()
                     ? executeReviewNative(input, diff, observations, activatedSkillIds)
                     : executeReviewLegacy(input, diff);
-            boolean blockerOrMajor = hasBlockerOrMajor(review);
-            boolean success = !blockerOrMajor && review.isSuccess();
+            ReviewVerdictComputer.Verdict verdict = verdictComputer.compute(review.getFindings());
+            boolean success = verdict.passed();
             review.setSuccess(success);
+            review.setFindings(verdict.normalizedFindings());
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
             outcome.setReviewResult(review);
@@ -269,22 +272,6 @@ public class ReviewAgent implements Agent {
         }
         throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
-    }
-
-    /**
-     * 依据 severity 策略的确定性底线：存在 BLOCKER/MAJOR 即强制 FAIL，即使 LLM 声称通过。
-     */
-    private boolean hasBlockerOrMajor(ReviewResult review) {
-        if (review.getFindings() == null) {
-            return false;
-        }
-        for (ReviewResult.Finding finding : review.getFindings()) {
-            String severity = finding.getSeverity() == null ? "" : finding.getSeverity().toUpperCase();
-            if ("BLOCKER".equals(severity) || "MAJOR".equals(severity)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private String firstFinding(ReviewResult review) {

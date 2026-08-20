@@ -18,6 +18,8 @@ import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.service.ContextService;
 import qg.qgent.orchestration.TaskContextSnapshotCodec;
+import qg.qgent.orchestration.result.ReviewResult;
+import qg.qgent.orchestration.result.TestResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.List;
@@ -198,6 +200,104 @@ class AgentContextAssemblerTest {
 
         assertThat(input.getFeedback()).contains("FAILED_INFRASTRUCTURE", "基础设施暂不可用")
                 .doesNotContain("private-path", failure.getFailureCode());
+    }
+
+    private AgentRunOutcome reviewFailure(ReviewResult.Finding... findings) {
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setPhase(OrchestrationPhase.REVIEWING);
+        outcome.setOutcome(RunOutcome.FAILED_QUALITY);
+        ReviewResult review = new ReviewResult();
+        review.setSuccess(false);
+        review.setNeedsCodingFix(true);
+        review.setFindings(List.of(findings));
+        outcome.setReviewResult(review);
+        return outcome;
+    }
+
+    private TaskStepEntity step(String instruction) {
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setInstruction(instruction);
+        return step;
+    }
+
+    @Test void codingReviewFeedbackFiltersToNormalizedMajorBlockerOnly() {
+        TaskEntity task = task();
+        ReviewResult.Finding major = new ReviewResult.Finding();
+        major.setSeverity("MAJOR");
+        major.setFile("src/AuthService.java");
+        major.setIssue("missing ownership check");
+        ReviewResult.Finding minor = new ReviewResult.Finding();
+        minor.setSeverity("MINOR");
+        minor.setIssue("typo in comment");
+        ReviewResult.Finding style = new ReviewResult.Finding();
+        style.setSeverity("MAJOR");
+        style.setFile("src/AuthService.java");
+        style.setIssue("unused import in this file");
+        AgentRunOutcome failed = reviewFailure(major, minor, style);
+
+        AgentInput input = assembler.assemble(task, step("修复"), OrchestrationPhase.CODING, failed,
+                UUID.randomUUID(), null, null, null, null);
+
+        // 只回灌归一化后 BLOCKER/MAJOR：MINOR 与风格类 MAJOR（已按宽松判定降级）不进修复反馈。
+        assertThat(input.getFeedback())
+                .contains("missing ownership check")
+                .doesNotContain("typo in comment")
+                .doesNotContain("unused import")
+                .doesNotContain("审查建议");
+        assertThat(input.getRetryContext().getFailures())
+                .containsExactly("MAJOR src/AuthService.java: missing ownership check");
+        // failureSummary 只给一行计数概述，不再整份 dump 问题明细。
+        assertThat(input.getRetryContext().getFailureSummary())
+                .contains("1 个待修复问题")
+                .doesNotContain("missing ownership check");
+    }
+
+    @Test void reviewingFeedbackKeepsAllFindingsAndSuggestions() {
+        TaskEntity task = task();
+        ReviewResult.Finding major = new ReviewResult.Finding();
+        major.setSeverity("MAJOR");
+        major.setFile("src/AuthService.java");
+        major.setIssue("missing ownership check");
+        ReviewResult.Finding minor = new ReviewResult.Finding();
+        minor.setSeverity("MINOR");
+        minor.setIssue("typo in comment");
+        AgentRunOutcome failed = reviewFailure(major, minor);
+        failed.getReviewResult().setSuggestions(List.of("补充单元测试"));
+
+        AgentInput input = assembler.assemble(task, step("复核"), OrchestrationPhase.REVIEWING, failed,
+                UUID.randomUUID(), null, null, null, null);
+
+        // Review 复核需要看到全部旧 finding 与建议，不能按修复反馈过滤。
+        assertThat(input.getFeedback())
+                .contains("missing ownership check", "typo in comment")
+                .contains("审查建议", "补充单元测试");
+    }
+
+    @Test void testFeedbackKeepsAllFailuresAndSummaryIsConcise() {
+        TaskEntity task = task();
+        TestResult.Failure first = new TestResult.Failure();
+        first.setName("testExport");
+        first.setReason("expected 5 but got 4");
+        TestResult.Failure second = new TestResult.Failure();
+        second.setName("testImport");
+        second.setReason("file not found");
+        AgentRunOutcome failed = new AgentRunOutcome();
+        failed.setPhase(OrchestrationPhase.TESTING);
+        failed.setOutcome(RunOutcome.FAILED_QUALITY);
+        TestResult test = new TestResult();
+        test.setSuccess(false);
+        test.setNeedsCodingFix(true);
+        test.setFailures(List.of(first, second));
+        failed.setTestResult(test);
+
+        AgentInput input = assembler.assemble(task, step("修复"), OrchestrationPhase.CODING, failed,
+                UUID.randomUUID(), null, null, null, null);
+
+        assertThat(input.getFeedback())
+                .contains("testExport: expected 5 but got 4", "testImport: file not found");
+        assertThat(input.getRetryContext().getFailures()).hasSize(2);
+        assertThat(input.getRetryContext().getFailureSummary()).contains("共 2 项").doesNotContain("expected 5");
     }
 
     @Test void retryContextCarriesOnlyReviewerActivatedSkillIdsWithoutBodies() {

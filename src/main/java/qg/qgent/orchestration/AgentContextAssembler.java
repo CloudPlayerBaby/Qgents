@@ -13,6 +13,7 @@ import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.DiffReviewBatchMapper;
+import qg.qgent.orchestration.agent.ReviewVerdictComputer;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.ReviewResult;
@@ -23,6 +24,7 @@ import qg.qgent.entity.WorkspaceRepositoryEntity;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -50,6 +52,11 @@ public class AgentContextAssembler {
     private final DiffReviewBatchMapper diffBatches;
     private final DiffMapper diffMapper;
     private final WorkspaceRepositoryMapper workspaceRepositories;
+    /**
+     * Review finding 严重度归一化（风格降级）复用宽松判定器，保证"只回灌 BLOCKER/MAJOR"与
+     * {@link ReviewVerdictComputer} 的通过判定完全同源：风格类 MAJOR 被降级后不再喂给 Coding。
+     */
+    private final ReviewVerdictComputer verdictComputer = new ReviewVerdictComputer();
 
     public AgentContextAssembler(ContextService contextService, TaskContextSnapshotCodec contextSnapshotCodec,
                                  DiffReviewBatchMapper diffBatches, DiffMapper diffMapper) {
@@ -101,7 +108,7 @@ public class AgentContextAssembler {
         input.setExecutionMode(step.getExecutionMode());
         input.setAllowedPaths(step.getAllowedPaths());
         input.setTargetFiles(step.getTargetFiles());
-        input.setFeedback(feedback == null ? null : formatFeedback(feedback));
+        input.setFeedback(feedback == null ? null : formatFeedback(feedback, phase));
         input.setRetryContext(retryContext(feedback, inheritedPatchFailureCounts));
         input.setPlanResult(planResult);
         input.setCodingResult(codingResult);
@@ -269,25 +276,101 @@ public class AgentContextAssembler {
         return input;
     }
 
-    private String formatFeedback(AgentRunOutcome feedback) {
+    /**
+     * 把上一轮失败反馈渲染成 Coding/Review 可读文本。相位感知过滤：CODING 的修复反馈只保留
+     * 归一化后 BLOCKER/MAJOR 的 review finding（宽松化降级掉的风格项不喂给 Coding，避免诱导
+     * 模型顺手修风格）并去掉 suggestions；REVIEWING 的复核反馈保留全部 findings + suggestions，
+     * 供 Review 复核旧 finding。与 {@link #retryContext} 共用 {@link #actionableFailures}，保证
+     * "前一轮反馈"与"重试上下文 failures"内容一致，同一批失败项不再重复渲染多遍。
+     */
+    private String formatFeedback(AgentRunOutcome feedback, OrchestrationPhase phase) {
+        if (feedback == null) {
+            return "";
+        }
         if (feedback.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE) {
             String code = ExecutionContentSanitizer.stableInfrastructureCode(feedback.getFailureCode());
             return "前一轮基础设施失败（" + code + "）："
                     + ExecutionContentSanitizer.infrastructureDescription(code);
         }
+        List<String> failures = actionableFailures(feedback, phase);
+        if (!failures.isEmpty()) {
+            TestResult test = feedback.getTestResult();
+            if (test != null && test.getFailures() != null && !test.getFailures().isEmpty()) {
+                return "前一轮测试失败：" + failures;
+            }
+            ReviewResult review = feedback.getReviewResult();
+            if (review != null && review.getFindings() != null && !review.getFindings().isEmpty()) {
+                StringBuilder sb = new StringBuilder("前一轮审查问题：").append(failures);
+                if (phase != OrchestrationPhase.CODING && review.getSuggestions() != null
+                        && !review.getSuggestions().isEmpty()) {
+                    sb.append("\n审查建议：").append(review.getSuggestions());
+                }
+                return sb.toString();
+            }
+        }
+        return feedback.getMessage();
+    }
+
+    /**
+     * 上一轮失败的可修复项列表（单条已截断脱敏），供 feedback 文本与 retryContext.failures 共用，
+     * 保证两者内容一致。Test 失败项全部视为可修复；Review finding 仅当修复反馈（CODING）时保留
+     * 归一化后 BLOCKER/MAJOR（风格降级项与 MINOR/INFO 不参与修复反馈），复核反馈（非 CODING）
+     * 保留全部。
+     */
+    private List<String> actionableFailures(AgentRunOutcome feedback, OrchestrationPhase phase) {
+        if (feedback == null) {
+            return List.of();
+        }
         TestResult test = feedback.getTestResult();
         if (test != null && test.getFailures() != null && !test.getFailures().isEmpty()) {
-            return "前一轮测试失败：" + test.getFailures();
+            return test.getFailures().stream()
+                    .map(failure -> limit(String.valueOf(failure.getName()) + ": " + String.valueOf(failure.getReason()),
+                            500))
+                    .toList();
         }
         ReviewResult review = feedback.getReviewResult();
         if (review != null && review.getFindings() != null && !review.getFindings().isEmpty()) {
-            StringBuilder sb = new StringBuilder("前一轮审查问题：").append(review.getFindings());
-            if (review.getSuggestions() != null && !review.getSuggestions().isEmpty()) {
-                sb.append("\n审查建议：").append(review.getSuggestions());
-            }
-            return sb.toString();
+            List<ReviewResult.Finding> effective = phase == OrchestrationPhase.CODING
+                    ? verdictComputer.compute(review.getFindings()).normalizedFindings().stream()
+                            .filter(finding -> isBlockerOrMajor(finding.getSeverity()))
+                            .toList()
+                    : review.getFindings();
+            return effective.stream()
+                    .map(finding -> limit(String.valueOf(finding.getSeverity()) + " " + String.valueOf(finding.getFile())
+                            + ": " + String.valueOf(finding.getIssue()), 500))
+                    .toList();
         }
-        return feedback.getMessage();
+        return List.of();
+    }
+
+    private boolean isBlockerOrMajor(String severity) {
+        String effective = severity == null ? "" : severity.toUpperCase(Locale.ROOT);
+        return "BLOCKER".equals(effective) || "MAJOR".equals(effective);
+    }
+
+    /**
+     * retryContext 的受控失败概述：基础设施失败走稳定码说明；质量失败只给一行计数概述，
+     * 明细由 {@link #actionableFailures} 提供的 failures 承载，不再整份 dump 到 failureSummary。
+     */
+    private String failureSummary(AgentRunOutcome outcome) {
+        if (outcome == null) {
+            return "";
+        }
+        if (outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE) {
+            String code = ExecutionContentSanitizer.stableInfrastructureCode(outcome.getFailureCode());
+            return "前一轮基础设施失败（" + code + "）："
+                    + ExecutionContentSanitizer.infrastructureDescription(code);
+        }
+        List<String> failures = actionableFailures(outcome, OrchestrationPhase.CODING);
+        if (!failures.isEmpty()) {
+            TestResult test = outcome.getTestResult();
+            if (test != null && test.getFailures() != null && !test.getFailures().isEmpty()) {
+                return "前一轮测试失败，共 " + failures.size() + " 项，详见 failures";
+            }
+            return "前一轮审查未通过，共 " + failures.size() + " 个待修复问题，详见 failures";
+        }
+        String message = outcome.getMessage();
+        return message == null ? "前一轮执行未通过" : message;
     }
 
     private RetryContext retryContext(AgentRunOutcome outcome, Map<String, Integer> inheritedCounts) {
@@ -301,18 +384,14 @@ public class AgentContextAssembler {
                     : outcome.getOutcome() == RunOutcome.FAILED_QUALITY ? "QUALITY_GATE_FAILED" : "AGENT_RETRY";
         }
         context.setFailureCode(limit(code, 128));
+        // failureSummary 只给一行受控概述，明细走 failures、正文走 feedback，同一批失败项
+        // 在 Coding prompt 里只出现两次（正文 + 结构化列表），不再整份 dump 三遍。
         context.setFailureSummary(limit(outcome == null
                 ? "前序运行的补丁连续失败，请先重新 read_file，再按要求切换 replace_file"
-                : formatFeedback(outcome), 2000));
-        TestResult test = outcome == null ? null : outcome.getTestResult();
-        if (test != null && test.getFailures() != null) {
-            context.setFailures(test.getFailures().stream().map(value -> limit(
-                    String.valueOf(value.getName()) + ": " + String.valueOf(value.getReason()), 500)).limit(20).toList());
-        }
-        ReviewResult review = outcome == null ? null : outcome.getReviewResult();
-        if (review != null && review.getFindings() != null) {
-            context.setFailures(review.getFindings().stream().map(value -> limit(
-                    String.valueOf(value.getSeverity()) + " " + String.valueOf(value.getFile()) + ": " + String.valueOf(value.getIssue()), 500)).limit(20).toList());
+                : failureSummary(outcome), 2000));
+        List<String> failures = actionableFailures(outcome, OrchestrationPhase.CODING);
+        if (!failures.isEmpty()) {
+            context.setFailures(failures.stream().limit(20).toList());
         }
         if (outcome != null && outcome.getPhase() == OrchestrationPhase.REVIEWING
                 && outcome.getActivatedSkillIds() != null

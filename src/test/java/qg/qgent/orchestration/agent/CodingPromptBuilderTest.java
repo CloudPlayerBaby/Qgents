@@ -3,6 +3,7 @@ package qg.qgent.orchestration.agent;
 import org.junit.jupiter.api.Test;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.result.CodingResult;
+import qg.qgent.orchestration.result.TestResult;
 
 import java.util.List;
 import java.util.stream.IntStream;
@@ -46,6 +47,49 @@ class CodingPromptBuilderTest {
                 .contains("workspacePath 开头")
                 .contains("新建目录和新建文件")
                 .contains("禁止使用无法确定仓库的裸路径");
+    }
+
+    private static TestResult.Failure failure(String name, String reason) {
+        TestResult.Failure failure = new TestResult.Failure();
+        failure.setName(name);
+        failure.setReason(reason);
+        return failure;
+    }
+
+    @Test
+    void skipsTestFailureListWhenFeedbackPresentToAvoidDuplication() {
+        AgentInput input = new AgentInput();
+        input.setTaskTitle("修复导出逻辑");
+        input.setRequirement("修复导出接口");
+        input.setFeedback("前一轮测试失败：[testExport: expected 5 but got 4]");
+        TestResult test = new TestResult();
+        test.setSuccess(false);
+        test.setExitCode(1);
+        test.setSummary("导出接口测试失败");
+        test.setFailures(List.of(failure("testExport", "expected 5 but got 4")));
+        input.setTestResult(test);
+
+        String prompt = promptBuilder.buildUser(input, List.of("src/main/java/ExportService.java"));
+
+        // 打回重做时失败明细已由 feedback 承载：整体状态与摘要保留，失败项不再重复渲染。
+        assertThat(prompt).contains("上次测试结果：未通过").contains("测试摘要：导出接口测试失败")
+                .doesNotContain("测试失败项：");
+    }
+
+    @Test
+    void rendersTestFailureListWhenNoFeedback() {
+        AgentInput input = new AgentInput();
+        input.setTaskTitle("修复导出逻辑");
+        input.setRequirement("修复导出接口");
+        TestResult test = new TestResult();
+        test.setSuccess(false);
+        test.setExitCode(1);
+        test.setFailures(List.of(failure("testExport", "expected 5 but got 4")));
+        input.setTestResult(test);
+
+        String prompt = promptBuilder.buildUser(input, List.of("src/main/java/ExportService.java"));
+
+        assertThat(prompt).contains("上次测试结果：未通过").contains("测试失败项：").contains("testExport");
     }
 
     @Test

@@ -479,6 +479,76 @@ class TestAgentTest {
         assertThat(test.isNeedsCodingFix()).isTrue();
     }
 
+    @Test
+    void environmentFailureIsClassifiedAsInfrastructureWithoutLlmAnalysis() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 1, "", "Connection refused to host mysql:3306", null));
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo("TEST_SERVICE_UNAVAILABLE");
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void timeoutExitCodeMapsToInfrastructureFailureWithoutLlm() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 124, "partial", "reached the timeout of 10 minutes", null));
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo("TEST_EXECUTION_TIMEOUT");
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void dependencyResolutionFailureMapsToInfrastructureWithoutLlm() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 1, "",
+                        "[ERROR] Could not resolve dependencies for project com.example:app:1.0", null));
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getFailureCode()).isEqualTo("TEST_DEPENDENCY_UNAVAILABLE");
+        verify(llm, never()).complete(anyString(), anyList());
+    }
+
+    @Test
+    void environmentKeywordDoesNotMaskFailureTouchingModifiedFile() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 1, "", "X.java:12 Connection refused", null));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"success\":false,\"summary\":\"connection failed\",\"failures\":[{\"name\":\"x\",\"reason\":\"r\",\"severity\":\"ERROR\"}],\"needsCodingFix\":true}");
+
+        AgentRunOutcome outcome = agent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        verify(llm).complete(anyString(), anyList());
+    }
+
+    @Test
+    void modifiedBuildFileKeepsDependencyFailureAsQualityFix() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 1, "", "[ERROR] Could not resolve dependencies", null));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"success\":false,\"summary\":\"deps\",\"failures\":[{\"name\":\"x\",\"reason\":\"r\",\"severity\":\"ERROR\"}],\"needsCodingFix\":true}");
+        AgentInput buildInput = input();
+        buildInput.getCodingResult().setModifiedFiles(List.of("pom.xml", "src/main/java/X.java"));
+
+        AgentRunOutcome outcome = agent().run(buildInput);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        verify(llm).complete(anyString(), anyList());
+    }
+
     private PlanResult.ImplementationStep stepWithAssertions(String file, String type, String value) {
         PlanResult.ImplementationStep step = new PlanResult.ImplementationStep();
         step.setTitle("步骤");

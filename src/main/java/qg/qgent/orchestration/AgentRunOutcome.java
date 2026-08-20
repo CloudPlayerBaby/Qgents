@@ -62,6 +62,12 @@ public class AgentRunOutcome {
     private List<UUID> activatedSkillIds = new ArrayList<>();
     /** Coding 工具按相对路径累计的连续 patch 失败次数，供下一次 TaskRun 继承。 */
     private Map<String, Integer> patchFailureCounts = new LinkedHashMap<>();
+    /**
+     * Coding 自报失败时是否仍存在真实写入证据（changed=true 的文件/目录写入）。
+     * 供编排证据门控区分"模型误判/中途放弃"与"确实未产生任何变更"两种自报失败：
+     * 前者可同相位有界重试，后者维持立即终态，避免 no-op 重试回环。
+     */
+    private boolean hasRealChanges;
 
     /**
      * 追加一条观测；首次调用时惰性初始化列表。

@@ -9,7 +9,8 @@ import java.util.List;
  * Review Agent 的结构化产出：是否通过、审查摘要、发现项、整体建议与是否需要 Coding 修复。
  * <p>
  * success 的最终判定由 ReviewAgent 依据严重度策略给出：存在 BLOCKER/MAJOR 时强制 FAIL，
- * 仅 MINOR/INFO 时可 PASS；不得只凭 LLM 声称通过。findings 与 suggestions 供重试的
+ * 仅 MINOR/INFO（含空 findings）时必 PASS；LLM 返回的 success 布尔值不参与判定，严重度
+ * 归一化由 ReviewVerdictComputer 完成。findings 与 suggestions 供重试的
  * Coding Agent 判断下一步应修复什么。
  */
 @Data

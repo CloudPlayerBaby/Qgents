@@ -68,7 +68,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void plannerCreatesNoTaskRunAndFormalGraphStartsAtDeveloper() {
+    void plannerCreatesItsOwnRunAndFormalGraphStartsAtDeveloper() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -82,9 +82,10 @@ class TaskOrchestratorTest {
 
         fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
 
-        verify(fixture.taskRuns, times(3)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
+        // Planner 也有自己的持久化 Run（用于心跳与启动失败记录），正式图从 Developer 开始。
+        verify(fixture.taskRuns, times(4)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
                 anyString(), any(), any(), any());
-        verify(fixture.taskRuns, never()).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
+        verify(fixture.taskRuns).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
                 anyString(), any(), any(), any());
         verify(fixture.materialization).materialize(eq(task), any(PlanResult.class));
         assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
@@ -316,7 +317,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void failedPlannerDoesNotEnterFormalGraphOrCreateTaskRun() {
+    void failedPlannerCreatesOnlyItsOwnRunNotFormalGraph() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -326,7 +327,9 @@ class TaskOrchestratorTest {
                 .orchestrate(task.getProjectId(), task.getId());
 
         verify(fixture.materialization, never()).materialize(any(), any());
-        verifyNoInteractions(fixture.taskRuns);
+        // Planner 失败仍持久化自己的 Run，但不物化正式步骤、不进入 Developer 等正式图。
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
+                anyString(), any(), any(), any());
         assertThat(fixture.updatedStatuses()).contains("FAILED");
     }
 
@@ -343,7 +346,10 @@ class TaskOrchestratorTest {
         fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess()))
                 .orchestrate(task.getProjectId(), task.getId());
 
-        verifyNoInteractions(fixture.taskRuns);
+        // 物化失败：Planner Run 仍被持久化并落 FAILED，但不再创建 Developer 等正式 Run。
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
+                anyString(), any(), any(), any());
+        verify(fixture.taskRuns).complete(any(), eq("FAILED"), eq("FAILED_INFRASTRUCTURE"), any());
         assertThat(planner.getStatus()).isEqualTo("FAILED");
         verify(fixture.steps, times(2)).updateById(planner);
         assertThat(fixture.updatedStatuses()).contains("FAILED");
@@ -456,7 +462,8 @@ class TaskOrchestratorTest {
         fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
 
         verify(fixture.materialization).materialize(eq(task), any(PlanResult.class));
-        verify(fixture.taskRuns, times(3)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
+        // Planner 重试两轮各创建一次 Run，随后 Developer/Tester/Reviewer 三个正式 Run。
+        verify(fixture.taskRuns, times(5)).createForStep(eq(task.getProjectId()), eq(task.getId()), any(),
                 anyString(), any(), any(), any());
         assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
         assertThat(fixture.feedbacksFor(OrchestrationPhase.PLAN)).hasSize(2);
@@ -566,6 +573,113 @@ class TaskOrchestratorTest {
         assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly(null, failedCoding);
         verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(developer.getId()), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void testingEnvironmentFailureRetriesSamePhaseWithoutQualityLoop() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+        AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_INFRASTRUCTURE);
+        failedTest.setFailureCode("TEST_SERVICE_UNAVAILABLE");
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                failedTest, fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        // 环境类测试失败：TESTING 同相位重试，不回到 CODING、不占用质量修复循环。
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.TESTING)).containsExactly(null, failedTest);
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly((AgentRunOutcome) null);
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(tester.getId()), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void codingSelfReportFailureWithRealChangesRetriesOnce() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+        AgentRunOutcome failedCoding = fixture.outcome(OrchestrationPhase.CODING, RunOutcome.FAILED);
+        failedCoding.setHasRealChanges(true);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), failedCoding,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING))).orchestrate(task.getProjectId(), task.getId());
+
+        // 有真实写入证据的自报失败：自动同相位重试一次，重试 run 收到前一轮失败反馈。
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly(null, failedCoding);
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void codingSelfReportFailureWithoutRealChangesFailsTaskImmediately() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        fixture.stubPlan(task, planner, List.of(planner, developer));
+        AgentRunOutcome failedCoding = fixture.outcome(OrchestrationPhase.CODING, RunOutcome.FAILED);
+        failedCoding.setHasRealChanges(false);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), failedCoding))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        // 无任何真实写入的自报失败保持立即终态，不重试，避免 no-op 回环。
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+    }
+
+    @Test
+    void codingSelfReportFailureExhaustsRetryBudgetThenFailsTask() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester));
+        AgentRunOutcome first = fixture.outcome(OrchestrationPhase.CODING, RunOutcome.FAILED);
+        first.setHasRealChanges(true);
+        AgentRunOutcome second = fixture.outcome(OrchestrationPhase.CODING, RunOutcome.FAILED);
+        second.setHasRealChanges(true);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), first, second))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        // 重试预算 1 次：第一次自报失败重试，第二次不再重试，直接 Task FAILED。
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+    }
+
+    @Test
+    void codedCodingFailureWithRealChangesDoesNotTriggerSelfReportRetry() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        fixture.stubPlan(task, planner, List.of(planner, developer));
+        AgentRunOutcome coded = fixture.outcome(OrchestrationPhase.CODING, RunOutcome.FAILED);
+        coded.setFailureCode("TOOL_PATCH_UNRECOVERABLE");
+        coded.setHasRealChanges(true);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), coded))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        // 已归类失败（补丁不可恢复）即使有真实写入也不走自报失败重试，保持原语义。
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
     }
 
     @Test
@@ -705,9 +819,12 @@ class TaskOrchestratorTest {
                 .orchestrate(task.getProjectId(), task.getId());
 
         verify(fixture.materialization).materialize(eq(task), any(PlanResult.class));
-        // 认领失败后不再进入正式图：不创建任何 TaskRun，也不触碰运行产物
-        verifyNoInteractions(fixture.taskRuns);
-        verify(fixture.artifacts, never()).createRunArtifact(any(), any(), any(), any(), any());
+        // 认领失败后不再进入正式图：仅 Planner Run 与 PLAN 产物已落库，不创建 Developer 等正式 Run。
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()), eq(planner.getId()),
+                anyString(), any(), any(), any());
+        verify(fixture.taskRuns).complete(any(), eq("SUCCEEDED"));
+        verify(fixture.artifacts, times(1)).createRunArtifact(any(), any(), any(), eq("PLAN"), any());
+        verify(fixture.artifacts, never()).createRunArtifact(any(), any(), any(), eq("CODING"), any());
     }
 
     @Test
@@ -813,6 +930,44 @@ class TaskOrchestratorTest {
         assertThat(reviewSummary).containsEntry("success", true);
         assertThat((List<?>) reviewSummary.get("findings")).hasSize(1);
         assertThat((Map<String, Integer>) reviewSummary.get("severityCount")).containsEntry("MAJOR", 1);
+    }
+
+    @Test
+    void identicalReviewQualityFailureTwiceTerminatesEarlyWithoutExhaustingAllLoops() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("MAJOR");
+        finding.setFile("src/AuthService.java");
+        finding.setIssue("missing ownership check");
+        reviewResult.setFindings(List.of(finding));
+        failedReview.setReviewResult(reviewResult);
+
+        // 同一 MAJOR 连续两轮出现：第二轮判定不收敛，提前终止，不再空转第三次。
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING), failedReview,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING), failedReview))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(tester.getId()), anyString(), any(), any(), any());
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(reviewer.getId()), anyString(), any(), any(), any());
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+        assertThat(task.getFailureCode()).isEqualTo("TASK_QUALITY_LOOPS_EXHAUSTED");
+        assertThat(task.getFailureReason()).contains("未见修复进展");
     }
 
     private static final class Fixture {

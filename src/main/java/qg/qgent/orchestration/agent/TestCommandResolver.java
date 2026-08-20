@@ -18,6 +18,11 @@ public class TestCommandResolver {
     public record ResolvedCommand(List<String> command, String repositoryPath) {
     }
 
+    /** 多模块 Maven 中单个子模块的构建入口标记（相对各模块目录自身）。 */
+    private static final List<String> MAVEN_MODULE_MARKERS = List.of("pom.xml");
+    /** Gradle 多项目中单个子项目的构建入口标记。 */
+    private static final List<String> GRADLE_MODULE_MARKERS = List.of("build.gradle", "build.gradle.kts");
+
     /**
      * 依据文件列表解析安全的测试命令。
      *
@@ -126,7 +131,8 @@ public class TestCommandResolver {
             return node;
         }
         if (resolved == null) return null;
-        return targetsMatchCommand(resolved.command(), resolved.repositoryPath(), targets) ? resolved : null;
+        if (!targetsMatchCommand(resolved.command(), resolved.repositoryPath(), targets)) return null;
+        return scopeToModule(files, resolved, targets);
     }
 
     private ResolvedCommand resolveNodeCommand(List<String> files, List<String> targets) {
@@ -159,6 +165,121 @@ public class TestCommandResolver {
         if (tool.equals("mvn") || command.equals(List.of("sh", "./mvnw", "test"))) return jvm || maven;
         if (tool.equals("npm")) return node;
         return true;
+    }
+
+    /**
+     * 把整仓库测试命令收敛到改动所在的唯一模块/项目：
+     * Maven 多模块使用 {@code mvn test -pl <模块>}，Gradle 多项目使用 {@code :<项目路径>:test}。
+     * 无法唯一确定模块（无嵌套模块、改动横跨多个模块、或命令不是 Maven/Gradle）时原样返回整仓库命令，
+     * 保守不误杀；"缺兄弟模块产物"等依赖解析失败由 TestFailureClassifier 归为环境问题重试。
+     */
+    private ResolvedCommand scopeToModule(List<String> files, ResolvedCommand resolved, List<String> targets) {
+        List<String> command = resolved.command();
+        boolean maven = isMavenCommand(command);
+        boolean gradle = isGradleCommand(command);
+        if (!maven && !gradle) {
+            return resolved; // npm 已按 package 根执行，无需收敛
+        }
+        Set<String> modules = new java.util.TreeSet<>();
+        for (String target : targets) {
+            String module = moduleForTarget(resolved.repositoryPath(), target, files,
+                    maven ? MAVEN_MODULE_MARKERS : GRADLE_MODULE_MARKERS);
+            if (module != null) {
+                modules.add(module);
+            }
+        }
+        if (modules.size() != 1) {
+            return resolved; // 0=单模块仓库，>1=改动横跨多模块，均退回整仓库命令
+        }
+        String module = modules.iterator().next();
+        return maven
+                ? new ResolvedCommand(withMavenModule(command, module), resolved.repositoryPath())
+                : new ResolvedCommand(withGradleModuleTask(command, module), resolved.repositoryPath());
+    }
+
+    private static boolean isMavenCommand(List<String> command) {
+        if (command.isEmpty()) {
+            return false;
+        }
+        return "mvn".equals(command.get(0))
+                || (command.size() > 1 && "./mvnw".equals(command.get(1)));
+    }
+
+    private static boolean isGradleCommand(List<String> command) {
+        if (command.isEmpty()) {
+            return false;
+        }
+        return "gradle".equals(command.get(0))
+                || (command.size() > 1 && "./gradlew".equals(command.get(1)));
+    }
+
+    /** Maven 命令在 test 目标前插入 {@code -pl <模块>}，保留 wrapper 选择。 */
+    private static List<String> withMavenModule(List<String> command, String module) {
+        List<String> scoped = new java.util.ArrayList<>(command);
+        int testIndex = scoped.lastIndexOf("test");
+        if (testIndex >= 0) {
+            scoped.addAll(testIndex, List.of("-pl", module));
+        } else {
+            scoped.add("-pl");
+            scoped.add(module);
+        }
+        return scoped;
+    }
+
+    /** Gradle 命令把 test 任务替换为 {@code :<模块路径>:test}（目录路径转冒号分隔）。 */
+    private static List<String> withGradleModuleTask(List<String> command, String module) {
+        List<String> scoped = new java.util.ArrayList<>(command);
+        String task = ":" + module.replace('/', ':') + ":test";
+        int testIndex = scoped.lastIndexOf("test");
+        if (testIndex >= 0) {
+            scoped.set(testIndex, task);
+        } else {
+            scoped.add(task);
+        }
+        return scoped;
+    }
+
+    /**
+     * 求 target 在 repositoryPath 仓库内所属模块目录（相对仓库根）：包含构建入口文件的最近祖先目录。
+     * 无嵌套模块（最近祖先即仓库根）、target 不属于该仓库或为 null 时返回 null，调用方退回整仓库命令。
+     */
+    private static String moduleForTarget(String repositoryPath, String target, List<String> files,
+                                          List<String> buildMarkers) {
+        if (target == null) {
+            return null;
+        }
+        String normalized = target.replace('\\', '/');
+        String root = repositoryPath == null ? "" : repositoryPath;
+        String rel;
+        if (root.isEmpty()) {
+            rel = normalized;
+        } else if (normalized.equals(root)) {
+            return null;
+        } else if (normalized.startsWith(root + "/")) {
+            rel = normalized.substring(root.length() + 1);
+        } else {
+            return null;
+        }
+        int idx = rel.lastIndexOf('/');
+        while (idx > 0) {
+            String candidate = rel.substring(0, idx);
+            String entryBase = root.isEmpty() ? candidate : root + "/" + candidate;
+            if (hasAnyBuildFile(files, entryBase, buildMarkers)) {
+                return candidate;
+            }
+            idx = rel.lastIndexOf('/', idx - 1);
+        }
+        return null;
+    }
+
+    private static boolean hasAnyBuildFile(List<String> files, String dir, List<String> buildMarkers) {
+        for (String marker : buildMarkers) {
+            String entry = dir.isEmpty() ? marker : dir + "/" + marker;
+            if (files.contains(entry)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String fileName(String path) {

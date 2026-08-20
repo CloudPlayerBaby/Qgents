@@ -118,6 +118,7 @@ public class CodingAgent implements Agent {
             outcome.setPhase(input.getPhase());
             boolean patchUnrecoverable = !coding.isSuccess() && hasPatchRepairRequired(observedWrites);
             outcome.setOutcome(coding.isSuccess() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED);
+            outcome.setHasRealChanges(observedWrites.hasChangedWrite());
             if (patchUnrecoverable) {
                 outcome.setFailureCode(ProtocolFailureCode.TOOL_PATCH_UNRECOVERABLE.name());
             }
@@ -141,6 +142,7 @@ public class CodingAgent implements Agent {
                     && hasPatchRepairRequired(observedWrites);
             failure.setOutcome(e.getCode() == ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE || patchUnrecoverable
                     ? RunOutcome.FAILED : RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setHasRealChanges(observedWrites.hasChangedWrite());
             failure.setFailureCode(patchUnrecoverable
                     ? ProtocolFailureCode.TOOL_PATCH_UNRECOVERABLE.name() : e.getCode().name());
             failure.setMessage("coding agent failed: " + e.getMessage()
@@ -152,6 +154,7 @@ public class CodingAgent implements Agent {
             AgentRunOutcome failure = new AgentRunOutcome();
             failure.setPhase(input.getPhase());
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setHasRealChanges(observedWrites.hasChangedWrite());
             failure.setFailureCode(e.code());
             failure.setMessage("coding agent failed: " + e.getMessage());
             failure.setObservations(observations);
@@ -163,6 +166,7 @@ public class CodingAgent implements Agent {
             AgentRunOutcome failure = new AgentRunOutcome();
             failure.setPhase(input.getPhase());
             failure.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+            failure.setHasRealChanges(observedWrites.hasChangedWrite());
             failure.setMessage("coding agent failed: " + e.getMessage());
             failure.setObservations(observations);
             failure.setPatchFailureCounts(observedWrites.patchFailureCounts());
