@@ -87,6 +87,7 @@ public class ReviewAgent implements Agent {
         log.info("review agent start phase={} workspaceId={} protocol={}",
                 input.getPhase(), input.getWorkspaceId(), protocol.isNative() ? "native" : "legacy");
         List<LlmObservation> observations = new ArrayList<>();
+        List<java.util.UUID> activatedSkillIds = new ArrayList<>();
         try {
             GitDiffResult diff = diffAccess.diff(input.getWorkspaceId());
             if (!diff.ok()) {
@@ -95,7 +96,7 @@ public class ReviewAgent implements Agent {
                 return infraFailure(input, "git diff unavailable: " + diff.error(), observations);
             }
             ReviewResult review = protocol.isNative()
-                    ? executeReviewNative(input, diff, observations)
+                    ? executeReviewNative(input, diff, observations, activatedSkillIds)
                     : executeReviewLegacy(input, diff);
             boolean blockerOrMajor = hasBlockerOrMajor(review);
             boolean success = !blockerOrMajor && review.isSuccess();
@@ -107,6 +108,7 @@ public class ReviewAgent implements Agent {
                     : (review.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
             outcome.setMessage(success ? review.getSummary() : firstFinding(review));
             outcome.setObservations(observations);
+            outcome.setActivatedSkillIds(activatedSkillIds);
             log.info("review agent done phase={} workspaceId={} outcome={} observations={}",
                     input.getPhase(), input.getWorkspaceId(), outcome.getOutcome(), observations.size());
             return outcome;
@@ -125,7 +127,8 @@ public class ReviewAgent implements Agent {
      * 原生 Tool Calling 只读循环：每轮把历史回传给模型，直到输出 finalResult；每轮写入观测。
      */
     private ReviewResult executeReviewNative(AgentInput input, GitDiffResult diff,
-                                             List<LlmObservation> observations) {
+                                             List<LlmObservation> observations,
+                                             List<java.util.UUID> activatedSkillIds) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         List<Message> history = new ArrayList<>();
         history.add(new UserMessage(promptBuilder.buildUser(input, files, diff)));
@@ -136,49 +139,53 @@ public class ReviewAgent implements Agent {
         ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
                 input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
         List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
-        for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
-            List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round);
-            Instant turnStartedAt = Instant.now();
-            ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
-            observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
-                    turnStartedAt, Instant.now()));
-            if (turn.isInfraAbort()) {
-                log.error("REVIEW_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
-                        input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
-                throw new IllegalStateException(turn.infraFailure());
-            }
-            if ("length".equalsIgnoreCase(turn.finishReason())) {
-                return finalizeReview(system, requestHistory, turn, observations, round, input.getPhase().name(),
-                        ProtocolFailureCode.LLM_FINISH_LENGTH);
-            }
-            if (turn.continuesToolLoop()) {
-                history = turn.history();
-                if (round == MAX_TOOL_ROUNDS) {
+        try {
+            for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
+                List<Message> requestHistory = NativeToolLoopSupport.prepareToolRound(history, round);
+                Instant turnStartedAt = Instant.now();
+                ToolTurnResult turn = llm.nextToolTurn(system, requestHistory, callbacks);
+                observations.add(LlmObservation.of(input.getPhase().name(), round, turn,
+                        turnStartedAt, Instant.now()));
+                if (turn.isInfraAbort()) {
+                    log.error("REVIEW_INFRA_ABORT phase={} workspaceId={} round={} tool={} reason={}",
+                            input.getPhase(), input.getWorkspaceId(), round, turn.toolName(), turn.infraFailure());
+                    throw new IllegalStateException(turn.infraFailure());
+                }
+                if ("length".equalsIgnoreCase(turn.finishReason())) {
                     return finalizeReview(system, requestHistory, turn, observations, round, input.getPhase().name(),
-                            ProtocolFailureCode.LLM_CONTEXT_LIMIT);
+                            ProtocolFailureCode.LLM_FINISH_LENGTH);
                 }
-                continue;
-            }
-            if (turn.isFinalText()) {
-                log.info("review agent round {} finalResult phase={} workspaceId={}",
-                        round, input.getPhase(), input.getWorkspaceId());
-                try {
-                    return parser.parse(turn.text());
-                } catch (ReviewParseException malformed) {
-                    log.warn("review agent final output not valid JSON, repairing phase={} workspaceId={} round={} code={}",
-                            input.getPhase(), input.getWorkspaceId(), round, malformed.getCode());
-                    String repaired = repairJson(system, turn.text(), malformed.getMessage(), observations, round, input);
-                    if (repaired != null) {
-                        return parser.parse(repaired);
+                if (turn.continuesToolLoop()) {
+                    history = turn.history();
+                    if (round == MAX_TOOL_ROUNDS) {
+                        return finalizeReview(system, requestHistory, turn, observations, round, input.getPhase().name(),
+                                ProtocolFailureCode.LLM_CONTEXT_LIMIT);
                     }
-                    throw malformed;
+                    continue;
                 }
+                if (turn.isFinalText()) {
+                    log.info("review agent round {} finalResult phase={} workspaceId={}",
+                            round, input.getPhase(), input.getWorkspaceId());
+                    try {
+                        return parser.parse(turn.text());
+                    } catch (ReviewParseException malformed) {
+                        log.warn("review agent final output not valid JSON, repairing phase={} workspaceId={} round={} code={}",
+                                input.getPhase(), input.getWorkspaceId(), round, malformed.getCode());
+                        String repaired = repairJson(system, turn.text(), malformed.getMessage(), observations, round, input);
+                        if (repaired != null) {
+                            return parser.parse(repaired);
+                        }
+                        throw malformed;
+                    }
+                }
+                throw new ReviewParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
+                        "review tool turn returned no text, history or infra failure");
             }
-            throw new ReviewParseException(ProtocolFailureCode.LLM_TOOL_CALL_MALFORMED,
-                    "review tool turn returned no text, history or infra failure");
+            throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
+                    "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
+        } finally {
+            activatedSkillIds.addAll(activateSkillTool.activatedSkillIds());
         }
-        throw new ReviewParseException(ProtocolFailureCode.LLM_CONTEXT_LIMIT,
-                "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
     }
 
     private ReviewResult finalizeReview(String system, List<Message> requestHistory, ToolTurnResult trigger,

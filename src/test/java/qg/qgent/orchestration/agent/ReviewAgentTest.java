@@ -46,16 +46,17 @@ class ReviewAgentTest {
     private final LlmClient llm = mock(LlmClient.class);
     private final WorkspaceCodeAccess codeAccess = mock(WorkspaceCodeAccess.class);
     private final WorkspaceDiffAccess diffAccess = mock(WorkspaceDiffAccess.class);
+    private final ContextService contextService = mock(ContextService.class);
     private final UUID workspaceId = UUID.randomUUID();
 
     private ReviewAgent nativeAgent() {
         return new ReviewAgent(llm, codeAccess, diffAccess, AgentProtocol.nativeDefault(),
-                mock(ContextService.class), new ContextSearchProperties(10));
+                contextService, new ContextSearchProperties(10));
     }
 
     private ReviewAgent legacyAgent() {
         return new ReviewAgent(llm, codeAccess, diffAccess, new AgentProtocol("legacy"),
-                mock(ContextService.class), new ContextSearchProperties(10));
+                contextService, new ContextSearchProperties(10));
     }
 
     // ---------- 原生 Tool Calling（默认协议） ----------
@@ -101,6 +102,36 @@ class ReviewAgentTest {
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
         assertThat(outcome.getReviewResult().isSuccess()).isFalse();
         assertThat(outcome.getReviewResult().getFindings().get(0).getSeverity()).isEqualTo("MAJOR");
+    }
+
+    @Test
+    void nativeReviewRecordsActuallyActivatedSkillsForQualityRepair() {
+        UUID skillId = UUID.randomUUID();
+        qg.qgent.entity.SkillEntity skill = new qg.qgent.entity.SkillEntity();
+        skill.setName("README 规范");
+        skill.setContent("末行签名");
+        AgentInput input = input();
+        when(contextService.activateSkill(input.getActorId(), input.getProjectId(), skillId)).thenReturn(skill);
+        when(codeAccess.listFiles(any())).thenReturn(List.of("README.md"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        java.util.concurrent.atomic.AtomicInteger round = new java.util.concurrent.atomic.AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            if (round.getAndIncrement() == 0) {
+                @SuppressWarnings("unchecked")
+                List<org.springframework.ai.tool.ToolCallback> callbacks = invocation.getArgument(2);
+                String response = callbacks.stream().filter(callback -> "activate_skill".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow().call("{\"skillId\":\"" + skillId + "\"}");
+                assertThat(response).contains("\"ok\":true");
+                return toolTurn("activate_skill");
+            }
+            return finalTurn(reviewJson(false, "missing skill requirement",
+                    "[{\"file\":\"README.md\",\"severity\":\"MAJOR\",\"issue\":\"missing\",\"suggestion\":\"fix\"}]"));
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getActivatedSkillIds()).containsExactly(skillId);
     }
 
     @Test
@@ -293,6 +324,7 @@ class ReviewAgentTest {
     private AgentInput input() {
         AgentInput input = new AgentInput();
         input.setProjectId(UUID.randomUUID());
+        input.setActorId(UUID.randomUUID());
         input.setTaskId(UUID.randomUUID());
         input.setTaskTitle("sample task");
         input.setRequirement("implement a calculator");

@@ -133,6 +133,12 @@ public class CodingPromptBuilder {
             if (input.getRetryContext().getModifiedFiles() != null && !input.getRetryContext().getModifiedFiles().isEmpty()) {
                 sb.append("\n- modifiedFiles：").append(input.getRetryContext().getModifiedFiles());
             }
+            if (input.getRetryContext().getReviewActivatedSkillIds() != null
+                    && !input.getRetryContext().getReviewActivatedSkillIds().isEmpty()) {
+                sb.append("\n- reviewActivatedSkillIds：")
+                        .append(input.getRetryContext().getReviewActivatedSkillIds())
+                        .append("（正文将在本次运行重新校验后自动注入）");
+            }
         }
         appendPreviousCodingResult(sb, input.getCodingResult());
         PlanResult plan = input.getPlanResult();

@@ -228,6 +228,8 @@ class TaskOrchestratorTest {
         verify(fixture.taskRuns, never()).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(reviewer.getId()), anyString(), any(), any(), any());
         assertThat(fixture.updatedStatuses()).contains("FAILED");
+        assertThat(task.getFailureCode()).isEqualTo("QUALITY_REPAIR_STEP_UNAVAILABLE");
+        assertThat(task.getFailureReason()).contains("没有可写");
     }
 
     @Test
@@ -463,6 +465,34 @@ class TaskOrchestratorTest {
         assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly(null, failedReview);
         assertThat(fixture.feedbacksFor(OrchestrationPhase.TESTING)).containsExactly(null, null);
         assertThat(fixture.feedbacksFor(OrchestrationPhase.REVIEWING)).containsExactly(null, failedReview);
+        ArgumentCaptor<String> reviewRunMessage = ArgumentCaptor.forClass(String.class);
+        verify(fixture.taskRuns, atLeastOnce()).complete(any(), eq("FAILED"), isNull(), reviewRunMessage.capture());
+        assertThat(reviewRunMessage.getAllValues()).anySatisfy(message ->
+                assertThat(message).contains("已安排第1/3次质量修复"));
+    }
+
+    @Test
+    void reviewQualityFeedbackTargetsLastMutableCustomStep() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity customWriter = fixture.step(task, "SECURITY", 2);
+        customWriter.setExecutionMode("MUTATE");
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 3);
+        fixture.stubPlan(task, planner, List.of(planner, customWriter, reviewer));
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        failedReview.setReviewResult(reviewResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.TESTING), failedReview,
+                fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.feedbacksForStep(customWriter.getId())).containsExactly(null, failedReview);
+        assertThat(fixture.feedbacksForStep(reviewer.getId())).containsExactly(null, failedReview);
     }
 
     @Test

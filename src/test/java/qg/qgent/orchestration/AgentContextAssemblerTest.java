@@ -200,6 +200,22 @@ class AgentContextAssemblerTest {
                 .doesNotContain("private-path", failure.getFailureCode());
     }
 
+    @Test void retryContextCarriesOnlyReviewerActivatedSkillIdsWithoutBodies() {
+        TaskEntity task = task();
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        UUID skillId = UUID.randomUUID();
+        AgentRunOutcome reviewFailure = new AgentRunOutcome();
+        reviewFailure.setPhase(OrchestrationPhase.REVIEWING);
+        reviewFailure.setOutcome(RunOutcome.FAILED_QUALITY);
+        reviewFailure.setActivatedSkillIds(List.of(skillId, skillId));
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, reviewFailure,
+                UUID.randomUUID(), null, null, null, null);
+
+        assertThat(input.getRetryContext().getReviewActivatedSkillIds()).containsExactly(skillId);
+    }
+
     @Test void continuationTaskInjectsSourceDiffSummaryAtConversationHead() {
         TaskEntity task = task();
         task.setContinuationOfTaskId(UUID.randomUUID());

@@ -521,31 +521,39 @@ public class TaskOrchestrator {
             taskRunService.appendVerificationResult(run, outcome.getTestResult());
         }
         taskRunService.appendAgentObservations(run, outcome.getObservations());
-        // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
-        // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
-        artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
-        taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
-                outcome.getMessage());
-        markStepSettled(task, step, outcome.getOutcome());
+        // 先做纯状态机决策，再持久化本次 Run。这样 FAILED_QUALITY 仍保持真实失败事实，
+        // 同时可把“已进入修复闭环”明确写入用户可见的 Run 消息，避免前端把单次 Run 失败
+        // 误解为 Task 已经终止。
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
         // Test/Review 必须明确声明失败是否可由 Coding 修复。旧 Agent/测试构造若没有
         // 结构化结果时保留历史兼容行为；一旦有结果且 needsCodingFix=false，直接终止，
         // 避免把测试环境、命令配置或不可修复问题反复送回 Coding。
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
                 && !needsCodingFix(outcome)) {
+            ctx.recordQualityRepairUnavailable("QUALITY_REPAIR_NOT_REQUESTED",
+                    "质量检查未通过，但该检查结果标记为不能由开发步骤自动修复");
             decision = StateMachineDecision.failed();
         }
         // 只读任务可能没有任何可修复的 MUTATE 步骤。此时质量失败不能沿用
         // requeue 路由回到一个 VERIFY/TEST 节点，否则会重复验证同一事实直到耗尽循环。
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
                 && !hasMutableStep(ctx.steps)) {
+            ctx.recordQualityRepairUnavailable("QUALITY_REPAIR_STEP_UNAVAILABLE",
+                    "质量检查未通过，但当前计划没有可写的 MUTATE 开发步骤可用于修复");
             decision = StateMachineDecision.failed();
         }
+        ctx.recordOutcome(step.getId(), phase, outcome);
+        outcome.setMessage(runCompletionMessage(outcome.getMessage(), decision, ctx.counters));
+        // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
+        // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
+        artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
+        taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
+                outcome.getMessage());
+        markStepSettled(task, step, outcome.getOutcome());
         if (decision.getAction() == StateMachineDecision.Action.COMPLETE_SUCCESS
                 && hasFollowingStep(step, ctx.steps)) {
             decision = StateMachineDecision.advance(phase);
         }
-        ctx.recordOutcome(step.getId(), phase, outcome);
         String route;
         switch (decision.getAction()) {
             case ADVANCE -> {
@@ -585,6 +593,20 @@ public class TaskOrchestrator {
         }
         // 没有结构化质量结果时沿用状态机原有行为，兼容旧 Agent 与历史数据。
         return true;
+    }
+
+    /**
+     * 单次质量检查失败与 Task 终态失败是两件不同的事实。Run 仍然如实为 FAILED，
+     * 但已安排回修时必须让查询 Run 的客户端可识别后续会继续执行。
+     */
+    private String runCompletionMessage(String message, StateMachineDecision decision,
+                                        OrchestrationCounters counters) {
+        String base = message == null || message.isBlank() ? "质量检查未通过" : message;
+        if (decision.getAction() != StateMachineDecision.Action.REQUEUE_CODING) {
+            return base;
+        }
+        return base + "；已安排第" + counters.getQualityFixLoops() + "/"
+                + counters.getMaxQualityFixLoops() + "次质量修复，将回到可写开发步骤并重新验证";
     }
 
     /**
@@ -854,6 +876,10 @@ public class TaskOrchestrator {
             // 失败 run 未携带稳定失败码（如质量循环中的 Test/Review FAILED_QUALITY 无码）时，
             // 按任务级语义收敛：质量修复循环已耗尽 → 明确「质量循环耗尽」，而不是误导性的
             // TASK_FINALIZATION_FAILED（交付准备失败）。
+            if ((code == null || code.isBlank()) && ctx.qualityRepairUnavailable != null) {
+                code = ctx.qualityRepairUnavailable.code();
+                reason = ctx.qualityRepairUnavailable.reason();
+            }
             if (code == null || code.isBlank()) {
                 code = ctx.counters.getQualityFixLoops() > 0 ? "TASK_QUALITY_LOOPS_EXHAUSTED"
                         : "TASK_FINALIZATION_FAILED";
@@ -1300,6 +1326,11 @@ public class TaskOrchestrator {
         /** 当前 TaskStep 跨 TaskRun 继承的 patch 失败计数。 */
         private final Map<String, Integer> patchFailureCounts = new LinkedHashMap<>();
         /**
+         * 质量失败本应回修但无法路由到可写步骤时的明确终止原因。它优先于循环计数，
+         * 避免把“根本没有修复入口”误报成“多次修复后仍失败”。
+         */
+        private QualityRepairUnavailable qualityRepairUnavailable;
+        /**
          * 本次 orchestrate 快照的群聊/Skill/Memory 上下文，跨节点复用；组装失败时为 null（不阻断）。
          */
         private GroupContext groupContext;
@@ -1362,20 +1393,28 @@ public class TaskOrchestrator {
             infraFeedback.remove(stepId);
         }
 
+        private void recordQualityRepairUnavailable(String code, String reason) {
+            qualityRepairUnavailable = new QualityRepairUnavailable(code, reason);
+        }
+
         private UUID repairCodingStepId() {
             if (steps == null) {
                 return null;
             }
-            UUID codingStepId = null;
+            UUID mutableStepId = null;
             for (TaskStepEntity step : steps) {
-                if ("DEVELOPER".equalsIgnoreCase(step.getRole())) {
-                    codingStepId = step.getId();
+                if (TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole())
+                        == TaskStepExecutionMode.MUTATE) {
+                    mutableStepId = step.getId();
                 }
             }
-            return codingStepId;
+            return mutableStepId;
         }
 
         private record QualityFeedback(UUID sourceStepId, UUID repairCodingStepId, AgentRunOutcome outcome) {
+        }
+
+        private record QualityRepairUnavailable(String code, String reason) {
         }
     }
 }

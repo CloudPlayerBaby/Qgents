@@ -185,15 +185,17 @@ public class CodingAgent implements Agent {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         log.info("coding agent workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
-        List<Message> history = new ArrayList<>();
-        history.add(buildUserMessage(input, files));
-        String system = promptBuilder.buildSystem(true);
         CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer, input.getAllowedPaths(),
                 input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts());
         tools.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId());
         ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
                 input.getProjectId());
+        String qualityRepairSkills = QualityRepairSkillContext.preloadAndRender(activateSkillTool,
+                input.getRetryContext());
+        List<Message> history = new ArrayList<>();
+        history.add(buildUserMessage(input, files, qualityRepairSkills));
+        String system = promptBuilder.buildSystem(true);
         ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
                 input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
         List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
@@ -253,11 +255,14 @@ public class CodingAgent implements Agent {
      * 读取失败、越权、越预算或类型不支持的附件降级为文本引用（ContextPromptRenderer 已渲染
      * [图片附件]/[文件附件]），不影响编码主流程与成功收敛。
      */
-    private UserMessage buildUserMessage(AgentInput input, List<String> files) {
+    private UserMessage buildUserMessage(AgentInput input, List<String> files, String qualityRepairSkills) {
         String text = promptBuilder.buildUser(input, files);
         AttachmentMediaLoader.Result attachments =
                 attachmentMediaLoader.load(input.getActorId(), input.getProjectId(), input.getConversation());
         String finalText = attachments.extraText().isEmpty() ? text : text + attachments.extraText();
+        if (qualityRepairSkills != null && !qualityRepairSkills.isBlank()) {
+            finalText += qualityRepairSkills;
+        }
         UserMessage.Builder builder = UserMessage.builder().text(finalText);
         if (!attachments.media().isEmpty()) {
             builder.media(attachments.media());
