@@ -21,6 +21,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -240,6 +241,7 @@ class AgentServiceLifecycleTest {
 
         assertEquals("TEAM", response.getVisibility());
         assertEquals(owner.toString(), response.getReviewedBy());
+        assertNotNull(response.getReviewedAt());
         verify(agents).updateById(any(AgentEntity.class));
     }
 

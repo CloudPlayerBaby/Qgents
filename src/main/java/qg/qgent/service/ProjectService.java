@@ -293,8 +293,13 @@ public class ProjectService {
             throw invalid("项目角色仅支持 PROJECT_ADMIN 或 PROJECT_MEMBER");
         }
         ProjectMemberEntity target = requireProjectMember(projectId, userId);
-        // 项目行锁串行化角色变更，避免两个请求同时降级最后一名 Admin。
-        protectLastAdmin(projectId, target, request.getRole());
+        // 管理员设置后不可撤销：降级一律拒绝；已生效的相同角色请求幂等返回，不重复写库。
+        if ("PROJECT_ADMIN".equals(target.getRole()) && !"PROJECT_ADMIN".equals(request.getRole())) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_ADMIN_IMMUTABLE", "项目管理员不可降级（设置后不可撤销）");
+        }
+        if ("PROJECT_ADMIN".equals(target.getRole())) {
+            return new ProjectMemberResponse(userId.toString(), target.getRole());
+        }
         memberMapper.updateRole(projectId, userId, request.getRole());
         return new ProjectMemberResponse(userId.toString(), request.getRole());
     }
@@ -305,8 +310,10 @@ public class ProjectService {
         access.requireProjectAdminAnyState(project, actor);
         requireActive(project);
         ProjectMemberEntity target = requireProjectMember(projectId, userId);
-        // Team Owner 兜底不计入项目 Admin，项目内始终保留至少一名 Admin。
-        protectLastAdmin(projectId, target, null);
+        // 管理员不可被其他管理员移除（含移除自己）。
+        if ("PROJECT_ADMIN".equals(target.getRole())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "PROJECT_ADMIN_CANNOT_REMOVE_MANAGER", "项目管理员不可被移除");
+        }
         groupMemberMapper.deleteByProjectAndUser(projectId, userId);
         memberMapper.deleteByProjectAndUser(projectId, userId);
         return new ProjectMemberResponse(userId.toString(), target.getRole());
@@ -324,13 +331,6 @@ public class ProjectService {
             projectMapper.updateById(project);
         }
         return response(project, "PROJECT_ADMIN");
-    }
-
-    private void protectLastAdmin(UUID projectId, ProjectMemberEntity target, String nextRole) {
-        if ("PROJECT_ADMIN".equals(target.getRole()) && !"PROJECT_ADMIN".equals(nextRole)
-                && memberMapper.countAdmins(projectId) <= 1) {
-            throw conflict("LAST_PROJECT_ADMIN_REQUIRED", "最后一名 Project Admin 不能被降级或移除");
-        }
     }
 
     private void insertMember(UUID projectId, UUID userId, String role) {
