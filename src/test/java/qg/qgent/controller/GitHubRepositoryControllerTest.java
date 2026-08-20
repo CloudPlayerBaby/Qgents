@@ -13,6 +13,7 @@ import qg.qgent.dto.CreateRemoteBranchRequest;
 import qg.qgent.dto.GitHubInstallationResponse;
 import qg.qgent.dto.GitHubInstallationUrlResponse;
 import qg.qgent.dto.GitHubRepositoryResponse;
+import qg.qgent.dto.NewProjectRepositoryRequest;
 import qg.qgent.dto.ProjectRepositoryResponse;
 import qg.qgent.dto.RemoteBranchResponse;
 import qg.qgent.dto.UpdateProjectRepositoryRequest;
@@ -137,6 +138,26 @@ class GitHubRepositoryControllerTest {
 
         assertNotNull(response);
         assertEquals("owner/repo", response.data().getFullName());
+    }
+
+    @Test
+    void createProjectRepository() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        when(currentActor.currentUserId()).thenReturn(userId);
+
+        NewProjectRepositoryRequest body = new NewProjectRepositoryRequest();
+        body.setName("new-repository");
+        body.setDisplayName("新仓库");
+        ProjectRepositoryResponse result = new ProjectRepositoryResponse();
+        result.setFullName("owner/new-repository");
+        when(service.createProjectRepository(userId, projectId, body)).thenReturn(result);
+
+        ApiResponse<ProjectRepositoryResponse> response = controller.createProjectRepository(projectId, body, request);
+
+        assertNotNull(response);
+        assertEquals("owner/new-repository", response.data().getFullName());
+        verify(service).createProjectRepository(userId, projectId, body);
     }
 
     @Test

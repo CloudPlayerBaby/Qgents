@@ -63,7 +63,12 @@ public class TestRunExecutionService {
             String status = response != null && "PASSED".equals(response.getStatus()) ? "PASSED" : "FAILED";
             if (completeTest(run, token, status, summary)) cleanupSnapshot(run);
         } catch (RuntimeException failure) {
-            if (completeTest(run, token, "FAILED", failureSummary(failure))) cleanupSnapshot(run);
+            Map<String, Object> summary = failureSummary(failure);
+            if ("SANDBOX_WORKER_UNAVAILABLE".equals(failureCode(failure))) {
+                // 传输层失败（Worker 未部署/未启动）时给出可操作提示，而不是笼统的基础设施描述。
+                summary.put("message", "Sandbox Worker 服务不可用，请确认 Worker 是否已部署启动");
+            }
+            if (completeTest(run, token, "FAILED", summary)) cleanupSnapshot(run);
         }
     }
 

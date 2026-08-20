@@ -60,7 +60,8 @@ class TestRunControllerTest {
         TestRunResponse response = new TestRunResponse(id(runId), id(projectId), id(UUID.randomUUID()),
                 "feat/login-api", List.of(id(UUID.randomUUID())), "QUEUED",
                 summary("QUEUED", null, List.of()),
-                id(userId), "2026-08-15T02:00:00Z");
+                id(userId), "2026-08-15T02:00:00Z",
+                "2026-08-15T02:00:00Z", null, "2026-08-15T02:00:00Z");
         when(testRunService.createTestRun(any(), any(), any())).thenReturn(response);
 
         mockMvc.perform(post("/api/v1/projects/{projectId}/test-runs", projectId)
@@ -82,7 +83,8 @@ class TestRunControllerTest {
                 "feat/login-api", List.of(id(testsetId)), "PASSED",
                 summary("PASSED", "0123456789012345678901234567890123456789",
                         List.of(result(id(testsetId), "PASSED", 0, 69, null))),
-                id(userId), "2026-08-15T02:00:00Z");
+                id(userId), "2026-08-15T02:00:00Z",
+                "2026-08-15T02:00:00Z", "2026-08-15T02:00:05Z", "2026-08-15T02:00:05Z");
         when(testRunService.testRun(any(), any(), any())).thenReturn(response);
 
         mockMvc.perform(get("/api/v1/projects/{projectId}/test-runs/{runId}", projectId, runId))

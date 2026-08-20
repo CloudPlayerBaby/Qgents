@@ -24,4 +24,10 @@ public class TestRunResponse {
     private Map<String, Object> summary;
     private String createdBy;
     private String createdAt;
+    /** 开始执行时间（ISO-8601，UTC）；QUEUED 时为空。 */
+    private String startedAt;
+    /** 结束执行时间（ISO-8601，UTC）；非终态时为空。 */
+    private String finishedAt;
+    /** 最后更新时间（ISO-8601，UTC）。 */
+    private String updatedAt;
 }

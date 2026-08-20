@@ -4,6 +4,7 @@ import io.swagger.v3.oas.annotations.Hidden;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
@@ -124,6 +125,18 @@ public class GitHubRepositoryController {
     public ApiResponse<ProjectRepositoryResponse> bindProjectRepository(@PathVariable UUID projectId,
                                                                         @Valid @RequestBody BindProjectRepositoryRequest body, HttpServletRequest request) {
         return ok(service.bindProjectRepository(currentActor.currentUserId(), projectId, body), request);
+    }
+
+    /**
+     * 项目级新建并绑定仓库。创建仓库属于团队外部资源操作，当前仅 Team Owner 可用；
+     * 建仓固定带初始提交，避免把空仓库带入 Task/Workspace 链路。
+     */
+    @PostMapping("/projects/{projectId}/repositories/new")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<ProjectRepositoryResponse> createProjectRepository(
+            @PathVariable UUID projectId, @Valid @RequestBody NewProjectRepositoryRequest body,
+            HttpServletRequest request) {
+        return ok(service.createProjectRepository(currentActor.currentUserId(), projectId, body), request);
     }
 
     /**
