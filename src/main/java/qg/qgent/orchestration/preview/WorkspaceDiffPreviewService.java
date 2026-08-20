@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.WorkspaceDiffPreviewFileResponse;
+import qg.qgent.dto.WorkspaceDiffPreviewFileDetailResponse;
 import qg.qgent.dto.WorkspaceDiffPreviewResponse;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.WorkspaceDiffPreviewEntity;
@@ -16,6 +17,8 @@ import qg.qgent.entity.WorkspaceDiffPreviewRevisionEntity;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.WorkspaceDiffPreviewMapper;
 import qg.qgent.mapper.WorkspaceDiffPreviewRevisionMapper;
+import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.orchestration.tool.GitDiffResult;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
 import qg.qgent.service.DiffSnapshotStorage;
@@ -55,6 +58,7 @@ public class WorkspaceDiffPreviewService {
     private final DiffSnapshotStorage snapshots;
     private final WorkspaceDiffPreviewMapper previewMapper;
     private final WorkspaceDiffPreviewRevisionMapper revisionMapper;
+    private final WorkspaceRepositoryMapper workspaceRepositories;
     private final ProjectAccessService access;
     private final GroupService groups;
     private final TaskMapper tasks;
@@ -64,6 +68,7 @@ public class WorkspaceDiffPreviewService {
                                        DiffSnapshotStorage snapshots,
                                        WorkspaceDiffPreviewMapper previewMapper,
                                        WorkspaceDiffPreviewRevisionMapper revisionMapper,
+                                       WorkspaceRepositoryMapper workspaceRepositories,
                                        ProjectAccessService access, GroupService groups, TaskMapper tasks,
                                        @Value("${app.worker.enabled:false}") boolean workerEnabled) {
         this.diffAccess = diffAccess;
@@ -71,6 +76,7 @@ public class WorkspaceDiffPreviewService {
         this.snapshots = snapshots;
         this.previewMapper = previewMapper;
         this.revisionMapper = revisionMapper;
+        this.workspaceRepositories = workspaceRepositories;
         this.access = access;
         this.groups = groups;
         this.tasks = tasks;
@@ -216,6 +222,33 @@ public class WorkspaceDiffPreviewService {
     }
 
     /**
+     * 查询指定 Preview revision 中单个仓库文件的 patch，避免客户端解析聚合 patch。
+     */
+    public WorkspaceDiffPreviewFileDetailResponse file(UUID projectId, UUID taskId, UUID actor,
+                                                        Long revision, UUID repositoryId, String path) {
+        if (repositoryId == null || path == null || path.isBlank() || !validRelativePath(path)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "repositoryId 和 path 参数不合法");
+        }
+        access.requireProjectMember(projectId, actor);
+        TaskEntity task = requireTask(projectId, taskId);
+        requireGroupVisible(projectId, task, actor);
+        WorkspaceRepositoryEntity repository = workspaceRepositories.selectByWorkspace(task.getWorkspaceId())
+                .stream()
+                .filter(value -> repositoryId.equals(value.getProjectRepositoryId()))
+                .findFirst()
+                .orElseThrow(this::notFound);
+        WorkspaceDiffPreviewRevisionEntity rev = requireRevision(projectId, taskId, task.getWorkspaceId(), revision);
+        String normalizedPath = path.replace('\\', '/');
+        String patch = loadQuietly(rev.getSnapshotKey());
+        DiffPatchFileParser.ParsedFile parsed = DiffPatchFileParser.find(patch, repository.getWorkspacePath(), normalizedPath)
+                .orElseThrow(this::notFound);
+        WorkspaceDiffPreviewFileResponse summary = parsed.file();
+        return new WorkspaceDiffPreviewFileDetailResponse(rev.getRevision(), repositoryId.toString(), summary.getPath(),
+                summary.getChangeType(), summary.getAdditions(), summary.getDeletions(), summary.getBinary(),
+                summary.getBinary() ? null : parsed.patch());
+    }
+
+    /**
      * 校验 Task 归属：任务属于当前项目且已准备 Workspace，否则 404 防枚举。
      */
     private TaskEntity requireTask(UUID projectId, UUID taskId) {
@@ -300,6 +333,13 @@ public class WorkspaceDiffPreviewService {
 
     private String iso(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC).toString();
+    }
+
+    private boolean validRelativePath(String path) {
+        String normalized = path.replace('\\', '/');
+        return !normalized.startsWith("/") && !normalized.matches("^[A-Za-z]:/.*")
+                && java.util.Arrays.stream(normalized.split("/"))
+                .noneMatch(".."::equals);
     }
 
     /**
