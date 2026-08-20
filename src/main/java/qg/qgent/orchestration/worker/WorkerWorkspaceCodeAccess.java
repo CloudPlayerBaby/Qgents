@@ -140,6 +140,11 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
 
     /**
      * 递归列出仓库内相对路径，跳过 .git/target/node_modules/.idea/build 与点文件。
+     * <p>
+     * 空目录也会被返回（目录本身作为一条路径）：Git 不跟踪空目录，Reviewer 的文件清单
+     * 和 Coding 的目标判定若只依赖「目录下有文件」就无法感知已创建的空目录，导致误判
+     * REVIEW_ASSERTION_TARGET_NOT_FOUND。把空目录自身返回后，目标判定
+     * （精确命中或作为目录前缀存在）即可识别目录已创建。
      */
     private List<String> listRecursive(UUID workspaceId, UUID repositoryId, String dir) {
         List<String> files = new ArrayList<>();
@@ -166,7 +171,13 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
                 if (isIgnoredDirectory(name)) {
                     continue;
                 }
-                files.addAll(listRecursive(workspaceId, repositoryId, child));
+                List<String> nested = listRecursive(workspaceId, repositoryId, child);
+                if (nested.isEmpty()) {
+                    // 空目录：没有可跟踪文件，目录自身作为路径返回，供目标判定/文件清单感知。
+                    files.add(child);
+                } else {
+                    files.addAll(nested);
+                }
             } else {
                 files.add(child);
             }
