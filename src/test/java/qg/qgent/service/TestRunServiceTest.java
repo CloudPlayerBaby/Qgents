@@ -90,8 +90,27 @@ class TestRunServiceTest {
         assertEquals(1, response.data().size());
         assertEquals("RUNNING", response.data().getFirst().getStatus());
         assertEquals(first.getId().toString(), response.data().getFirst().getId());
+        assertEquals(true, response.data().getFirst().getDurationMs() >= 0);
         assertEquals(null, response.page().getNextCursor());
         assertEquals(false, response.page().getHasMore());
+    }
+
+    @Test
+    void derivesTestRunDurationOnTheServerAndNeverReturnsNegativeDuration() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TestRunEntity run = new TestRunEntity();
+        run.setId(runId); run.setProjectId(projectId); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setStatus("PASSED");
+        run.setStartedAt(LocalDateTime.of(2026, 8, 19, 8, 0));
+        run.setFinishedAt(LocalDateTime.of(2026, 8, 19, 8, 0, 5));
+        when(testRuns.selectById(runId)).thenReturn(run);
+
+        TestRunResponse response = service.testRun(projectId, runId, UUID.randomUUID());
+
+        assertEquals(5_000L, response.getDurationMs());
+
+        run.setFinishedAt(LocalDateTime.of(2026, 8, 19, 7, 59, 59));
+        assertEquals(null, service.testRun(projectId, runId, UUID.randomUUID()).getDurationMs());
     }
 
     @Test

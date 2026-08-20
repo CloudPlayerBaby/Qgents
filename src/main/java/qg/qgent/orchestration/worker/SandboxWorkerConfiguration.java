@@ -12,7 +12,8 @@ import qg.qgent.config.PerformanceMetrics;
 /**
  * Worker 客户端装配：启用 {@link SandboxWorkerProperties} 并基于 {@link RestClient#builder()}
  * 静态工厂构建 {@link SandboxWorkerClient}（与 {@code GitHubConfiguration} 的既有约定一致，
- * 不依赖额外的 RestClient.Builder Bean）。客户端为惰性 Bean，未启用 Worker 端口时不产生外部调用。
+ * 不依赖额外的 RestClient.Builder Bean）。调用鉴权只取决于是否配置服务间令牌，不能因开关遗漏
+ * Bearer Token 而产生难以定位的 401。
  * <p>
  * 为 RestClient 配置连接/响应超时（来自 {@code app.worker.connect-timeout/response-timeout}）：
  * Worker 请求挂起时会在超时内转为 {@code SANDBOX_WORKER_UNAVAILABLE}，避免长期占住编排线程，
@@ -30,7 +31,7 @@ public class SandboxWorkerConfiguration {
         requestFactory.setReadTimeout((int) properties.getResponseTimeout().toMillis());
         RestClient.Builder builder = RestClient.builder().baseUrl(properties.getBaseUrl())
                 .requestFactory(requestFactory);
-        if (properties.isEnabled() && properties.getBackendServiceToken() != null
+        if (properties.getBackendServiceToken() != null
                 && !properties.getBackendServiceToken().isBlank()) {
             builder.defaultHeaders(headers -> headers.setBearerAuth(properties.getBackendServiceToken()));
         }

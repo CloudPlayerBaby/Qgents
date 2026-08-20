@@ -16,6 +16,7 @@ import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitResolveRequest;
 import qg.qgent.orchestration.worker.WorkerGitResolveResponse;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -672,7 +673,7 @@ public class TestRunService {
         return new TestRunResponse(id(run.getId()), id(run.getProjectId()), id(run.getProjectRepositoryId()),
                 run.getRef(), run.getTestsetIds(), run.getStatus(), run.getSummary(),
                 id(run.getCreatedBy()), iso(run.getCreatedAt()),
-                iso(run.getStartedAt()), iso(run.getFinishedAt()), iso(run.getUpdatedAt()));
+                iso(run.getStartedAt()), iso(run.getFinishedAt()), iso(run.getUpdatedAt()), durationMs(run));
     }
 
     private DryRunResponse toDryRun(DryRunEntity run) {
@@ -686,7 +687,22 @@ public class TestRunService {
                 id(run.getProjectRepositoryId()), run.getTestsetIds() == null ? List.of() : run.getTestsetIds(),
                 id(run.getTaskId()), run.getRef() == null ? run.getExecutionSourceRef() : run.getRef(),
                 run.getStatus(), id(run.getCreatedBy()), iso(run.getCreatedAt()), iso(run.getStartedAt()),
-                iso(run.getFinishedAt()));
+                iso(run.getFinishedAt()), durationMs(run));
+    }
+
+    /**
+     * 测试运行的时间均由数据库 UTC 时间戳派生，避免客户端把 UTC 字符串误按本地时区相减。
+     * RUNNING 返回查询瞬间的快照；出现时钟异常时不返回负值。
+     */
+    private Long durationMs(TestRunEntity run) {
+        if (run.getStartedAt() == null) {
+            return null;
+        }
+        LocalDateTime end = run.getFinishedAt() == null ? LocalDateTime.now(ZoneOffset.UTC) : run.getFinishedAt();
+        if (end.isBefore(run.getStartedAt())) {
+            return null;
+        }
+        return Duration.between(run.getStartedAt(), end).toMillis();
     }
 
     private DryRunListItemResponse toDryRunListItem(DryRunEntity run) {

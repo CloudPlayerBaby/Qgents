@@ -46,6 +46,7 @@ class TestRunExecutionServiceTest {
         item.setExitCode(0);
         item.setDurationMs(69);
         item.setFailureCode(null);
+        item.setMessage("endpoint=https://worker.internal/test token=secret-value");
         WorkerTestExecutionResponse response = new WorkerTestExecutionResponse();
         response.setStatus("PASSED");
         response.setResolvedHeadCommit(run.getExecutionSourceRef());
@@ -65,7 +66,8 @@ class TestRunExecutionServiceTest {
                         && "PASSED".equals(row.get("status"))
                         && Integer.valueOf(0).equals(row.get("exitCode"))
                         && Long.valueOf(69L).equals(row.get("durationMs"))
-                        && row.get("failureCode") == null));
+                        && row.get("failureCode") == null
+                        && "endpoint=[endpoint omitted] token=[redacted]".equals(row.get("message"))));
     }
 
     @Test
@@ -77,14 +79,39 @@ class TestRunExecutionServiceTest {
         when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
         when(testRuns.selectById(runId)).thenReturn(run);
         when(worker.executeTests(any())).thenThrow(
-                new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE", "worker down"));
+                new SandboxWorkerTransportException("WORKER_CONNECTION_REFUSED", "Sandbox Worker 拒绝连接"));
         when(testRuns.complete(eq(runId), anyString(), eq("FAILED"), any())).thenReturn(1);
 
         service.executeTestRun(runId);
 
         verify(testRuns).complete(eq(runId), anyString(), eq("FAILED"),
                 argThat(summary -> "SANDBOX_WORKER_UNAVAILABLE".equals(summary.get("failureCode"))
-                        && summary.get("message") != null));
+                        && "WORKER_CONNECTION_REFUSED".equals(summary.get("workerDiagnosticCode"))
+                        && "EXECUTE_TESTS".equals(summary.get("failureStage"))
+                        && String.valueOf(summary.get("message")).contains("端口映射")));
+    }
+
+    @Test
+    void clampsUnexpectedNegativeWorkerItemDuration() {
+        UUID runId = UUID.randomUUID(), testsetId = UUID.randomUUID();
+        TestRunEntity run = new TestRunEntity();
+        run.setId(runId); run.setProjectId(UUID.randomUUID()); run.setProjectRepositoryId(UUID.randomUUID());
+        run.setExecutionSourceRef("0123456789012345678901234567890123456789"); run.setExecutionSnapshot(List.of());
+        when(testRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(testRuns.selectById(runId)).thenReturn(run);
+        WorkerTestExecutionItemResponse item = new WorkerTestExecutionItemResponse();
+        item.setTestsetId(testsetId); item.setStatus("FAILED"); item.setDurationMs(-1L);
+        WorkerTestExecutionResponse response = new WorkerTestExecutionResponse();
+        response.setStatus("FAILED"); response.setResolvedHeadCommit(run.getExecutionSourceRef()); response.setResults(List.of(item));
+        when(worker.executeTests(any())).thenReturn(response);
+        when(testRuns.complete(eq(runId), anyString(), eq("FAILED"), any())).thenReturn(1);
+
+        service.executeTestRun(runId);
+
+        verify(testRuns).complete(eq(runId), anyString(), eq("FAILED"),
+                argThat(summary -> summary.get("results") instanceof List<?> results
+                        && results.getFirst() instanceof Map<?, ?> row
+                        && Long.valueOf(0L).equals(row.get("durationMs"))));
     }
 
     @Test
@@ -206,6 +233,7 @@ class TestRunExecutionServiceTest {
 
         verify(testRuns).complete(eq(runId), anyString(), eq("FAILED"),
                 argThat(summary -> "SANDBOX_WORKER_UNAVAILABLE".equals(summary.get("failureCode"))
+                        && "PREPARE_SNAPSHOT".equals(summary.get("failureStage"))
                         && summary.get("message") != null));
         verify(worker, never()).executeTests(any());
     }

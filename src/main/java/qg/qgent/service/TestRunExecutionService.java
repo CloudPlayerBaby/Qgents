@@ -54,19 +54,24 @@ public class TestRunExecutionService {
         if (token == null) return;
         TestRunEntity run = testRuns.selectById(runId);
         publishTest(run);
+        String failureStage = "PREPARE_SNAPSHOT";
         try {
             prepareSnapshot(run);
+            failureStage = "RESOLVE_EXECUTION_REF";
             String expectedHeadCommit = resolveExecutionRef(run);
+            failureStage = "EXECUTE_TESTS";
             WorkerTestExecutionResponse response = worker.executeTests(testRequest(run, expectedHeadCommit));
+            failureStage = "VALIDATE_TEST_CONTEXT";
             requirePassedTestContext(expectedHeadCommit, response);
             Map<String, Object> summary = testSummary(response);
             String status = response != null && "PASSED".equals(response.getStatus()) ? "PASSED" : "FAILED";
             if (completeTest(run, token, status, summary)) cleanupSnapshot(run);
         } catch (RuntimeException failure) {
             Map<String, Object> summary = failureSummary(failure);
+            summary.put("failureStage", failureStage);
             if ("SANDBOX_WORKER_UNAVAILABLE".equals(failureCode(failure))) {
-                // 传输层失败（Worker 未部署/未启动）时给出可操作提示，而不是笼统的基础设施描述。
-                summary.put("message", "Sandbox Worker 服务不可用，请确认 Worker 是否已部署启动");
+                // 保留稳定客户端错误码，同时输出不含端点、凭据或原始异常的可操作诊断。
+                summary.put("message", workerUnavailableMessage(failure));
             }
             if (completeTest(run, token, "FAILED", summary)) cleanupSnapshot(run);
         }
@@ -216,9 +221,10 @@ public class TestRunExecutionService {
             item.put("testsetId", result.getTestsetId());
             item.put("status", result.getStatus());
             item.put("exitCode", result.getExitCode());
-            item.put("durationMs", result.getDurationMs());
+            // Worker 正常使用单调时钟；仍对异常响应防御性钳制，避免负耗时进入用户结果。
+            item.put("durationMs", Math.max(0L, result.getDurationMs()));
             item.put("failureCode", result.getFailureCode());
-            item.put("message", result.getMessage());
+            item.put("message", safeDiagnosticDetail(result.getMessage()));
             return item;
         }).toList());
         return summary;
@@ -352,12 +358,36 @@ public class TestRunExecutionService {
         String code = failureCode(failure);
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("failureCode", code);
-        String message = failure == null ? null : ExecutionContentSanitizer.sanitize(failure.getMessage());
+        if (failure instanceof SandboxWorkerTransportException transport) {
+            summary.put("workerDiagnosticCode", transport.diagnosticCode());
+        }
+        String message = failure == null ? null : safeDiagnosticDetail(failure.getMessage());
         if (message == null || message.isBlank()) {
             message = ExecutionContentSanitizer.infrastructureDescription(code);
         }
         summary.put("message", message);
         return summary;
+    }
+
+    private String workerUnavailableMessage(RuntimeException failure) {
+        if (failure instanceof SandboxWorkerTransportException transport) {
+            return switch (transport.diagnosticCode()) {
+                case "WORKER_CONNECTION_REFUSED" -> "Sandbox Worker 拒绝连接，请检查容器端口映射、防火墙和服务是否已启动";
+                case "WORKER_DNS_FAILED" -> "无法解析 Sandbox Worker 服务地址，请检查 Worker 服务地址配置";
+                case "WORKER_NETWORK_UNREACHABLE" -> "无法到达 Sandbox Worker 所在网络，请检查主后端到 Worker 的路由和防火墙";
+                case "WORKER_RESPONSE_TIMEOUT" -> "等待 Sandbox Worker 响应超时，请检查 Worker 负载和请求超时配置";
+                default -> "Sandbox Worker 网络通信失败，请检查服务连通性";
+            };
+        }
+        return "Sandbox Worker 服务不可用，请检查服务状态和服务间鉴权配置";
+    }
+
+    private String safeDiagnosticDetail(String value) {
+        String sanitized = ExecutionContentSanitizer.sanitizeDiagnosticDetail(value);
+        if (sanitized == null || sanitized.isBlank()) {
+            return null;
+        }
+        return sanitized.length() <= 500 ? sanitized : sanitized.substring(0, 500);
     }
 
     private Duration totalTimeout(List<Map<String, Object>> snapshot) {

@@ -24,4 +24,6 @@ public class TestRunListItemResponse {
     private String createdAt;
     private String startedAt;
     private String finishedAt;
+    /** 后端基于 UTC 生命周期时间计算的运行时长（毫秒）；尚未开始或时间异常时为空。 */
+    private Long durationMs;
 }

@@ -30,4 +30,6 @@ public class TestRunResponse {
     private String finishedAt;
     /** 最后更新时间（ISO-8601，UTC）。 */
     private String updatedAt;
+    /** 后端基于 UTC 生命周期时间计算的运行时长（毫秒）；尚未开始或时间异常时为空。 */
+    private Long durationMs;
 }

@@ -13,6 +13,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.net.ConnectException;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,6 +22,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.ResourceAccessException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -272,6 +274,16 @@ class SandboxWorkerClientTest {
         assertEquals(HttpStatus.CONFLICT, exception.status());
         assertEquals("执行编号已经存在", exception.getMessage());
         server.verify();
+    }
+
+    @Test
+    void classifiesConnectionFailureWithoutLeakingEndpointOrRawException() {
+        SandboxWorkerTransportException failure = SandboxWorkerClient.transportFailure(
+                new ResourceAccessException("connect to http://private-worker:8091 failed", new ConnectException("refused")));
+
+        assertEquals("SANDBOX_WORKER_UNAVAILABLE", failure.code());
+        assertEquals("WORKER_CONNECTION_REFUSED", failure.diagnosticCode());
+        assertEquals("Sandbox Worker 拒绝连接", failure.getMessage());
     }
 
     @Test

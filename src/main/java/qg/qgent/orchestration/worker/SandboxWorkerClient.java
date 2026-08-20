@@ -10,7 +10,12 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import qg.qgent.api.ApiException;
 import qg.qgent.config.PerformanceMetrics;
+import qg.qgent.orchestration.ExecutionContentSanitizer;
 
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -318,8 +323,10 @@ public class SandboxWorkerClient {
                 metrics.stop(timer, "qgents.worker.request.duration", "worker_http", "failed");
                 metrics.increment("qgents.worker.request.total", "worker_http", "failed");
             }
-            throw new ApiException(HttpStatus.BAD_GATEWAY, "SANDBOX_WORKER_UNAVAILABLE",
-                    "Sandbox worker is unavailable: " + exception.getMessage());
+            SandboxWorkerTransportException failure = transportFailure(exception);
+            log.warn("sandbox worker transport failed diagnosticCode={} exceptionType={}",
+                    failure.diagnosticCode(), rootCause(exception).getClass().getSimpleName());
+            throw failure;
         }
     }
 
@@ -328,7 +335,7 @@ public class SandboxWorkerClient {
      */
     private ApiException workerError(RestClientResponseException exception) {
         String code = "SANDBOX_WORKER_ERROR";
-        String message = exception.getMessage();
+        String message = "Sandbox Worker 返回了无法处理的错误响应";
         try {
             String body = exception.getResponseBodyAsString();
             if (body != null && !body.isBlank()) {
@@ -343,9 +350,49 @@ public class SandboxWorkerClient {
                 }
             }
         } catch (Exception ignored) {
-            // 错误体非预期结构时退回通用错误码与原始消息。
+            // 错误体非预期结构时退回通用错误码与安全消息。
         }
         HttpStatus status = HttpStatus.resolve(exception.getStatusCode().value());
-        return new ApiException(status == null ? HttpStatus.BAD_GATEWAY : status, code, message);
+        return new ApiException(status == null ? HttpStatus.BAD_GATEWAY : status, code,
+                safeDiagnosticMessage(message));
+    }
+
+    static SandboxWorkerTransportException transportFailure(RestClientException exception) {
+        Throwable root = rootCause(exception);
+        String diagnosticCode;
+        String message;
+        if (root instanceof UnknownHostException) {
+            diagnosticCode = "WORKER_DNS_FAILED";
+            message = "无法解析 Sandbox Worker 服务地址";
+        } else if (root instanceof ConnectException) {
+            diagnosticCode = "WORKER_CONNECTION_REFUSED";
+            message = "Sandbox Worker 拒绝连接";
+        } else if (root instanceof NoRouteToHostException) {
+            diagnosticCode = "WORKER_NETWORK_UNREACHABLE";
+            message = "无法到达 Sandbox Worker 所在网络";
+        } else if (root instanceof SocketTimeoutException) {
+            diagnosticCode = "WORKER_RESPONSE_TIMEOUT";
+            message = "等待 Sandbox Worker 响应超时";
+        } else {
+            diagnosticCode = "WORKER_TRANSPORT_FAILED";
+            message = "与 Sandbox Worker 的网络通信失败";
+        }
+        return new SandboxWorkerTransportException(diagnosticCode, message);
+    }
+
+    private static Throwable rootCause(Throwable failure) {
+        Throwable current = failure;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    private static String safeDiagnosticMessage(String message) {
+        String sanitized = ExecutionContentSanitizer.sanitizeDiagnosticDetail(message);
+        if (sanitized == null || sanitized.isBlank()) {
+            return "Sandbox Worker 返回了无法处理的错误响应";
+        }
+        return sanitized.length() <= 500 ? sanitized : sanitized.substring(0, 500);
     }
 }
