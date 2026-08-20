@@ -1,6 +1,8 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -18,6 +20,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.config.MdcTaskDecorator;
+import qg.qgent.config.PerformanceMetrics;
 import qg.qgent.entity.EventEntity;
 import qg.qgent.entity.NotificationEventEntity;
 import qg.qgent.entity.ProjectEntity;
@@ -52,6 +55,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -109,6 +113,8 @@ public class EventService {
     private final UserMapper userMapper;
     private final TeamMapper teamMapper;
     private final TransactionTemplate eventTransaction;
+    private final PerformanceMetrics metrics;
+    private final AtomicInteger activeSseConnections = new AtomicInteger();
 
     @Autowired
     public EventService(EventMapper eventMapper, ProjectAccessService projectAccess,
@@ -117,7 +123,7 @@ public class EventService {
                         ProjectMemberMapper projectMemberMapper, TeamMemberMapper teamMemberMapper,
                         RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
                         ProjectMapper projectMapper, UserMapper userMapper, TeamMapper teamMapper,
-                        PlatformTransactionManager transactionManager) {
+                        PlatformTransactionManager transactionManager, PerformanceMetrics metrics) {
         this.eventMapper = eventMapper;
         this.projectAccess = projectAccess;
         this.notificationEventMapper = notificationEventMapper;
@@ -132,6 +138,7 @@ public class EventService {
         this.userMapper = userMapper;
         this.teamMapper = teamMapper;
         this.eventTransaction = transactionManager == null ? null : new TransactionTemplate(transactionManager);
+        this.metrics = metrics;
         // SSE 泵线程执行期间保留提交线程的 MDC（requestId），便于按请求串联日志
         MdcTaskDecorator mdcDecorator = new MdcTaskDecorator();
         AtomicInteger seq = new AtomicInteger(1);
@@ -142,6 +149,11 @@ public class EventService {
         };
         // 每连接占用一个轮询线程；规模扩大后应改为共享调度器或推模式
         this.executor = Executors.newFixedThreadPool(8, factory);
+        if (metrics != null) {
+            Gauge.builder("qgents.sse.connections", activeSseConnections, AtomicInteger::get)
+                    .description("当前活跃的项目 SSE 连接数")
+                    .register(metrics.registry());
+        }
     }
 
     /**
@@ -154,7 +166,8 @@ public class EventService {
                         RequirementGroupMapper groupMapper, GroupMemberMapper groupMemberMapper,
                         ProjectMapper projectMapper) {
         this(eventMapper, projectAccess, notificationEventMapper, teamEventMapper, publisher, realtimeHub,
-                projectMemberMapper, teamMemberMapper, groupMapper, groupMemberMapper, projectMapper, null, null, null);
+                projectMemberMapper, teamMemberMapper, groupMapper, groupMemberMapper, projectMapper,
+                null, null, null, null);
     }
 
     /** 保留测试与既有直接构造调用的完整构造器，不启用生产事务重试。 */
@@ -166,7 +179,7 @@ public class EventService {
                         ProjectMapper projectMapper, UserMapper userMapper, TeamMapper teamMapper) {
         this(eventMapper, projectAccess, notificationEventMapper, teamEventMapper, publisher, realtimeHub,
                 projectMemberMapper, teamMemberMapper, groupMapper, groupMemberMapper, projectMapper,
-                userMapper, teamMapper, null);
+                userMapper, teamMapper, null, null);
     }
 
     /**
@@ -532,10 +545,21 @@ public class EventService {
         long cursor = lastEventId != null ? lastEventId : eventMapper.maxSequence(projectId);
 
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        activeSseConnections.incrementAndGet();
+        AtomicBoolean connectionClosed = new AtomicBoolean();
 
-        emitter.onTimeout(() -> log.info("SSE timeout, projectId={}, cursor={}", projectId, cursor));
-        emitter.onError(e -> log.info("SSE error, projectId={}: {}", projectId, e.getMessage()));
-        emitter.onCompletion(() -> log.info("SSE completed, projectId={}, cursor={}", projectId, cursor));
+        emitter.onTimeout(() -> {
+            closeSseConnection(connectionClosed);
+            log.info("SSE timeout, projectId={}, cursor={}", projectId, cursor);
+        });
+        emitter.onError(e -> {
+            closeSseConnection(connectionClosed);
+            log.info("SSE error, projectId={}: {}", projectId, e.getMessage());
+        });
+        emitter.onCompletion(() -> {
+            closeSseConnection(connectionClosed);
+            log.info("SSE completed, projectId={}, cursor={}", projectId, cursor);
+        });
 
         // 群成员可见性（契约 2026-08-17 严格收紧）：SSE 仅推送用户可见群（主群 + 已加入需求群）的事件
         Set<UUID> visibleGroups = new HashSet<>();
@@ -545,7 +569,7 @@ public class EventService {
                 .forEach(group -> visibleGroups.add(group.getId()));
         visibleGroups.addAll(groupMemberMapper.selectGroupIdsByUser(projectId, userId));
 
-        executor.execute(() -> pump(emitter, projectId, cursor, visibleGroups));
+        executor.execute(() -> pump(emitter, projectId, cursor, visibleGroups, connectionClosed));
         return emitter;
     }
 
@@ -554,12 +578,17 @@ public class EventService {
      * 游标本地推进，成功发送的事件序号即新的续传点；不可见群的事件跳过发送但同样推进游标
      * （不可见事件无需重试，避免重复拉取同一批）。
      */
-    private void pump(SseEmitter emitter, UUID projectId, long startCursor, Set<UUID> visibleGroups) {
+    private void pump(SseEmitter emitter, UUID projectId, long startCursor, Set<UUID> visibleGroups,
+                      AtomicBoolean connectionClosed) {
         long cursor = startCursor;
         LocalDateTime lastHeartbeat = LocalDateTime.now(ZoneOffset.UTC);
         try {
             while (true) {
+                Timer.Sample pollTimer = metrics == null ? null : metrics.start();
                 List<EventEntity> events = eventMapper.listAfter(projectId, cursor, BATCH_SIZE);
+                if (metrics != null) {
+                    metrics.stop(pollTimer, "qgents.sse.poll.duration", "event_poll", "succeeded");
+                }
                 for (EventEntity event : events) {
                     cursor = event.getSequenceNo();
                     if (event.getRequirementGroupId() == null
@@ -583,6 +612,8 @@ public class EventService {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            closeSseConnection(connectionClosed);
         }
     }
 
@@ -591,6 +622,9 @@ public class EventService {
             emitter.send(event);
             return true;
         } catch (IOException | IllegalStateException e) {
+            if (metrics != null) {
+                metrics.increment("qgents.sse.send.failures", "event_send", "failed");
+            }
             // 客户端断开/连接失效（含 AsyncRequestNotUsableException，其亦为 IOException 子类）：
             // 立即结束该 emitter，泵线程退出，等待客户端按 Last-Event-ID 重连
             completeQuietly(emitter);
@@ -603,6 +637,12 @@ public class EventService {
             emitter.complete();
         } catch (Exception ignored) {
             // 连接已断时 complete 自身也可能抛错，忽略
+        }
+    }
+
+    private void closeSseConnection(AtomicBoolean connectionClosed) {
+        if (connectionClosed.compareAndSet(false, true)) {
+            activeSseConnections.decrementAndGet();
         }
     }
 
