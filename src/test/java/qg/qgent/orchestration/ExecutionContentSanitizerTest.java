@@ -23,4 +23,17 @@ class ExecutionContentSanitizerTest {
         assertThat(ExecutionContentSanitizer.userFailureRetryable("UNKNOWN_INTERNAL_CODE")).isFalse();
         assertThat(ExecutionContentSanitizer.userFailureRetryable(null)).isFalse();
     }
+
+    @Test
+    void keepsGitBranchNotFoundAsStablePublicCode() {
+        assertThat(ExecutionContentSanitizer.stableInfrastructureCode("GIT_BRANCH_NOT_FOUND"))
+                .isEqualTo("GIT_BRANCH_NOT_FOUND");
+        assertThat(ExecutionContentSanitizer.publicFailureCode("GIT_BRANCH_NOT_FOUND"))
+                .isEqualTo("GIT_BRANCH_NOT_FOUND");
+        assertThat(ExecutionContentSanitizer.userFailureRetryable("GIT_BRANCH_NOT_FOUND")).isTrue();
+        assertThat(ExecutionContentSanitizer.userFailureDescription("GIT_BRANCH_NOT_FOUND"))
+                .contains("基线分支");
+        // 未知内部码不应再被误映射为 GIT_BRANCH_NOT_FOUND
+        assertThat(ExecutionContentSanitizer.publicFailureCode("UNKNOWN_INTERNAL_CODE")).isNull();
+    }
 }

@@ -205,6 +205,8 @@ public class TaskDisplayService {
 
     /**
      * TaskRun 尚未创建时仍返回启动失败原因；旧任务没有持久化原因则保持 null。
+     * GIT_BRANCH_NOT_FOUND 等带上下文（仓库/分支）的失败优先使用启动时持久化的
+     * failureReason，保证详情页展示「修改基线分支后重试」的具体信息。
      */
     private TaskStatusReason taskStatusReason(TaskEntity task) {
         if (task == null || !"FAILED".equals(task.getStatus())
@@ -212,8 +214,13 @@ public class TaskDisplayService {
             return null;
         }
         String failureCode = ExecutionContentSanitizer.publicFailureCode(task.getFailureCode());
+        String summary = ExecutionContentSanitizer.userFailureDescription(failureCode);
+        if (failureCode != null && "GIT_BRANCH_NOT_FOUND".equals(failureCode)
+                && task.getFailureReason() != null && !task.getFailureReason().isBlank()) {
+            summary = task.getFailureReason();
+        }
         return new TaskStatusReason("STARTUP_FAILED", failureCode,
-                "任务启动失败", ExecutionContentSanitizer.userFailureDescription(failureCode),
+                "任务启动失败", summary,
                 ExecutionContentSanitizer.userFailureRetryable(failureCode),
                 iso(task.getFailureOccurredAt()));
     }
