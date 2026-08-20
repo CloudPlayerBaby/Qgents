@@ -1,6 +1,8 @@
 package qg.qgent.orchestration.llm;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openai.errors.OpenAIServiceException;
+import com.openai.core.http.Headers;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -88,9 +90,8 @@ public class SpringAiChatLlmClient implements LlmClient {
                     Duration.ofNanos(System.nanoTime() - started).toMillis(),
                     finishReason, responseSha256);
         } catch (RuntimeException exception) {
-            log.error("LLM_CALL_FAILED messages={} promptChars={} media={} category={} durationMs={}",
-                    springMessages.size(), promptChars, media.size(), exception.getClass().getSimpleName(),
-                    Duration.ofNanos(System.nanoTime() - started).toMillis(), exception);
+            logLlmFailure("LLM_CALL_FAILED", springMessages.size(), promptChars, media.size(), 0,
+                    exception, started);
             throw exception;
         }
         if ("length".equalsIgnoreCase(finishReason)) {
@@ -122,9 +123,7 @@ public class SpringAiChatLlmClient implements LlmClient {
                     Duration.ofNanos(System.nanoTime() - started).toMillis(),
                     finishReason, responseSha256);
         } catch (RuntimeException exception) {
-            log.error("LLM_CALL_FAILED messages={} promptChars={} category={} durationMs={}",
-                    messages.size(), promptChars, exception.getClass().getSimpleName(),
-                    Duration.ofNanos(System.nanoTime() - started).toMillis(), exception);
+            logLlmFailure("LLM_CALL_FAILED", messages.size(), promptChars, 0, 0, exception, started);
             throw exception;
         }
         if ("length".equalsIgnoreCase(finishReason)) {
@@ -148,10 +147,8 @@ public class SpringAiChatLlmClient implements LlmClient {
         try {
             response = chatModel.call(new Prompt(springMessages, options));
         } catch (RuntimeException exception) {
-            log.error("LLM_TOOL_CALL_FAILED messages={} tools={} promptChars={} category={} durationMs={}",
-                    springMessages.size(), tools == null ? 0 : tools.size(), promptChars,
-                    exception.getClass().getSimpleName(),
-                    Duration.ofNanos(System.nanoTime() - started).toMillis(), exception);
+            logLlmFailure("LLM_TOOL_CALL_FAILED", springMessages.size(), promptChars, 0,
+                    tools == null ? 0 : tools.size(), exception, started);
             throw exception;
         }
         String finishReason = finishReasonOf(response);
@@ -187,7 +184,14 @@ public class SpringAiChatLlmClient implements LlmClient {
         promptChars += finalizationInstruction.length();
 
         long started = System.nanoTime();
-        ChatResponse response = chatModel.call(new Prompt(springMessages, jsonOptions()));
+        ChatResponse response;
+        try {
+            response = chatModel.call(new Prompt(springMessages, jsonOptions()));
+        } catch (RuntimeException exception) {
+            logLlmFailure("LLM_FINALIZATION_FAILED", springMessages.size(), promptChars, 0, 0,
+                    exception, started);
+            throw exception;
+        }
         String finishReason = finishReasonOf(response);
         AssistantMessage output = response.getResult().getOutput();
         String text = output == null ? null : output.getText();
@@ -351,6 +355,73 @@ public class SpringAiChatLlmClient implements LlmClient {
         }
         String firstLine = throwable.getMessage().strip().lines().findFirst().orElse("tool execution failed");
         return firstLine.length() <= 200 ? firstLine : firstLine.substring(0, 200);
+    }
+
+    /**
+     * 将 OpenAI SDK 的服务端错误和 IO/超时错误展开记录，避免只留下无诊断价值的
+     * {@code Request failed}。响应 body 只保留短摘要，且不记录请求内容或密钥。
+     */
+    private void logLlmFailure(String event, int messages, int promptChars, int media, int tools,
+                               RuntimeException exception, long started) {
+        OpenAIServiceException serviceException = findServiceException(exception);
+        int status = serviceException == null ? 0 : serviceException.statusCode();
+        String requestId = serviceException == null ? null
+                : firstHeader(serviceException.headers(), "x-request-id", "request-id");
+        String retryAfter = serviceException == null ? null
+                : firstHeader(serviceException.headers(), "retry-after");
+        String body = serviceException == null ? null : truncate(String.valueOf(serviceException.body()), 1000);
+        String code = serviceException == null ? null : serviceException.code().orElse(null);
+        String type = serviceException == null ? null : serviceException.type().orElse(null);
+        String param = serviceException == null ? null : serviceException.param().orElse(null);
+        Throwable root = rootCause(exception);
+        log.error("{} messages={} tools={} media={} promptChars={} category={} status={} "
+                        + "upstreamRequestId={} upstreamCode={} upstreamType={} upstreamParam={} "
+                        + "retryAfter={} upstreamBody={} rootCause={} rootMessage={} durationMs={}",
+                event, messages, tools, media, promptChars, exception.getClass().getSimpleName(), status,
+                requestId, code, type, param, retryAfter, body, root.getClass().getSimpleName(),
+                safeMessage(root), Duration.ofNanos(System.nanoTime() - started).toMillis(), exception);
+    }
+
+    private OpenAIServiceException findServiceException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof OpenAIServiceException serviceException) {
+                return serviceException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    private Throwable rootCause(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    private String firstHeader(Headers headers, String... names) {
+        if (headers == null || headers.isEmpty()) {
+            return null;
+        }
+        for (String actual : headers.names()) {
+            for (String expected : names) {
+                if (expected.equalsIgnoreCase(actual)) {
+                    List<String> values = headers.values(actual);
+                    return values.isEmpty() ? null : truncate(values.get(0), 200);
+                }
+            }
+        }
+        return null;
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String oneLine = value.replaceAll("[\\r\\n]+", " ").strip();
+        return oneLine.length() <= maxLength ? oneLine : oneLine.substring(0, maxLength) + "...";
     }
 
     private Message toSpringMessage(LlmMessage message) {
