@@ -9785,3 +9785,72 @@ GET /api/v1/projects/{projectId}/dry-runs
 - 客户端不得根据 Planner 文本、`repo-1/repo-2` 路径或项目默认仓库自行猜测当前仓库；
 - 实时消息、历史消息、SSE/WebSocket 载荷使用同一字段语义；
 - 字段不得包含宿主机绝对路径、Token、凭据、命令输出或完整文件列表。
+
+---
+
+## 39. 手动发起任务的群聊提示（2026-08-24）
+
+手动发起任务（`POST /api/v1/projects/{projectId}/tasks`，非 @Agent/消息触发）后，服务端以**编排助手 Agent** 身份在需求群插入一句 TEXT 文本消息，提示发起者任务已开始。**不新增群聊消息类型**，复用既有 `TEXT` 类型与 `mentions` 结构。
+
+### 39.1 消息内容
+
+```json
+{
+  "type": "TEXT",
+  "content": { "text": "@发起者显示名 您创建的任务已开始" },
+  "mentions": [
+    { "type": "USER", "id": "发起者用户ID" }
+  ],
+  "clientMessageId": "task-started-<taskId>"
+}
+```
+
+- 发送者为团队**编排助手** Agent（`senderType=AGENT`，名称"编排助手"），团队查不到编排助手时跳过插入并记录日志，不阻断任务创建。
+- 消息文本中的 `@发起者显示名` 取自用户 `displayName`；`mentions` 携带发起者，前端据此高亮 @ 提及。
+- `clientMessageId = "task-started-<taskId>"` 固定幂等：同一任务重复触发只插入一次。
+- 触发条件：任务 `triggerMessageId` 为空（用户手动发起）。@Agent 自动触发与显式消息触发（`triggerMessageId` 非空）不重复插入，避免与 @Agent 消息本身重复提示。
+
+### 39.2 触发时机与失败语义
+
+- 任务创建事务提交后异步执行（`TaskStartedNoticeListener`，`@Async` + `AFTER_COMMIT`），不占任务创建事务与群行锁。
+- 消息插入失败只记日志，不影响任务创建与后续编排。
+- 前端通过既有 `message.created` SSE 实时收到该消息，无需额外轮询。
+
+---
+
+## 40. 任务启动失败错误码修复：GIT_BRANCH_NOT_FOUND（2026-08-24）
+
+任务启动阶段（Sandbox 会话准备、Git Store 同步前）解析基线分支时，若仓库在 GitHub 上不存在指定分支，服务端返回稳定的 `GIT_BRANCH_NOT_FOUND` 错误，**不再降级为泛化的 `FAILED_INFRASTRUCTURE`**。
+
+### 40.1 错误码与用户可读信息
+
+| 字段 | 值 |
+|---|---|
+| `failureCode` | `GIT_BRANCH_NOT_FOUND` |
+| `failureReason` | `仓库 CloudPlayerBaby/test01 不存在基线分支 develop，请在项目仓库配置中选择真实存在的分支后重试` |
+| `failureRetryable` | `true` |
+| HTTP 语义 | 启动失败落 Task `FAILED`，`TaskStatusReason.code = STARTUP_FAILED` |
+
+- `GIT_BRANCH_NOT_FOUND` 已加入 `ExecutionContentSanitizer` 公开白名单：`stableInfrastructureCode` / `publicFailureCode` / `userFailureRetryable` / `userFailureDescription` 均识别该码，未定义内部码不会被误映射。
+- 启动失败卡片（TASK_STATUS `status=FAILED`）与任务详情 `statusReason` 均携带仓库名与基线分支名；`summary` 只含脱敏可读文案，不回显 GitHub 地址、Token 或异常堆栈。
+
+### 40.2 前端消费
+
+任务详情页在 `statusReason.failureCode === "GIT_BRANCH_NOT_FOUND"` 时展示：
+
+```text
+任务无法启动
+仓库：CloudPlayerBaby/test01
+基线分支：develop
+原因：仓库 CloudPlayerBaby/test01 不存在基线分支 develop，请在项目仓库配置中选择真实存在的分支后重试
+请修改基线分支后重新发起任务。
+[重新发起任务]
+```
+
+- 「重新发起任务」跳回需求群（`/app/projects/{projectId}/req-chat/{groupId}`），由用户在发起弹窗中选择真实存在的基线分支后重新创建任务。
+- 仓库名与基线分支名优先取自任务详情 `repositories[]`（`fullName` / `baseRef`）；数据缺失时回退展示 `statusReason.summary` 中的文案。
+
+### 40.3 触发路径与预检时机
+
+- 校验发生在任务异步编排启动的 Sandbox 会话准备阶段（`SandboxSessionManager.acquire` → GitHub 分支解析），**早于任何 TaskRun 创建与 Agent 执行**；失败直接落 Task `FAILED`，不会先进入执行再失败。
+- 结构化错误详情（仓库 `fullName` 与 `branch`）随 `ApiException.details` 传递，仅用于服务端拼装用户可读文案，不进入 SSE 或公开日志。
