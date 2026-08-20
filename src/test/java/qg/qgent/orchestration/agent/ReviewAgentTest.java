@@ -152,6 +152,66 @@ class ReviewAgentTest {
     }
 
     @Test
+    void nativeMissingAcceptanceTargetCarriesStableFailureCode() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        // 验收目标（DOM 选择器等）经核实不存在：Review 不得臆造目标存在，必须输出
+        // REVIEW_ASSERTION_TARGET_NOT_FOUND 稳定码且 needsCodingFix=true 回到 Coding 补齐。
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":false,\"summary\":\"验收目标不存在\","
+                        + "\"findings\":[{\"file\":\"src/main/resources/template.html\",\"severity\":\"MAJOR\","
+                        + "\"issue\":\"页面缺少任务要求的 #submit 按钮\",\"suggestion\":\"补齐该按钮\"}],"
+                        + "\"suggestions\":[],\"needsCodingFix\":true,"
+                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND\"}}"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getReviewResult().isSuccess()).isFalse();
+        assertThat(outcome.getReviewResult().getFailureCode()).isEqualTo("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+        assertThat(outcome.getReviewResult().isNeedsCodingFix()).isTrue();
+        // 稳定失败码必须传播到 outcome，供 Run/任务级失败语义区分「验收目标缺失」。
+        assertThat(outcome.getFailureCode()).isEqualTo("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+    }
+
+    @Test
+    void nativeUnknownFailureCodeIsIgnoredNotLeaked() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn("{\"finalResult\":{\"success\":false,\"summary\":\"boom\","
+                        + "\"findings\":[{\"file\":\"src/main/java/X.java\",\"severity\":\"MAJOR\","
+                        + "\"issue\":\"missing check\",\"suggestion\":\"add check\"}],"
+                        + "\"suggestions\":[],\"needsCodingFix\":true,"
+                        + "\"failureCode\":\"MODEL_INVENTED_INTERNAL_CODE\"}}"));
+
+        AgentRunOutcome outcome = nativeAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        // 白名单外的失败码被忽略，避免把模型臆造的内部细节作为公开码外泄。
+        assertThat(outcome.getReviewResult().getFailureCode()).isNull();
+        assertThat(outcome.getFailureCode()).isNull();
+    }
+
+    @Test
+    void legacyMissingAcceptanceTargetCarriesStableFailureCode() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"finalResult\":{\"success\":false,\"summary\":\"目标不存在\","
+                        + "\"findings\":[{\"file\":\"src/main/java/X.java\",\"severity\":\"MAJOR\","
+                        + "\"issue\":\"接口方法缺失\",\"suggestion\":\"补齐\"}],"
+                        + "\"suggestions\":[],\"needsCodingFix\":true,"
+                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND\"}}");
+
+        AgentRunOutcome outcome = legacyAgent().run(input());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getReviewResult().getFailureCode()).isEqualTo("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+        assertThat(outcome.getFailureCode()).isEqualTo("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+    }
+
+    @Test
     void nativeMinorOnlyRespectsLlmSuccess() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));

@@ -107,6 +107,11 @@ public class ReviewAgent implements Agent {
             outcome.setOutcome(success ? RunOutcome.SUCCEEDED
                     : (review.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
             outcome.setMessage(success ? review.getSummary() : firstFinding(review));
+            // 稳定失败码（如 REVIEW_ASSERTION_TARGET_NOT_FOUND）随 Run 落库，供任务级失败语义
+            // 区分「验收目标缺失」等确定性原因，避免回退到笼统的审查未通过。
+            if (!success && review.getFailureCode() != null && !review.getFailureCode().isBlank()) {
+                outcome.setFailureCode(review.getFailureCode());
+            }
             outcome.setObservations(observations);
             outcome.setActivatedSkillIds(activatedSkillIds);
             log.info("review agent done phase={} workspaceId={} outcome={} observations={}",
@@ -199,7 +204,8 @@ public class ReviewAgent implements Agent {
                                 + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,"
                                 + "\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\",\"issue\":\"问题\","
                                 + "\"suggestion\":\"建议\"}],\"suggestions\":[\"建议\"],"
-                                + "\"needsCodingFix\":true|false}"));
+                                + "\"needsCodingFix\":true|false,"
+                                + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND（可选，仅验收目标缺失时输出）\"}"));
         observations.add(LlmObservation.of(phase, round + 1, finalization,
                 finalizationStartedAt, Instant.now()));
         if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
@@ -219,12 +225,14 @@ public class ReviewAgent implements Agent {
                 "{\"success\":true|false,\"summary\":\"审查摘要\","
                         + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
                         + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
-                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false}" );
+                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false,"
+                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND（可选）\"}" );
         String repaired = JsonRepairSupport.repairOnce(llm, system, raw, errorMessage,
                 "{\"success\":true|false,\"summary\":\"审查摘要\","
                         + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
                         + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
-                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false}");
+                        + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false,"
+                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND（可选）\"}");
         String repairedSha = repaired == null ? null
                 : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
         observations.add(new LlmObservation(input.getPhase().name(), round + 1,

@@ -110,6 +110,28 @@ class TaskStatusReasonFactoryTest {
         assertThat(reason.getSummary()).isEqualTo("任务多次未通过质量验证，修复循环已耗尽");
     }
 
+    @Test
+    void stableQualityCodesMapToControlledText() {
+        // TEST_COMMAND_NOT_FOUND：项目未配置测试命令，稳定码公开，summary 用受控文案而非模型原文。
+        TaskEntity noTest = task("FAILED", "TEST_COMMAND_NOT_FOUND", "模型内部细节不应外泄");
+        TaskStatusReason noTestReason = TaskStatusReasonFactory.taskFailure(noTest, true);
+
+        assertThat(noTestReason).isNotNull();
+        assertThat(noTestReason.getFailureCode()).isEqualTo("TEST_COMMAND_NOT_FOUND");
+        assertThat(noTestReason.getSummary()).contains("未检测到受支持的项目/测试命令");
+        assertThat(noTestReason.getSummary()).doesNotContain("模型内部细节");
+
+        // REVIEW_ASSERTION_TARGET_NOT_FOUND：审查验收目标缺失，稳定码公开且可重试。
+        TaskEntity missingTarget = task("FAILED", "REVIEW_ASSERTION_TARGET_NOT_FOUND", "不应回显的模型原文");
+        TaskStatusReason missingTargetReason = TaskStatusReasonFactory.taskFailure(missingTarget, true);
+
+        assertThat(missingTargetReason).isNotNull();
+        assertThat(missingTargetReason.getFailureCode()).isEqualTo("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+        assertThat(missingTargetReason.getSummary()).contains("验收目标");
+        assertThat(missingTargetReason.getSummary()).doesNotContain("模型原文");
+        assertThat(missingTargetReason.isRetryable()).isTrue();
+    }
+
     private TaskEntity task(String status, String failureCode, String failureReason) {
         TaskEntity task = new TaskEntity();
         task.setId(UUID.randomUUID());
