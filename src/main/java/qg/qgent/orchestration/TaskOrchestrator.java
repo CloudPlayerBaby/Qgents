@@ -190,6 +190,11 @@ public class TaskOrchestrator {
             throw new IllegalStateException("Task " + taskId + " is already being orchestrated in this process");
         }
         try {
+            // 先物化 Planner 步骤再获取 Sandbox。这样即使 Sandbox/Worker 在规划调用前失败，
+            // failStartup 也能关联一个真实的 taskStepId，创建可查询的失败 Planner Run。
+            if (task.getPlanMaterializedAt() == null) {
+                planMaterialization.ensurePlannerStep(task);
+            }
             sandboxSessionManager.acquire(task.getId(), task.getProjectId(), task.getWorkspaceId());
             // 群聊/Skill/Memory 上下文快照：一次 orchestrate 组装一次，跨节点复用（失败不阻断）
             ctx.groupContext = contextAssembler.buildGroupContext(task);
@@ -237,7 +242,7 @@ public class TaskOrchestrator {
             // 启动/图执行阶段的意外失败（Sandbox Worker 不可达、建图失败等）必须落 FAILED 终态并
             // 通知用户，不允许任务无声卡死在初始状态；requireTask/requireStartable 的幂等护栏
             // 异常在 try 之外，继续外抛由监听器吞掉。
-            failStartup(task, e);
+            failStartup(task, ctx, e);
         } finally {
             // 只允许本次 Task 清理自己领取的会话。若 acquire 因另一个 Task 正持有同一
             // Workspace 而失败，不能在 finally 中误销毁对方的 Sandbox 或释放对方租约。
@@ -276,6 +281,10 @@ public class TaskOrchestrator {
     private boolean runPlanBootstrap(TaskEntity task, TaskStepEntity planner, TaskExecutionContext ctx) {
         Optional<Agent> agent = agentRegistry.resolve(planner.getAssignedAgentId(), "PLANNER");
         if (agent.isEmpty()) {
+            TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), planner.getId(),
+                    planner.getRole(), planner.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
+            taskRunService.markRunning(run.getId());
+            taskRunService.complete(run.getId(), "FAILED", "AGENT_NOT_FOUND", "Planner Agent 不可用");
             markStepSettled(task, planner, RunOutcome.FAILED);
             finishTaskIfStartable(task, ctx, StateMachineDecision.Action.COMPLETE_FAILED);
             return false;
@@ -283,12 +292,17 @@ public class TaskOrchestrator {
         while (true) {
             sendPlanningStartedCard(task);
             markStepRunning(task, planner);
+            TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), planner.getId(),
+                    planner.getRole(), planner.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
+            taskRunService.markRunning(run.getId());
+            ctx.lastRunId = run.getId();
             // 规划期心跳：刷新任务 updated_at，防止恢复调度器把长规划任务误判为卡死续跑
             taskMapper.touchUpdatedAt(task.getId());
             AgentInput input = contextAssembler.assemble(task, planner, OrchestrationPhase.PLAN,
                     ctx.feedbackFor(planner.getId()), null,
                     null, null, null, ctx.groupContext);
             AgentRunOutcome outcome = safeExecute(agent.get(), OrchestrationPhase.PLAN, input);
+            taskRunService.appendAgentObservations(run, outcome.getObservations());
             if (outcome.getPlanResult() != null) {
                 ctx.planResult = outcome.getPlanResult();
             }
@@ -299,10 +313,13 @@ public class TaskOrchestrator {
                 try {
                     planMaterialization.materialize(task, outcome.getPlanResult());
                 } catch (ApiException e) {
+                    taskRunService.complete(run.getId(), "FAILED", stableFailureCode(e), e.getMessage());
                     markStepSettled(task, planner, RunOutcome.FAILED);
                     failTaskIfStartable(task, e);
                     return false;
                 }
+                artifactService.createRunArtifact(task, run, planner, "PLAN", runArtifactSummary(planner, outcome));
+                taskRunService.complete(run.getId(), "SUCCEEDED");
                 TaskEntity materialized = taskMapper.selectById(task.getId());
                 sendAgentCard(materialized == null ? task : materialized, "task-" + task.getId(),
                         "PENDING", "PLAN", "执行计划已生成", outcome.getPlanResult());
@@ -311,12 +328,25 @@ public class TaskOrchestrator {
                 return true;
             }
             if (decision.getAction() == StateMachineDecision.Action.RETRY_PHASE) {
+                taskRunService.complete(run.getId(), "FAILED", stableFailureCode(outcome), outcome.getMessage());
+                markStepSettled(task, planner, outcome.getOutcome());
                 continue;
             }
+            taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
+                    outcome.getMessage());
             markStepSettled(task, planner, outcome.getOutcome());
             finishTaskIfStartable(task, ctx, decision.getAction());
             return false;
         }
+    }
+
+    private String stableFailureCode(RuntimeException failure) {
+        return ExecutionContentSanitizer.stableInfrastructureCode(
+                failure instanceof ApiException api ? api.code() : null);
+    }
+
+    private String stableFailureCode(AgentRunOutcome outcome) {
+        return outcome == null ? null : outcome.getFailureCode();
     }
 
     /**
@@ -325,7 +355,7 @@ public class TaskOrchestrator {
      * （CANCELLING/CANCELLED）或已终态的任务被误改；随后走统一终态链路
      * （落库 + task.updated 事件 + TASK_FAILED 通知）并以编排助手身份回群失败卡片。
      */
-    private void failStartup(TaskEntity task, RuntimeException cause) {
+    private void failStartup(TaskEntity task, TaskExecutionContext ctx, RuntimeException cause) {
         log.error("orchestration aborted by unexpected failure, taskId={}", task.getId(), cause);
         TaskEntity latest = taskMapper.selectById(task.getId());
         if (latest == null || !STARTABLE_TASK_STATUSES.contains(latest.getStatus())) {
@@ -334,6 +364,28 @@ public class TaskOrchestrator {
             return;
         }
         StartupFailure failure = startupFailure(cause);
+        // Sandbox 获取、上下文组装等异常可能发生在 Planner 调用前。仍然创建一条失败的
+        // Planner Run，保证 diagnostics 能通过 latestFailedRun 返回可追踪的根因。
+        if (ctx != null && ctx.lastRunId != null) {
+            TaskRunEntity run = taskRunService.findById(ctx.lastRunId);
+            if (run != null && "RUNNING".equals(run.getStatus())) {
+                taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
+            }
+        } else {
+            List<TaskStepEntity> plannerSteps = stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
+                    .eq(TaskStepEntity::getTaskId, task.getId())
+                    .eq(TaskStepEntity::getRole, "PLANNER")
+                    .orderByAsc(TaskStepEntity::getSequenceNo)
+                    .last("LIMIT 1"));
+            TaskStepEntity planner = plannerSteps == null || plannerSteps.isEmpty() ? null : plannerSteps.get(0);
+            if (planner != null) {
+                TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), planner.getId(),
+                        planner.getRole(), planner.getAssignedAgentId(), task.getCreatedBy(),
+                        ctx == null ? null : ctx.retryOf);
+                taskRunService.markRunning(run.getId());
+                taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
+            }
+        }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         latest.setFailureCode(failure.code());
         latest.setFailureReason(failure.reason());

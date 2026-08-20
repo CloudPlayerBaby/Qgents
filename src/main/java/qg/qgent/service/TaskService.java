@@ -47,6 +47,9 @@ public class TaskService {
     private final DefaultAgentProvisioner defaultAgents;
     private final ContextService contextService;
     private final TaskContextSnapshotCodec contextSnapshotCodec;
+    /** Optional to preserve lightweight domain tests; production injects both mappers. */
+    private DiffReviewBatchMapper diffReviewBatches;
+    private DiffMapper taskDiffs;
     /** 续作前的工作分支 MR 锁定门禁；纯领域单测可不注入。 */
     private WorkBranchDevelopmentGuard developmentGuard;
 
@@ -82,6 +85,12 @@ public class TaskService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setDevelopmentGuard(WorkBranchDevelopmentGuard developmentGuard) {
         this.developmentGuard = developmentGuard;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setDiffReviewStateMappers(DiffReviewBatchMapper diffReviewBatches, DiffMapper taskDiffs) {
+        this.diffReviewBatches = diffReviewBatches;
+        this.taskDiffs = taskDiffs;
     }
 
     /**
@@ -159,6 +168,7 @@ public class TaskService {
             if (repositoryIds.isEmpty()) {
                 throw validation("WORKSPACE_HAS_NO_REPOSITORIES", "The reused Workspace has no repository worktrees");
             }
+            supersedePendingReviews(workspace.getId(), group.getId());
         } else {
             repositoryIds = Optional.ofNullable(body.getRepositoryIds()).orElse(List.of()).stream().distinct().toList();
             if (repositoryIds.isEmpty()) {
@@ -223,6 +233,30 @@ public class TaskService {
         }
         eventPublisher.publishEvent(new TaskCreatedEvent(projectId, task.getId()));
         return response(task, workspace);
+    }
+
+    /**
+     * A continuation starts a new revision of the same Workspace.  Any review
+     * card produced by an earlier revision is no longer confirmable.  The
+     * Workspace row is already locked by create(), so this update is serialized
+     * with other continuation writers.
+     */
+    private void supersedePendingReviews(UUID workspaceId, UUID requirementGroupId) {
+        if (diffReviewBatches == null || taskDiffs == null || workspaceId == null) return;
+        List<DiffReviewBatchEntity> pending = diffReviewBatches.selectPendingByWorkspaceForUpdate(workspaceId);
+        if (pending == null || pending.isEmpty()) return;
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        for (DiffReviewBatchEntity batch : pending) {
+            batch.setReviewStatus("SUPERSEDED");
+            batch.setReviewReason("被同一 Workspace 的后续修改取代");
+            batch.setUpdatedAt(now);
+            diffReviewBatches.updateById(batch);
+            taskDiffs.markReviewBatchSuperseded(batch.getId(), now);
+            eventService.publish(batch.getProjectId(), requirementGroupId, "diff-review.superseded", batch.getId().toString(),
+                    Map.of("projectId", batch.getProjectId(), "workspaceId", workspaceId,
+                            "taskId", batch.getTaskId(), "reviewBatchId", batch.getId(),
+                            "reviewStatus", "SUPERSEDED"));
+        }
     }
 
     /**
