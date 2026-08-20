@@ -8,8 +8,8 @@ import lombok.Data;
 import java.util.UUID;
 
 /**
- * 创建项目时自动新建 GitHub 仓库的参数。与 {@link CreateProjectRequest#getRepositoryIds()} 互斥：
- * 前者绑定已有授权仓库，本对象用于在团队 GitHub App 账号下新建一个仓库并绑定到项目。
+ * 在团队 GitHub App 账号下新建并绑定 GitHub 仓库的参数。
+ * 创建项目时由 {@link CreateProjectRequest} 使用，已有项目也可通过项目级建仓接口使用。
  */
 @Data
 public class NewProjectRepositoryRequest {

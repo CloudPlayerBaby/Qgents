@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.lenient;
@@ -669,6 +670,97 @@ class GitHubRepositoryServiceTest {
         assertEquals("https://github.com/install", response.getInstallationUrl());
         assertNotNull(response.getExpiresAt());
         assertEquals(java.time.ZoneOffset.UTC, response.getExpiresAt().getOffset());
+    }
+
+    @Test
+    void createsAndBindsRepositoryToExistingProject() {
+        UUID teamId = UUID.randomUUID();
+        ProjectEntity project = new ProjectEntity();
+        project.setId(projectId);
+        project.setTeamId(teamId);
+        when(projectMapper.selectById(projectId)).thenReturn(project);
+
+        GitHubInstallationEntity installation = activeInstallation();
+        installation.setTeamId(teamId);
+        installation.setAccountType("Organization");
+        installation.setAccountLogin("qgents");
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        GitHubRepositoryDetails created = new GitHubRepositoryDetails(
+                987L, "qgents", "new-repository", "main", "PRIVATE", false);
+        when(gitHubClient.createRepository(eq(12345L), eq("Organization"), eq("qgents"), any()))
+                .thenReturn(created);
+        when(repositoryMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(projectRepositoryMapper.selectByProjectAndRepositoryForUpdate(eq(projectId), any(UUID.class)))
+                .thenReturn(null);
+
+        NewProjectRepositoryRequest request = new NewProjectRepositoryRequest();
+        request.setName("new-repository");
+        request.setInstallationId(installationId);
+        request.setDisplayName("新仓库");
+
+        ProjectRepositoryResponse response = service.createProjectRepository(actorId, projectId, request);
+
+        assertNotNull(response);
+        assertEquals("qgents/new-repository", response.getFullName());
+        assertEquals("main", response.getDefaultBranch());
+        verify(gitHubClient).createRepository(eq(12345L), eq("Organization"), eq("qgents"), any());
+        verify(repositoryMapper).insert(any(GitHubRepositoryEntity.class));
+        verify(projectRepositoryMapper).insert(any(ProjectRepositoryEntity.class));
+        verify(gitHubClient, never()).deleteRepository(anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void projectRepositoryCreationRequiresTeamOwner() {
+        UUID teamId = UUID.randomUUID();
+        ProjectEntity project = new ProjectEntity();
+        project.setId(projectId);
+        project.setTeamId(teamId);
+        when(projectMapper.selectById(projectId)).thenReturn(project);
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+
+        NewProjectRepositoryRequest request = new NewProjectRepositoryRequest();
+        request.setName("new-repository");
+        request.setInstallationId(installationId);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.createProjectRepository(actorId, projectId, request));
+
+        assertEquals(HttpStatus.FORBIDDEN, exception.status());
+        assertEquals("GITHUB_REPOSITORY_ACCESS_DENIED", exception.code());
+        verifyNoInteractions(gitHubClient);
+    }
+
+    @Test
+    void rejectsAndCleansUpCreatedRepositoryWithoutDefaultBranch() {
+        UUID teamId = UUID.randomUUID();
+        ProjectEntity project = new ProjectEntity();
+        project.setId(projectId);
+        project.setTeamId(teamId);
+        when(projectMapper.selectById(projectId)).thenReturn(project);
+
+        GitHubInstallationEntity installation = activeInstallation();
+        installation.setTeamId(teamId);
+        installation.setAccountType("Organization");
+        installation.setAccountLogin("qgents");
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        GitHubRepositoryDetails created = new GitHubRepositoryDetails(
+                988L, "qgents", "empty-repository", null, "PRIVATE", false);
+        when(gitHubClient.createRepository(eq(12345L), eq("Organization"), eq("qgents"), any()))
+                .thenReturn(created);
+
+        NewProjectRepositoryRequest request = new NewProjectRepositoryRequest();
+        request.setName("empty-repository");
+        request.setInstallationId(installationId);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.createProjectRepository(actorId, projectId, request));
+
+        assertEquals(HttpStatus.BAD_GATEWAY, exception.status());
+        assertEquals("GITHUB_REPOSITORY_METADATA_INCOMPLETE", exception.code());
+        verify(gitHubClient).deleteRepository(12345L, "qgents", "empty-repository");
+        verifyNoInteractions(repositoryMapper, projectRepositoryMapper);
     }
 
     @Test
