@@ -11,8 +11,9 @@ import java.util.List;
  * TaskRun 统一失败诊断入口。
  *
  * <p>每个失败运行都返回主后端阶段和脱敏失败原因；只有实际调用过 Sandbox Worker 的运行才会
- * 包含 {@code workerExecutions}。空数组表示本次失败发生在调用 Worker 之前或未启用 Worker，
- * 不是诊断查询失败。</p>
+ * 包含 {@code workerExecutions}。该数组至多返回最新一条状态为 {@code FAILED} 的 Worker 执行摘要，
+ * 不返回成功或进行中的执行；空数组表示本次失败发生在调用 Worker 之前、未启用 Worker，或没有失败的
+ * Worker 执行，不是诊断查询失败。</p>
  */
 @Data
 @NoArgsConstructor
@@ -28,6 +29,6 @@ public class TaskRunDiagnosticsResponse {
     private String stage;
     @Schema(description = "主后端失败摘要；非失败运行可为 null")
     private TaskStatusReason failure;
-    @Schema(description = "关联的 Worker 工具执行脱敏摘要；未调用 Worker 时为空数组")
+    @Schema(description = "至多包含最新一条 status=FAILED 的 Worker 工具执行脱敏摘要；无失败 Worker 执行时为空数组")
     private List<WorkerExecutionDiagnosticResponse> workerExecutions;
 }

@@ -218,7 +218,14 @@ class TaskRunServiceTest {
         worker.setFailureCode("FILE_PATCH_FAILED");
         worker.setFailureReason("补丁上下文与文件不一致");
         worker.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
-        when(workerExecutions.selectList(any())).thenReturn(List.of(worker));
+        TaskRunWorkerExecutionEntity successfulWorker = new TaskRunWorkerExecutionEntity();
+        successfulWorker.setExecutionId(UUID.randomUUID());
+        successfulWorker.setProjectId(projectId);
+        successfulWorker.setTaskId(run.getTaskId());
+        successfulWorker.setTaskRunId(runId);
+        successfulWorker.setToolName("file.read");
+        successfulWorker.setStatus("SUCCEEDED");
+        when(workerExecutions.selectList(any())).thenReturn(List.of(successfulWorker, worker));
         TaskRunService diagnosticService = new TaskRunService(runs, logs, inputRequests, diffs, steps, agents,
                 artifacts, tasks, groups, projectRepositories, workspaceRepositories, access, groupService, events,
                 mock(NotificationService.class), eventPublisher,
@@ -230,6 +237,7 @@ class TaskRunServiceTest {
         assertEquals("FILE_PATCH_FAILED", response.getFailure().getFailureCode());
         assertEquals("补丁上下文与文件不一致", response.getFailure().getSummary());
         assertEquals(executionId.toString(), response.getWorkerExecutions().getFirst().getExecutionId());
+        assertEquals(1, response.getWorkerExecutions().size());
     }
 
     @Test
@@ -254,6 +262,31 @@ class TaskRunServiceTest {
         assertNull(response.getLatestFailedRun());
         assertEquals("SANDBOX_WORKER_UNAVAILABLE", response.getFailure().getFailureCode());
         assertEquals("执行环境暂时不可用", response.getFailure().getSummary());
+    }
+
+    @Test
+    void taskDiagnosticsSuppressesFailureWhileTaskIsRunningQualityFixLoop() {
+        // Test/Review 质量失败退回 Developer 修复期间任务仍为 RUNNING：历史上 FAILED 的
+        // TaskRun 只是修复循环中的一次失败，不应作为「任务失败」诊断返回给前端。
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        TaskEntity runningTask = new TaskEntity();
+        runningTask.setId(taskId);
+        runningTask.setProjectId(projectId);
+        runningTask.setStatus("RUNNING");
+        TaskRunEntity failedRun = run(projectId, UUID.randomUUID());
+        failedRun.setTaskId(taskId);
+        failedRun.setStatus("FAILED");
+        failedRun.setFailureCode("TEST_FAILED");
+        failedRun.setFailureReason("测试未通过");
+        failedRun.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
+        when(tasks.selectById(taskId)).thenReturn(runningTask);
+        when(runs.selectList(any())).thenReturn(List.of(failedRun));
+
+        TaskDiagnosticsResponse response = service.taskDiagnostics(projectId, taskId, UUID.randomUUID());
+
+        assertNull(response.getFailure());
+        assertNull(response.getLatestFailedRun());
     }
 
     @Test
@@ -424,6 +457,21 @@ class TaskRunServiceTest {
         assertTrue(log.getValue().getContent().contains("补丁无法应用，请重新读取文件后重试"));
         assertFalse(log.getValue().getContent().contains("第 7 行"));
         assertFalse(log.getValue().getContent().contains("模型原始细节"));
+    }
+
+    @Test
+    void workerToolLogDoesNotExposeSuccessfulExecutionId() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        qg.qgent.orchestration.worker.WorkerToolExecution execution =
+                new qg.qgent.orchestration.worker.WorkerToolExecution();
+        execution.setId(UUID.randomUUID());
+        execution.setTool("file.read");
+        execution.setStatus("SUCCEEDED");
+
+        service.appendWorkerToolExecution(run, execution);
+
+        verifyNoInteractions(logs);
     }
 
     @Test

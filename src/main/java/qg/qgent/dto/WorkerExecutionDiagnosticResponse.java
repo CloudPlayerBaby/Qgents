@@ -6,7 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * 关联到单个 TaskRun 的 Worker 工具执行脱敏诊断摘要。
+ * 关联到单个 TaskRun 的失败 Worker 工具执行脱敏诊断摘要。公开诊断接口至多返回最新一条 status=FAILED 的记录。
  * 完整 Worker 日志仍只可由持有服务令牌的受控运维程序查询。
  */
 @Data
