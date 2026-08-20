@@ -582,8 +582,9 @@ Worker 工具执行阶段还是测试阶段，均返回 `taskRunId/status/stage/
 }
 ```
 
-`workerExecutions` 中的每项只返回 `executionId/tool/status/exitCode/failureCode/failureSummary`
-及时间字段。该关联在主后端收到 Worker 入队回执后立即持久化，不能依赖解析日志文本，因而
+`workerExecutions` 至多返回最新一条状态为 `FAILED` 的 Worker 执行；该项只返回
+`executionId/tool/status/exitCode/failureCode/failureSummary` 及时间字段，成功、排队中、执行中和更早失败的
+Worker 均不暴露 `executionId`。该关联在主后端收到 Worker 入队回执后立即持久化，不能依赖解析日志文本，因而
 即使后续轮询超时或主后端线程中断，也能按 `taskRunId` 找到已经创建的 Worker 执行。
 
 ### 15.1.1 Task 级统一失败诊断入口（前端首选）
