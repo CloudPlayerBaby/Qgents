@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import qg.qgent.api.ApiResponse;
+import qg.qgent.api.ApiException;
 import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.*;
 import qg.qgent.github.GitHubClient;
@@ -175,9 +176,18 @@ public class GitHubRepositoryController {
      */
     @GetMapping("/integrations/github/callback")
     public ResponseEntity<Void> installationCallback(@RequestParam("installation_id") long installationId,
-                                                     @RequestParam String state,
+                                                     @RequestParam(required = false) String state,
                                                      @RequestParam(name = "setup_action", required = false) String setupAction) {
-        GitHubInstallationState callbackState = service.handleInstallationCallbackDetails(installationId, state);
+        GitHubInstallationState callbackState;
+        if (state != null && !state.isBlank()) {
+            callbackState = service.handleInstallationCallbackDetails(installationId, state);
+        } else if ("update".equalsIgnoreCase(setupAction)) {
+            // GitHub Configure 页的更新回调不会回传最初安装时的 state；按已绑定 Installation 恢复团队。
+            callbackState = service.handleInstallationUpdateCallback(installationId);
+        } else {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "GITHUB_CALLBACK_STATE_REQUIRED",
+                    "GitHub 安装回调缺少 state");
+        }
         String frontendUrl = callbackState.client() == GitHubClient.MOBILE ? frontendUrlMobile : frontendUrlWeb;
         if (callbackState.conflictCode() != null) {
             return redirectTo(frontendUrl, callbackState.teamId(), callbackState.conflictCode());
