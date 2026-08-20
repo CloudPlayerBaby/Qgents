@@ -110,6 +110,22 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
     UUID selectLastSucceededCodingRunId(@Param("taskId") UUID taskId);
 
     /**
+     * 收集同一 (repository, sourceBranch) 上已交付的任务，用于分支级预检的覆盖集合。
+     * MR_FIRST 已完成全部仓库 Push 进入 WAITING_PREFLIGHT；DIFF_FIRST 已完成确认推送进入 SUCCEEDED。
+     * 多个已交付任务连续提交到同一功能分支时，它们都作为该分支级 MR 的覆盖任务。
+     */
+    @Select("select t.id from tasks t join workspaces w on w.id=t.workspace_id "
+            + "join workspace_repositories wr on wr.workspace_id=w.id "
+            + "where t.project_id=#{projectId} and wr.project_repository_id=#{repositoryId} "
+            + "and wr.source_branch=#{sourceBranch} "
+            + "and ((t.delivery_mode='MR_FIRST' and t.status in ('WAITING_PREFLIGHT','SUCCEEDED')) "
+            + "or (t.delivery_mode='DIFF_FIRST' and t.status='SUCCEEDED')) "
+            + "order by t.created_at")
+    java.util.List<UUID> selectDeliveredTasksOnBranch(@Param("projectId") UUID projectId,
+                                                      @Param("repositoryId") UUID repositoryId,
+                                                      @Param("sourceBranch") String sourceBranch);
+
+    /**
      * 恢复调度器扫描疑似崩溃遗留的卡死任务：状态 PLANNING/PENDING/RUNNING 且超过阈值未更新，
      * 且没有任何进行中的 TaskRun（正常编排期间 task 有活跃 run，不会命中）。
      */

@@ -9926,3 +9926,88 @@ GET /api/v1/projects/{projectId}/dry-runs
 - **统一失败横幅**：任务详情页仅保留 `TaskFailureDiagnostic`（读诊断接口）作为失败展示；启动失败横幅（`TaskStartupFailureAlert`）仅在**没有失败 TaskRun** 时出现（`showStartupFailure={!hasFailedRun}`），避免两横幅并存。
 - **诊断查询时机**：`useTaskDiagnostics` 仅在任务进入失败终态（`FAILED`/`DELIVERY_FAILED`）后查询（`enabled` 条件）；质量修复循环（`RUNNING`）期间不查询，历史失败 run 不再被误报为任务失败。
 - `GIT_BRANCH_NOT_FOUND` 展示：`任务无法启动 / 仓库 / 基线分支 / 原因 / 请修改基线分支后重新发起任务。` + 「重新发起任务」按钮（跳需求群）。
+
+## 47. Workspace 最新 Diff 确认规则（2026-08-20，尾部优先）
+
+> 本节补充同一 Workspace 多次续作时的 Diff 审核一致性规则。若前文对 Diff
+> 确认状态或按钮能力的描述与本节冲突，以本节为准。本轮只改后端业务约束，接口路径不变。
+
+### 47.1 Workspace 级唯一待确认 Diff
+
+同一 `Workspace` 同时最多保留一个 `reviewStatus=PENDING_CONFIRMATION` 的
+`DiffReviewBatch`。一个批次可以包含该 Workspace 下多个仓库的 Diff。
+
+当用户引用旧 Diff 创建续作 Task 时，后端在同一事务内：
+
+1. 锁定 Workspace，串行化续作、Diff 生成和确认操作；
+2. 查找该 Workspace 现有的待确认批次；
+3. 将旧批次的 `reviewStatus` 更新为 `SUPERSEDED`；
+4. 将旧批次下所有 Diff 的 `status` 更新为 `SUPERSEDED`；
+5. 创建续作 Task。续作完成后生成的批次成为唯一可确认的最新 Diff。
+
+最新 Diff 通常是当前 Workspace 相对基线的累计结果，可能包含前序 Task 已交付修改与本次续作修改。
+
+### 47.2 Diff 状态和响应字段
+
+`DiffReviewBatchResponse.reviewStatus` 支持：
+
+| 状态 | 含义 |
+|---|---|
+| `PENDING_CONFIRMATION` | 当前 Workspace 最新 Diff，等待用户确认 |
+| `ACCEPTED` | 已确认并进入交付流程 |
+| `REJECTED` | 用户拒绝该 Diff |
+| `SUPERSEDED` | 已被同一 Workspace 的后续修改取代，不可确认 |
+
+批次中的 Diff `status` 同样可能为 `SUPERSEDED`。该状态不表示代码交付失败，也不表示用户主动拒绝。
+
+### 47.3 确认和拒绝接口规则
+
+现有接口路径不变：
+
+```http
+POST /api/v1/projects/{projectId}/tasks/{taskId}/diff-review/confirm
+POST /api/v1/projects/{projectId}/tasks/{taskId}/diff-review/reject
+```
+
+服务端会在执行确认/拒绝前锁定 Workspace，并校验请求批次是否仍是该 Workspace 唯一的最新
+`PENDING_CONFIRMATION` 批次。旧页面未刷新、重复点击或并发续作都不能绕过该校验。
+
+如果请求对应的 Diff 已被新修改取代，返回 HTTP `409`：
+
+```json
+{
+  "error": {
+    "code": "DIFF_REVIEW_SUPERSEDED",
+    "message": "This Diff was superseded by a newer change in the same Workspace"
+  },
+  "requestId": "req_xxx"
+}
+```
+
+### 47.4 任务详情能力和前端处理
+
+任务详情 `capabilities.canConfirmDiffReview`、`canRejectDiffReview` 在批次为
+`SUPERSEDED` 时必须为 `false`，对应 disabled reason 为 `DIFF_REVIEW_SUPERSEDED`。
+
+前端应将该状态展示为“已被后续修改取代”，隐藏“确认交付”和“拒绝交付”，并引导用户查看同一
+Workspace 最新任务/最新 Diff。收到 `DIFF_REVIEW_SUPERSEDED` 后应重新请求任务详情或 Diff 详情，
+不能继续使用旧页面状态提交确认。
+
+### 47.5 事件和兼容性
+
+续作替换旧批次时，后端发布项目级事件：
+
+```text
+event: diff-review.superseded
+data: {
+  "projectId": "project-uuid",
+  "workspaceId": "workspace-uuid",
+  "taskId": "old-task-uuid",
+  "reviewBatchId": "old-batch-uuid",
+  "reviewStatus": "SUPERSEDED"
+}
+```
+
+未识别 `SUPERSEDED` 的旧客户端仍可通过 `capabilities` 看到确认按钮，但服务端会拒绝实际请求；
+升级后的客户端应消费该状态或事件以即时刷新页面。该规则不新增接口、不新增数据库字段，现有
+字符串状态字段即可承载 `SUPERSEDED`。

@@ -140,6 +140,38 @@ class DiffReviewBatchServiceTest {
     }
 
     @Test
+    void confirmRejectsOlderBatchWhenWorkspaceHasNewerPendingReview() {
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        TaskMapper tasks = mock(TaskMapper.class);
+        WorkspaceMapper workspaces = mock(WorkspaceMapper.class);
+        ProjectAccessService access = mock(ProjectAccessService.class);
+        UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), workspaceId = UUID.randomUUID(), actor = UUID.randomUUID();
+        DiffReviewBatchEntity old = new DiffReviewBatchEntity();
+        old.setId(UUID.randomUUID()); old.setProjectId(projectId); old.setTaskId(taskId); old.setWorkspaceId(workspaceId);
+        old.setReviewStatus("PENDING_CONFIRMATION"); old.setDeliveryStatus("NOT_STARTED");
+        DiffReviewBatchEntity newer = new DiffReviewBatchEntity();
+        newer.setId(UUID.randomUUID()); newer.setProjectId(projectId); newer.setTaskId(UUID.randomUUID());
+        newer.setWorkspaceId(workspaceId); newer.setReviewStatus("PENDING_CONFIRMATION");
+        TaskEntity task = new TaskEntity(); task.setId(taskId); task.setProjectId(projectId); task.setWorkspaceId(workspaceId);
+        task.setCreatedBy(actor);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+        when(workspaces.selectByIdForUpdate(workspaceId)).thenReturn(new WorkspaceEntity());
+        when(batches.selectOne(any())).thenReturn(old);
+        when(batches.selectByIdForUpdate(old.getId())).thenReturn(old);
+        when(batches.selectPendingByWorkspaceForUpdate(workspaceId)).thenReturn(List.of(newer));
+        TransactionTemplate transactions = immediateTransactions();
+        DiffReviewBatchService service = service(batches, diffs, tasks, mock(SandboxWorkerClient.class), access, transactions);
+        service.setWorkspaceMapper(workspaces);
+
+        ApiException error = assertThrows(ApiException.class, () -> service.confirm(projectId, taskId, actor));
+
+        assertEquals("DIFF_REVIEW_SUPERSEDED", error.code());
+        verifyNoInteractions(diffs);
+    }
+
+    @Test
     void staleSnapshotFailsBatchDiffAndTask() {
         DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
         DiffMapper diffs = mock(DiffMapper.class);

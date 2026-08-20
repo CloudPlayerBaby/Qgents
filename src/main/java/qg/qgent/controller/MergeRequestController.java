@@ -10,6 +10,7 @@ import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.*;
 import qg.qgent.service.MergeRequestCommentService;
 import qg.qgent.service.MergeRequestService;
+import qg.qgent.service.MrPreflightService;
 
 import java.util.List;
 import java.util.UUID;
@@ -23,11 +24,14 @@ import java.util.UUID;
 public class MergeRequestController {
     private final MergeRequestService mergeRequestService;
     private final MergeRequestCommentService commentService;
+    private final MrPreflightService preflightService;
 
     public MergeRequestController(MergeRequestService mergeRequestService,
-                                  MergeRequestCommentService commentService) {
+                                  MergeRequestCommentService commentService,
+                                  MrPreflightService preflightService) {
         this.mergeRequestService = mergeRequestService;
         this.commentService = commentService;
+        this.preflightService = preflightService;
     }
 
     /**
@@ -44,13 +48,53 @@ public class MergeRequestController {
     }
 
     /**
-     * 契约 §13：基于已接受并推送的 Diff 创建 MR。
+     * 申请分支级 MR 预检（DIFF_FIRST 手动入口）。后端从 Workspace 解析 source/target branch，
+     * 持久化预检请求并启动 Dry Run；真实 MR 只在 Dry Run 通过且独立 CQ+1 通过后由服务端自动创建。
+     */
+    @PostMapping("/preflight")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ApiResponse<?> requestPreflight(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
+                                           @Valid @RequestBody MergeRequestPreflightRequest body,
+                                           @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+                                           HttpServletRequest request) {
+        MergeRequestPreflightResponse data = preflightService.requestPreflight(projectId, userId,
+                body.getTaskId(), body.getRepositoryId(), idempotencyKey);
+        return ok(data, request);
+    }
+
+    /**
+     * 重新预检：CQ 拒绝或失败后创建全新 Dry Run，让旧 CQ+1 失效。
+     */
+    @PostMapping("/preflight/{preflightId}/retries")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ApiResponse<?> retryPreflight(@PathVariable UUID projectId, @PathVariable UUID preflightId,
+                                         @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        MergeRequestPreflightResponse data = preflightService.retryPreflight(projectId, preflightId, userId);
+        return ok(data, request);
+    }
+
+    /**
+     * 查询单条分支级预检申请（含覆盖任务/Diff、Dry Run、CQ 与真实 MR 状态）。
+     */
+    @GetMapping("/preflight/{preflightId}")
+    public ApiResponse<?> preflight(@PathVariable UUID projectId, @PathVariable UUID preflightId,
+                                    @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+        MergeRequestPreflightResponse data = preflightService.getPreflight(projectId, preflightId, userId);
+        return ok(data, request);
+    }
+
+    /**
+     * 兼容入口：旧客户端 {@code POST /merge-requests} 语义改为转发到“申请预检”，不再直接创建真实 MR。
+     * 目标分支与标题由服务端从 Workspace 读取，客户端传入值仅作兼容忽略。
      */
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> create(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
-                                 @Valid @RequestBody MergeRequestCreateRequest body, HttpServletRequest request) {
-        MergeRequestSummaryResponse data = mergeRequestService.create(projectId, userId, body);
+                                 @Valid @RequestBody MergeRequestCreateRequest body,
+                                 @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+                                 HttpServletRequest request) {
+        MergeRequestPreflightResponse data = preflightService.requestPreflight(projectId, userId,
+                body.getTaskId(), body.getRepositoryId(), idempotencyKey);
         return ok(data, request);
     }
 

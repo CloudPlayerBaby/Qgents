@@ -38,6 +38,7 @@ public class FinalDiffBundleService {
     private final DiffSnapshotStorage snapshots;
     private final EventService events;
     private final TransactionTemplate transactions;
+    private WorkspaceMapper workspaces;
 
     public FinalDiffBundleService(TaskMapper tasks, TaskRunMapper runs, WorkspaceRepositoryMapper worktrees,
                                   DiffReviewBatchMapper batches, DiffMapper diffs, DiffFileMapper files, SandboxWorkerClient worker,
@@ -52,6 +53,11 @@ public class FinalDiffBundleService {
         this.snapshots = snapshots;
         this.events = events;
         this.transactions = transactions;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setWorkspaceMapper(WorkspaceMapper workspaces) {
+        this.workspaces = workspaces;
     }
 
     /**
@@ -135,6 +141,7 @@ public class FinalDiffBundleService {
                 .eq(DiffReviewBatchEntity::getTaskId, task.getId())
                 .eq(DiffReviewBatchEntity::getFinalCodingTaskRunId, coding.getId()).last("LIMIT 1"));
         if (duplicate != null) return duplicate.getId();
+        lockWorkspaceAndSupersedePending(task.getWorkspaceId());
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
         batch.setId(UuidV7.next());
@@ -209,6 +216,7 @@ public class FinalDiffBundleService {
                 .eq(DiffReviewBatchEntity::getTaskId, task.getId())
                 .eq(DiffReviewBatchEntity::getFinalCodingTaskRunId, coding.getId()).last("LIMIT 1"));
         if (duplicate != null) return duplicate.getId();
+        lockWorkspaceAndSupersedePending(task.getWorkspaceId());
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
         batch.setId(UuidV7.next());
@@ -257,6 +265,28 @@ public class FinalDiffBundleService {
                 Map.of("projectId", task.getProjectId(), "taskId", task.getId(), "reviewBatchId", batch.getId(),
                         "reviewStatus", batch.getReviewStatus(), "aggregateHash", aggregateHash));
         return batch.getId();
+    }
+
+    /**
+     * The coding worker runs outside the transaction, so the final persistence
+     * transaction must repeat the Workspace lock and supersede check.  This
+     * closes the race where a continuation is created while an older run is
+     * finishing its snapshot.
+     */
+    private void lockWorkspaceAndSupersedePending(UUID workspaceId) {
+        if (workspaces != null && workspaceId != null) {
+            workspaces.selectByIdForUpdate(workspaceId);
+        }
+        List<DiffReviewBatchEntity> pending = batches.selectPendingByWorkspaceForUpdate(workspaceId);
+        if (pending == null || pending.isEmpty()) return;
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        for (DiffReviewBatchEntity old : pending) {
+            old.setReviewStatus("SUPERSEDED");
+            old.setReviewReason("被同一 Workspace 的后续修改取代");
+            old.setUpdatedAt(now);
+            batches.updateById(old);
+            diffs.markReviewBatchSuperseded(old.getId(), now);
+        }
     }
 
     /**

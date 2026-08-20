@@ -405,6 +405,11 @@ public class TaskDisplayService {
                                      DiffReviewBatchEntity batch, List<DiffEntity> batchDiffs) {
         String status = task.getStatus();
         if ("WAITING_DIFF_CONFIRMATION".equals(status)) {
+            if (batch != null && "SUPERSEDED".equals(batch.getReviewStatus())) {
+                return new Attention("DIFF_REVIEW_SUPERSEDED", "Diff 已被后续修改取代",
+                        "请查看同一 Workspace 的最新 Diff，旧 Diff 不能再确认", null, null,
+                        id(batch.getId()), null, iso(task.getUpdatedAt()));
+            }
             return new Attention("DIFF_CONFIRMATION_REQUIRED", "等待确认最终 Diff", "已生成多仓库总 Diff，等待确认",
                     null, null, id(batch == null ? null : batch.getId()), null, iso(task.getUpdatedAt()));
         }
@@ -501,7 +506,9 @@ public class TaskDisplayService {
         boolean canConfirm = ownerOrAdmin && reviewDecidable;
         String confirmReason = canConfirm ? null
                 : (!ownerOrAdmin ? "DIFF_REVIEW_FORBIDDEN"
-                   : (batch == null ? "DIFF_REVIEW_NOT_FOUND" : "DIFF_REVIEW_NOT_DECIDABLE"));
+                   : (batch == null ? "DIFF_REVIEW_NOT_FOUND"
+                   : ("SUPERSEDED".equals(batch.getReviewStatus()) ? "DIFF_REVIEW_SUPERSEDED"
+                   : "DIFF_REVIEW_NOT_DECIDABLE")));
         boolean canReject = canConfirm;
         String rejectReason = confirmReason;
 

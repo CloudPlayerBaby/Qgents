@@ -13,6 +13,7 @@ import java.util.UUID;
 
 /**
  * Immutable Task-level Diff snapshot and its change statistics.
+ * The review status may be SUPERSEDED when a later Workspace revision replaces it.
  */
 @Data
 @TableName(value = "diffs", autoResultMap = true)

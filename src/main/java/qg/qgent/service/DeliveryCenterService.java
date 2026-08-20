@@ -662,6 +662,7 @@ public class DeliveryCenterService {
         return switch (batch.getReviewStatus()) {
             case "PENDING_CONFIRMATION" -> "PROCESSING";
             case "REJECTED" -> "REJECTED";
+            case "SUPERSEDED" -> "SUPERSEDED";
             case "ACCEPTED" -> switch (batch.getDeliveryStatus() == null ? "" : batch.getDeliveryStatus()) {
                 case "DELIVERED" -> "DELIVERED";
                 case "PARTIALLY_DELIVERED", "FAILED" -> "FAILED";
@@ -696,8 +697,10 @@ public class DeliveryCenterService {
         caps.setCanOpenResource(true);
         DeliveryCapabilities.DeliveryCapabilityReasons reasons = new DeliveryCapabilities.DeliveryCapabilityReasons();
         reasons.setCanSubmitReview("NOT_SUPPORTED");
-        reasons.setCanApprove(!pendingConfirmation ? "DIFF_REVIEW_NOT_DECIDABLE" : forbid);
-        reasons.setCanReject(!pendingConfirmation ? "DIFF_REVIEW_NOT_DECIDABLE" : forbid);
+        String reviewDisabled = "SUPERSEDED".equals(batch.getReviewStatus())
+                ? "DIFF_REVIEW_SUPERSEDED" : "DIFF_REVIEW_NOT_DECIDABLE";
+        reasons.setCanApprove(!pendingConfirmation ? reviewDisabled : forbid);
+        reasons.setCanReject(!pendingConfirmation ? reviewDisabled : forbid);
         reasons.setCanArchive("NOT_SUPPORTED");
         reasons.setCanRetryDelivery(!retryable ? "DIFF_DELIVERY_NOT_RETRYABLE" : forbid);
         reasons.setCanOpenResource(null);
