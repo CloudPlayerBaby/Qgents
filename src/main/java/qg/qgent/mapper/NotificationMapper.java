@@ -66,4 +66,16 @@ public interface NotificationMapper extends BaseMapper<NotificationEntity> {
      */
     @Delete("DELETE FROM notifications WHERE resource_id = #{resourceId} AND kind = #{kind}")
     int deleteByResourceAndKind(@Param("resourceId") String resourceId, @Param("kind") String kind);
+
+    /**
+     * 查询某资源指定类型通知的接收者（删除前调用，用于向这些用户广播 notification.removed）。
+     *
+     * @param resourceId 关联资源 ID（任务 ID 字符串）
+     * @param kind       通知类型（如 TASK_FAILED）
+     * @return 接收通知的用户 ID 列表（去重）
+     */
+    @Select("SELECT DISTINCT recipient_user_id FROM notifications "
+            + "WHERE resource_id = #{resourceId} AND kind = #{kind}")
+    List<UUID> selectRecipientsByResourceAndKind(@Param("resourceId") String resourceId,
+                                                 @Param("kind") String kind);
 }

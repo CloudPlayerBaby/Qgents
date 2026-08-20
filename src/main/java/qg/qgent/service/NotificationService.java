@@ -124,7 +124,8 @@ public class NotificationService {
      * <p>
      * 任务可能因质量循环耗尽 / 基础设施失败短暂进入 FAILED 并发 TASK_FAILED 通知，
      * 随后被用户重试或恢复器续跑成功继续执行。此时铃铛里的「任务失败」已与真实状态矛盾，
-     * 应直接删除该任务已写入的 TASK_FAILED 通知（幂等；无通知时不影响任何数据）。
+     * 应直接删除该任务已写入的 TASK_FAILED 通知，并向受影响用户广播 {@code notification.removed}
+     * 刷新信号（WebSocket scope=notification 收到即刷新；SSE 客户端识别该事件名刷新通知列表）。
      * 通知级 SSE 投递记录（notification_events）保留——游标式增量事件删除会破坏用户游标连续性。
      *
      * @param taskId 已恢复编排的任务 ID（resource_id 存储形态）
@@ -134,9 +135,14 @@ public class NotificationService {
         if (taskId == null || taskId.isBlank()) {
             return;
         }
+        List<UUID> recipients = notificationMapper.selectRecipientsByResourceAndKind(taskId, "TASK_FAILED");
         int removed = notificationMapper.deleteByResourceAndKind(taskId, "TASK_FAILED");
         if (removed > 0) {
             log.info("task failed notification cleared for resumed task, taskId={} removed={}", taskId, removed);
+        }
+        for (UUID recipient : recipients) {
+            eventService.publishNotification(recipient, null, "notification.removed",
+                    Map.of("resourceId", taskId, "kind", "TASK_FAILED"));
         }
     }
 
