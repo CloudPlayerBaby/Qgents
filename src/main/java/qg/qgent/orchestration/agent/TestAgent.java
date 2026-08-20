@@ -117,6 +117,10 @@ public class TestAgent implements Agent {
             outcome.setOutcome(passed ? RunOutcome.SUCCEEDED
                     : (test.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
             outcome.setMessage(test.getSummary());
+            // 非零退出码是已验证的执行事实，不能让后续产物/诊断退化为 failureCode=null。
+            if (!passed) {
+                outcome.setFailureCode("PROCESS_EXIT_NONZERO");
+            }
             return outcome;
         } catch (RuntimeException e) {
             return infraFailure(input, e.getMessage());

@@ -55,4 +55,26 @@ class TaskExecutionArtifactServiceTest {
         assertThat(sanitized).containsEntry("failureCode", "FILE_PATCH_FAILED")
                 .containsEntry("message", "补丁无法应用，请重新读取文件后重试");
     }
+
+    @Test
+    void processFailureKeepsSanitizedStructuredTestFacts() {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("outcome", "FAILED_QUALITY");
+        summary.put("status", "FAILED");
+        summary.put("failureCode", "PROCESS_EXIT_NONZERO");
+        summary.put("message", "内部异常原文不应展示");
+        summary.put("testFailure", Map.of("exitCode", 1, "failureCount", 1,
+                "failures", java.util.List.of(Map.of("name", "CalculatorTest",
+                        "reason", "stderr: token=secret at C:\\worker\\repo", "severity", "ERROR"))));
+
+        Map<String, Object> sanitized = service.sanitizeSummary(summary);
+
+        assertThat(sanitized).containsEntry("failureCode", "PROCESS_EXIT_NONZERO")
+                .containsEntry("message", "工具进程执行失败");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> testFailure = (Map<String, Object>) sanitized.get("testFailure");
+        assertThat(testFailure).containsEntry("exitCode", 1).containsEntry("failureCount", 1);
+        assertThat(String.valueOf(testFailure)).contains("CalculatorTest", "[raw output omitted]")
+                .doesNotContain("secret", "C:\\worker", "stderr:");
+    }
 }

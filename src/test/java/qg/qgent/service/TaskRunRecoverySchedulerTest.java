@@ -2,6 +2,7 @@ package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskRunEntity;
@@ -36,8 +37,9 @@ class TaskRunRecoverySchedulerTest {
     private final TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
     private final EventService taskEvents = mock(EventService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+    private final TaskRunFailureDiagnosticService failureDiagnostics = mock(TaskRunFailureDiagnosticService.class);
     private final TaskRunRecoveryScheduler scheduler = new TaskRunRecoveryScheduler(tasks, steps, runMapper,
-            artifacts, taskEvents, events, Duration.ofMinutes(20));
+            artifacts, taskEvents, events, Duration.ofMinutes(20), null, failureDiagnostics);
 
     @Test
     void recoversOrphanedTaskFromFirstIncompleteStep() {
@@ -149,6 +151,15 @@ class TaskRunRecoverySchedulerTest {
         ArgumentCaptor<Map> summary = ArgumentCaptor.forClass(Map.class);
         verify(artifacts).createRunArtifact(eq(task), eq(run), eq(step), eq("CODING"), summary.capture());
         assertThat(summary.getValue().get("failureCode")).isEqualTo("ORPHANED_RUN_TIMEOUT");
+        verify(failureDiagnostics).record(eq(task), eq(run), eq(step),
+                eq(qg.qgent.orchestration.OrchestrationPhase.CODING),
+                org.mockito.ArgumentMatchers.argThat(outcome ->
+                        outcome.getOutcome() == qg.qgent.orchestration.RunOutcome.FAILED_INFRASTRUCTURE
+                                && "ORPHANED_RUN_TIMEOUT".equals(outcome.getDiagnosticFailureCode())));
+        InOrder persistenceBeforeEvent = org.mockito.Mockito.inOrder(artifacts, taskEvents);
+        persistenceBeforeEvent.verify(artifacts).createRunArtifact(eq(task), eq(run), eq(step), eq("CODING"), any());
+        persistenceBeforeEvent.verify(taskEvents).publish(eq(projectId), eq(task.getRequirementGroupId()), eq("task.updated"),
+                eq(taskId.toString()), org.mockito.ArgumentMatchers.anyMap());
         verify(taskEvents).publish(eq(projectId), eq(task.getRequirementGroupId()), eq("task.updated"),
                 eq(taskId.toString()), org.mockito.ArgumentMatchers.anyMap());
         verify(taskEvents).publish(eq(projectId), eq(task.getRequirementGroupId()), eq("task-run.updated"),

@@ -110,6 +110,7 @@ public final class ExecutionContentSanitizer {
             return GENERIC_FAILURE_DESCRIPTION;
         }
         return switch (code.toUpperCase(Locale.ROOT)) {
+            case "EXECUTION_FAILED" -> "执行步骤未通过，请查看脱敏失败摘要";
             case "LLM_TOOL_CALL_MALFORMED", "LLM_TOOL_NOT_ALLOWED", "LLM_TOOL_ARGUMENT_INVALID" ->
                     "模型工具协议未能稳定完成";
             case "CODING_NO_ACTUAL_CHANGE" -> "代码步骤未产生实际文件变更";
@@ -145,7 +146,7 @@ public final class ExecutionContentSanitizer {
             return null;
         }
         return switch (code.toUpperCase(Locale.ROOT)) {
-            case "FAILED_INFRASTRUCTURE", "LLM_TOOL_CALL_MALFORMED", "LLM_TOOL_NOT_ALLOWED",
+            case "EXECUTION_FAILED", "FAILED_INFRASTRUCTURE", "LLM_TOOL_CALL_MALFORMED", "LLM_TOOL_NOT_ALLOWED",
                     "LLM_TOOL_ARGUMENT_INVALID", "CODING_NO_ACTUAL_CHANGE", "FILE_PATCH_FAILED",
                     "FILE_HASH_MISMATCH", "TOOL_PATH_INVALID", "TOOL_ARGUMENT_INVALID",
                     "PROCESS_EXIT_NONZERO", "AGENT_RUN_TIMEOUT", "TOOL_EXECUTION_FAILED",
@@ -172,7 +173,7 @@ public final class ExecutionContentSanitizer {
             return false;
         }
         return switch (code.toUpperCase(Locale.ROOT)) {
-            case "FAILED_INFRASTRUCTURE", "LLM_TOOL_CALL_MALFORMED", "LLM_TOOL_NOT_ALLOWED",
+            case "EXECUTION_FAILED", "FAILED_INFRASTRUCTURE", "LLM_TOOL_CALL_MALFORMED", "LLM_TOOL_NOT_ALLOWED",
                     "LLM_TOOL_ARGUMENT_INVALID", "CODING_NO_ACTUAL_CHANGE", "FILE_PATCH_FAILED",
                     "FILE_HASH_MISMATCH", "TOOL_PATH_INVALID", "TOOL_ARGUMENT_INVALID",
                     "PROCESS_EXIT_NONZERO", "AGENT_RUN_TIMEOUT", "TOOL_EXECUTION_FAILED",

@@ -83,6 +83,7 @@ class TestAgentTest {
         AgentRunOutcome outcome = agent().run(input());
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getFailureCode()).isEqualTo("PROCESS_EXIT_NONZERO");
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
         assertThat(outcome.getTestResult().getFailures()).hasSize(1);
         assertThat(outcome.getTestResult().getFailures().get(0).getName()).isEqualTo("CalculatorTest");
@@ -117,6 +118,7 @@ class TestAgentTest {
 
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo("PROCESS_EXIT_NONZERO");
     }
 
     @Test

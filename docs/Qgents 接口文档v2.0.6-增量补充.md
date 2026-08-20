@@ -816,3 +816,19 @@ Authorization: Bearer <user-access-token>
   `task-step.updated` SSE 事件。
 - 前端只以服务端返回的 `TaskStep.status` 呈现当前流程状态；可以通过历史 TaskRun 查看上次
   测试或审查失败的具体诊断，但不能用旧 Run 的终态覆盖新的 Step 状态。
+
+## 18. 失败 Run 诊断与执行产物摘要（2026-08-21）
+
+每个 `FAILED`、`FAILED_QUALITY` 或 `FAILED_INFRASTRUCTURE` 的 TaskRun 都必须先持久化一条
+不可变的 `task_run_failure_diagnostics` 记录，再持久化 Run 执行产物并发布终态事件。记录必须关联
+Task、TaskRun、TaskStep、phase、role 与 executionMode；重试创建新 Run 和新诊断，旧记录不得覆盖。
+
+- `task_run_failure_diagnostics` 是受限后端诊断事实，不通过项目成员公开接口直接返回。它保存稳定公开码、
+  内部归一化码、来源、异常类型和限长脱敏结构化上下文。
+- TESTING 上下文可包含验证方式、exitCode、是否需要 Coding 修复、失败项数量及限长的
+  `name/reason/severity`；不得保存原始命令、stdout、stderr、环境变量、凭据、宿主机路径或异常堆栈。
+- `task_execution_artifacts.summary` 仍是项目成员可见的受控摘要。测试失败时可包含
+  `testFailure.verificationMode/exitCode/needsCodingFix/failureCount/failures[]`，所有文本均经过脱敏与长度限制。
+  `failureCode=PROCESS_EXIT_NONZERO` 时 `message` 固定为“工具进程执行失败”。
+- 无法归类的普通失败对外使用稳定 `failureCode=EXECUTION_FAILED`，不返回内部异常原文；基础设施失败继续使用
+  已发布的基础设施失败码。

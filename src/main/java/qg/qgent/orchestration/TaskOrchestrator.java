@@ -292,7 +292,11 @@ public class TaskOrchestrator {
             TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), planner.getId(),
                     planner.getRole(), planner.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
             taskRunService.markRunning(run.getId());
-            taskRunService.complete(run.getId(), "FAILED", "AGENT_NOT_FOUND", "Planner Agent 不可用");
+            AgentRunOutcome missingAgent = infrastructureFailure(OrchestrationPhase.PLAN,
+                    "Planner Agent 不可用", "AGENT_NOT_FOUND", "AGENT_RESOLUTION", null);
+            recordFailureDiagnostic(task, run, planner, missingAgent);
+            artifactService.createRunArtifact(task, run, planner, "PLAN", runArtifactSummary(planner, missingAgent));
+            taskRunService.complete(run.getId(), "FAILED", "AGENT_NOT_FOUND", missingAgent.getMessage());
             markStepSettled(task, planner, RunOutcome.FAILED);
             finishTaskIfStartable(task, ctx, StateMachineDecision.Action.COMPLETE_FAILED);
             return false;
@@ -323,7 +327,8 @@ public class TaskOrchestrator {
                 } catch (ApiException e) {
                     AgentRunOutcome materializationFailure = infrastructureFailure(OrchestrationPhase.PLAN,
                             "plan materialization failed", stableFailureCode(e), "PLAN_MATERIALIZATION", e);
-                    recordInfrastructureFailure(task, run, planner, materializationFailure);
+                    recordFailureDiagnostic(task, run, planner, materializationFailure);
+                    artifactService.createRunArtifact(task, run, planner, "PLAN", runArtifactSummary(planner, materializationFailure));
                     taskRunService.complete(run.getId(), "FAILED", stableFailureCode(e), e.getMessage());
                     markStepSettled(task, planner, RunOutcome.FAILED);
                     failTaskIfStartable(task, e);
@@ -339,12 +344,14 @@ public class TaskOrchestrator {
                 return true;
             }
             if (decision.getAction() == StateMachineDecision.Action.RETRY_PHASE) {
-                recordInfrastructureFailure(task, run, planner, outcome);
+                recordFailureDiagnostic(task, run, planner, outcome);
+                artifactService.createRunArtifact(task, run, planner, "PLAN", runArtifactSummary(planner, outcome));
                 taskRunService.complete(run.getId(), "FAILED", stableFailureCode(outcome), outcome.getMessage());
                 markStepSettled(task, planner, outcome.getOutcome());
                 continue;
             }
-            recordInfrastructureFailure(task, run, planner, outcome);
+            recordFailureDiagnostic(task, run, planner, outcome);
+            artifactService.createRunArtifact(task, run, planner, "PLAN", runArtifactSummary(planner, outcome));
             taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
                     outcome.getMessage());
             markStepSettled(task, planner, outcome.getOutcome());
@@ -385,7 +392,7 @@ public class TaskOrchestrator {
         if (ctx != null && ctx.lastRunId != null) {
             TaskRunEntity run = taskRunService.findById(ctx.lastRunId);
             if (run != null && "RUNNING".equals(run.getStatus())) {
-                recordInfrastructureFailure(task, run, stepMapper.selectById(run.getTaskStepId()), startupOutcome);
+                recordFailureDiagnostic(task, run, stepMapper.selectById(run.getTaskStepId()), startupOutcome);
                 taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
             }
         } else {
@@ -400,7 +407,7 @@ public class TaskOrchestrator {
                         planner.getRole(), planner.getAssignedAgentId(), task.getCreatedBy(),
                         ctx == null ? null : ctx.retryOf);
                 taskRunService.markRunning(run.getId());
-                recordInfrastructureFailure(task, run, planner, startupOutcome);
+                recordFailureDiagnostic(task, run, planner, startupOutcome);
                 taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
             }
         }
@@ -617,7 +624,7 @@ public class TaskOrchestrator {
         }
         ctx.recordOutcome(step.getId(), phase, outcome);
         outcome.setMessage(runCompletionMessage(outcome.getMessage(), decision, ctx.counters));
-        recordInfrastructureFailure(task, run, step, outcome);
+        recordFailureDiagnostic(task, run, step, outcome);
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
         // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
         artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
@@ -800,10 +807,10 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 失败诊断必须在执行产物和 Run 终态之前完成；仅基础设施失败会真正落库。
+     * 任一失败 Run 的诊断必须在执行产物和 Run 终态之前完成。
      */
-    private void recordInfrastructureFailure(TaskEntity task, TaskRunEntity run, TaskStepEntity step,
-                                             AgentRunOutcome outcome) {
+    private void recordFailureDiagnostic(TaskEntity task, TaskRunEntity run, TaskStepEntity step,
+                                         AgentRunOutcome outcome) {
         if (step == null) {
             log.warn("failure diagnostic skipped because task step is missing, taskRunId={}",
                     run == null ? null : run.getId());
@@ -862,10 +869,34 @@ public class TaskOrchestrator {
         if (outcome.getPatchFailureCounts() != null && !outcome.getPatchFailureCounts().isEmpty()) {
             summary.put("patchFailureCounts", outcome.getPatchFailureCounts());
         }
+        if (outcome.getTestResult() != null && !outcome.getTestResult().isSuccess()) {
+            summary.put("testFailure", testFailureSummary(outcome.getTestResult()));
+        }
         if ("REVIEWER".equals(step.getRole()) && outcome.getReviewResult() != null) {
             summary.put("review", reviewSummary(outcome.getReviewResult()));
         }
         return summary;
+    }
+
+    /**
+     * 面向项目成员展示的测试失败事实。只保存限长、脱敏后的失败项，不携带原始命令或 stdout/stderr。
+     */
+    private Map<String, Object> testFailureSummary(TestResult test) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("verificationMode", test.getVerificationMode());
+        value.put("exitCode", test.getExitCode());
+        value.put("needsCodingFix", test.isNeedsCodingFix());
+        List<TestResult.Failure> allFailures = test.getFailures() == null ? List.of() : test.getFailures();
+        List<Map<String, Object>> failures = allFailures.stream().filter(java.util.Objects::nonNull).limit(4).map(failure -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("name", safeFailureText(failure.getName(), 160));
+                    item.put("reason", safeFailureText(failure.getReason(), 384));
+                    item.put("severity", safeFailureText(failure.getSeverity(), 32));
+                    return item;
+                }).toList();
+        value.put("failureCount", allFailures.size());
+        value.put("failures", failures);
+        return value;
     }
 
     /**
@@ -907,6 +938,11 @@ public class TaskOrchestrator {
 
     private String truncate(String value, int max) {
         return value == null || value.length() <= max ? value : value.substring(0, max);
+    }
+
+    /** 公开失败项不得承载 Worker 原始命令、输出、环境变量、端点或宿主路径。 */
+    private String safeFailureText(String value, int max) {
+        return truncate(ExecutionContentSanitizer.sanitizeDiagnosticDetail(value == null ? "" : value).strip(), max);
     }
 
     private String lastDeveloperNodeId(List<TaskStepEntity> steps) {

@@ -189,7 +189,8 @@ public class TaskExecutionArtifactService {
     }
 
     private String sanitizeText(String value) {
-        String text = ExecutionContentSanitizer.sanitize(value).strip();
+        // 产物面向项目成员；与诊断摘要使用同等严格的规则，禁止把命令或原始输出反写出来。
+        String text = ExecutionContentSanitizer.sanitizeDiagnosticDetail(value).strip();
         return text.length() <= MAX_TEXT_LENGTH ? text : text.substring(0, MAX_TEXT_LENGTH) + "...";
     }
 

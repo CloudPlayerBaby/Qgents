@@ -13,6 +13,9 @@ import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskRunMapper;
 import qg.qgent.mapper.TaskStepMapper;
+import qg.qgent.orchestration.AgentRunOutcome;
+import qg.qgent.orchestration.OrchestrationPhase;
+import qg.qgent.orchestration.RunOutcome;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -46,6 +49,7 @@ public class TaskRunRecoveryScheduler {
     private final EventService eventService;
     private final ApplicationEventPublisher eventPublisher;
     private final TaskRunLogService taskRunLogService;
+    private final TaskRunFailureDiagnosticService failureDiagnostics;
 
     /**
      * 无进行中 Run 的崩溃任务的陈旧阈值；可配置，默认 15 分钟。
@@ -57,16 +61,17 @@ public class TaskRunRecoveryScheduler {
                                     EventService eventService,
                                     ApplicationEventPublisher eventPublisher,
                                     @Value("${qgents.task-recovery.stale-run-threshold:20m}") Duration staleRunThreshold) {
-        this(tasks, steps, runMapper, artifactService, eventService, eventPublisher, staleRunThreshold, null);
+        this(tasks, steps, runMapper, artifactService, eventService, eventPublisher, staleRunThreshold, null, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public TaskRunRecoveryScheduler(TaskMapper tasks, TaskStepMapper steps, TaskRunMapper runMapper,
                                     TaskExecutionArtifactService artifactService,
                                     EventService eventService,
-                                    ApplicationEventPublisher eventPublisher,
-                                    @Value("${qgents.task-recovery.stale-run-threshold:20m}") Duration staleRunThreshold,
-                                    TaskRunLogService taskRunLogService) {
+                                     ApplicationEventPublisher eventPublisher,
+                                     @Value("${qgents.task-recovery.stale-run-threshold:20m}") Duration staleRunThreshold,
+                                     TaskRunLogService taskRunLogService,
+                                     TaskRunFailureDiagnosticService failureDiagnostics) {
         this.tasks = tasks;
         this.steps = steps;
         this.runMapper = runMapper;
@@ -75,6 +80,7 @@ public class TaskRunRecoveryScheduler {
         this.eventPublisher = eventPublisher;
         this.staleRunThreshold = staleRunThreshold;
         this.taskRunLogService = taskRunLogService;
+        this.failureDiagnostics = failureDiagnostics;
     }
 
     /**
@@ -108,10 +114,23 @@ public class TaskRunRecoveryScheduler {
                 if (task == null) {
                     continue;
                 }
-                // 先收敛 Task，再写失败产物。即使产物落库异常，也不能让旧 Task 留在可恢复状态。
-                if (tasks.failAfterStaleRun(task.getProjectId(), task.getId()) == 1) {
+                // CAS 已经使 Run 终态；Task 同步收敛后，必须先持久化诊断/产物，再发布任何终态事件。
+                boolean taskFailed = tasks.failAfterStaleRun(task.getProjectId(), task.getId()) == 1;
+                if (taskFailed) {
                     task.setStatus("FAILED");
                     run.setStatus("FAILED");
+                } else {
+                    log.info("reclaimed stale run but task already left executable states runId={} taskId={} status={}",
+                            runId, run.getTaskId(), task.getStatus());
+                }
+                TaskStepEntity step = steps.selectById(run.getTaskStepId());
+                if (step != null) {
+                    recordOrphanFailure(task, run, step);
+                    artifactService.createRunArtifact(task, run, step,
+                            artifactTypeForRole(run.getRole()), orphanSummary(run, step));
+                }
+                markStepFailedIfActive(run.getTaskId(), run.getTaskStepId());
+                if (taskFailed) {
                     if (taskRunLogService != null) {
                         taskRunLogService.append(run, "TERMINAL", run.getRole(),
                                 "ORPHANED_RUN_TIMEOUT：运行超过陈旧阈值未返回，已被恢复器回收");
@@ -122,20 +141,36 @@ public class TaskRunRecoveryScheduler {
                             run.getId().toString(), TaskEventPayloads.taskRunUpdated(run, 0));
                     log.info("reclaimed stale run and failed task runId={} taskId={} projectId={} stepId={}",
                             runId, run.getTaskId(), task.getProjectId(), run.getTaskStepId());
-                } else {
-                    log.info("reclaimed stale run but task already left executable states runId={} taskId={} status={}",
-                            runId, run.getTaskId(), task.getStatus());
-                }
-                TaskStepEntity step = steps.selectById(run.getTaskStepId());
-                markStepFailedIfActive(run.getTaskId(), run.getTaskStepId());
-                if (step != null) {
-                    artifactService.createRunArtifact(task, run, step,
-                            artifactTypeForRole(run.getRole()), orphanSummary(run, step));
                 }
             } catch (RuntimeException e) {
                 log.warn("stale run reclaim skipped runId={}: {}", runId, e.getMessage());
             }
         }
+    }
+
+    /** 由恢复器终止的 Run 也必须写入与在线编排一致的失败诊断。 */
+    private void recordOrphanFailure(TaskEntity task, TaskRunEntity run, TaskStepEntity step) {
+        if (failureDiagnostics == null) {
+            return;
+        }
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setOutcome(RunOutcome.FAILED_INFRASTRUCTURE);
+        outcome.setPhase(orphanPhase(run.getRole()));
+        outcome.setFailureCode("AGENT_RUN_TIMEOUT");
+        outcome.setDiagnosticFailureCode("ORPHANED_RUN_TIMEOUT");
+        outcome.setDiagnosticSource("RECOVERY");
+        outcome.setDiagnosticDetail("运行超过陈旧阈值未返回，已被恢复器回收");
+        outcome.setMessage("运行超过陈旧阈值未返回，已被恢复器回收");
+        failureDiagnostics.record(task, run, step, outcome.getPhase(), outcome);
+    }
+
+    private OrchestrationPhase orphanPhase(String role) {
+        return switch (role == null ? "" : role) {
+            case "PLANNER" -> OrchestrationPhase.PLAN;
+            case "TESTER" -> OrchestrationPhase.TESTING;
+            case "REVIEWER" -> OrchestrationPhase.REVIEWING;
+            default -> OrchestrationPhase.CODING;
+        };
     }
 
     /**

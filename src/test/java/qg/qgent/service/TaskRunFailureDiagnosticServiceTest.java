@@ -10,6 +10,7 @@ import qg.qgent.mapper.TaskRunFailureDiagnosticMapper;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.OrchestrationPhase;
 import qg.qgent.orchestration.RunOutcome;
+import qg.qgent.orchestration.result.TestResult;
 
 import java.util.List;
 import java.util.UUID;
@@ -63,6 +64,59 @@ class TaskRunFailureDiagnosticServiceTest {
 
         assertThat(actual).isSameAs(existing);
         verify(mapper, never()).insert(any(TaskRunFailureDiagnosticEntity.class));
+    }
+
+    @Test
+    void persistsOrdinaryTestFailureWithStepSnapshotAndStructuredFacts() {
+        TaskRunFailureDiagnosticMapper mapper = mock(TaskRunFailureDiagnosticMapper.class);
+        when(mapper.selectList(any())).thenReturn(List.of());
+        TaskRunFailureDiagnosticService service = new TaskRunFailureDiagnosticService(mapper);
+        Fixture fixture = new Fixture();
+        fixture.step.setRole("TESTER");
+        fixture.step.setExecutionMode("TEST");
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setOutcome(RunOutcome.FAILED_QUALITY);
+        outcome.setMessage("测试发现 1 项失败");
+        TestResult test = new TestResult();
+        test.setExitCode(1);
+        test.setVerificationMode("COMMAND");
+        test.setNeedsCodingFix(true);
+        TestResult.Failure failure = new TestResult.Failure();
+        failure.setName("CalculatorTest");
+        failure.setReason("expected 5 but got 4; token=secret C:\\worker\\repo");
+        failure.setSeverity("ERROR");
+        test.setFailures(List.of(failure));
+        outcome.setTestResult(test);
+
+        service.record(fixture.task, fixture.run, fixture.step, OrchestrationPhase.TESTING, outcome);
+
+        ArgumentCaptor<TaskRunFailureDiagnosticEntity> stored =
+                ArgumentCaptor.forClass(TaskRunFailureDiagnosticEntity.class);
+        verify(mapper).insert(stored.capture());
+        TaskRunFailureDiagnosticEntity value = stored.getValue();
+        assertThat(value.getFailureCode()).isEqualTo("PROCESS_EXIT_NONZERO");
+        assertThat(value.getPublicFailureCode()).isEqualTo("PROCESS_EXIT_NONZERO");
+        assertThat(value.getRunOutcome()).isEqualTo("FAILED_QUALITY");
+        assertThat(value.getStepRole()).isEqualTo("TESTER");
+        assertThat(value.getExecutionMode()).isEqualTo("TEST");
+        assertThat(value.getDiagnosticContext()).containsKey("test");
+        assertThat(String.valueOf(value.getDiagnosticContext())).contains("CalculatorTest", "[redacted]", "[host path omitted]")
+                .doesNotContain("secret", "C:\\worker");
+    }
+
+    @Test
+    void doesNotPersistSucceededOrCancelledOutcome() {
+        TaskRunFailureDiagnosticMapper mapper = mock(TaskRunFailureDiagnosticMapper.class);
+        TaskRunFailureDiagnosticService service = new TaskRunFailureDiagnosticService(mapper);
+        Fixture fixture = new Fixture();
+        AgentRunOutcome succeeded = new AgentRunOutcome();
+        succeeded.setOutcome(RunOutcome.SUCCEEDED);
+        AgentRunOutcome cancelled = new AgentRunOutcome();
+        cancelled.setOutcome(RunOutcome.CANCELLED);
+
+        assertThat(service.record(fixture.task, fixture.run, fixture.step, OrchestrationPhase.CODING, succeeded)).isNull();
+        assertThat(service.record(fixture.task, fixture.run, fixture.step, OrchestrationPhase.CODING, cancelled)).isNull();
+        verifyNoInteractions(mapper);
     }
 
     @Test

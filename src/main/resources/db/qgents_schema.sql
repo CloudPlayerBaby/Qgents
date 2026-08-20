@@ -713,11 +713,15 @@ CREATE TABLE IF NOT EXISTS task_run_failure_diagnostics (
     task_run_id BINARY(16) NOT NULL COMMENT '所属失败任务运行ID，每个Run至多一条',
     task_step_id BINARY(16) NOT NULL COMMENT '所属任务步骤ID',
     phase VARCHAR(32) NOT NULL COMMENT '编排相位：PLAN/CODING/TESTING/REVIEWING',
+    run_outcome VARCHAR(32) NOT NULL COMMENT '失败语义：FAILED/FAILED_QUALITY/FAILED_INFRASTRUCTURE',
+    step_role VARCHAR(32) NOT NULL COMMENT '失败步骤角色',
+    execution_mode VARCHAR(32) NOT NULL COMMENT '失败步骤执行模式',
     source VARCHAR(32) NOT NULL COMMENT '内部失败来源标签',
     failure_code VARCHAR(64) NOT NULL COMMENT '原始归一化内部失败码，未知码仅在本表保留',
     public_failure_code VARCHAR(64) NOT NULL COMMENT '与客户端一致的稳定公开失败码',
     exception_type VARCHAR(255) NULL COMMENT '异常简单类型名，不保存堆栈',
     failure_detail TEXT NOT NULL COMMENT '已脱敏且限长的内部失败上下文，禁止命令、原始输出、环境变量、路径和凭据',
+    diagnostic_context JSON NULL COMMENT '按失败相位保存的脱敏结构化上下文，不保存原始命令或输出',
     detail_fingerprint CHAR(64) NOT NULL COMMENT 'failure_detail 的 SHA-256 指纹，用于聚合定位',
     occurred_at DATETIME(6) NOT NULL COMMENT '失败发生时间（UTC）',
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '创建时间（UTC）',
@@ -728,7 +732,7 @@ CREATE TABLE IF NOT EXISTS task_run_failure_diagnostics (
     CONSTRAINT fk_task_run_failure_diagnostic_task FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE,
     CONSTRAINT fk_task_run_failure_diagnostic_run FOREIGN KEY (task_run_id) REFERENCES task_runs (id) ON DELETE CASCADE,
     CONSTRAINT fk_task_run_failure_diagnostic_step FOREIGN KEY (task_step_id) REFERENCES task_steps (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仅供后端受控查询的TaskRun基础设施失败诊断';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仅供后端受控查询的TaskRun失败诊断';
 
 CREATE TABLE IF NOT EXISTS
     execution_logs (
