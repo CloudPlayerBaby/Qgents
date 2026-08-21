@@ -96,6 +96,12 @@ public class WorkflowGraphBuilder {
                 routes.put("next", next);
                 routes.put("retry", nodeId);
                 routes.put("requeue", requeueNodeId);
+                // TESTING 相位失败（验证/测试未通过）→ 交下一个 REVIEW 步骤裁决：Test 不判定
+                // 任务失败，Review 是最终裁决（见 OrchestrationStateMachine）。不能按序列 next
+                // 继续执行后续步骤——否则 VERIFY 失败后仍会继续执行 MUTATE 写步骤。之后没有
+                // REVIEW 步骤时回退到 next（等价旧行为，保证条件边目标永远存在）。
+                String reviewTarget = nextReviewStepId(steps, i);
+                routes.put("review", reviewTarget == null ? next : reviewTarget);
                 routes.put(GraphDefinition.END, GraphDefinition.END);
                 graph.addConditionalEdges(nodeId, route, routes);
             }
@@ -110,6 +116,23 @@ public class WorkflowGraphBuilder {
             // 图结构错误属于编程错误（节点/边名不匹配），包装为运行时异常，不改变调用方签名。
             throw new IllegalStateException("failed to build step-driven orchestration graph", e);
         }
+    }
+
+    /**
+     * 当前步骤之后第一个 REVIEW 步骤（role=REVIEWER 或 executionMode=REVIEW）的节点 ID；
+     * 之后没有 REVIEW 步骤时返回 null，由调用方回退到按序 next。判定与
+     * {@code TaskOrchestrator#stepPhase} 的 REVIEWING 相位一致。
+     */
+    private static String nextReviewStepId(List<TaskStepEntity> steps, int fromIndex) {
+        for (int i = fromIndex + 1; i < steps.size(); i++) {
+            TaskStepEntity step = steps.get(i);
+            if ("REVIEWER".equals(step.getRole())
+                    || TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole())
+                    == TaskStepExecutionMode.REVIEW) {
+                return step.getId().toString();
+            }
+        }
+        return null;
     }
 
     /**

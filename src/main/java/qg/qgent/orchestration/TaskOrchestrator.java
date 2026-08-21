@@ -201,7 +201,14 @@ public class TaskOrchestrator {
         // 双持同一 workspace session、输家 finally release 销毁赢家正在用的沙箱。
         TaskExecutionContext previous = executions.putIfAbsent(taskId, ctx);
         if (previous != null) {
-            throw new IllegalStateException("Task " + taskId + " is already being orchestrated in this process");
+            // 恢复器只会在任务长期无活跃 Run 时续跑；若本进程仍保留旧上下文且尚未创建 Run，
+            // 说明旧线程卡在 Sandbox 初始化等启动窗口。不能只把异常交给异步监听器吞掉，
+            // 否则任务会永久 RUNNING；已有 Run 时保留原执行者继续收敛，避免误判并发执行。
+            if (previous.activeRunId == null) {
+                failStartup(task, previous, new IllegalStateException(
+                        "Task " + taskId + " is already being orchestrated in this process"));
+            }
+            return;
         }
         try {
             // 先物化 Planner 步骤再获取 Sandbox。这样即使 Sandbox/Worker 在规划调用前失败，
@@ -210,6 +217,12 @@ public class TaskOrchestrator {
                 planMaterialization.ensurePlannerStep(task);
             }
             sandboxSessionManager.acquire(task.getId(), task.getProjectId(), task.getWorkspaceId());
+            // 恢复器可能已将同一启动上下文收敛为 FAILED；旧初始化线程即使晚返回，也不得
+            // 再进入 Planner/正式图或创建 Sandbox 后继续修改 Workspace。
+            if (ctx.aborted) {
+                log.info("orchestration startup context aborted before graph taskId={}", taskId);
+                return;
+            }
             // 群聊/Skill/Memory 上下文快照：一次 orchestrate 组装一次，跨节点复用（失败不阻断）
             ctx.groupContext = contextAssembler.buildGroupContext(task);
             TaskEntity current = taskMapper.selectById(taskId);
@@ -385,6 +398,9 @@ public class TaskOrchestrator {
      * （落库 + task.updated 事件 + TASK_FAILED 通知）并以编排助手身份回群失败卡片。
      */
     private void failStartup(TaskEntity task, TaskExecutionContext ctx, RuntimeException cause) {
+        if (ctx != null) {
+            ctx.aborted = true;
+        }
         log.error("orchestration aborted by unexpected failure, taskId={} exceptionType={} detail={}", task.getId(),
                 cause.getClass().getSimpleName(), ExecutionContentSanitizer.sanitizeDiagnosticDetail(cause.getMessage()));
         TaskEntity latest = taskMapper.selectById(task.getId());
@@ -752,7 +768,12 @@ public class TaskOrchestrator {
         switch (decision.getAction()) {
             case ADVANCE -> {
                 ctx.retryOf = null;
-                route = "next";
+                // TESTING 相位失败（验证/测试未通过）→ 交下一个 REVIEW 步骤裁决，而不是按序列
+                // next 继续执行后续步骤——否则 VERIFY 失败后仍会继续执行 MUTATE 写步骤
+                // （Test 不判任务失败，Review 是最终裁决，见 OrchestrationStateMachine）。
+                // TESTING SUCCEEDED 与其他相位仍正常按序推进。
+                route = phase == OrchestrationPhase.TESTING
+                        && outcome.getOutcome() != RunOutcome.SUCCEEDED ? "review" : "next";
             }
             case REQUEUE_CODING -> {
                 resetStepsForQualityRework(task, ctx.steps, ctx.repairCodingStepId());
@@ -1221,6 +1242,13 @@ public class TaskOrchestrator {
                 updateTaskStatus(latest, "CANCELLED");
                 sendAgentCard(latest, "task-" + latest.getId(), "CANCELLED", null, "任务已取消");
             }
+            return;
+        }
+        // 恢复器可能已经把卡死启动窗口收敛为 FAILED；旧线程晚返回时不得用过期上下文
+        // 覆盖任务终态，也不得重复发送成功/失败卡片。
+        if (latest == null || !STARTABLE_TASK_STATUSES.contains(latest.getStatus())) {
+            log.info("skip stale orchestration terminal update taskId={} status={}", task.getId(),
+                    latest == null ? "MISSING" : latest.getStatus());
             return;
         }
         FinishingStatus finishing = switch (action) {
@@ -1782,6 +1810,8 @@ public class TaskOrchestrator {
         /** 当前步骤的 TaskRun；创建成功后立即记录，覆盖 QUEUED/RUNNING 异常窗口。 */
         private UUID activeRunId;
         private UUID lastRunId;
+        /** 启动窗口被恢复器或异常收敛后，旧线程不得继续进入图执行。 */
+        private volatile boolean aborted;
         private UUID retryOf;
         /**
          * 本次续跑的起始步骤 ID（用户重试/恢复器续跑传入）；null 表示全量编排。

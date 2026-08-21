@@ -249,7 +249,7 @@ public class MergeRequestService {
                 || "PENDING_CREATE".equalsIgnoreCase(status);
         List<MergeRequestSummaryResponse> pendingCandidates = includePendingCreate
                 ? placeholderMergeRequests(projectId, repositoryId, groupId,
-                "PENDING_CREATE".equalsIgnoreCase(status) ? null : "WAITING_PREFLIGHT")
+                "WAITING_PREFLIGHT")
                 : List.of();
         Set<String> pendingIds = pendingCandidates.stream()
                 .map(MergeRequestSummaryResponse::getId).filter(Objects::nonNull).collect(Collectors.toSet());
@@ -471,6 +471,10 @@ public class MergeRequestService {
             throw new ApiException(HttpStatus.CONFLICT, "MR_BRANCH_LOCKED_BY_OPEN_MR",
                     "该工作分支已有未合并的 MR，不能继续推送新的提交",
                     List.of(branchLockDetails(existing)));
+        }
+        if (existing == null && sameCommit(worktree.getHeadCommit(), targetCommit)) {
+            throw new ApiException(HttpStatus.CONFLICT, "MR_NO_CHANGES",
+                    "源分支与目标分支当前提交相同，没有可创建 MR 的变更");
         }
         if (!completedReplayCandidate) {
             requirePreflightGates().requireReady(task, worktree, request.getRepositoryId(), request.getTargetBranch(), targetCommit);
@@ -1787,8 +1791,8 @@ public class MergeRequestService {
         QueryWrapper<TaskEntity> taskQuery = Wrappers.<TaskEntity>query()
                 .eq("project_id", projectId).in("workspace_id", workspaceIds)
                 .eq(requirementGroupId != null, "requirement_group_id", requirementGroupId);
-        // 默认列表同时展示仍在等待预检的 MR_FIRST 任务，以及已经完成交付但尚未
-        // 落库真实 MR 的 DIFF_FIRST 小任务。PENDING_CREATE 查询则保持原语义：不限制 Task 状态。
+        // 待创建占位只代表已经完成交付、可以进入 MR 前门禁的任务。
+        // 默认列表和显式 PENDING_CREATE 查询都必须排除仍在开发/等待交付确认的 Task。
         if ("WAITING_PREFLIGHT".equalsIgnoreCase(taskRequiredStatus)) {
             taskQuery.and(wrapper -> wrapper.eq("status", "WAITING_PREFLIGHT")
                     .or().eq("status", "SUCCEEDED"));

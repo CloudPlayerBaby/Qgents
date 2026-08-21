@@ -8,6 +8,8 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 
 import java.util.Map;
 
@@ -46,6 +48,16 @@ class WorkerExceptionHandlerTest {
     }
 
     @Test
+    void validationErrorIncludesFieldAndReason() throws Exception {
+        mockMvc.perform(post("/validated-probe").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"value\":\"\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("value:")))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("must not be blank")));
+    }
+
+    @Test
     void methodNotAllowedReturnsUnifiedError() throws Exception {
         mockMvc.perform(get("/probe")).andExpect(status().isMethodNotAllowed())
                 .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"))
@@ -65,5 +77,13 @@ class WorkerExceptionHandlerTest {
         Map<String, Object> probe(@RequestBody Map<String, Object> body) {
             return body;
         }
+
+        @PostMapping("/validated-probe")
+        Map<String, Object> validatedProbe(@Valid @RequestBody ValidatedBody body) {
+            return Map.of("value", body.value());
+        }
+    }
+
+    record ValidatedBody(@NotBlank String value) {
     }
 }

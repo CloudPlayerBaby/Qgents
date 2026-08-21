@@ -14,7 +14,7 @@ public interface DryRunMapper extends BaseMapper<DryRunEntity> {
 
     @Update("update dry_runs set status='RUNNING',started_at=coalesce(started_at,UTC_TIMESTAMP(6)),"
             + "finished_at=null,claim_token=#{token},lease_expires_at=#{leaseExpiresAt},"
-            + "attempt_count=attempt_count+1 where id=#{id} and "
+            + "updated_at=UTC_TIMESTAMP(6),attempt_count=attempt_count+1 where id=#{id} and "
             + "(status='QUEUED' or (status='RUNNING' and lease_expires_at < #{now}))")
     int claim(@Param("id") java.util.UUID id, @Param("token") String token,
               @Param("now") java.time.LocalDateTime now,

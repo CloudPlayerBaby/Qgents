@@ -22,6 +22,8 @@ import java.util.UUID;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
+import org.springframework.http.HttpStatus;
+import qg.qgent.api.ApiException;
 
 class MrFirstAutomationServiceTest {
     private final TaskMapper tasks = mock(TaskMapper.class);
@@ -127,6 +129,28 @@ class MrFirstAutomationServiceTest {
 
         verify(preflightService).requestPreflight(projectId, creator, taskId, repositoryId, null);
         verify(mrService, never()).create(any(), any(), any());
+    }
+
+    @Test
+    void noChangesFailureStopsRetryingAndMarksTaskFailed() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID creator = UUID.randomUUID();
+        TaskEntity waiting = task(projectId, taskId, workspaceId);
+        waiting.setCreatedBy(creator);
+        WorkspaceRepositoryEntity worktree = worktree(workspaceId, repositoryId, "main");
+        when(tasks.selectById(taskId)).thenReturn(waiting);
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree));
+        doThrow(new ApiException(HttpStatus.CONFLICT, "MR_NO_CHANGES",
+                "源分支与目标分支当前提交相同，没有可创建 MR 的变更"))
+                .when(preflightService).requestPreflight(projectId, creator, taskId, repositoryId, null);
+
+        service.onPreflightRequested(new MrFirstPreflightRequestedDomainEvent(projectId, taskId));
+
+        verify(tasks).failMrPreflightNoChanges(projectId, taskId);
+        verify(preflightService).requestPreflight(projectId, creator, taskId, repositoryId, null);
     }
 
     private TaskEntity task(UUID projectId, UUID taskId, UUID workspaceId) {
