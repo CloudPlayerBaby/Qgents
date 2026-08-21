@@ -4,14 +4,15 @@ import lombok.Data;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Test Agent 的结构化产出：是否通过、真实 exit code、执行的命令、脱敏输出与失败项。
  * <p>
  * success 必须基于 ExecutionPort 返回的真实 exit code（exitCode == 0 才算通过），
  * 不允许凭记忆或 LLM 声称通过。stdout/stderr 只存已脱敏文本，不承载 Secret。
- * failures 供 Coding Agent 判断下一步应修复什么；needsCodingFix=false 且未通过时
- * 视为不可自动修复，由状态机判 Task FAILED 而非回 Coding 重试。
+ * failures 供 Coding Agent 判断下一步应修复什么。Test 不再自行判定任务失败：任何测试失败
+ * 统一以 TEST_FAILED 交 Review 裁决，needsCodingFix 仅作为分析信息随产物记录，不决定路由。
  */
 @Data
 public class TestResult {
@@ -63,6 +64,47 @@ public class TestResult {
      * 逻辑，并在终态如实标注「测试因环境问题未执行」。仅环境阻塞时非空。
      */
     private String environmentFailureCode;
+
+    /**
+     * 是否「测试未真实跑完」：环境阻塞未执行（{@link #environmentFailureCode} 非空）、未检测到
+     * 测试命令（verificationMode 为 NONE）或执行超时（exitCode 124/143，或摘要/失败项声明超时）。
+     * true 表示测试没有给出真实的通过/失败结论；供 Review 判定 {@code testsNotExecuted} 与
+     * 终态卡片选择「测试未执行/未完成验证」的标注文案，避免把未跑完的测试描述为已通过。
+     */
+    public boolean isInconclusive() {
+        if (isSuccess()) {
+            return false;
+        }
+        if (environmentFailureCode != null && !environmentFailureCode.isBlank()) {
+            return true;
+        }
+        if ("NONE".equalsIgnoreCase(verificationMode)) {
+            return true;
+        }
+        return isTimeoutSignal();
+    }
+
+    private boolean isTimeoutSignal() {
+        if (exitCode == 124 || exitCode == 143) {
+            return true;
+        }
+        String text = (summary == null ? "" : summary) + ' ' + failureNames();
+        String lower = text.toLowerCase(Locale.ROOT);
+        return lower.contains("timed out") || lower.contains("timeout") || lower.contains("超时");
+    }
+
+    private String failureNames() {
+        if (failures == null) {
+            return "";
+        }
+        StringBuilder joined = new StringBuilder();
+        for (Failure failure : failures) {
+            if (failure != null && failure.getName() != null) {
+                joined.append(failure.getName()).append(' ');
+            }
+        }
+        return joined.toString();
+    }
 
     /**
      * 单个失败项。

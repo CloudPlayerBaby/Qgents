@@ -104,9 +104,11 @@ public class ReviewAgent implements Agent {
             boolean success = verdict.passed();
             review.setSuccess(success);
             review.setFindings(verdict.normalizedFindings());
-            // 测试因环境问题未完成验证时，本次放行是「无真实测试证据」下的审查放行：标记
-            // testsNotExecuted，供终态如实标注「代码审查通过，但测试因环境问题未执行」。
-            if (success && isEnvironmentBlocked(input)) {
+            // 测试未真实跑完（环境阻塞/超时/未检测到测试命令）时，本次放行是「无真实测试证据」下
+            // 的审查放行：标记 testsNotExecuted，供终态如实标注「代码审查通过，但测试未完成验证」。
+            // 测试真实执行并给出失败结论的（如代码缺陷失败但 Review 判定无 MAJOR+），测试证据存在，
+            // 不设该标记——由终态卡片单独如实标注「测试未通过」。
+            if (success && isTestInconclusive(input)) {
                 review.setTestsNotExecuted(true);
             }
             AgentRunOutcome outcome = new AgentRunOutcome();
@@ -279,11 +281,14 @@ public class ReviewAgent implements Agent {
                 "exceeded " + MAX_TOOL_ROUNDS + " tool rounds without a final result");
     }
 
-    /** 测试是否因环境问题未完成验证（TestResult.environmentFailureCode 非空）。 */
-    private boolean isEnvironmentBlocked(AgentInput input) {
+    /**
+     * 测试是否未真实跑完（环境阻塞/超时/未检测到测试命令，见 {@link TestResult#isInconclusive()}）。
+     * 此类放行属「无真实测试证据」下的审查放行，需标记 testsNotExecuted。
+     */
+    private boolean isTestInconclusive(AgentInput input) {
         return input != null && input.getTestResult() != null
-                && input.getTestResult().getEnvironmentFailureCode() != null
-                && !input.getTestResult().getEnvironmentFailureCode().isBlank();
+                && !input.getTestResult().isSuccess()
+                && input.getTestResult().isInconclusive();
     }
 
     private String firstFinding(ReviewResult review) {

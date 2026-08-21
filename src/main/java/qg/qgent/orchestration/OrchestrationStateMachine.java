@@ -9,8 +9,9 @@ import org.springframework.stereotype.Component;
  * 转移规则：
  * PLAN/CODING SUCCEEDED → 进入下一相位；质量失败 → Task FAILED（Plan/Coding 无修复循环）。
  * TESTING/REVIEWING SUCCEEDED → 进入下一相位 / Task SUCCESS。
- * TESTING TEST_FAILED → 进入 REVIEWING（环境阻塞，交 Review 兜底审查代码逻辑）。
- * TESTING/REVIEWING FAILED_QUALITY → 质量循环内回到 CODING，超限 Task FAILED。
+ * TESTING 任一测试失败（FAILED/FAILED_QUALITY/TEST_FAILED）→ 进入 REVIEWING：Test 不判定任务
+ * 是否失败，Review 是最终裁决，仅 BLOCKER/MAJOR 判失败（见 REVIEWING 分支）。
+ * REVIEWING FAILED_QUALITY → 质量循环内回到 CODING，超限 Task FAILED；FAILED/TEST_FAILED → Task FAILED。
  * 任一相位 FAILED_INFRASTRUCTURE → 同相位重试（计数），超限 Task FAILED。
  * 任一相位 CANCELLED → Task CANCELLED。
  */
@@ -53,9 +54,10 @@ public class OrchestrationStateMachine {
     private StateMachineDecision testing(OrchestrationPhase phase, RunOutcome outcome, OrchestrationCounters counters) {
         return switch (outcome) {
             case SUCCEEDED -> StateMachineDecision.advance(OrchestrationPhase.REVIEWING);
-            case TEST_FAILED -> StateMachineDecision.advance(OrchestrationPhase.REVIEWING);
-            case FAILED_QUALITY -> requeueCodingOrFail(counters);
-            case FAILED -> StateMachineDecision.failed();
+            // Test 不判定任务是否失败：任一测试失败（含 FAILED/FAILED_QUALITY，如自定义 TESTER）
+            // 统一进入 REVIEWING，由 Review 按 BLOCKER/MAJOR 严重度闸门裁决。
+            case TEST_FAILED, FAILED_QUALITY, FAILED ->
+                    StateMachineDecision.advance(OrchestrationPhase.REVIEWING);
             case FAILED_INFRASTRUCTURE -> retryOrFail(phase, counters);
             case CANCELLED -> StateMachineDecision.cancelled();
         };

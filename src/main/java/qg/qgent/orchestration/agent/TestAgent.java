@@ -34,11 +34,13 @@ import java.util.UUID;
  * <ul>
  *   <li>success 以 ExecutionPort 返回的真实 exit code 为准（exitCode==0 才通过），LLM 不得推翻；</li>
  *   <li>LLM 不参与命令选择，命令由 {@link TestCommandResolver} 白名单模板解析；</li>
- *   <li>检测不到受支持构建工具时，纯文件任务走只读文件断言；无法确定断言目标时才判 Task FAILED；</li>
+ *   <li>检测不到受支持构建工具时，纯文件任务走只读文件断言；</li>
  *   <li>ExecutionPort 返回 ok=false（Sandbox 未就绪等）→ FAILED_INFRASTRUCTURE 同相位重试；</li>
- *   <li>环境/超时/依赖网络失败由 {@link TestFailureClassifier} 在 LLM 分析前分流为 TEST_FAILED，
- *       携带环境证据转交 Review 兜底审查代码逻辑（代码无误放行并标注测试未执行、有误回 Coding），
- *       不再同相位盲重试；</li>
+ *   <li><b>Test 不判定任务是否失败</b>：一切测试执行失败（代码缺陷/环境/超时/未检测到命令/文件断言/
+ *       缺人工验收报告）统一 {@link RunOutcome#TEST_FAILED} 携带完整失败信息转交 Review 裁决——
+ *       Review 独立审查代码逻辑，仅 BLOCKER/MAJOR 判失败并打回 Coding，否则放行；</li>
+ *   <li>{@link TestFailureClassifier} 只在 LLM 分析前为环境类失败打上 environmentFailureCode 元数据
+ *       （决定能否打回 Coding 与终态标注），不再决定失败路由；</li>
  *   <li>LLM 分析失败仅退回基于真实执行的结果，不影响 PASS/FAIL 真实性。</li>
  * </ul>
  * 不修改 Workspace、不 write_file、不调用其他 Agent、不执行 Git 命令、不访问宿主机。
@@ -119,15 +121,14 @@ public class TestAgent implements Agent {
             if (isCommandUnavailable(safeExec)) {
                 return environmentBlocked(input, command, safeExec, "BUILD_ENVIRONMENT_UNAVAILABLE");
             }
-            // 环境/超时/依赖网络失败在 LLM 分析之前分流：不占用质量修复循环，也不让 Coding 空转修复。
+            // 环境/超时/依赖网络失败在 LLM 分析之前分流：只打环境失败码元数据（决定终态标注与能否
+            // 打回 Coding），不再判定失败去向——所有测试失败统一 TEST_FAILED 交 Review 裁决。
             // 只对真实失败（exit != 0）分类，避免通过执行的日志误触发环境关键字。
             if (exec.exitCode() != 0) {
                 TestFailureClassifier.Verdict verdict = failureClassifier.classify(
                         exec.exitCode(), exec.stdout(), exec.stderr(), fileTargets(input));
                 if (verdict.classification() == TestFailureClassifier.Classification.ENVIRONMENT) {
-                    // 超时是确定性失败：10 分钟时限内跑不完的测试，重试大概率再次超时（尤其是
-                    // Android SDK 缺失等确定性环境缺陷会反复超时）。直接判 FAILED 不再同相位重试，
-                    // 避免任务陷入多轮 10 分钟测试循环后仍显示「运行中」。
+                    // 超时不再判任务失败：交 Review 独立裁决（代码有 MAJOR+ 缺陷仍可打回 Coding）。
                     if ("TEST_EXECUTION_TIMEOUT".equals(verdict.failureCode())) {
                         return testExecutionTimeout(input, command, safeExec);
                     }
@@ -141,8 +142,8 @@ public class TestAgent implements Agent {
             AgentRunOutcome outcome = new AgentRunOutcome();
             outcome.setPhase(input.getPhase());
             outcome.setTestResult(test);
-            outcome.setOutcome(passed ? RunOutcome.SUCCEEDED
-                    : (test.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
+            // Test 不自行判定任务失败：非零退出一律 TEST_FAILED 交 Review 裁决（仅 MAJOR+ 判失败）。
+            outcome.setOutcome(passed ? RunOutcome.SUCCEEDED : RunOutcome.TEST_FAILED);
             outcome.setMessage(test.getSummary());
             // 非零退出码是已验证的执行事实，不能让后续产物/诊断退化为 failureCode=null。
             if (!passed) {
@@ -232,8 +233,8 @@ public class TestAgent implements Agent {
         AgentRunOutcome outcome = new AgentRunOutcome();
         outcome.setPhase(input.getPhase());
         outcome.setTestResult(test);
-        outcome.setOutcome(passed ? RunOutcome.SUCCEEDED
-                : (test.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
+        // 任一验证命令失败 → TEST_FAILED 交 Review 裁决，Test 不自行判定任务失败。
+        outcome.setOutcome(passed ? RunOutcome.SUCCEEDED : RunOutcome.TEST_FAILED);
         outcome.setMessage(test.getSummary());
         return outcome;
     }
@@ -307,14 +308,14 @@ public class TestAgent implements Agent {
                 + "无法确定安全测试命令");
         failure.setSeverity("ERROR");
         test.setFailures(List.of(failure));
-        // 项目未配置测试是确定性配置问题，不是 Coding 可修复的代码缺陷，也不属于基础设施故障：
-        // needsCodingFix=false 终止质量循环（不反复退回 Developer 修复），
-        // failureCode=TEST_COMMAND_NOT_FOUND 供任务级失败语义区分「项目未配置测试」与执行失败。
+        // 项目未配置测试是确定性配置问题，不属于基础设施故障；但不判定任务失败——测试未执行
+        // 统一 TEST_FAILED 交 Review 独立裁决代码逻辑（代码正确则放行并如实标注「未执行测试」，
+        // 有 MAJOR+ 缺陷则打回 Coding）。needsCodingFix 仅作分析信息记录，不决定路由。
         test.setNeedsCodingFix(false);
 
         AgentRunOutcome outcome = new AgentRunOutcome();
         outcome.setPhase(input.getPhase());
-        outcome.setOutcome(RunOutcome.FAILED);
+        outcome.setOutcome(RunOutcome.TEST_FAILED);
         outcome.setTestResult(test);
         outcome.setMessage(test.getSummary());
         outcome.setFailureCode("TEST_COMMAND_NOT_FOUND");
@@ -390,7 +391,8 @@ public class TestAgent implements Agent {
         AgentRunOutcome outcome = new AgentRunOutcome();
         outcome.setPhase(input.getPhase());
         outcome.setTestResult(test);
-        outcome.setOutcome(failures.isEmpty() ? RunOutcome.SUCCEEDED : RunOutcome.FAILED_QUALITY);
+        // 文件断言失败也交 Review 裁决，Test 不自行判定任务失败。
+        outcome.setOutcome(failures.isEmpty() ? RunOutcome.SUCCEEDED : RunOutcome.TEST_FAILED);
         outcome.setMessage(test.getSummary());
         return outcome;
     }
@@ -423,7 +425,8 @@ public class TestAgent implements Agent {
         AgentRunOutcome outcome = new AgentRunOutcome();
         outcome.setPhase(input.getPhase());
         outcome.setTestResult(test);
-        outcome.setOutcome(hasReport ? RunOutcome.SUCCEEDED : RunOutcome.FAILED_QUALITY);
+        // 缺 Developer 检查报告也交 Review 裁决，Test 不自行判定任务失败。
+        outcome.setOutcome(hasReport ? RunOutcome.SUCCEEDED : RunOutcome.TEST_FAILED);
         outcome.setMessage(test.getSummary());
         return outcome;
     }
@@ -708,12 +711,13 @@ public class TestAgent implements Agent {
     }
 
     /**
-     * 测试命令超时：确定性失败，不再走同相位基础设施重试。
+     * 测试命令超时：不再走同相位基础设施重试，也不判定任务失败。
      * <p>
-     * 10 分钟测试时限内未完成，往往是因为测试目标本身跑不完（如 Android SDK 缺失、依赖反复下载）
-     * 等确定性环境缺陷，重试大概率再次超时。直接判 {@link RunOutcome#FAILED}（不可修复、不可重试），
-     * 让任务落到 FAILED 终态，避免陷入多轮 10 分钟循环后任务仍显示「运行中」。
+     * 10 分钟测试时限内未完成，往往是测试目标本身跑不完（如 Android SDK 缺失、依赖反复下载）
+     * 等确定性原因，重试大概率再次超时。统一 {@link RunOutcome#TEST_FAILED} 交 Review 独立裁决：
+     * 代码无 MAJOR+ 缺陷则放行并如实标注「测试执行超时未完成验证」，有 MAJOR+ 缺陷则打回 Coding。
      * 保留真实 exitCode/stdout/stderr 供诊断展示，failureCode 用稳定码 TEST_EXECUTION_TIMEOUT。
+     * 不设 environmentFailureCode——超时未必不可由代码修复（如死循环），不能因此阻断打回 Coding。
      */
     private AgentRunOutcome testExecutionTimeout(AgentInput input, List<String> command, ExecutionResult exec) {
         TestResult test = new TestResult();
@@ -724,17 +728,17 @@ public class TestAgent implements Agent {
         test.setStderr(exec.stderr());
         test.setVerificationMode("COMMAND");
         test.setSummary("测试命令 " + String.join(" ", command) + " 执行超时（" + TEST_TIMEOUT.toMinutes()
-                + " 分钟时限），判定为确定性失败不再重试");
+                + " 分钟时限），未完成验证，已转交 Review 裁决");
         TestResult.Failure failure = new TestResult.Failure();
         failure.setName("test execution timeout");
-        failure.setReason("测试在 " + TEST_TIMEOUT.toMinutes() + " 分钟时限内未完成，重试无法解决确定性环境缺陷");
+        failure.setReason("测试在 " + TEST_TIMEOUT.toMinutes() + " 分钟时限内未完成，未给出真实通过/失败结论");
         failure.setSeverity("ERROR");
         test.setFailures(List.of(failure));
         test.setNeedsCodingFix(false);
 
         AgentRunOutcome outcome = new AgentRunOutcome();
         outcome.setPhase(input.getPhase());
-        outcome.setOutcome(RunOutcome.FAILED);
+        outcome.setOutcome(RunOutcome.TEST_FAILED);
         outcome.setTestResult(test);
         outcome.setMessage(test.getSummary());
         outcome.setFailureCode("TEST_EXECUTION_TIMEOUT");

@@ -460,6 +460,66 @@ class ReviewAgentTest {
         assertThat(outcome.getReviewResult().isTestsNotExecuted()).isFalse();
     }
 
+    @Test
+    void nativeTimeoutFailureReleaseMarksTestsNotExecuted() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(reviewJson(true, "code reviewed ok", "[]")));
+
+        AgentInput timeoutInput = input();
+        timeoutInput.getTestResult().setSuccess(false);
+        timeoutInput.getTestResult().setExitCode(124);
+        timeoutInput.getTestResult().setSummary("reached the timeout of 10 minutes");
+
+        AgentRunOutcome outcome = nativeAgent().run(timeoutInput);
+
+        // 超时属「测试未完成验证」（TestResult.isInconclusive()）：Review 放行需标记 testsNotExecuted。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getReviewResult().isTestsNotExecuted()).isTrue();
+    }
+
+    @Test
+    void nativeNoTestCommandFailureReleaseMarksTestsNotExecuted() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(reviewJson(true, "code reviewed ok", "[]")));
+
+        AgentInput noCommandInput = input();
+        noCommandInput.getTestResult().setSuccess(false);
+        noCommandInput.getTestResult().setExitCode(1);
+        noCommandInput.getTestResult().setVerificationMode("NONE");
+
+        AgentRunOutcome outcome = nativeAgent().run(noCommandInput);
+
+        // 未检测到测试命令（verificationMode NONE）属「测试未完成验证」：Review 放行需标记 testsNotExecuted。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getReviewResult().isTestsNotExecuted()).isTrue();
+    }
+
+    @Test
+    void nativeRealExecutionFailureReleaseDoesNotMarkTestsNotExecuted() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(diffAccess.diff(any())).thenReturn(GitDiffResult.ok("diff", "base", "head"));
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(reviewJson(true, "code reviewed ok, no blocker", "[]")));
+
+        AgentInput failedInput = input();
+        failedInput.getTestResult().setSuccess(false);
+        failedInput.getTestResult().setExitCode(1);
+        failedInput.getTestResult().setVerificationMode("COMMAND");
+        failedInput.getTestResult().setSummary("2 tests failed");
+
+        AgentRunOutcome outcome = nativeAgent().run(failedInput);
+
+        // 测试真实执行并给出失败结论：测试证据存在，testsNotExecuted 保持 false，
+        // 由终态卡片单独如实标注「测试未通过」（见 TaskOrchestrator.testNotPassedNote）。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getReviewResult().isSuccess()).isTrue();
+        assertThat(outcome.getReviewResult().isTestsNotExecuted()).isFalse();
+    }
+
     // ---------- legacy 手写 JSON 协议（灰度期回归） ----------
 
     @Test

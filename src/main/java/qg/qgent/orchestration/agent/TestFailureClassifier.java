@@ -7,10 +7,16 @@ import java.util.Set;
 /**
  * 确定性测试失败分类器：区分"真实代码缺陷"与"环境/超时/依赖网络失败"。
  * <p>
- * Test 真实 exit code != 0 时，TestAgent 在 LLM 分析之前调用本类判断失败归属。只有能证明失败与
- * 本次改动无关（超时、依赖解析失败、网络不可达、服务连接被拒、构建工具链/SDK 缺失，且输出未引用
- * 任何已修改文件、未修改构建/清单文件）才归为 {@link Classification#ENVIRONMENT}，走 FAILED_INFRASTRUCTURE
- * 同相位重试、不占用质量修复循环；其余一律归 {@link Classification#CODE_DEFECT}，维持打回 Coding 的既有质量循环。
+ * Test 真实 exit code != 0 时，TestAgent 在 LLM 分析之前调用本类判断失败归属。本类不再决定失败
+ * 路由：所有测试执行失败统一 TEST_FAILED 交 Review 按 BLOCKER/MAJOR 严重度闸门裁决（Test 不自行
+ * 判定任务失败）。分类只决定是否设置 {@link TestResult} 的环境失败码（environmentFailureCode）元数据——
+ * 它决定环境类失败是否还能打回 Coding（见 TaskOrchestrator 环境守卫）以及终态卡片「测试未执行原因」
+ * 的如实标注，不影响失败去向。
+ * <p>
+ * 只有能证明失败与本次改动无关（超时、依赖解析失败、网络不可达、服务连接被拒、构建工具链/SDK 缺失，
+ * 且输出未引用任何已修改文件、未修改构建/清单文件）才归为 {@link Classification#ENVIRONMENT} 并设置
+ * 环境失败码；其余一律归 {@link Classification#CODE_DEFECT}（不设环境失败码，Review 判 BLOCKER/MAJOR
+ * 时仍可打回 Coding）。
  * <p>
  * 纯逻辑、无 LLM、无 Spring，可独立单元测试。环境关键字只做保守方向使用：命中守卫（输出引用已修改
  * 文件，或本次改动了构建文件）时强制按代码缺陷处理，避免"改坏 pom 坐标 / 改错连接配置"这类真实

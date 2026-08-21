@@ -84,7 +84,7 @@ class TestAgentTest {
     }
 
     @Test
-    void failingTestYieldsQualityFixOutcome() {
+    void failingTestYieldsTestFailedOutcome() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 1, "", "2 tests failed", null));
@@ -93,7 +93,7 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("PROCESS_EXIT_NONZERO");
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
         assertThat(outcome.getTestResult().getFailures()).hasSize(1);
@@ -128,7 +128,7 @@ class TestAgentTest {
         AgentRunOutcome outcome = agent().run(input());
 
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("PROCESS_EXIT_NONZERO");
     }
 
@@ -256,7 +256,7 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
         assertThat(outcome.getTestResult().getExitCode()).isEqualTo(2);
         assertThat(outcome.getTestResult().getSummary())
@@ -270,7 +270,7 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
         verify(executionPort, never()).execute(any(), anyList(), any());
         verify(llm, never()).complete(anyString(), anyList());
@@ -328,7 +328,7 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(manualInput);
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getTestResult().getSummary()).contains("缺少 Developer");
     }
 
@@ -364,7 +364,7 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(fileInput);
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
         assertThat(outcome.getTestResult().getFailures().get(0).getReason()).contains("为空");
         verify(executionPort, never()).execute(any(), anyList(), any());
@@ -463,7 +463,7 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(fileInput);
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getTestResult().isSuccess()).isFalse();
         assertThat(outcome.getTestResult().getFailures().get(0).getReason()).contains("不存在");
         verify(executionPort, never()).execute(any(), anyList(), any());
@@ -515,8 +515,9 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(input());
 
-        // 超时是确定性失败：不再走 FAILED_INFRASTRUCTURE 同相位重试，直接 FAILED 让任务落到终态。
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        // 超时是确定性失败：不再走 FAILED_INFRASTRUCTURE 同相位重试，统一 TEST_FAILED 交 Review
+        // 裁决——代码无 BLOCKER/MAJOR 则放行并在终态如实标注「测试执行超时未完成验证」。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("TEST_EXECUTION_TIMEOUT");
         verify(llm, never()).complete(anyString(), anyList());
     }
@@ -546,12 +547,12 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         verify(llm).complete(anyString(), anyList());
     }
 
     @Test
-    void modifiedBuildFileKeepsDependencyFailureAsQualityFix() {
+    void modifiedBuildFileKeepsDependencyFailureAsTestFailed() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 1, "", "[ERROR] Could not resolve dependencies", null));
@@ -562,7 +563,7 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(buildInput);
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         verify(llm).complete(anyString(), anyList());
     }
 
@@ -725,7 +726,7 @@ class TestAgentTest {
     @Test
     void consumesPerRepositoryPlannedCommandsAndMergesFailure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("backend/pom.xml", "frontend/tests/a.test.js"));
-        // backend 通过、frontend 失败 → 整体 FAILED_QUALITY。
+        // backend 通过、frontend 失败 → 整体 TEST_FAILED（Test 不自判失败，交 Review 裁决）。
         when(executionPort.execute(any(), eq("backend"), eq(List.of("mvn", "test")), any()))
                 .thenReturn(new ExecutionResult(true, 0, "backend ok", "", null));
         when(executionPort.execute(any(), eq("frontend"), eq(List.of("node", "tests/a.test.js")), any()))
@@ -740,7 +741,7 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(input);
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         TestResult test = outcome.getTestResult();
         assertThat(test.isSuccess()).isFalse();
         assertThat(test.getCommand()).isEqualTo("mvn test && node tests/a.test.js");

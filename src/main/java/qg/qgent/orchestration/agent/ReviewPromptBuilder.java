@@ -83,6 +83,7 @@ public class ReviewPromptBuilder {
                 - 推测性、潜在或合规类担忧（"可能"、"疑似"、"有风险"、"建议考虑"）在未确认实际错误或明确违规前，不判 MAJOR/BLOCKER，放入 MINOR/INFO 或 suggestions；此条不适用于安全、权限、凭证类问题，它们仍按实际严重度判定。
                 - 非代码文件（README/文档/SQL/配置文件等）的修改：内容错误、关键信息缺失、与用户明确要求冲突才判 MAJOR；措辞、排版、格式、规范建议一律判 MINOR/INFO。
                 - 示例：为 README 增加开源协议声明这类合规性改动，除非用户明确要求特定许可证或改动造成明确协议冲突，否则不判 MAJOR/BLOCKER。
+                - 测试失败或未执行只是验证信号，不是自动 MAJOR：先判断测试失败是否源于代码本身的真实缺陷（编译错误、逻辑错误、断言失败等）；环境/依赖/网络/超时/命令缺失等非代码原因不作为 MAJOR，除非你独立确认代码本身存在 BLOCKER/MAJOR 缺陷。
 
                 验收目标核实规则：
                 - 任务或计划明确要求的验收目标（文件、函数、接口、DOM 选择器等）必须真实存在才能认定满足。
@@ -107,7 +108,7 @@ public class ReviewPromptBuilder {
                 - 存在上一轮审查反馈时，优先复核其中的旧 finding；只报告当前仍未解决的可执行缺陷，不重复已修复问题或纯风格建议。
                 - summary 不得为空；findings 可为空数组。needsCodingFix 只表示当前未通过是否应回到 Coding Agent 修改仓库内代码/配置后重新审查，默认 true。
                 - 只有已有明确证据表明问题不可能通过修改仓库内代码或配置解决时，needsCodingFix 才能为 false，例如外部审批、Sandbox/Worker 故障、外部服务不可用或缺失运行环境；summary 必须说明该非代码依赖及处理方。
-                - 需求遗漏、实现缺陷、安全/权限问题、测试失败、仓库内配置错误，或尚无法确定根因的审查问题，needsCodingFix 必须为 true；不得为了结束任务、暂时无法定位或认为问题与本轮改动无关而填 false。
+                - 需求遗漏、实现缺陷、安全/权限问题、已确认由代码缺陷导致的测试失败、仓库内配置错误，或尚无法确定根因的审查问题，needsCodingFix 必须为 true；不得为了结束任务、暂时无法定位或认为问题与本轮改动无关而填 false。测试因环境/依赖/超时/命令缺失而未执行或未通过，且你独立确认代码本身无 BLOCKER/MAJOR 缺陷时，不应据此判失败。
                 """;
     }
 
@@ -140,6 +141,7 @@ public class ReviewPromptBuilder {
                 - 推测性、潜在或合规类担忧（"可能"、"疑似"、"有风险"、"建议考虑"）在未确认实际错误或明确违规前，不判 MAJOR/BLOCKER，放入 MINOR/INFO 或 suggestions；此条不适用于安全、权限、凭证类问题，它们仍按实际严重度判定。
                 - 非代码文件（README/文档/SQL/配置文件等）的修改：内容错误、关键信息缺失、与用户明确要求冲突才判 MAJOR；措辞、排版、格式、规范建议一律判 MINOR/INFO。
                 - 示例：为 README 增加开源协议声明这类合规性改动，除非用户明确要求特定许可证或改动造成明确协议冲突，否则不判 MAJOR/BLOCKER。
+                - 测试失败或未执行只是验证信号，不是自动 MAJOR：先判断测试失败是否源于代码本身的真实缺陷（编译错误、逻辑错误、断言失败等）；环境/依赖/网络/超时/命令缺失等非代码原因不作为 MAJOR，除非你独立确认代码本身存在 BLOCKER/MAJOR 缺陷。
 
                 验收目标核实规则：
                 - 任务或计划明确要求的验收目标（文件、函数、接口、DOM 选择器等）必须真实存在才能认定满足。
@@ -163,7 +165,7 @@ public class ReviewPromptBuilder {
                 - 存在上一轮审查反馈时，优先复核其中的旧 finding；只报告当前仍未解决的可执行缺陷，不重复已修复问题或纯风格建议。
                 - summary 不得为空；findings 可为空数组。needsCodingFix 只表示当前未通过是否应回到 Coding Agent 修改仓库内代码/配置后重新审查，默认 true。
                 - 只有已有明确证据表明问题不可能通过修改仓库内代码或配置解决时，needsCodingFix 才能为 false，例如外部审批、Sandbox/Worker 故障、外部服务不可用或缺失运行环境；summary 必须说明该非代码依赖及处理方。
-                - 需求遗漏、实现缺陷、安全/权限问题、测试失败、仓库内配置错误，或尚无法确定根因的审查问题，needsCodingFix 必须为 true；不得为了结束任务、暂时无法定位或认为问题与本轮改动无关而填 false。
+                - 需求遗漏、实现缺陷、安全/权限问题、已确认由代码缺陷导致的测试失败、仓库内配置错误，或尚无法确定根因的审查问题，needsCodingFix 必须为 true；不得为了结束任务、暂时无法定位或认为问题与本轮改动无关而填 false。测试因环境/依赖/超时/命令缺失而未执行或未通过，且你独立确认代码本身无 BLOCKER/MAJOR 缺陷时，不应据此判失败。
                 """;
     }
 
@@ -243,25 +245,39 @@ public class ReviewPromptBuilder {
         if (test == null) {
             return;
         }
+        boolean envBlocked = test.getEnvironmentFailureCode() != null
+                && !test.getEnvironmentFailureCode().isBlank();
         sb.append("\n\n上次测试结果：").append(test.isSuccess() ? "通过" : "未通过")
-                .append("（exit code ").append(test.getExitCode()).append("）");
-        if (test.getEnvironmentFailureCode() != null && !test.getEnvironmentFailureCode().isBlank()) {
+                .append("（exit code ").append(test.getExitCode())
+                .append("；验证方式 ").append(nullToBlank(test.getVerificationMode()));
+        if (test.getCommand() != null && !test.getCommand().isBlank()) {
+            sb.append("；命令 ").append(test.getCommand());
+        }
+        sb.append("）");
+        if (envBlocked) {
             sb.append("\n测试执行状态：测试因环境问题未能完成验证（").append(test.getEnvironmentFailureCode())
                     .append("），并非本次代码改动导致的失败。请独立审查代码逻辑本身是否有缺陷：")
                     .append("若代码逻辑正确，可判定通过（此时测试并未真实通过，属环境阻塞下的审查放行）；")
-                    .append("若发现代码缺陷，请按 BLOCKER/MAJOR 报告并打回 Coding。");
-            if (test.getStdout() != null && !test.getStdout().isBlank()) {
-                sb.append("\n测试 stdout（脱敏，供核实环境原因）：\n").append(test.getStdout());
-            }
-            if (test.getStderr() != null && !test.getStderr().isBlank()) {
-                sb.append("\n测试 stderr（脱敏，供核实环境原因）：\n").append(test.getStderr());
-            }
+                    .append("若发现代码缺陷，请按 BLOCKER/MAJOR 报告。");
+        } else if (!test.isSuccess()) {
+            sb.append("\n测试未通过或未执行只是验证信号，不代表任务失败。你是最终裁决：请独立判断 Coding 的实际修改")
+                    .append("是否构成 BLOCKER/MAJOR 缺陷，包括判断测试失败是源于代码本身的真实缺陷（编译错误、逻辑错误、")
+                    .append("断言失败等），还是环境/依赖/超时/命令缺失等非代码原因。无 BLOCKER/MAJOR → success=true（即使测试未通过）；")
+                    .append("有 BLOCKER/MAJOR → success=false 并给出可执行的 finding。");
         }
         if (test.getFailures() != null && !test.getFailures().isEmpty()) {
             sb.append("\n测试失败项：").append(test.getFailures());
         }
         if (test.getSummary() != null && !test.getSummary().isBlank()) {
             sb.append("\n测试摘要：").append(test.getSummary());
+        }
+        if (!test.isSuccess()) {
+            if (test.getStdout() != null && !test.getStdout().isBlank()) {
+                sb.append("\n测试 stdout（脱敏，供核实失败原因）：\n").append(test.getStdout());
+            }
+            if (test.getStderr() != null && !test.getStderr().isBlank()) {
+                sb.append("\n测试 stderr（脱敏，供核实失败原因）：\n").append(test.getStderr());
+            }
         }
     }
 

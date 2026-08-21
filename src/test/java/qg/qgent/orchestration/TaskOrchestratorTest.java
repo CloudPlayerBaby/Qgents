@@ -166,8 +166,11 @@ class TaskOrchestratorTest {
         TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 5);
         List<TaskStepEntity> all = List.of(planner, developerOne, developerTwo, tester, reviewer);
         fixture.stubPlan(task, planner, all);
+        // TESTING 失败统一进 REVIEWING：由 Review 判 FAILED_QUALITY 触发 requeue（回到最后
+        // 一个可写 developer），不再由 Test 自判直接打回。REVIEWING SUCCESS 后任务成功。
         Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
                 fixture.success(OrchestrationPhase.CODING), fixture.outcome(OrchestrationPhase.TESTING,
+                        RunOutcome.FAILED_QUALITY), fixture.outcome(OrchestrationPhase.REVIEWING,
                         RunOutcome.FAILED_QUALITY), fixture.success(OrchestrationPhase.CODING),
                 fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING));
 
@@ -193,8 +196,10 @@ class TaskOrchestratorTest {
         testResult.setSuccess(false);
         testResult.setNeedsCodingFix(true);
         failedTest.setTestResult(testResult);
+        // 质量闭环改由 REVIEWING FAILED_QUALITY 触发 requeue：TESTING 失败先交 Review 裁决。
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
         fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
-                fixture.success(OrchestrationPhase.CODING), failedTest,
+                fixture.success(OrchestrationPhase.CODING), failedTest, failedReview,
                 fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
                 fixture.success(OrchestrationPhase.REVIEWING)))
                 .orchestrate(task.getProjectId(), task.getId());
@@ -219,19 +224,21 @@ class TaskOrchestratorTest {
                 fixture.planSuccess(),
                 fixture.success(OrchestrationPhase.CODING),
                 fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY),
+                fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY),
                 fixture.success(OrchestrationPhase.CODING),
                 fixture.success(OrchestrationPhase.TESTING),
                 fixture.success(OrchestrationPhase.REVIEWING));
 
         fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
 
-        // VERIFY 虽然保留 DEVELOPER role，但应按 TESTING 进入质量闭环；失败后回到
-        // 真正可写的 MUTATE developer，而不能回到同一个只读 VERIFY step。
+        // VERIFY 虽然保留 DEVELOPER role，但应按 TESTING 进入验证；Test 不自判失败，测试失败
+        // 交 Review 裁决，Review 判质量失败后回到真正可写的 MUTATE developer，而不是同一个只读
+        // VERIFY step。Review 先判一次（FAILED_QUALITY）再确认一次（SUCCESS）。
         verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(developer.getId()), anyString(), any(), any(), any());
         verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(verification.getId()), anyString(), any(), any(), any());
-        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+        verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(reviewer.getId()), anyString(), any(), any(), any());
         assertThat(fixture.feedbacksFor(OrchestrationPhase.TESTING)).hasSize(2);
     }
@@ -248,12 +255,15 @@ class TaskOrchestratorTest {
         fixture.stubPlan(task, planner, all);
         fixture.orchestrator(fixture.sequenceAgent(
                 fixture.planSuccess(),
-                fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY)))
+                fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY),
+                fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY)))
                 .orchestrate(task.getProjectId(), task.getId());
 
         verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(verification.getId()), anyString(), any(), any(), any());
-        verify(fixture.taskRuns, never()).createForStep(eq(task.getProjectId()), eq(task.getId()),
+        // TESTING 失败统一进 REVIEWING，Review 判质量失败后 requeue；但任务没有可写 MUTATE 步骤，
+        // requeue 被守卫拦截（reviewer 已运行一次）。
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(reviewer.getId()), anyString(), any(), any(), any());
         assertThat(fixture.updatedStatuses()).contains("FAILED");
         assertThat(task.getFailureCode()).isEqualTo("QUALITY_REPAIR_STEP_UNAVAILABLE");
@@ -261,13 +271,14 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void testQualityFailureWithoutCodingFixDoesNotRequeueCoding() {
+    void testQualityFailureWithoutCodingFixStillRoutesToReview() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
         TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
         TaskStepEntity tester = fixture.step(task, "TESTER", 3);
-        fixture.stubPlan(task, planner, List.of(planner, developer, tester));
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
 
         AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
         TestResult testResult = new TestResult();
@@ -277,12 +288,15 @@ class TaskOrchestratorTest {
         failedTest.setTestResult(testResult);
 
         fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
-                fixture.success(OrchestrationPhase.CODING), failedTest))
+                fixture.success(OrchestrationPhase.CODING), failedTest,
+                fixture.success(OrchestrationPhase.REVIEWING)))
                 .orchestrate(task.getProjectId(), task.getId());
 
+        // Test 的 needsCodingFix=false 不再拦截路由：TESTING 失败统一交 Review，Review 判
+        // SUCCESS（无 BLOCKER/MAJOR）→ 任务成功。needsCodingFix 仅作分析信息，不再影响去向。
         verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(developer.getId()), anyString(), any(), any(), any());
-        assertThat(fixture.updatedStatuses()).contains("FAILED");
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
     }
 
     @Test
@@ -295,19 +309,21 @@ class TaskOrchestratorTest {
         TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
         List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
         fixture.stubPlan(task, planner, all);
-        // 质量循环上限 3 次：前 3 次 FAILED_QUALITY 触发 requeue，第 4 次循环耗尽落终态。
+        // 质量循环上限 3 次：质量闭环改由 REVIEWING FAILED_QUALITY 驱动 requeue，前 3 次
+        // 触发 requeue，第 4 次循环耗尽落终态。每个闭环 = Test 失败交 Review → Review 判失败 → 回 Coding。
         AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
         TestResult repairNeeded = new TestResult();
         repairNeeded.setSuccess(false);
         repairNeeded.setNeedsCodingFix(true);
         repairNeeded.setSummary("测试未通过，需要修复");
         failedTest.setTestResult(repairNeeded);
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
 
         fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
-                fixture.success(OrchestrationPhase.CODING), failedTest,
-                fixture.success(OrchestrationPhase.CODING), failedTest,
-                fixture.success(OrchestrationPhase.CODING), failedTest,
-                fixture.success(OrchestrationPhase.CODING), failedTest))
+                fixture.success(OrchestrationPhase.CODING), failedTest, failedReview,
+                fixture.success(OrchestrationPhase.CODING), failedTest, failedReview,
+                fixture.success(OrchestrationPhase.CODING), failedTest, failedReview,
+                fixture.success(OrchestrationPhase.CODING), failedTest, failedReview))
                 .orchestrate(task.getProjectId(), task.getId());
 
         assertThat(fixture.updatedStatuses()).contains("FAILED");
@@ -750,7 +766,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void testQualityFeedbackClearsOnlyAfterTestingPasses() {
+    void testQualityFeedbackClearsOnlyAfterReviewingPasses() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -759,15 +775,18 @@ class TaskOrchestratorTest {
         TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
         fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
         AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
 
+        // TESTING FAILED_QUALITY 先记 feedback（Test 不自判），REVIEWING FAILED_QUALITY 覆盖为
+        // review 源并触发 requeue；直到 REVIEWING SUCCEEDED 才清除（source=reviewer）。
         fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
-                fixture.success(OrchestrationPhase.CODING), failedTest,
+                fixture.success(OrchestrationPhase.CODING), failedTest, failedReview,
                 fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
                 fixture.success(OrchestrationPhase.REVIEWING))).orchestrate(task.getProjectId(), task.getId());
 
-        assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly(null, failedTest);
-        assertThat(fixture.feedbacksFor(OrchestrationPhase.TESTING)).containsExactly(null, failedTest);
-        assertThat(fixture.feedbacksFor(OrchestrationPhase.REVIEWING)).containsExactly((AgentRunOutcome) null);
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.CODING)).containsExactly(null, failedReview);
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.TESTING)).containsExactly(null, null);
+        assertThat(fixture.feedbacksFor(OrchestrationPhase.REVIEWING)).containsExactly(null, failedReview);
     }
 
     @Test
@@ -784,20 +803,23 @@ class TaskOrchestratorTest {
         AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
         AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
 
+        // 线性链：developer → testSource → otherTest → reviewSource → otherReview。
+        // TESTING FAILED_QUALITY 沿 next 先到 otherTest，再到 reviewSource；REVIEWING FAILED_QUALITY
+        // 触发 requeue 回 developer。REVIEWING SUCCEEDED 若还有后续 REVIEWER step 会继续推进
+        // （COMPLETE_SUCCESS + hasFollowingStep → advance）。qualityFeedback 只对 source step 与
+        // repair(developer) 可见，不泄漏到 otherTest/otherReview；REVIEWING SUCCEEDED 时清除。
         fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
-                fixture.success(OrchestrationPhase.CODING), failedTest,
-                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
-                fixture.success(OrchestrationPhase.TESTING), failedReview,
-                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.CODING), failedTest, fixture.success(OrchestrationPhase.TESTING),
+                failedReview, fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
                 fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING),
                 fixture.success(OrchestrationPhase.REVIEWING)))
                 .orchestrate(task.getProjectId(), task.getId());
 
-        assertThat(fixture.feedbacksForStep(developer.getId())).containsExactly(null, failedTest, failedReview);
-        assertThat(fixture.feedbacksForStep(testSource.getId())).containsExactly(null, failedTest, null);
-        assertThat(fixture.feedbacksForStep(otherTest.getId())).containsOnlyNulls();
+        assertThat(fixture.feedbacksForStep(developer.getId())).containsExactly(null, failedReview);
+        assertThat(fixture.feedbacksForStep(testSource.getId())).containsExactly(null, null);
+        assertThat(fixture.feedbacksForStep(otherTest.getId())).containsExactly(null, null);
         assertThat(fixture.feedbacksForStep(reviewSource.getId())).containsExactly(null, failedReview);
-        assertThat(fixture.feedbacksForStep(otherReview.getId())).containsOnlyNulls();
+        assertThat(fixture.feedbacksForStep(otherReview.getId())).containsExactly((AgentRunOutcome) null);
     }
 
     @Test

@@ -41,22 +41,32 @@ class OrchestrationStateMachineTest {
         assertThat(d.isTerminal()).isTrue();
     }
 
-    @Test void testQualityFailureRequeuesCoding() {
+    @Test void testQualityFailureAdvancesToReviewing() {
+        // Test 不再自判失败：TESTING FAILED_QUALITY（如自定义 TESTER）也进入 REVIEWING，
+        // 不触发质量循环 requeue——循环只由 REVIEWING FAILED_QUALITY 驱动。
         StateMachineDecision d = stateMachine.decide(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY, counters);
-        assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.REQUEUE_CODING);
-        assertThat(d.getNextPhase()).isEqualTo(OrchestrationPhase.CODING);
-        assertThat(counters.getQualityFixLoops()).isEqualTo(1);
+        assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.ADVANCE);
+        assertThat(d.getNextPhase()).isEqualTo(OrchestrationPhase.REVIEWING);
+        assertThat(counters.getQualityFixLoops()).isZero();
+    }
+
+    @Test void testFailureAdvancesToReviewing() {
+        // 确定性失败（超时/无测试命令等，旧语义下直接终态失败）也统一进入 REVIEWING 由 Review 裁决。
+        StateMachineDecision d = stateMachine.decide(OrchestrationPhase.TESTING, RunOutcome.FAILED, counters);
+        assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.ADVANCE);
+        assertThat(d.getNextPhase()).isEqualTo(OrchestrationPhase.REVIEWING);
     }
 
     @Test void reviewQualityFailureRequeuesCoding() {
         StateMachineDecision d = stateMachine.decide(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY, counters);
         assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.REQUEUE_CODING);
         assertThat(d.getNextPhase()).isEqualTo(OrchestrationPhase.CODING);
+        assertThat(counters.getQualityFixLoops()).isEqualTo(1);
     }
 
     @Test void maxQualityFixLoopsExhaustedFailsTask() {
         counters.setQualityFixLoops(counters.getMaxQualityFixLoops());
-        StateMachineDecision d = stateMachine.decide(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY, counters);
+        StateMachineDecision d = stateMachine.decide(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY, counters);
         assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.COMPLETE_FAILED);
         assertThat(d.isTerminal()).isTrue();
     }

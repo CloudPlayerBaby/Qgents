@@ -42,8 +42,11 @@ public class ReviewResult {
      */
     private String failureCode;
     /**
-     * 是否在「测试因环境问题未执行」的阻塞下通过审查。true 表示 Review 放行时测试并未真实通过，
-     * 终态需如实标注「代码审查通过，但测试因环境问题未执行」，不得描述为测试通过。
+     * 是否在「测试未真实跑完」的情况下通过审查。true 表示 Review 放行时测试并未给出真实通过/失败
+     * 结论（环境阻塞、执行超时、未检测到测试命令等，见 {@link qg.qgent.orchestration.result.TestResult#isInconclusive()}），
+     * 终态需如实标注「代码审查通过，但测试未完成验证」，不得描述为测试通过。
+     * 测试真实执行并给出失败结论、但 Review 判定无 BLOCKER/MAJOR 而放行时，本标记保持 false，
+     * 由终态卡片单独如实标注「测试未通过」。
      */
     private boolean testsNotExecuted;
     /**

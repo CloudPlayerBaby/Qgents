@@ -620,8 +620,9 @@ public class TaskOrchestrator {
         // 同时可把“已进入修复闭环”明确写入用户可见的 Run 消息，避免前端把单次 Run 失败
         // 误解为 Task 已经终止。
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
-        // Test/Review 必须明确声明失败是否可由 Coding 修复。旧 Agent/测试构造若没有
-        // 结构化结果时保留历史兼容行为；一旦有结果且 needsCodingFix=false，直接终止，
+        // 质量修复循环现在只由 REVIEWING 的 FAILED_QUALITY 触发（Test 不再自行判定失败，测试失败
+        // 统一 TEST_FAILED 交 Review 裁决）。仍需 Review 明确声明失败是否可由 Coding 修复；旧 Agent/
+        // 测试构造若没有结构化结果时保留历史兼容行为；一旦有结果且 needsCodingFix=false，直接终止，
         // 避免把测试环境、命令配置或不可修复问题反复送回 Coding。
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
                 && !needsCodingFix(outcome)) {
@@ -637,10 +638,10 @@ public class TaskOrchestrator {
                     "质量检查未通过，但当前计划没有可写的 MUTATE 开发步骤可用于修复");
             decision = StateMachineDecision.failed();
         }
-        // 测试环境失败转 Review 兜底审查时，Review 只做「放行或判失败」二选一：环境问题是执行
-        // 环境缺陷而非本次代码可修复，Review 判代码有疑点时直接落 FAILED，不再回 Coding——否则
-        // 持续环境缺陷会让任务反复「改代码→再测→又环境失败」空转。放行路径（Review 判代码无误）
-        // 仍走 COMPLETE_SUCCESS，终态卡片已标注「测试因环境问题未执行」（见 finishTask）。
+        // Review 判 BLOCKER/MAJOR 且测试因环境问题未执行时，不回 Coding：环境问题是执行环境缺陷
+        // 而非本次代码可修复，若打回 Coding 会让任务反复「改代码→再测→又环境失败」空转。放行路径
+        // （Review 判代码无误）仍走 COMPLETE_SUCCESS，终态卡片已如实标注「测试未通过/未执行原因」
+        // （见 finishTask 的 testNotPassedNote）。
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
                 && phase == OrchestrationPhase.REVIEWING
                 && ctx.testResult != null && ctx.testResult.getEnvironmentFailureCode() != null
@@ -1191,12 +1192,15 @@ public class TaskOrchestrator {
             sendDiffCard(task, finishing.reviewBatchId());
         }
         String cardMessage = taskResultMessage(finishing);
-        // 环境阻塞放行：测试因环境问题未执行，终态如实标注，不得描述为测试通过。
+        // Review 放行但测试未真实通过时，终态如实标注原因，不得描述为测试通过。
+        // 环境阻塞/未检测到测试命令/执行超时属「测试未完成验证」（TestResult.isInconclusive()），
+        // 其余是测试真实执行并给出失败结论（如代码缺陷失败但 Review 判定无 BLOCKER/MAJOR）。
         if (action == StateMachineDecision.Action.COMPLETE_SUCCESS && !"FAILED".equals(finishing.status())
-                && ctx.testResult != null && ctx.testResult.getEnvironmentFailureCode() != null
-                && !ctx.testResult.getEnvironmentFailureCode().isBlank()) {
-            cardMessage = cardMessage + "；代码审查通过，但测试因环境问题未执行（"
-                    + ctx.testResult.getEnvironmentFailureCode() + "）";
+                && ctx.testResult != null && !ctx.testResult.isSuccess()) {
+            String note = testNotPassedNote(ctx.testResult);
+            if (note != null) {
+                cardMessage = cardMessage + "；代码审查通过，但" + note;
+            }
         }
         sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, cardMessage);
     }
@@ -1584,6 +1588,25 @@ public class TaskOrchestrator {
             case "CANCELLED" -> "任务已取消";
             default -> "任务状态更新：" + finishing.status();
         };
+    }
+
+    /**
+     * Review 放行但测试未真实通过时，按失败类型给出如实标注原因；返回 null 表示无附加说明。
+     * 环境阻塞/未检测到测试命令/执行超时属「测试未完成验证」（见 {@link TestResult#isInconclusive()}），
+     * 其余是测试真实执行并给出失败结论（如代码缺陷失败但 Review 判定无 BLOCKER/MAJOR）。
+     * 终态一律不得描述为测试通过。
+     */
+    private String testNotPassedNote(TestResult test) {
+        if (test.getEnvironmentFailureCode() != null && !test.getEnvironmentFailureCode().isBlank()) {
+            return "测试因环境问题未执行（" + test.getEnvironmentFailureCode() + "）";
+        }
+        if ("NONE".equalsIgnoreCase(test.getVerificationMode())) {
+            return "未检测到可执行的测试命令，测试未执行";
+        }
+        if (test.isInconclusive()) {
+            return "测试执行超时，未完成验证";
+        }
+        return "测试未通过（exit code " + test.getExitCode() + "）";
     }
 
     /**
