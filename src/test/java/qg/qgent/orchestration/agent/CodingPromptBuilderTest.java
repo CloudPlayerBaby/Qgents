@@ -31,6 +31,41 @@ class CodingPromptBuilderTest {
     }
 
     @Test
+    void rendersGreenfieldInstructionWhenWorkspaceEmpty() {
+        AgentInput input = new AgentInput();
+        input.setTaskTitle("图书管理系统");
+        input.setRequirement("从零搭建图书管理系统");
+
+        String prompt = promptBuilder.buildUser(input, List.of());
+
+        assertThat(prompt).contains("绿地任务：工作区为空")
+                .contains("用 create_directory 建立目录结构")
+                .contains("只输出方案而不建任何文件属于失败");
+    }
+
+    @Test
+    void omitsGreenfieldInstructionWhenWorkspaceHasFiles() {
+        AgentInput input = new AgentInput();
+        input.setTaskTitle("图书管理系统");
+        input.setRequirement("从零搭建图书管理系统");
+
+        String prompt = promptBuilder.buildUser(input, List.of("pom.xml", "src/main/java/Book.java"));
+
+        assertThat(prompt).doesNotContain("绿地任务：工作区为空");
+    }
+
+    @Test
+    void correctiveGiveUpInstructionDemandsActualToolWrites() {
+        String instruction = CodingPromptBuilder.correctiveGiveUpInstruction();
+
+        assertThat(instruction).contains("纠正指令")
+                .contains("未动手就放弃")
+                .contains("只有产生真实写入");
+        // 纠正文案不应出现于默认系统提示，避免首次执行就被引导为"已放弃"。
+        assertThat(promptBuilder.buildSystem(true)).doesNotContain("纠正指令");
+    }
+
+    @Test
     void omitsPreviousFailureFeedbackWhenEmpty() {
         AgentInput input = new AgentInput();
         input.setTaskTitle("修复导出逻辑");

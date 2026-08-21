@@ -21,6 +21,18 @@ public class CodingPromptBuilder {
     static final int MAX_FILE_TREE_CHARS = 20_000;
 
     /**
+     * 绿地任务硬性要求：工作区为空时注入用户消息，阻止模型用设计散文/文字方案代替实际建文件。
+     * 与 {@link #correctiveGiveUpInstruction()} 配合，前者预防、后者兜底纠正。
+     */
+    static final String GREENFIELD_INSTRUCTION = """
+            \n
+            \n【绿地任务：工作区为空】当前工作区未检测到任何代码文件，本次任务是从零搭建项目。
+            - 必须先通过工具真实创建文件：用 create_directory 建立目录结构，用 write_file 写入项目构建文件（pom.xml / build.gradle / package.json 等）与核心源码，再逐步补齐测试与配置。
+            - 禁止用设计文档、架构说明、文字方案或纯描述代替实际文件；即使一次只能写一个文件，也要把成果落成可审查的代码文件。
+            - 只有 write_file 返回 ok=true、changed=true 或 create_directory 返回 created=true 才算真实进展；只输出方案而不建任何文件属于失败。
+            """;
+
+    /**
      * 默认使用原生协议的系统提示（无叠加，供内置兜底调用）。
      */
     public String buildSystem() {
@@ -168,8 +180,26 @@ public class CodingPromptBuilder {
         }
         appendTestResult(sb, input.getTestResult(), hasFeedback(input));
         sb.append("\n\n工作区文件树：\n").append(renderTree(files));
+        if (files.isEmpty()) {
+            sb.append(GREENFIELD_INSTRUCTION);
+        }
         sb.append(ContextPromptRenderer.render(input));
         return sb.toString();
+    }
+
+    /**
+     * "未尝试即放弃"纠正指令：Coding 首次运行自报 success=false 但未调用任何工具且未产生
+     * 写入时，作为第二次执行的附加用户消息，要求模型立即改用工具真正建/改文件。
+     * 与 {@link #GREENFIELD_INSTRUCTION} 配合使用；纯文本、无状态、不含 Secret。
+     */
+    public static String correctiveGiveUpInstruction() {
+        return """
+                \n
+                \n【纠正指令】你上一轮声明 success=false，但服务端未观测到任何工具调用与文件写入，工作区仍未产生代码。这属于"未动手就放弃"，不是完成。请立即改用工具真正执行：
+                - 若工作区为空，按上方绿地任务要求，用 create_directory + write_file 从零搭建项目骨架并逐文件实现。
+                - 若已有文件，先 read_file 理解现状，再用 apply_patch / replace_file / write_file 落实修改。
+                - 只有产生真实写入（工具返回 ok=true、changed=true / created=true）后才能 success=true；再次只输出说明或失败声明仍会被判为失败。
+                """;
     }
 
     /**
