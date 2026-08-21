@@ -55,6 +55,20 @@ class ExecutionContentSanitizerTest {
     }
 
     @Test
+    void exposesAccountAccessDeniedAsSafeUserMessage() {
+        assertThat(ExecutionContentSanitizer.stableInfrastructureCode("LLM_ACCOUNT_ACCESS_DENIED"))
+                .isEqualTo("LLM_ACCOUNT_ACCESS_DENIED");
+        assertThat(ExecutionContentSanitizer.infrastructureDescription("LLM_ACCOUNT_ACCESS_DENIED"))
+                .contains("模型服务账号");
+        assertThat(ExecutionContentSanitizer.userFailureDescription("LLM_ACCOUNT_ACCESS_DENIED"))
+                .contains("API 权限")
+                .doesNotContain("Access denied");
+        assertThat(ExecutionContentSanitizer.publicFailureCode("LLM_ACCOUNT_ACCESS_DENIED"))
+                .isEqualTo("LLM_ACCOUNT_ACCESS_DENIED");
+        assertThat(ExecutionContentSanitizer.userFailureRetryable("LLM_ACCOUNT_ACCESS_DENIED")).isFalse();
+    }
+
+    @Test
     void sanitizesDiagnosticOnlyValuesWithoutChangingPublicFailureMapping() {
         String detail = ExecutionContentSanitizer.sanitizeDiagnosticDetail(
                 "TOKEN=secret-value endpoint=https://worker.internal/run path=C:\\worker\\secret "

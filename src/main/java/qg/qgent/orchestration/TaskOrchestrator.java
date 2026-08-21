@@ -325,7 +325,7 @@ public class TaskOrchestrator {
                 ctx.planResult = outcome.getPlanResult();
             }
             StateMachineDecision decision = stateMachine.decide(OrchestrationPhase.PLAN, outcome.getOutcome(),
-                    ctx.counters);
+                    outcome.getFailureCode(), ctx.counters);
             ctx.recordOutcome(planner.getId(), OrchestrationPhase.PLAN, outcome);
             if (decision.getAction() == StateMachineDecision.Action.ADVANCE && outcome.getPlanResult() != null) {
                 try {
@@ -619,7 +619,8 @@ public class TaskOrchestrator {
         // 先做纯状态机决策，再持久化本次 Run。这样 FAILED_QUALITY 仍保持真实失败事实，
         // 同时可把“已进入修复闭环”明确写入用户可见的 Run 消息，避免前端把单次 Run 失败
         // 误解为 Task 已经终止。
-        StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), ctx.counters);
+        StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), outcome.getFailureCode(),
+                ctx.counters);
         // 质量修复循环现在只由 REVIEWING 的 FAILED_QUALITY 触发（Test 不再自行判定失败，测试失败
         // 统一 TEST_FAILED 交 Review 裁决）。仍需 Review 明确声明失败是否可由 Coding 修复；旧 Agent/
         // 测试构造若没有结构化结果时保留历史兼容行为；一旦有结果且 needsCodingFix=false，直接终止，
@@ -845,15 +846,56 @@ public class TaskOrchestrator {
         } catch (java.util.concurrent.ExecutionException e) {
             Throwable cause = e.getCause();
             return infrastructureFailure(phase, "agent execution failed: "
-                    + (cause == null ? e.getMessage() : cause.getMessage()), null, "AGENT_EXECUTION",
+                    + (cause == null ? e.getMessage() : cause.getMessage()), llmFailureCode(cause), "AGENT_EXECUTION",
                     cause == null ? e : cause);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return infrastructureFailure(phase, "agent run interrupted", null, "AGENT_INTERRUPTED", e);
         } catch (RuntimeException e) {
-            return infrastructureFailure(phase, "agent execution failed: " + e.getMessage(), null,
+            return infrastructureFailure(phase, "agent execution failed: " + e.getMessage(), llmFailureCode(e),
                     "AGENT_EXECUTION", e);
         }
+    }
+
+    /** 将供应商明确拒绝模型账号的响应转换为稳定、不可重试的业务错误码。 */
+    private String llmFailureCode(Throwable cause) {
+        for (Throwable current = cause; current != null; current = current.getCause()) {
+            String message = String.valueOf(current.getMessage()).toLowerCase(java.util.Locale.ROOT);
+            if (message.contains("access denied") && message.contains("account")) {
+                return "LLM_ACCOUNT_ACCESS_DENIED";
+            }
+            if (message.contains("unauthorized") || message.contains("invalid api key")
+                    || message.contains("authentication")) {
+                return "LLM_AUTH_FAILED";
+            }
+            if (message.contains("insufficient_quota") || message.contains("billing")
+                    || message.contains("payment required") || message.contains("quota exceeded")) {
+                return "LLM_BILLING_REQUIRED";
+            }
+            if (message.contains("rate limit") || message.contains("too many requests")) {
+                return "LLM_RATE_LIMITED";
+            }
+            if (message.contains("model") && (message.contains("not found")
+                    || message.contains("does not exist") || message.contains("not available"))) {
+                return "LLM_MODEL_NOT_FOUND";
+            }
+            if (message.contains("invalid request") || message.contains("invalid parameter")
+                    || message.contains("bad request")) {
+                return "LLM_REQUEST_INVALID";
+            }
+            if (message.contains("timeout") || message.contains("timed out")) {
+                return "LLM_TIMEOUT";
+            }
+            if (message.contains("connection refused") || message.contains("connection reset")
+                    || message.contains("network is unreachable") || message.contains("dns")) {
+                return "LLM_NETWORK_FAILED";
+            }
+            if (message.contains("service unavailable") || message.contains("bad gateway")
+                    || message.contains("temporarily unavailable")) {
+                return "LLM_SERVICE_UNAVAILABLE";
+            }
+        }
+        return null;
     }
 
     private AgentRunOutcome infrastructureFailure(OrchestrationPhase phase, String message, String failureCode) {
