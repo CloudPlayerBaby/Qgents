@@ -45,7 +45,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # 只安装无界面 Android 编译/本地单测所需 SDK；不引入 Android Studio、NDK 或 Emulator。
-# SDK 本体位于镜像只读层，用户级 Android 状态仍写入每个 Sandbox 的 HOME tmpfs。
+# SDK 初始内容位于镜像层，用户级 Android 状态仍写入每个 Sandbox 的 HOME tmpfs。
+# Gradle 会按项目 compileSdk 自动补齐缺失组件，因此非 root 沙箱用户必须能写入 SDK 目录。
 RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" "${ANDROID_USER_HOME}" \
     && curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_COMMAND_LINE_TOOLS_VERSION}_latest.zip" -o /tmp/android-command-line-tools.zip \
     && echo "${ANDROID_COMMAND_LINE_TOOLS_SHA256}  /tmp/android-command-line-tools.zip" | sha256sum -c - \
@@ -56,7 +57,7 @@ RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" "${ANDROID_USER_HOME}" \
         "platform-tools" \
         "platforms;android-${ANDROID_API_LEVEL}" \
         "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
-    && chown -R developer:developer "${ANDROID_USER_HOME}" \
+    && chown -R developer:developer "${ANDROID_HOME}" "${ANDROID_USER_HOME}" \
     && rm -rf /tmp/android-command-line-tools /tmp/android-command-line-tools.zip
 
 USER developer:developer

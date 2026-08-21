@@ -3,6 +3,7 @@ package qg.qgent.sandboxworker.runtime;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.core.command.ExecStartResultCallback;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import qg.qgent.sandboxworker.config.SandboxWorkerProperties;
@@ -26,6 +27,7 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 @Component
 @RequiredArgsConstructor
+@Slf4j
 @ConditionalOnProperty(name = "sandbox.runtime", havingValue = "docker")
 public class DockerCommandExecutor implements CommandExecutor {
     private final DockerClient docker;
@@ -57,13 +59,18 @@ public class DockerCommandExecutor implements CommandExecutor {
      * 取消或超时需要重启容器，因此同一 Sandbox 内的容器命令必须串行，避免误杀其他正在运行的命令。
      */
     private CommandExecutionResult executeLocked(SandboxAllocation sandbox, String workingDirectory,
-                                                 List<String> command, Duration timeout) throws InterruptedException {
-        String execId = docker.execCreateCmd(sandbox.getRuntimeHandle())
-                .withAttachStdout(true)
-                .withAttachStderr(true)
-                .withWorkingDir(workingDirectory)
-                .withCmd(command.toArray(String[]::new))
-                .exec().getId();
+                                                  List<String> command, Duration timeout) throws InterruptedException {
+        String execId;
+        try {
+            execId = docker.execCreateCmd(sandbox.getRuntimeHandle())
+                    .withAttachStdout(true)
+                    .withAttachStderr(true)
+                    .withWorkingDir(workingDirectory)
+                    .withCmd(command.toArray(String[]::new))
+                    .exec().getId();
+        } catch (RuntimeException exception) {
+            throw dockerFailure("create", sandbox, exception);
+        }
         LimitedOutputStream stdout = new LimitedOutputStream(properties.getMaxOutputBytes());
         LimitedOutputStream stderr = new LimitedOutputStream(properties.getMaxOutputBytes());
         try (ExecStartResultCallback callback = new ExecStartResultCallback(stdout, stderr)) {
@@ -76,11 +83,23 @@ public class DockerCommandExecutor implements CommandExecutor {
             restartContainer(sandbox.getRuntimeHandle());
             throw exception;
         } catch (Exception exception) {
-            throw new WorkerException(org.springframework.http.HttpStatus.BAD_GATEWAY,
-                    "DOCKER_EXEC_FAILED", "Docker Exec 执行失败");
+            throw dockerFailure("start", sandbox, exception);
         }
-        Long exitCode = docker.inspectExecCmd(execId).exec().getExitCodeLong();
+        Long exitCode;
+        try {
+            exitCode = docker.inspectExecCmd(execId).exec().getExitCodeLong();
+        } catch (RuntimeException exception) {
+            throw dockerFailure("inspect", sandbox, exception);
+        }
         return new CommandExecutionResult(exitCode == null ? -1 : exitCode.intValue(), lines(stdout), lines(stderr));
+    }
+
+    /** Docker 异常只记录内部类别，接口统一返回稳定错误码，避免把引擎详情或宿主路径暴露给用户。 */
+    private WorkerException dockerFailure(String phase, SandboxAllocation sandbox, Throwable exception) {
+        log.warn("docker exec failed phase={} sandboxId={} category={}", phase,
+                sandbox == null ? null : sandbox.getId(), exception.getClass().getSimpleName());
+        return new WorkerException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                "DOCKER_EXEC_FAILED", "Docker Exec 执行失败");
     }
 
     private void restartContainer(String containerId) {

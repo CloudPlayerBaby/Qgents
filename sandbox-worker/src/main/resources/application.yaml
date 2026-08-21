@@ -24,7 +24,7 @@ logging:
       max-history: ${SANDBOX_LOG_MAX_HISTORY:30}
       total-size-cap: ${SANDBOX_LOG_TOTAL_SIZE_CAP:2GB}
   level:
-    qg.qgent.sandboxworker.service.ToolExecutionService: ${SANDBOX_TOOL_LOG_LEVEL:WARN}
+    qg.qgent.sandboxworker.service.ToolExecutionService: ${SANDBOX_TOOL_LOG_LEVEL:INFO}
 
 server:
   port: ${SANDBOX_WORKER_PORT:8091}

@@ -35,6 +35,9 @@ import java.util.regex.Pattern;
 public class TestExecutionService {
     private static final int MAX_FAILURE_SUMMARY_LENGTH = 500;
     private static final int FAILURE_SUMMARY_TAIL_LINES = 8;
+    private static final int MAX_COMPILATION_DIAGNOSTICS = 4;
+    private static final Pattern COMPILATION_DIAGNOSTIC = Pattern.compile(
+            "(?i)(?:\\berror:|\\bexception:|\\bfailed to compile\\b)");
     private static final Pattern BEARER = Pattern.compile("(?i)\\bBearer\\s+[^\\s,;]+", Pattern.CASE_INSENSITIVE);
     private static final Pattern SENSITIVE_VALUE = Pattern.compile(
             "(?i)\\b(token|password|secret|api[-_]?key|authorization)\\b\\s*[:=]\\s*([^\\s,;}]*)");
@@ -169,6 +172,11 @@ public class TestExecutionService {
                 return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started),
                         "TEST_COMMAND_NOT_ALLOWED", "Testset 命令不在受控测试白名单内");
             }
+            if (exception instanceof WorkerException workerException
+                    && "DOCKER_EXEC_FAILED".equals(workerException.getCode())) {
+                return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started),
+                        "DOCKER_EXEC_FAILED", "Sandbox 内测试命令未能启动");
+            }
             return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started),
                     "EXECUTION_FAILED", "测试执行未能完成");
         }
@@ -180,6 +188,8 @@ public class TestExecutionService {
      */
     static String failureMessage(CommandExecutionResult result) {
         List<String> lines = new ArrayList<>();
+        appendCompilationDiagnostics(lines, result == null ? null : result.getStandardError());
+        appendCompilationDiagnostics(lines, result == null ? null : result.getStandardOutput());
         appendTail(lines, result == null ? null : result.getStandardError());
         appendTail(lines, result == null ? null : result.getStandardOutput());
         String detail = String.join(" | ", lines).replaceAll("[\\r\\n]+", " ").strip();
@@ -203,6 +213,20 @@ public class TestExecutionService {
         for (int index = start; index < source.size(); index++) {
             String line = source.get(index);
             if (line != null && !line.isBlank()) destination.add(line.strip());
+        }
+    }
+
+    /**
+     * Gradle 的汇总页脚会掩盖 javac 的实际报错；优先保留有限数量的诊断行，仍交由
+     * {@link #failureMessage(CommandExecutionResult)} 统一脱敏和截断。
+     */
+    private static void appendCompilationDiagnostics(List<String> destination, List<String> source) {
+        if (source == null || source.isEmpty() || destination.size() >= MAX_COMPILATION_DIAGNOSTICS) return;
+        for (String line : source) {
+            if (line != null && COMPILATION_DIAGNOSTIC.matcher(line).find()) {
+                destination.add(line.strip());
+                if (destination.size() >= MAX_COMPILATION_DIAGNOSTICS) return;
+            }
         }
     }
 
