@@ -813,6 +813,13 @@ public class GitHubRepositoryService {
         installationEntity.setAccountLogin(installation.getAccountLogin());
         installationEntity.setAccountType(normalizeEnum(installation.getAccountType()));
         installationEntity.setStatus("ACTIVE");
+        // created_at/updated_at 显式写 UTC（注入的 clock 为 systemUTC）：DB 默认 CURRENT_TIMESTAMP
+        // 在 +08 服务器上会落本地时间，前端按契约把 installedAt 当 UTC 解析时就会偏 8 小时。
+        LocalDateTime now = LocalDateTime.now(clock);
+        if (newInstallation) {
+            installationEntity.setCreatedAt(now);
+        }
+        installationEntity.setUpdatedAt(now);
 
         if (newInstallation) {
             installationMapper.insert(installationEntity);
@@ -820,7 +827,6 @@ public class GitHubRepositoryService {
             installationMapper.updateById(installationEntity);
         }
 
-        LocalDateTime now = LocalDateTime.now(clock);
         List<Long> returnedProviderRepoIds = providerRepositories.stream()
                 .map(GitHubRepositoryDetails::getRepositoryId).toList();
 
