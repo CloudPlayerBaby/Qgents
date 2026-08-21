@@ -278,15 +278,14 @@ public class TaskDisplayService {
 
     private List<TaskListItemResponse> buildListItems(List<TaskEntity> page) {
         List<UUID> taskIds = page.stream().map(TaskEntity::getId).toList();
-        List<UUID> workspaceIds = page.stream().map(TaskEntity::getWorkspaceId).distinct().toList();
-        List<UUID> groupIds = page.stream().map(TaskEntity::getRequirementGroupId).distinct().toList();
-        List<UUID> creatorIds = page.stream().map(TaskEntity::getCreatedBy).distinct().toList();
+        List<UUID> workspaceIds = page.stream().map(TaskEntity::getWorkspaceId).filter(Objects::nonNull).distinct().toList();
+        List<UUID> groupIds = page.stream().map(TaskEntity::getRequirementGroupId).filter(Objects::nonNull).distinct().toList();
+        List<UUID> creatorIds = page.stream().map(TaskEntity::getCreatedBy).filter(Objects::nonNull).distinct().toList();
 
         Map<UUID, List<TaskStepEntity>> stepsByTask = steps
                 .selectList(Wrappers.<TaskStepEntity>lambdaQuery().in(TaskStepEntity::getTaskId, taskIds)).stream()
                 .collect(Collectors.groupingBy(TaskStepEntity::getTaskId));
-        List<TaskRunEntity> allRuns = runs.selectList(Wrappers.<TaskRunEntity>lambdaQuery()
-                .in(TaskRunEntity::getTaskId, taskIds));
+        List<TaskRunEntity> allRuns = loadTaskListRuns(taskIds);
         Map<UUID, List<TaskRunEntity>> runsByTask = allRuns.stream()
                 .collect(Collectors.groupingBy(TaskRunEntity::getTaskId));
         Map<UUID, List<InputRequestEntity>> inputByRun = loadInputByRun(allRuns);
@@ -300,11 +299,15 @@ public class TaskDisplayService {
                 .selectList(Wrappers.<RequirementGroupEntity>lambdaQuery().in(RequirementGroupEntity::getId, groupIds))
                 .stream().collect(Collectors.toMap(RequirementGroupEntity::getId, Function.identity()));
         Map<UUID, DiffReviewBatchEntity> batchByTask = taskIds.isEmpty() ? Collections.emptyMap() : diffBatches
-                .selectList(Wrappers.<DiffReviewBatchEntity>lambdaQuery().in(DiffReviewBatchEntity::getTaskId, taskIds))
-                .stream().collect(Collectors.toMap(DiffReviewBatchEntity::getTaskId, Function.identity()));
+                .selectList(Wrappers.<DiffReviewBatchEntity>lambdaQuery().in(DiffReviewBatchEntity::getTaskId, taskIds)
+                        .orderByDesc(DiffReviewBatchEntity::getCreatedAt).orderByDesc(DiffReviewBatchEntity::getId))
+                .stream().collect(Collectors.toMap(DiffReviewBatchEntity::getTaskId, Function.identity(), (first, ignored) -> first));
         Set<UUID> batchIds = batchByTask.values().stream().map(DiffReviewBatchEntity::getId).collect(Collectors.toSet());
         Map<UUID, List<DiffEntity>> diffsByBatch = batchIds.isEmpty() ? Collections.emptyMap() : diffs
-                .selectList(Wrappers.<DiffEntity>lambdaQuery().in(DiffEntity::getReviewBatchId, batchIds)).stream()
+                // The list attention only needs to identify a failed delivery repository;
+                // full diff content remains available from the detail/diff endpoints.
+                .selectList(Wrappers.<DiffEntity>lambdaQuery().in(DiffEntity::getReviewBatchId, batchIds)
+                        .eq(DiffEntity::getDeliveryStatus, "FAILED")).stream()
                 .collect(Collectors.groupingBy(DiffEntity::getReviewBatchId));
 
         return page.stream().map(task -> toListItem(task,
@@ -745,6 +748,24 @@ public class TaskDisplayService {
         return inputRequests
                 .selectList(Wrappers.<InputRequestEntity>lambdaQuery().in(InputRequestEntity::getTaskRunId, runIds))
                 .stream().collect(Collectors.groupingBy(InputRequestEntity::getTaskRunId));
+    }
+
+    /**
+     * 列表摘要只需要每个步骤的最新运行，以及每个任务最新失败运行。
+     * 后者用于保留失败提示能力，前者用于执行统计和等待输入判断。
+     */
+    private List<TaskRunEntity> loadTaskListRuns(List<UUID> taskIds) {
+        if (taskIds.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, TaskRunEntity> byId = new LinkedHashMap<>();
+        for (TaskRunEntity run : runs.selectLatestForTaskList(taskIds)) {
+            byId.put(run.getId(), run);
+        }
+        for (TaskRunEntity run : runs.selectLatestFailedForTaskList(taskIds)) {
+            byId.putIfAbsent(run.getId(), run);
+        }
+        return new ArrayList<>(byId.values());
     }
 
     private DiffReviewBatchEntity latestBatch(UUID projectId, UUID taskId) {

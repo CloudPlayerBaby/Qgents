@@ -715,6 +715,8 @@ CREATE TABLE IF NOT EXISTS
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
         KEY idx_task_run_project (project_id, status),
         KEY idx_task_run_task (task_id, task_step_id),
+        KEY idx_task_run_list_latest (task_id, task_step_id, created_at, id),
+        KEY idx_task_run_list_failed (task_id, status, failure_occurred_at, updated_at, id),
         KEY idx_task_run_creator (created_by),
         CONSTRAINT fk_task_run_project FOREIGN KEY (project_id) REFERENCES projects (id),
         CONSTRAINT fk_task_run_task FOREIGN KEY (task_id) REFERENCES tasks (id),
