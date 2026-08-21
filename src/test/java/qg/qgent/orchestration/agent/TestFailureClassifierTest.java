@@ -104,4 +104,58 @@ class TestFailureClassifierTest {
         assertThat(verdict.classification()).isEqualTo(TestFailureClassifier.Classification.ENVIRONMENT);
         assertThat(verdict.failureCode()).isEqualTo("TEST_SERVICE_UNAVAILABLE");
     }
+
+    @Test
+    void sdkLocationNotFoundIsEnvironment() {
+        // Android SDK 缺失：明确的环境缺陷，修代码无法凭空补环境，不得回 Coding。
+        TestFailureClassifier.Verdict verdict = classify(1, "",
+                "ERROR: SDK location not found. Define location with an ANDROID_SDK_ROOT environment variable",
+                List.of("src/X.java"));
+
+        assertThat(verdict.classification()).isEqualTo(TestFailureClassifier.Classification.ENVIRONMENT);
+        assertThat(verdict.failureCode()).isEqualTo("BUILD_ENVIRONMENT_UNAVAILABLE");
+    }
+
+    @Test
+    void unableToLocateJavaRuntimeIsEnvironment() {
+        // Gradle/JDK 缺失：构建工具链问题，归环境。
+        TestFailureClassifier.Verdict verdict = classify(1, "",
+                "Unable to locate a Java Runtime to invoke javac. Please check that Java is installed",
+                List.of("src/X.java"));
+
+        assertThat(verdict.classification()).isEqualTo(TestFailureClassifier.Classification.ENVIRONMENT);
+        assertThat(verdict.failureCode()).isEqualTo("BUILD_ENVIRONMENT_UNAVAILABLE");
+    }
+
+    @Test
+    void mavenNoCompilerProvidedIsEnvironment() {
+        // Maven 运行在 JRE 而非 JDK 上：无 javac 可用，环境问题。
+        TestFailureClassifier.Verdict verdict = classify(1, "",
+                "No compiler is provided in this environment. Perhaps you are running on a JRE rather than a JDK?",
+                List.of("src/X.java"));
+
+        assertThat(verdict.classification()).isEqualTo(TestFailureClassifier.Classification.ENVIRONMENT);
+        assertThat(verdict.failureCode()).isEqualTo("BUILD_ENVIRONMENT_UNAVAILABLE");
+    }
+
+    @Test
+    void modifiedBuildFileKeepsToolchainFailureAsCodeDefect() {
+        // 改动了 pom.xml 时即使出现 SDK 缺失输出也按代码缺陷处理：改动构建文件后环境类关键词
+        // 不可信（可能是配置引入），守卫优先级高于工具链识别。
+        TestFailureClassifier.Verdict verdict = classify(1, "",
+                "SDK location not found", List.of("pom.xml", "src/X.java"));
+
+        assertThat(verdict.classification()).isEqualTo(TestFailureClassifier.Classification.CODE_DEFECT);
+        assertThat(verdict.failureCode()).isNull();
+    }
+
+    @Test
+    void outputReferencingModifiedFileMasksToolchainKeyword() {
+        // 输出引用已修改文件 X.java：即使命中 SDK 缺失也按代码缺陷处理。
+        TestFailureClassifier.Verdict verdict = classify(1, "", "X.java:12 SDK location not found",
+                List.of("src/X.java"));
+
+        assertThat(verdict.classification()).isEqualTo(TestFailureClassifier.Classification.CODE_DEFECT);
+        assertThat(verdict.failureCode()).isNull();
+    }
 }

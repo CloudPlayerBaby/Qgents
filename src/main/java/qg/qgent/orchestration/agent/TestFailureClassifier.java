@@ -8,9 +8,9 @@ import java.util.Set;
  * 确定性测试失败分类器：区分"真实代码缺陷"与"环境/超时/依赖网络失败"。
  * <p>
  * Test 真实 exit code != 0 时，TestAgent 在 LLM 分析之前调用本类判断失败归属。只有能证明失败与
- * 本次改动无关（超时、依赖解析失败、网络不可达、服务连接被拒，且输出未引用任何已修改文件、未修改
- * 构建/清单文件）才归为 {@link Classification#ENVIRONMENT}，走 FAILED_INFRASTRUCTURE 同相位重试、
- * 不占用质量修复循环；其余一律归 {@link Classification#CODE_DEFECT}，维持打回 Coding 的既有质量循环。
+ * 本次改动无关（超时、依赖解析失败、网络不可达、服务连接被拒、构建工具链/SDK 缺失，且输出未引用
+ * 任何已修改文件、未修改构建/清单文件）才归为 {@link Classification#ENVIRONMENT}，走 FAILED_INFRASTRUCTURE
+ * 同相位重试、不占用质量修复循环；其余一律归 {@link Classification#CODE_DEFECT}，维持打回 Coding 的既有质量循环。
  * <p>
  * 纯逻辑、无 LLM、无 Spring，可独立单元测试。环境关键字只做保守方向使用：命中守卫（输出引用已修改
  * 文件，或本次改动了构建文件）时强制按代码缺陷处理，避免"改坏 pom 坐标 / 改错连接配置"这类真实
@@ -73,6 +73,24 @@ public class TestFailureClassifier {
             "could not connect"
     };
 
+    /**
+     * 构建工具链缺失：JDK/JRE、Maven 自带编译器、Gradle JVM、Android SDK、Node 运行时等。
+     * 此类失败有明确的环境语义，不是本次代码可修复的缺陷（修代码不能凭空变出 SDK）；
+     * 与命令不可用（{@code isCommandUnavailable}）共用失败码 BUILD_ENVIRONMENT_UNAVAILABLE。
+     */
+    private static final String[] TOOLCHAIN_PATTERNS = {
+            "no compiler is provided in this environment",
+            "unable to locate a java runtime",
+            "unable to locate java",
+            "unable to find any jvms",
+            "sdk location not found",
+            "failed to find target android",
+            "requires android sdk",
+            "could not create the java virtual machine",
+            "java runtime not found",
+            "not recognized as an internal or external command"
+    };
+
     /** 超时：进程被超时杀掉（exit 124/143）或输出声明超时。 */
     private static final String[] TIMEOUT_PATTERNS = {
             "timed out", "timeout", "超时"
@@ -108,6 +126,11 @@ public class TestFailureClassifier {
         }
         if (matchesAny(output, SERVICE_PATTERNS)) {
             return Verdict.environment("TEST_SERVICE_UNAVAILABLE");
+        }
+        // 构建工具链缺失（JDK/编译器/SDK/Node 等）：环境缺陷而非代码缺陷，修代码无法凭空补环境。
+        // 守卫已在上方拦截「改坏构建文件或输出引用已修改文件」的场景，此处只放行明确的环境措辞。
+        if (matchesAny(output, TOOLCHAIN_PATTERNS)) {
+            return Verdict.environment("BUILD_ENVIRONMENT_UNAVAILABLE");
         }
         return Verdict.codeDefect();
     }

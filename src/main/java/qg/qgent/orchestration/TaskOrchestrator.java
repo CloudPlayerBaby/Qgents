@@ -632,6 +632,19 @@ public class TaskOrchestrator {
                     "质量检查未通过，但当前计划没有可写的 MUTATE 开发步骤可用于修复");
             decision = StateMachineDecision.failed();
         }
+        // 测试环境失败转 Review 兜底审查时，Review 只做「放行或判失败」二选一：环境问题是执行
+        // 环境缺陷而非本次代码可修复，Review 判代码有疑点时直接落 FAILED，不再回 Coding——否则
+        // 持续环境缺陷会让任务反复「改代码→再测→又环境失败」空转。放行路径（Review 判代码无误）
+        // 仍走 COMPLETE_SUCCESS，终态卡片已标注「测试因环境问题未执行」（见 finishTask）。
+        if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
+                && phase == OrchestrationPhase.REVIEWING
+                && ctx.testResult != null && ctx.testResult.getEnvironmentFailureCode() != null
+                && !ctx.testResult.getEnvironmentFailureCode().isBlank()) {
+            ctx.recordQualityRepairUnavailable(ctx.testResult.getEnvironmentFailureCode(),
+                    "测试因环境问题未执行（" + ctx.testResult.getEnvironmentFailureCode()
+                            + "）；Review 兜底审查发现代码疑点，任务失败（环境问题不回 Coding）");
+            decision = StateMachineDecision.failed();
+        }
         // 质量循环不收敛：本轮与上一轮可修复项完全一致（无任何消减或变化）→ 提前终止，省下
         // 注定空转的循环预算（模型修不动或该 MAJOR 本身是误报时，再多打回也只会重复耗 LLM 调用）。
         // 有变化的循环（子集缩小/新增项/issue 变化）才记录本轮签名供下一轮比对。
