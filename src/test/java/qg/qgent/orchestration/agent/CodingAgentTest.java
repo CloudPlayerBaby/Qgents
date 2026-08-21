@@ -13,6 +13,7 @@ import qg.qgent.orchestration.OrchestrationPhase;
 import qg.qgent.orchestration.RunOutcome;
 import qg.qgent.orchestration.RetryContext;
 import qg.qgent.orchestration.llm.LlmClient;
+import qg.qgent.orchestration.llm.LlmMessage;
 import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
@@ -171,10 +172,10 @@ class CodingAgentTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Message>> historyCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llm).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
-        String userMessage = ((UserMessage) historyCaptor.getValue().get(0)).getText();
+        verify(llm, times(3)).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
+        String userMessage = ((UserMessage) historyCaptor.getAllValues().get(0).get(0)).getText();
         assertThat(userMessage).contains("质量回修必读 Skill", skillId.toString(), "README 最后一行必须为 Hiiii113");
-        verify(contextService).activateSkill(input.getActorId(), input.getProjectId(), skillId);
+        verify(contextService, times(3)).activateSkill(input.getActorId(), input.getProjectId(), skillId);
     }
 
     @Test
@@ -439,10 +440,10 @@ class CodingAgentTest {
         assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
     }
 
-    // ---------- "未尝试即放弃"有界纠正重试（绿地任务兜底） ----------
+    // ---------- 模型自报未完成的有界纠正重试 ----------
 
     @Test
-    void nativeGaveUpWithoutToolCallRetriesOnceAndSucceedsWithCorrectiveInstruction() {
+    void nativeSelfReportedFailureRetriesAndSucceedsWithContinuationInstruction() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(writer.writeFile(workspaceId, "src/main/java/Book.java", "code"))
                 .thenReturn(WorkspaceWriteResult.ok("src/main/java/Book.java", "new-hash", true));
@@ -473,48 +474,62 @@ class CodingAgentTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Message>> historyCaptor = ArgumentCaptor.forClass(List.class);
         verify(llm, times(3)).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
-        // 首次执行（放弃）的首条 user 消息：绿地引导存在、纠正指令不存在。
+        // 首次执行的首条 user 消息：绿地引导存在、继续完成提示不存在。
         UserMessage firstUser = (UserMessage) historyCaptor.getAllValues().get(0).get(0);
-        assertThat(firstUser.getText()).contains("绿地任务：工作区为空").doesNotContain("纠正指令");
-        // 纠正重试的首条 user 消息：必须携带纠正指令。
+        assertThat(firstUser.getText()).contains("绿地任务：工作区为空").doesNotContain("继续完成");
+        // 纠正重试的首条 user 消息：必须携带继续完成提示。
         UserMessage retryUser = (UserMessage) historyCaptor.getAllValues().get(1).get(0);
-        assertThat(retryUser.getText()).contains("纠正指令").contains("未动手就放弃");
+        assertThat(retryUser.getText()).contains("继续完成").contains("不能代替实现");
     }
 
     @Test
-    void nativeGaveUpWithoutToolCallRetryAlsoGivesUpStaysBoundedUnclassifiedFailure() {
+    void nativeSelfReportedFailureRetriesTwiceThenStaysBoundedUnclassifiedFailure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenAnswer(invocation -> finalTurn(bareResult(false, "still cannot start", null), "stop"));
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        // 纠正重试上限 1 次：仍失败时保持原有 UNCLASSIFIED_FAILURE 终态语义。
+        // 纠正重试上限 2 次：仍失败时保持 UNCLASSIFIED_FAILURE 终态语义。
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("UNCLASSIFIED_FAILURE");
-        assertThat(outcome.getMessage()).contains("已执行 1 次纠正性重试");
-        verify(llm, times(2)).nextToolTurn(anyString(), anyList(), anyList());
-        assertThat(outcome.getObservations()).hasSize(2);
+        assertThat(outcome.getMessage()).contains("已执行 2 次纠正性重试");
+        verify(llm, times(3)).nextToolTurn(anyString(), anyList(), anyList());
+        assertThat(outcome.getObservations()).hasSize(3);
     }
 
     @Test
-    void nativeToolCallThenDeclaredFailureDoesNotTriggerCorrectiveRetry() {
+    void nativeToolCallThenDeclaredFailureRetriesAndCanRecover() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
-        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
-                .thenReturn(toolTurn("list_files"),
-                        finalTurn(bareResult(false, "workspace looks empty", null), "stop"));
+        when(writer.writeFile(workspaceId, "src/main/java/Book.java", "code"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/Book.java", "new-hash", true));
+        AtomicInteger call = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            int current = call.getAndIncrement();
+            if (current == 0) {
+                return toolTurn("list_files");
+            }
+            if (current == 1) {
+                return finalTurn(bareResult(false, "workspace looks empty", null), "stop");
+            }
+            if (current == 2) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream().filter(callback -> "write_file".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow().call("{\"path\":\"src/main/java/Book.java\",\"content\":\"code\"}");
+                return toolTurn("write_file");
+            }
+            return finalTurn(bareResult(true, "done", "src/main/java/Book.java"), "stop");
+        });
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        // 已调用过工具（哪怕只读）就不属于"未尝试即放弃"，不触发纠正重试：
-        // 仅 2 次调用（工具轮 + 终态轮），而非纠正重试带来的第 3 次。
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo("UNCLASSIFIED_FAILURE");
-        verify(llm, times(2)).nextToolTurn(anyString(), anyList(), anyList());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        verify(llm, times(4)).nextToolTurn(anyString(), anyList(), anyList());
     }
 
     @Test
-    void nativeGaveUpWithRetryContextDoesNotTriggerCorrectiveRetry() {
+    void nativeSelfReportedFailureWithRetryContextStillUsesBoundedCorrectionRetries() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn(bareResult(false, "cannot", null), "stop"));
@@ -525,10 +540,10 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(input);
 
-        // 已在重试/质量回修链路上，不叠加纠正重试，避免多层递归。
+        // 普通模型自报失败统一给予有限纠正机会，质量回修上下文不改变这一规则。
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("UNCLASSIFIED_FAILURE");
-        verify(llm, times(1)).nextToolTurn(anyString(), anyList(), anyList());
+        verify(llm, times(3)).nextToolTurn(anyString(), anyList(), anyList());
     }
 
     @Test
@@ -728,6 +743,22 @@ class CodingAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         assertThat(outcome.getCodingResult().getModifiedFiles()).containsExactly("src/main/java/X.java");
+    }
+
+    @Test
+    void legacySelfReportedFailureRetriesWithContinuationInstruction() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.complete(anyString(), anyList())).thenReturn(
+                "{\"finalResult\":{\"success\":false,\"summary\":\"not ready\",\"errors\":[\"missing file\"]}}",
+                "{\"finalResult\":{\"success\":true,\"summary\":\"done\"}}");
+
+        AgentRunOutcome outcome = legacyAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LlmMessage>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm, times(2)).complete(anyString(), historyCaptor.capture());
+        assertThat(historyCaptor.getAllValues().get(1).getFirst().content()).contains("继续完成");
     }
 
     @Test

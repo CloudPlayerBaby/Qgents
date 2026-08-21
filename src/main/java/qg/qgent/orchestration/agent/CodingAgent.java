@@ -51,6 +51,8 @@ import java.util.List;
 public class CodingAgent implements Agent {
 
     private static final int MAX_TOOL_ROUNDS = 20;
+    /** 模型自报未完成后的同 Run 纠正次数，避免一次保守判断直接终止开发步骤。 */
+    private static final int MAX_SELF_REPORT_CORRECTION_RETRIES = 2;
 
     private final LlmClient llm;
     private final WorkspaceCodeAccess codeAccess;
@@ -126,19 +128,21 @@ public class CodingAgent implements Agent {
         try {
             CodingResult coding = protocol.isNative()
                     ? executeCodingNative(input, observations, observedWrites, null)
-                    : executeCodingLegacy(input, observedWrites);
+                    : executeCodingLegacy(input, observedWrites, null);
             validateAndCompleteChanges(coding, observedWrites, input);
-            // "未尝试即放弃"有界纠正重试：模型自报失败但未调用任何工具、未产生任何写入时，
-            // 以强化指令重跑一次（上限 1 次）。仍在同一 TaskRun 内完成，重试仍失败则保持
-            // 原有 FAILED 终态语义，不改变状态机路由。
-            boolean correctiveRetried = false;
-            if (protocol.isNative() && shouldRetryGaveUp(coding, observations, observedWrites, input)) {
-                log.info("CODING_GAVE_UP_RETRY phase={} workspaceId={} taskRunId={} "
-                                + "首次运行未调用任何工具且未产生写入，执行一次纠正性重试",
-                        input.getPhase(), input.getWorkspaceId(), input.getTaskRunId());
-                correctiveRetried = true;
-                coding = executeCodingNative(input, observations, observedWrites,
-                        CodingPromptBuilder.correctiveGiveUpInstruction());
+            // 模型的 success=false 仅表示其当前判断未完成，不应在首次保守判断时立即终止步骤。
+            // 同一 TaskRun 内给予有限次数的纠正机会；明确的补丁不可恢复错误不适合重复调用模型。
+            int correctiveRetries = 0;
+            while (shouldRetrySelfReportedFailure(coding, observedWrites, observations)
+                    && correctiveRetries < MAX_SELF_REPORT_CORRECTION_RETRIES) {
+                correctiveRetries++;
+                log.info("CODING_SELF_REPORT_CORRECTION_RETRY phase={} workspaceId={} taskRunId={} attempt={}",
+                        input.getPhase(), input.getWorkspaceId(), input.getTaskRunId(), correctiveRetries);
+                String correctiveInstruction = CodingPromptBuilder.correctiveSelfReportInstruction(coding,
+                        correctiveRetries, MAX_SELF_REPORT_CORRECTION_RETRIES);
+                coding = protocol.isNative()
+                        ? executeCodingNative(input, observations, observedWrites, correctiveInstruction)
+                        : executeCodingLegacy(input, observedWrites, correctiveInstruction);
                 validateAndCompleteChanges(coding, observedWrites, input);
             }
             AgentRunOutcome outcome = new AgentRunOutcome();
@@ -156,7 +160,8 @@ public class CodingAgent implements Agent {
             outcome.setCodingResult(coding);
             outcome.setMessage((coding.isSuccess() ? coding.getSummary() : firstError(coding))
                     + (patchUnrecoverable ? "；补丁连续失败且 replace_file 未完成，无法继续自动修复" : "")
-                    + (correctiveRetried && !coding.isSuccess() ? "；已执行 1 次纠正性重试，模型仍未实际调用工具写入文件" : ""));
+                    + (correctiveRetries > 0 && !coding.isSuccess()
+                    ? "；已执行 " + correctiveRetries + " 次纠正性重试，模型仍判断未完成" : ""));
             outcome.setObservations(observations);
             outcome.setPatchFailureCounts(observedWrites.patchFailureCounts());
             log.info("coding agent done phase={} workspaceId={} outcome={} observations={}",
@@ -212,27 +217,20 @@ public class CodingAgent implements Agent {
     }
 
     /**
-     * "未尝试即放弃"判定：模型自报 success=false、本次 run 没有任何 changed=true 写入，
-     * 且没有任何一轮观测到工具调用（含只读工具）。只有这类"完全没动手"才触发单次纠正重试；
-     * 已调用过工具（哪怕失败）、已处于重试/质量回修链路、或模型直接声明成功（success=true，
-     * 现一律放行）均不在此列，避免 no-op 重试回环。
-     * <p>
-     * 工具调用证据来自每轮 {@link LlmObservation#toolName()}：只有工具轮非空，
-     * finalAnswer / repair / finalization 轮均为 null；本 run 无任何工具观测即"未动手"。
+     * 普通模型自报未完成的纠正重试判定。模型可能因保守判断、无法确认新文件是否创建等原因
+     * 输出 success=false；这些情况应先要求它重新检查并继续完成，而不是直接失败。
+     * 补丁不可恢复属于已知工具失败，重复模型调用无法改善，保持原有终态。
      */
-    private boolean shouldRetryGaveUp(CodingResult coding, List<LlmObservation> observations,
-                                      ChangedWriteFactLedger observedWrites, AgentInput input) {
+    private boolean shouldRetrySelfReportedFailure(CodingResult coding, ChangedWriteFactLedger observedWrites,
+                                                   List<LlmObservation> observations) {
         if (coding == null || coding.isSuccess()) {
             return false;
         }
-        if (observedWrites.hasChangedWrite()) {
+        if (hasPatchRepairRequired(observedWrites)) {
             return false;
         }
-        if (input.getRetryContext() != null) {
-            return false;
-        }
-        return observations.stream()
-                .noneMatch(obs -> obs.toolName() != null && !obs.toolName().isBlank());
+        return observations == null || observations.stream().noneMatch(observation ->
+                observation != null && observation.protocolFailureCode() != null);
     }
 
     /**
@@ -380,12 +378,14 @@ public class CodingAgent implements Agent {
      * legacy 手写 JSON 协议循环：模型输出 toolCall/finalResult 文本，由 {@link CodingToolExecutor}
      * 执行工具。仅灰度期使用，协议切换稳定后删除。
      */
-    private CodingResult executeCodingLegacy(AgentInput input, ChangedWriteFactLedger observedWrites) {
+    private CodingResult executeCodingLegacy(AgentInput input, ChangedWriteFactLedger observedWrites,
+                                             String correctiveInstruction) {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         log.info("coding agent (legacy) workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
         List<LlmMessage> history = new ArrayList<>();
-        history.add(LlmMessage.user(promptBuilder.buildUser(input, files)));
+        String userMessage = promptBuilder.buildUser(input, files);
+        history.add(LlmMessage.user(correctiveInstruction == null ? userMessage : userMessage + correctiveInstruction));
         String system = promptBuilder.buildSystem(false, input.getAgentPrompt());
         CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer, input.getAllowedPaths(),
                 input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts());

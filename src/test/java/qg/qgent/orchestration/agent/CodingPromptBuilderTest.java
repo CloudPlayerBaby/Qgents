@@ -55,14 +55,19 @@ class CodingPromptBuilderTest {
     }
 
     @Test
-    void correctiveGiveUpInstructionDemandsActualToolWrites() {
-        String instruction = CodingPromptBuilder.correctiveGiveUpInstruction();
+    void correctiveSelfReportInstructionEncouragesContinuedImplementation() {
+        CodingResult previous = new CodingResult();
+        previous.setSuccess(false);
+        previous.setErrors(List.of("缺少 WebSecurityConfig.java"));
 
-        assertThat(instruction).contains("纠正指令")
-                .contains("未动手就放弃")
-                .contains("只有产生真实写入");
+        String instruction = CodingPromptBuilder.correctiveSelfReportInstruction(previous, 1, 2);
+
+        assertThat(instruction).contains("继续完成")
+                .contains("第 1/2 次纠正机会")
+                .contains("缺少 WebSecurityConfig.java")
+                .contains("缺少文件时应在允许范围内创建它");
         // 纠正文案不应出现于默认系统提示，避免首次执行就被引导为"已放弃"。
-        assertThat(promptBuilder.buildSystem(true)).doesNotContain("纠正指令");
+        assertThat(promptBuilder.buildSystem(true)).doesNotContain("继续完成");
     }
 
     @Test
@@ -194,8 +199,8 @@ class CodingPromptBuilderTest {
         assertThat(system)
                 .contains("连续失败 3 次后必须改用 replace_file")
                 .contains("replace_file 提供完整文件内容")
-                .contains("收到前一轮反馈或重试上下文（打回重做）时")
-                .contains("只读复核、重复已存在内容、确认现状或空操作不构成完成");
+                .contains("不要仅因为暂时缺少某个文件")
+                .contains("只有在已尝试合理的修复路径后仍存在");
     }
 
     @Test
