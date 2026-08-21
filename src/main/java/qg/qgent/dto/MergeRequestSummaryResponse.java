@@ -23,6 +23,9 @@ public class MergeRequestSummaryResponse {
     private String status;
     /** 合并操作状态：RUNNING、COMPLETED、FAILED；未发起时为 null。 */
     private String mergeOperationStatus;
+    /** 异步合并失败时返回的受控错误码与原因。 */
+    private String mergeOperationFailureCode;
+    private String mergeOperationFailureReason;
     private String headCommit;
     /**
      * GitHub 是否可合并；null 表示 GitHub 尚未计算完成。

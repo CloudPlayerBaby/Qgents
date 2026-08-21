@@ -88,6 +88,40 @@ class MrFirstAutomationServiceTest {
     }
 
     @Test
+    void approvedRepositoryCreatesMrEvenWhenAnotherRepositoryIsNotReady() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID approvedRepositoryId = UUID.randomUUID();
+        UUID waitingRepositoryId = UUID.randomUUID();
+        UUID dryRunId = UUID.randomUUID();
+        UUID creator = UUID.randomUUID();
+        TaskEntity task = task(projectId, taskId, workspaceId);
+        task.setCreatedBy(creator);
+        DryRunEntity dryRun = new DryRunEntity();
+        dryRun.setId(dryRunId);
+        dryRun.setProjectId(projectId);
+        dryRun.setTaskId(taskId);
+        dryRun.setProjectRepositoryId(approvedRepositoryId);
+        dryRun.setTargetBranch("main");
+        dryRun.setStatus("PASSED");
+        WorkspaceRepositoryEntity approved = worktree(workspaceId, approvedRepositoryId, "main");
+        WorkspaceRepositoryEntity waiting = worktree(workspaceId, waitingRepositoryId, "main");
+        when(dryRuns.selectById(dryRunId)).thenReturn(dryRun);
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of(approved, waiting));
+        when(repositories.selectById(approvedRepositoryId)).thenReturn(new ProjectRepositoryEntity());
+        when(preflightGates.get(projectId, taskId, approvedRepositoryId, "main", creator))
+                .thenReturn(new PreflightGateResponse(null, null, null, null, null, "PASSED", List.of(), null, null));
+        when(preflightGates.get(projectId, taskId, waitingRepositoryId, "main", creator))
+                .thenReturn(new PreflightGateResponse(null, null, null, null, null, "WAITING_CQ", List.of(), null, null));
+
+        service.onCqApproved(new PreflightCqApprovedDomainEvent(projectId, dryRunId));
+
+        verify(mrService).create(eq(projectId), eq(creator), any(MergeRequestCreateRequest.class));
+    }
+
+    @Test
     void failedDryRunDoesNotCreateMergeRequest() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
@@ -132,7 +166,7 @@ class MrFirstAutomationServiceTest {
     }
 
     @Test
-    void noChangesFailureStopsRetryingAndMarksTaskFailed() {
+    void noChangesFailureDoesNotBlockOtherRepositoriesOrFailTask() {
         UUID projectId = UUID.randomUUID();
         UUID taskId = UUID.randomUUID();
         UUID workspaceId = UUID.randomUUID();
@@ -149,7 +183,7 @@ class MrFirstAutomationServiceTest {
 
         service.onPreflightRequested(new MrFirstPreflightRequestedDomainEvent(projectId, taskId));
 
-        verify(tasks).failMrPreflightNoChanges(projectId, taskId);
+        verify(tasks, never()).failMrPreflightNoChanges(projectId, taskId);
         verify(preflightService).requestPreflight(projectId, creator, taskId, repositoryId, null);
     }
 

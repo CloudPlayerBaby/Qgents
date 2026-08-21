@@ -145,6 +145,7 @@ public class TaskPlanMaterializationService {
         List<UUID> repositories = worktreeList.stream()
                 .map(WorkspaceRepositoryEntity::getProjectRepositoryId).toList();
         List<TaskStepEntity> created = new ArrayList<>();
+        List<UUID> implementationRepositories = new ArrayList<>();
         UUID previous = planner.getId();
         int sequence = planner.getSequenceNo() + 1;
         // 顺序执行的多个实现步骤共享同一可写文件集（各步声明文件的并集）：后续步骤可补充或修正
@@ -165,7 +166,9 @@ public class TaskPlanMaterializationService {
             step.setTargetFiles(targetFilesFor(item, worktreeList));
             steps.insert(step);
             dependencies.insertLink(step.getId(), previous);
-            insertScopes(step.getId(), repositoriesForStep(item, worktreeList), mode.allowWrite() ? "WRITE" : "READ");
+            List<UUID> stepRepositories = repositoriesForStep(item, worktreeList);
+            implementationRepositories.addAll(stepRepositories);
+            insertScopes(step.getId(), stepRepositories, mode.allowWrite() ? "WRITE" : "READ");
             created.add(step);
             previous = step.getId();
         }
@@ -174,13 +177,17 @@ public class TaskPlanMaterializationService {
         tester.setVerificationCommands(verificationCommandsFor(plan));
         steps.insert(tester);
         dependencies.insertLink(tester.getId(), previous);
-        insertScopes(tester.getId(), repositories, "READ");
+        List<UUID> executionRepositories = implementationRepositories.stream().distinct().toList();
+        if (executionRepositories.isEmpty()) {
+            executionRepositories = repositories;
+        }
+        insertScopes(tester.getId(), executionRepositories, "READ");
         created.add(tester);
         TaskStepEntity reviewer = step(task, sequence, "Review", "审查本次改动是否符合需求、质量与安全要求", "REVIEWER",
                 List.of(), "完成独立代码审查", null, "REVIEW");
         steps.insert(reviewer);
         dependencies.insertLink(reviewer.getId(), tester.getId());
-        insertScopes(reviewer.getId(), repositories, "READ");
+        insertScopes(reviewer.getId(), executionRepositories, "READ");
         created.add(reviewer);
         created.forEach(step -> registerStepEvent(task, step));
     }

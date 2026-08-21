@@ -15,10 +15,12 @@ import qg.qgent.dto.TaskResponse;
 import qg.qgent.dto.TaskTriggerRequest;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.MessageEntity;
+import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.MessageMapper;
+import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.RequirementGroupRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
@@ -46,6 +48,7 @@ public class TaskTriggerService {
     private final MessageMapper messageMapper;
     private final RequirementGroupMapper groupMapper;
     private final RequirementGroupRepositoryMapper groupRepoMapper;
+    private final ProjectRepositoryMapper projectRepositoryMapper;
     private final TaskMapper taskMapper;
     private final DiffMapper diffMapper;
     private final TaskService taskService;
@@ -58,12 +61,14 @@ public class TaskTriggerService {
 
     public TaskTriggerService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                               RequirementGroupRepositoryMapper groupRepoMapper, TaskMapper taskMapper,
-                              DiffMapper diffMapper, TaskService taskService, MessageService messageService,
+                              ProjectRepositoryMapper projectRepositoryMapper, DiffMapper diffMapper,
+                              TaskService taskService, MessageService messageService,
                               GroupService groupService,
                               ProjectAccessService access, ObjectMapper mapper) {
         this.messageMapper = messageMapper;
         this.groupMapper = groupMapper;
         this.groupRepoMapper = groupRepoMapper;
+        this.projectRepositoryMapper = projectRepositoryMapper;
         this.taskMapper = taskMapper;
         this.diffMapper = diffMapper;
         this.taskService = taskService;
@@ -82,9 +87,8 @@ public class TaskTriggerService {
      * 显式触发：从一条群消息创建 Task。
      * <p>
      * 消息必须属于该需求群，否则 404；请求缺省字段（title/requirement/repositoryIds/baseRef）
-     * 由服务端从消息文本或群信息提取。新建 Workspace 且仓库范围解析为空（请求未传
-     * repositoryIds、需求群也未绑定仓库）时返回 422 {@code REQUIREMENT_GROUP_NO_REPOSITORIES}，
-     * 不静默回退到项目全部仓库。
+     * 由服务端从消息文本或项目绑定仓库提取。新建 Workspace 且请求未传
+     * {@code repositoryIds} 时，服务端使用项目 ACTIVE 仓库作为 Planner 候选范围。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -108,11 +112,19 @@ public class TaskTriggerService {
         TaskCreateRequest request = assembleRequest(group, message, body.getTitle(),
                 body.getRequirement(), continuation, body.getRepositoryIds(), body.getBaseRef(),
                 body.getBaseRefs());
-        // 新建 Workspace 且仓库范围解析为空（请求未传 repositoryIds、需求群也未绑定仓库）时，
-        // 用独立错误码明确指引前端引导用户先绑定仓库，而不是落到模糊的 TASK_REPOSITORY_REQUIRED。
+        // 需求群共享项目仓库范围：客户端没有指定仓库时，使用项目当前 ACTIVE 仓库，
+        // 再由 Planner 物化阶段收敛实际涉及的仓库。
         if (continuation == null && (request.getRepositoryIds() == null || request.getRepositoryIds().isEmpty())) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "REQUIREMENT_GROUP_NO_REPOSITORIES",
-                    "需求群未绑定仓库，请先为需求群绑定仓库后再触发任务");
+            List<UUID> projectRepositories = projectRepositoryMapper.selectList(
+                    Wrappers.<ProjectRepositoryEntity>lambdaQuery()
+                            .eq(ProjectRepositoryEntity::getProjectId, projectId)
+                            .eq(ProjectRepositoryEntity::getStatus, "ACTIVE"))
+                    .stream().map(ProjectRepositoryEntity::getId).toList();
+            if (projectRepositories.isEmpty()) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PROJECT_NO_ACTIVE_REPOSITORIES",
+                        "项目当前没有可用仓库，请先绑定至少一个有效仓库");
+            }
+            request.setRepositoryIds(projectRepositories);
         }
         request.setDeliveryMode(body.getDeliveryMode());
         return createIdempotent(projectId, actor, message, request);
@@ -121,8 +133,9 @@ public class TaskTriggerService {
     /**
      * 自动触发：检测消息 mentions 中是否存在 {@code type=AGENT}，存在则从该消息创建 Task。
      * <p>
-     * 幂等防重：同一 {@code triggerMessageId} 已有关联 Task 时跳过；群未绑仓库时跳过并记录
-     * warn（@agent 消息不应因缺仓库而阻塞聊天，不抛错）。
+     * 幂等防重：同一 {@code triggerMessageId} 已有关联 Task 时跳过。新 Workspace 的候选仓库
+     * 统一取项目当前 ACTIVE 仓库，需求群不再拥有独立的仓库范围；Planner 后续再收敛实际写入范围，
+     * 不要求前端把项目仓库清单拼进请求。
      *
      * @param actor     当前用户 ID
      * @param projectId 项目 ID
@@ -148,17 +161,16 @@ public class TaskTriggerService {
         }
         RequirementGroupEntity group = requireActiveRequirementGroup(projectId, groupId);
         ContinuationRef continuation = resolveQuotedDiffContinuation(projectId, groupId, message);
-        List<UUID> groupRepositories = groupRepoMapper.selectRepositoryIds(groupId);
-        // 非续作且需求群未绑仓库时跳过；引用 DIFF 续作的仓库范围由源 Workspace 继承，不依赖群绑定。
-        if (continuation == null && groupRepositories.isEmpty()) {
-            log.warn("task auto-trigger skipped: requirement group {} has no bound repositories", groupId);
+        List<UUID> projectRepositories = continuation == null ? activeProjectRepositoryIds(projectId) : null;
+        if (continuation == null && projectRepositories.isEmpty()) {
+            log.warn("task auto-trigger skipped: project {} has no active repositories", projectId);
             return null;
         }
         String title = messageText(message.getContent());
         if (title == null || title.isBlank()) {
             title = group.getName();
         }
-        TaskCreateRequest request = assembleRequest(group, message, title, null, continuation, groupRepositories, null,
+        TaskCreateRequest request = assembleRequest(group, message, title, null, continuation, projectRepositories, null,
                 null);
         return createIdempotent(projectId, actor, message, request);
     }
@@ -197,12 +209,20 @@ public class TaskTriggerService {
             request.setContinuationOfTaskId(continuation.taskId());
             request.setRepositoryIds(null);
         } else {
-            request.setRepositoryIds(repositoryIds == null || repositoryIds.isEmpty()
-                    ? groupRepoMapper.selectRepositoryIds(group.getId()) : repositoryIds);
+            // 新 Workspace 的仓库范围由调用方从项目 ACTIVE 仓库解析；不要再回读需求群旧绑定，
+            // 否则历史群绑定会把不属于当前项目候选范围的仓库重新带入任务。
+            request.setRepositoryIds(repositoryIds);
         }
         request.setBaseRef(baseRef);
         request.setBaseRefs(baseRefs);
         return request;
+    }
+
+    private List<UUID> activeProjectRepositoryIds(UUID projectId) {
+        return projectRepositoryMapper.selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
+                        .eq(ProjectRepositoryEntity::getProjectId, projectId)
+                        .eq(ProjectRepositoryEntity::getStatus, "ACTIVE"))
+                .stream().map(ProjectRepositoryEntity::getId).toList();
     }
 
     /**

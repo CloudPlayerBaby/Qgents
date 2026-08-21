@@ -154,12 +154,12 @@ public class MrFirstAutomationService {
                         projectId, taskId, worktree.getProjectRepositoryId());
             } catch (RuntimeException failure) {
                 if (isNoChangesFailure(failure)) {
-                    tasks.failMrPreflightNoChanges(projectId, taskId);
                     log.warn("preflight stopped because source and target have no changes "
                                     + "projectId={} taskId={} repositoryId={}",
                             projectId, taskId, worktree.getProjectRepositoryId());
-                    // 这是任务级终态，当前 Workspace 的其他仓库不应继续申请预检。
-                    break;
+                    // 无差异只说明当前仓库没有可创建的 MR，不能把整个多仓库任务
+                    // 收敛为 FAILED，也不能阻止其它仓库继续申请预检。
+                    continue;
                 }
                 // 外部基础设施失败暂不改变 Task，但要退避后再重试，避免每轮调度重复打 Worker。
                 scheduleRetry(repositoryKey);
@@ -217,19 +217,22 @@ public class MrFirstAutomationService {
                 || !isPreflightActionable(task) || task.getCreatedBy() == null) {
             return;
         }
-        // 多仓库交付必须先确认所有仓库的当前 source/target、Dry Run 和独立 CQ+1，
-        // 任一仓库未完成时只保留预检状态，不提前创建局部 MR。
-        for (WorkspaceRepositoryEntity worktree : worktrees.selectByWorkspace(task.getWorkspaceId())) {
-            ProjectRepositoryEntity repository = repositories.selectById(worktree.getProjectRepositoryId());
-            String branch = worktree.getBaseRef();
-            if (branch == null || branch.isBlank()) branch = repository == null ? null : repository.getDefaultBranch();
-            if (branch == null || branch.isBlank()) return;
-            try {
-                if (!"PASSED".equals(preflightGates.get(projectId, task.getId(), worktree.getProjectRepositoryId(),
-                        branch, task.getCreatedBy()).getStatus())) return;
-            } catch (RuntimeException ignored) {
-                return;
-            }
+        // 预检是按仓库独立完成的：当前 Dry Run 对应仓库通过 Dry Run/CQ+1 后即可创建
+        // 自己的 MR。其它仓库失败或仍在等待 CQ+1 不应阻塞这个仓库，否则多仓库任务会
+        // 因一个仓库的外部故障把所有 MR 永久卡在 PENDING_CREATE。
+        WorkspaceRepositoryEntity worktree = worktrees.selectByWorkspace(task.getWorkspaceId()).stream()
+                .filter(value -> dryRun.getProjectRepositoryId().equals(value.getProjectRepositoryId()))
+                .findFirst().orElse(null);
+        if (worktree == null) return;
+        ProjectRepositoryEntity repository = repositories.selectById(worktree.getProjectRepositoryId());
+        String branch = worktree.getBaseRef();
+        if (branch == null || branch.isBlank()) branch = repository == null ? null : repository.getDefaultBranch();
+        if (branch == null || branch.isBlank()) return;
+        try {
+            if (!"PASSED".equals(preflightGates.get(projectId, task.getId(), worktree.getProjectRepositoryId(),
+                    branch, task.getCreatedBy()).getStatus())) return;
+        } catch (RuntimeException ignored) {
+            return;
         }
         MergeRequestCreateRequest request = new MergeRequestCreateRequest();
         request.setTaskId(task.getId());

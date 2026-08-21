@@ -11,7 +11,8 @@ import java.util.List;
  * 任务关联 Workspace 展示摘要（任务详情使用）。
  * <p>
  * status 为 Workspace 生命周期状态（PROVISIONING/READY/LEASED/ARCHIVED/FAILED）；
- * repositories 为该 Workspace 内每个 worktree 的仓库摘要。
+ * repositories 为 Planner 已确定的实际写入仓库摘要；规划尚未物化时为空，
+ * 不把 Workspace 的候选仓库范围直接暴露为任务目标。
  */
 @Data
 @NoArgsConstructor

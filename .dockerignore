@@ -1,0 +1,8 @@
+.git
+.env
+github_app.pem
+target
+logs
+data
+sandbox-worker/logs
+*.log

@@ -1201,18 +1201,29 @@ public class MergeRequestService {
      * 测试环境未注入执行器时保留同步执行，便于维持服务层单元测试的确定性。
      */
     public MergeRequestSummaryResponse merge(UUID projectId, UUID mergeRequestId, UUID userId) {
+        return merge(projectId, mergeRequestId, userId, null);
+    }
+
+    /**
+     * 受理 GitHub 合并，可选传入 squash 合并提交说明。
+     */
+    public MergeRequestSummaryResponse merge(UUID projectId, UUID mergeRequestId, UUID userId,
+                                             String commitMessage) {
         projectAccess.requireProjectAdmin(projectId, userId);
+        String normalizedCommitMessage = normalizeCommitMessage(commitMessage);
         MergeClaim claim = inTransaction(() -> claimMerge(projectId, mergeRequestId));
         if (claim.alreadyCompleted() || claim.alreadyInProgress()) {
             return summary(claim.mergeRequest());
         }
         boolean synchronous = mergeExecutor == null;
-        Runnable operation = () -> executeMerge(projectId, mergeRequestId, claim, synchronous);
+        Runnable operation = () -> executeMerge(projectId, mergeRequestId, claim, synchronous,
+                normalizedCommitMessage);
         if (mergeExecutor != null) {
             try {
                 mergeExecutor.execute(operation);
             } catch (RejectedExecutionException rejected) {
-                inTransaction(() -> failMerge(mergeRequestId, claim.operationId()));
+                inTransaction(() -> failMerge(mergeRequestId, claim.operationId(),
+                        "MERGE_EXECUTOR_UNAVAILABLE", "合并任务当前排队已满，请稍后重试"));
                 throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "MERGE_EXECUTOR_UNAVAILABLE",
                         "合并任务当前排队已满，请稍后重试");
             }
@@ -1222,7 +1233,8 @@ public class MergeRequestService {
         return summary(inTransaction(() -> mergeRequestMapper.selectById(mergeRequestId)));
     }
 
-    private void executeMerge(UUID projectId, UUID mergeRequestId, MergeClaim claim, boolean propagateFailure) {
+    private void executeMerge(UUID projectId, UUID mergeRequestId, MergeClaim claim, boolean propagateFailure,
+                              String commitMessage) {
         try {
             GitHubPullRequestDetails remote = githubClient.getPullRequest(
                     claim.installation().getProviderInstallationId(), claim.githubRepository().getOwnerLogin(),
@@ -1240,7 +1252,7 @@ public class MergeRequestService {
                         new GitHubPullRequestMergeRequest(
                                 "Merge " + (claim.mergeRequest().getTitle() == null
                                         ? "Pull Request" : claim.mergeRequest().getTitle()),
-                                null, "squash", claim.mergeRequest().getHeadCommit()));
+                                commitMessage, "squash", claim.mergeRequest().getHeadCommit()));
                 if (!result.merged()) {
                     throw new ApiException(HttpStatus.CONFLICT, "GITHUB_MERGE_NOT_COMPLETED",
                             result.message() == null ? "GitHub did not merge the Pull Request" : result.message());
@@ -1250,7 +1262,11 @@ public class MergeRequestService {
                     claim.operationId()));
             publishUpdated(merged);
         } catch (RuntimeException failure) {
-            MergeRequestEntity failed = inTransaction(() -> failMerge(mergeRequestId, claim.operationId()));
+            String failureCode = failure instanceof ApiException api ? api.code() : "GITHUB_MERGE_FAILED";
+            String failureReason = failure instanceof ApiException api
+                    ? api.getMessage() : "GitHub 合并失败，请稍后重试";
+            MergeRequestEntity failed = inTransaction(() -> failMerge(mergeRequestId, claim.operationId(),
+                    failureCode, failureReason));
             if (failed != null) {
                 publishUpdated(failed);
             }
@@ -1294,6 +1310,8 @@ public class MergeRequestService {
         }
         mr.setMergeOperationId(operationId);
         mr.setMergeOperationStatus("RUNNING");
+        mr.setMergeOperationFailureCode(null);
+        mr.setMergeOperationFailureReason(null);
         mr.setMergeLeaseExpiresAt(now.plus(MERGE_OPERATION_LEASE));
         mergeRequestMapper.updateById(mr);
         return new MergeClaim(mr, githubRepository, installation, operationId, false, false);
@@ -1311,6 +1329,8 @@ public class MergeRequestService {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         current.setStatus("MERGED");
         current.setMergeOperationStatus("COMPLETED");
+        current.setMergeOperationFailureCode(null);
+        current.setMergeOperationFailureReason(null);
         current.setMergeLeaseExpiresAt(null);
         current.setProviderUpdatedAt(now);
         current.setSyncedAt(now);
@@ -1318,13 +1338,17 @@ public class MergeRequestService {
         return current;
     }
 
-    private MergeRequestEntity failMerge(UUID mergeRequestId, String operationId) {
+    private MergeRequestEntity failMerge(UUID mergeRequestId, String operationId,
+                                         String failureCode, String failureReason) {
         MergeRequestEntity current = mergeRequestMapper.selectByIdForUpdate(mergeRequestId);
         if (current == null || !operationId.equals(current.getMergeOperationId())
                 || "COMPLETED".equals(current.getMergeOperationStatus())) {
             return current;
         }
         current.setMergeOperationStatus("FAILED");
+        current.setMergeOperationFailureCode(failureCode);
+        current.setMergeOperationFailureReason(failureReason == null || failureReason.isBlank()
+                ? "合并失败，请稍后重试" : failureReason.substring(0, Math.min(failureReason.length(), 500)));
         current.setMergeLeaseExpiresAt(null);
         mergeRequestMapper.updateById(current);
         return current;
@@ -1976,6 +2000,18 @@ public class MergeRequestService {
         return result;
     }
 
+    private String normalizeCommitMessage(String commitMessage) {
+        if (commitMessage == null || commitMessage.isBlank()) {
+            return null;
+        }
+        String normalized = commitMessage.trim();
+        if (normalized.length() > 500) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "MERGE_COMMIT_MESSAGE_TOO_LONG",
+                    "合并提交说明不能超过 500 个字符");
+        }
+        return normalized;
+    }
+
     private Set<UUID> visibleGroupIds(UUID projectId, UUID userId) {
         if (groupService == null) {
             return Set.of();
@@ -2110,6 +2146,8 @@ public class MergeRequestService {
         response.setTargetBranch(mr.getTargetBranch());
         response.setStatus(mr.getStatus());
         response.setMergeOperationStatus(mr.getMergeOperationStatus());
+        response.setMergeOperationFailureCode(mr.getMergeOperationFailureCode());
+        response.setMergeOperationFailureReason(mr.getMergeOperationFailureReason());
         response.setHeadCommit(mr.getHeadCommit());
         response.setMergeable(mr.getMergeable());
         response.setMergeableState(mr.getMergeableState());
