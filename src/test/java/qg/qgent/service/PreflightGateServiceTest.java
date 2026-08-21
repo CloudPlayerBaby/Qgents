@@ -9,6 +9,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import qg.qgent.api.ApiException;
 import qg.qgent.entity.DryRunEntity;
 import qg.qgent.entity.PreflightCqReviewEntity;
+import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.mapper.DryRunMapper;

@@ -1786,14 +1786,21 @@ public class MergeRequestService {
         }
         QueryWrapper<TaskEntity> taskQuery = Wrappers.<TaskEntity>query()
                 .eq("project_id", projectId).in("workspace_id", workspaceIds)
-                .eq(taskRequiredStatus != null, "status", taskRequiredStatus)
                 .eq(requirementGroupId != null, "requirement_group_id", requirementGroupId);
+        // 默认列表同时展示仍在等待预检的 MR_FIRST 任务，以及已经完成交付但尚未
+        // 落库真实 MR 的 DIFF_FIRST 小任务。PENDING_CREATE 查询则保持原语义：不限制 Task 状态。
+        if ("WAITING_PREFLIGHT".equalsIgnoreCase(taskRequiredStatus)) {
+            taskQuery.and(wrapper -> wrapper.eq("status", "WAITING_PREFLIGHT")
+                    .or().eq("status", "SUCCEEDED"));
+        } else if (taskRequiredStatus != null) {
+            taskQuery.eq("status", taskRequiredStatus);
+        }
         List<TaskEntity> tasks = taskMapper.selectList(taskQuery);
         if (tasks == null) tasks = List.of();
         Map<UUID, TaskEntity> taskByWorkspace = new HashMap<>();
         for (TaskEntity task : tasks) {
             if (task == null || task.getWorkspaceId() == null) continue;
-            if (taskRequiredStatus != null && !taskRequiredStatus.equalsIgnoreCase(task.getStatus())) continue;
+            if (!matchesPlaceholderTaskStatus(taskRequiredStatus, task.getStatus())) continue;
             if (requirementGroupId != null && !requirementGroupId.equals(task.getRequirementGroupId())) continue;
             taskByWorkspace.merge(task.getWorkspaceId(), task, this::newerTask);
         }
@@ -1822,7 +1829,7 @@ public class MergeRequestService {
         if (repositoryRows == null) repositoryRows = List.of();
         Map<UUID, ProjectRepositoryEntity> repositories = repositoryRows.stream()
                 .collect(Collectors.toMap(ProjectRepositoryEntity::getId, Function.identity(), (left, right) -> left));
-        List<MergeRequestSummaryResponse> result = new ArrayList<>();
+        Map<String, PlaceholderCandidate> candidatesByBranch = new HashMap<>();
         for (WorkspaceRepositoryEntity worktree : worktrees) {
             TaskEntity task = taskByWorkspace.get(worktree.getWorkspaceId());
             if (task == null || worktree.getProjectRepositoryId() == null
@@ -1831,7 +1838,16 @@ public class MergeRequestService {
                 continue;
             }
             String key = branchKey(worktree.getProjectRepositoryId(), worktree.getSourceBranch());
-            if (existingKeys.contains(key)) continue;
+            candidatesByBranch.merge(key, new PlaceholderCandidate(task, worktree),
+                    this::newerPlaceholderCandidate);
+        }
+
+        List<MergeRequestSummaryResponse> result = new ArrayList<>();
+        for (Map.Entry<String, PlaceholderCandidate> entry : candidatesByBranch.entrySet()) {
+            if (existingKeys.contains(entry.getKey())) continue;
+            PlaceholderCandidate candidate = entry.getValue();
+            TaskEntity task = candidate.task();
+            WorkspaceRepositoryEntity worktree = candidate.worktree();
 
             ProjectRepositoryEntity repository = repositories.get(worktree.getProjectRepositoryId());
             String targetBranch = worktree.getBaseRef();
@@ -1860,14 +1876,87 @@ public class MergeRequestService {
             row.setWebUrl(null);
             row.setCreatedAt(iso(task.getUpdatedAt() == null ? task.getCreatedAt() : task.getUpdatedAt()));
             row.setTaskId(id(task.getId()));
-            row.setCreateMode("SYSTEM");
+            row.setCreateMode(placeholderCreateMode(task));
             result.add(row);
-            existingKeys.add(key);
         }
         result.sort(Comparator.comparing(MergeRequestSummaryResponse::getId,
                 Comparator.nullsLast(Comparator.reverseOrder())));
         return result;
     }
+
+    private PlaceholderCandidate newerPlaceholderCandidate(PlaceholderCandidate left,
+                                                            PlaceholderCandidate right) {
+        if (Objects.equals(left.task().getId(), right.task().getId())) {
+            return newerWorktree(left, right);
+        }
+        TaskEntity newerTask = newerPlaceholderTask(left.task(), right.task());
+        if (newerTask == right.task()) return right;
+        if (newerTask == left.task()) return left;
+        return newerWorktree(left, right);
+    }
+
+    private TaskEntity newerPlaceholderTask(TaskEntity left, TaskEntity right) {
+        LocalDateTime leftTime = left.getUpdatedAt() == null ? left.getCreatedAt() : left.getUpdatedAt();
+        LocalDateTime rightTime = right.getUpdatedAt() == null ? right.getCreatedAt() : right.getUpdatedAt();
+        if (leftTime == null && rightTime == null) {
+            UUID leftId = left.getId();
+            UUID rightId = right.getId();
+            if (leftId == null) return right;
+            if (rightId == null) return left;
+            return rightId.compareTo(leftId) >= 0 ? right : left;
+        }
+        if (leftTime == null) return right;
+        if (rightTime == null) return left;
+        if (rightTime.isAfter(leftTime)) return right;
+        if (rightTime.isBefore(leftTime)) return left;
+        UUID leftId = left.getId();
+        UUID rightId = right.getId();
+        if (leftId == null) return right;
+        if (rightId == null) return left;
+        return rightId.compareTo(leftId) >= 0 ? right : left;
+    }
+
+    private PlaceholderCandidate newerWorktree(PlaceholderCandidate left, PlaceholderCandidate right) {
+        LocalDateTime leftTime = left.worktree().getUpdatedAt() == null
+                ? left.worktree().getCreatedAt() : left.worktree().getUpdatedAt();
+        LocalDateTime rightTime = right.worktree().getUpdatedAt() == null
+                ? right.worktree().getCreatedAt() : right.worktree().getUpdatedAt();
+        if (leftTime == null) return right;
+        if (rightTime == null) return left;
+        if (rightTime.isAfter(leftTime)) return right;
+        if (rightTime.isBefore(leftTime)) return left;
+        String leftHead = left.worktree().getHeadCommit() == null ? "" : left.worktree().getHeadCommit();
+        String rightHead = right.worktree().getHeadCommit() == null ? "" : right.worktree().getHeadCommit();
+        int headComparison = rightHead.compareTo(leftHead);
+        if (headComparison != 0) return headComparison > 0 ? right : left;
+        String leftBase = left.worktree().getBaseRef() == null ? "" : left.worktree().getBaseRef();
+        String rightBase = right.worktree().getBaseRef() == null ? "" : right.worktree().getBaseRef();
+        int baseComparison = rightBase.compareTo(leftBase);
+        if (baseComparison != 0) return baseComparison > 0 ? right : left;
+        UUID leftWorkspace = left.worktree().getWorkspaceId();
+        UUID rightWorkspace = right.worktree().getWorkspaceId();
+        if (leftWorkspace == null) return right;
+        if (rightWorkspace == null) return left;
+        return rightWorkspace.compareTo(leftWorkspace) >= 0 ? right : left;
+    }
+
+    private boolean matchesPlaceholderTaskStatus(String requiredStatus, String actualStatus) {
+        if (requiredStatus == null) return true;
+        if ("WAITING_PREFLIGHT".equalsIgnoreCase(requiredStatus)) {
+            return "WAITING_PREFLIGHT".equalsIgnoreCase(actualStatus)
+                    || "SUCCEEDED".equalsIgnoreCase(actualStatus);
+        }
+        return requiredStatus.equalsIgnoreCase(actualStatus);
+    }
+
+    private String placeholderCreateMode(TaskEntity task) {
+        if (task == null || task.getDeliveryMode() == null) return "UNKNOWN";
+        if ("MR_FIRST".equalsIgnoreCase(task.getDeliveryMode())) return "SYSTEM";
+        if ("DIFF_FIRST".equalsIgnoreCase(task.getDeliveryMode())) return "MANUAL";
+        return "UNKNOWN";
+    }
+
+    private record PlaceholderCandidate(TaskEntity task, WorkspaceRepositoryEntity worktree) { }
 
     private TaskEntity newerTask(TaskEntity left, TaskEntity right) {
         LocalDateTime leftTime = left.getUpdatedAt() == null ? left.getCreatedAt() : left.getUpdatedAt();

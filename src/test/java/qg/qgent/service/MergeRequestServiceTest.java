@@ -20,6 +20,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Map;
+import java.time.LocalDateTime;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1623,6 +1624,110 @@ class MergeRequestServiceTest {
 
         var again = service.list(projectId, userId, null, null, null, null, 20, "req-1");
         assertEquals(row.getId(), again.data().get(0).getId());
+    }
+
+    @Test
+    void listInjectsManualPlaceholderForSucceededDiffFirstTask() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setDefaultBranch("main");
+        when(projectRepositoryMapper.selectList(any())).thenReturn(java.util.List.of(repository));
+        when(projectRepositoryMapper.selectBatchIds(anyCollection())).thenReturn(java.util.List.of(repository));
+
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setWorkspaceId(workspaceId);
+        worktree.setProjectRepositoryId(repositoryId);
+        worktree.setBaseRef("main");
+        worktree.setSourceBranch("feat/task-diff-first");
+        worktree.setHeadCommit("head-sha");
+        when(workspaceRepositoryMapper.selectByProject(projectId, null)).thenReturn(java.util.List.of(worktree));
+
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setWorkspaceId(workspaceId);
+        task.setStatus("SUCCEEDED");
+        task.setDeliveryMode("DIFF_FIRST");
+        task.setTitle("小任务");
+        when(taskMapper.selectList(any())).thenReturn(java.util.List.of(task));
+        when(mergeRequestMapper.selectList(any())).thenReturn(java.util.List.of());
+
+        var response = service.list(projectId, userId, null, null, null, null, 20, "req-1");
+
+        assertEquals(1, response.data().size());
+        MergeRequestSummaryResponse row = response.data().get(0);
+        assertEquals("PENDING_CREATE", row.getStatus());
+        assertEquals(taskId.toString(), row.getTaskId());
+        assertEquals("MANUAL", row.getCreateMode());
+        assertEquals("feat/task-diff-first", row.getSourceBranch());
+        assertEquals("main", row.getTargetBranch());
+    }
+
+    @Test
+    void choosesNewestWorkspaceCandidateWhenMultipleWorkspacesReuseBranch() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID olderWorkspaceId = UUID.randomUUID();
+        UUID newerWorkspaceId = UUID.randomUUID();
+        UUID olderTaskId = UUID.randomUUID();
+        UUID newerTaskId = UUID.randomUUID();
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setDefaultBranch("main");
+        when(projectRepositoryMapper.selectList(any())).thenReturn(java.util.List.of(repository));
+        when(projectRepositoryMapper.selectBatchIds(anyCollection())).thenReturn(java.util.List.of(repository));
+
+        WorkspaceRepositoryEntity olderWorktree = new WorkspaceRepositoryEntity();
+        olderWorktree.setWorkspaceId(olderWorkspaceId);
+        olderWorktree.setProjectRepositoryId(repositoryId);
+        olderWorktree.setBaseRef("main");
+        olderWorktree.setSourceBranch("feat/shared");
+        olderWorktree.setHeadCommit("older-head");
+        olderWorktree.setUpdatedAt(LocalDateTime.of(2026, 8, 20, 10, 0));
+        WorkspaceRepositoryEntity newerWorktree = new WorkspaceRepositoryEntity();
+        newerWorktree.setWorkspaceId(newerWorkspaceId);
+        newerWorktree.setProjectRepositoryId(repositoryId);
+        newerWorktree.setBaseRef("main");
+        newerWorktree.setSourceBranch("feat/shared");
+        newerWorktree.setHeadCommit("newer-head");
+        newerWorktree.setUpdatedAt(LocalDateTime.of(2026, 8, 20, 11, 0));
+        when(workspaceRepositoryMapper.selectByProject(projectId, null))
+                .thenReturn(java.util.List.of(newerWorktree, olderWorktree));
+
+        TaskEntity olderTask = new TaskEntity();
+        olderTask.setId(olderTaskId);
+        olderTask.setProjectId(projectId);
+        olderTask.setWorkspaceId(olderWorkspaceId);
+        olderTask.setStatus("SUCCEEDED");
+        olderTask.setDeliveryMode("DIFF_FIRST");
+        olderTask.setUpdatedAt(LocalDateTime.of(2026, 8, 20, 10, 0));
+        TaskEntity newerTask = new TaskEntity();
+        newerTask.setId(newerTaskId);
+        newerTask.setProjectId(projectId);
+        newerTask.setWorkspaceId(newerWorkspaceId);
+        newerTask.setStatus("SUCCEEDED");
+        newerTask.setDeliveryMode("DIFF_FIRST");
+        newerTask.setUpdatedAt(LocalDateTime.of(2026, 8, 20, 11, 0));
+        when(taskMapper.selectList(any())).thenReturn(java.util.List.of(olderTask, newerTask));
+        when(mergeRequestMapper.selectList(any())).thenReturn(java.util.List.of());
+
+        var response = service.list(projectId, userId, null, null, null, null, 20, "req-1");
+
+        assertEquals(1, response.data().size());
+        MergeRequestSummaryResponse row = response.data().get(0);
+        assertEquals(newerTaskId.toString(), row.getTaskId());
+        assertEquals("newer-head", row.getHeadCommit());
+        assertEquals("feat/shared", row.getSourceBranch());
     }
 
     @Test
