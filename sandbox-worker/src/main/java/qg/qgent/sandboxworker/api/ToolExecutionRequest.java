@@ -24,7 +24,10 @@ public class ToolExecutionRequest {
 
     @NotBlank
     @Size(max = 64)
-    @Pattern(regexp = "[a-z]+\\.[a-z]+")
+    // Tool names are namespaced (for example file.read and file.ensure_trailing_newline).
+    // Keep validation aligned with the registered tool names; the registry remains the
+    // authoritative allow-list after the request passes shape validation.
+    @Pattern(regexp = "[a-z]+\\.[a-z_]+")
     private String tool;
 
     @NotNull
