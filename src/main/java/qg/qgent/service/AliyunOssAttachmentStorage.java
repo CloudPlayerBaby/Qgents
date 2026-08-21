@@ -3,12 +3,14 @@ package qg.qgent.service;
 import com.aliyun.oss.HttpMethod;
 import com.aliyun.oss.OSS;
 import com.aliyun.oss.model.OSSObject;
+import com.aliyun.oss.model.ObjectMetadata;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 import qg.qgent.config.AliyunOssProperties;
 import qg.qgent.dto.UploadCredential;
 
+import java.io.InputStream;
 import java.net.URL;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -17,9 +19,10 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 阿里云 OSS 预签名直传凭证（附件真实存储策略，@Primary）。
+ * 阿里云 OSS 附件存储策略（真实存储，@Primary）。
  * <p>
- * 仅在 aliyun.oss.enabled=true 时生效：上传签发预签名 PUT URL（客户端直接 PUT 文件字节到 OSS 桶），
+ * 仅在 aliyun.oss.enabled=true 时生效：上传走后端代理——凭证 {@code uploadUrl} 指向代理端点，
+ * 客户端把文件字节 PUT 到后端，由 {@link #storeBytes} 写入 OSS 桶（浏览器不直传 OSS，规避跨域预检）；
  * 下载签发预签名 GET URL，确认上传通过 doesObjectExist 校验。AccessKey 由环境变量注入
  * （见 {@link AliyunOssProperties}），本类不接触密钥明文。
  */
@@ -44,11 +47,22 @@ public class AliyunOssAttachmentStorage implements AttachmentStorageStrategy {
     @Override
     public UploadCredential createCredential(UUID attachmentId, String objectKey, String fileName, String mediaType,
                                              Long sizeBytes) {
-        Date expiresAt = new Date(System.currentTimeMillis() + properties.getPresignExpirySeconds() * 1000L);
-        URL url = oss.generatePresignedUrl(properties.getBucketName(), objectKey, expiresAt, HttpMethod.PUT);
-        LocalDateTime expiry = LocalDateTime.ofInstant(expiresAt.toInstant(), ZoneOffset.UTC);
-        // 预签名 PUT 不要求固定请求头，避免 Content-Type 参与签名导致前端上传校验失败
-        return new UploadCredential(url.toString(), "PUT", Map.of(), expiry);
+        LocalDateTime expiry = LocalDateTime.now(ZoneOffset.UTC).plusSeconds(properties.getPresignExpirySeconds());
+        // 代理上传：uploadUrl 指向后端代理端点（相对路径，前端按 API base origin 解析），
+        // 字节经 storeBytes 写入 OSS。Content-Type 透传给前端便于回传（代理端点不强依赖该头）。
+        Map<String, String> headers = mediaType == null || mediaType.isBlank()
+                ? Map.of()
+                : Map.of("Content-Type", mediaType);
+        return new UploadCredential("/api/v1/" + objectKey, "PUT", headers, expiry);
+    }
+
+    @Override
+    public void storeBytes(String objectKey, InputStream bytes, String contentType) {
+        ObjectMetadata metadata = new ObjectMetadata();
+        if (contentType != null && !contentType.isBlank()) {
+            metadata.setContentType(contentType);
+        }
+        oss.putObject(properties.getBucketName(), objectKey, bytes, metadata);
     }
 
     @Override

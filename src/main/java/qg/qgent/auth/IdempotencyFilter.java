@@ -144,14 +144,17 @@ public class IdempotencyFilter extends OncePerRequestFilter {
     }
 
     private byte[] readBody(HttpServletRequest request) throws IOException {
+        // 与首次请求的哈希口径保持一致：只取前 BODY_CACHE_LIMIT 字节。
+        // 若这里读全量，>1MB 的请求体（如代理上传大文件）重放时会因
+        // 「全量哈希 vs 缓存前缀哈希」不一致被误判为 IDEMPOTENCY_KEY_REUSED。
         if (request instanceof ContentCachingRequestWrapper cached) {
             // 强制读取以填充缓存，保证下游可重复读
             try (InputStream in = cached.getInputStream()) {
-                return in.readAllBytes();
+                return in.readNBytes(BODY_CACHE_LIMIT);
             }
         }
         try (InputStream in = request.getInputStream()) {
-            return in.readAllBytes();
+            return in.readNBytes(BODY_CACHE_LIMIT);
         }
     }
 

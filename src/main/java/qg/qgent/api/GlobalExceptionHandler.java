@@ -7,11 +7,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.List;
 import java.util.Map;
@@ -72,6 +74,24 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AsyncRequestNotUsableException.class)
     void asyncRequestNotUsable(AsyncRequestNotUsableException ex, HttpServletRequest request) {
         log.info("Async request (SSE) client disconnected [{}]: {}", request.getRequestURI(), ex.getMessage());
+    }
+
+    // 未映射的路径/方法：路径不存在（404）或方法不匹配（405）。必须在 Exception 兜底之前命中，
+    // 否则 NoResourceFoundException 等会被吞成 500「服务暂时不可用」，掩盖「端点不存在」的真实问题。
+    @ExceptionHandler(NoResourceFoundException.class)
+    ResponseEntity<?> notFound(NoResourceFoundException ex, HttpServletRequest request) {
+        log.warn("Resource not found [{}] {}: {}", request.getMethod(), request.getRequestURI(), ex.getMessage());
+        return ResponseEntity
+                .status(HttpStatus.NOT_FOUND)
+                .body(error("NOT_FOUND", "接口路径不存在", List.of(), request));
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    ResponseEntity<?> methodNotSupported(HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        log.warn("Method not supported [{}] {}: {}", request.getMethod(), request.getRequestURI(), ex.getMessage());
+        return ResponseEntity
+                .status(HttpStatus.METHOD_NOT_ALLOWED)
+                .body(error("METHOD_NOT_ALLOWED", "请求方法不允许", List.of(), request));
     }
 
     // 处理其他异常

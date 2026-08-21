@@ -11,6 +11,7 @@ import qg.qgent.dto.*;
 import qg.qgent.entity.AttachmentEntity;
 import qg.qgent.mapper.AttachmentMapper;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,9 +24,9 @@ import java.util.UUID;
 /**
  * 附件直传凭证与生命周期业务（契约 §7）。
  * <p>
- * 流程：先落 PENDING 附件记录并签发对象存储直传凭证 → 客户端把文件直接上传到对象存储 →
- * 客户端确认上传（服务端校验对象存在后置 READY）→ 按需签发临时下载地址。
- * 文件字节始终不经过后端；上传/下载均为对象存储预签名 URL。
+ * 流程：先落 PENDING 附件记录并签发代理上传凭证 → 客户端把文件字节 PUT 到代理端点
+ * （{@link #uploadBytes} 写入当前存储策略）→ 客户端确认上传（服务端校验对象存在后置 READY）→
+ * 按需签发临时下载地址。上传字节经后端代理写入存储（OSS / 本地磁盘），下载为预签名 URL 或流式回源。
  */
 @Service
 public class AttachmentService {
@@ -134,6 +135,55 @@ public class AttachmentService {
         attachment.setStatus("READY");
         attachmentMapper.updateById(attachment);
         return new AttachmentStatusResponse(attachment.getId().toString(), attachment.getStatus());
+    }
+
+    /**
+     * 服务端代理接收附件字节并写入存储（契约 §7 代理上传）。
+     * <p>
+     * 校验项目成员资格、附件归属与 PENDING 状态后，读取请求体字节（上限 {@code maxSizeBytes}）写入
+     * 当前存储策略；不改状态，仍由 confirm 在 objectExists 校验通过后置 READY。
+     *
+     * @param actor        当前用户 ID
+     * @param projectId    项目 ID
+     * @param attachmentId 附件 ID
+     * @param bytes        请求体原始字节流
+     * @param contentType  请求 Content-Type，可空
+     */
+    public void uploadBytes(UUID actor, UUID projectId, UUID attachmentId, InputStream bytes, String contentType) {
+        access.requireProjectMember(projectId, actor);
+        AttachmentEntity attachment = requireAttachment(projectId, attachmentId);
+        if (!"PENDING".equals(attachment.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, "ATTACHMENT_NOT_PENDING", "附件不可上传（状态非待上传）");
+        }
+        byte[] data = readBounded(bytes);
+        if (data.length > maxSizeBytes) {
+            throw new ApiException(HttpStatus.PAYLOAD_TOO_LARGE, "ATTACHMENT_TOO_LARGE",
+                    "文件大小超过上限 " + maxSizeBytes + " 字节");
+        }
+        storage.storeBytes(attachment.getObjectKey(), new ByteArrayInputStream(data), contentType);
+    }
+
+    /**
+     * 读取请求体字节，边读边按 maxSizeBytes 上限拦截超限上传，避免把超大请求整体读入内存。
+     */
+    private byte[] readBounded(InputStream in) {
+        try (InputStream stream = in) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            long total = 0;
+            int n;
+            while ((n = stream.read(buf)) != -1) {
+                total += n;
+                if (total > maxSizeBytes) {
+                    throw new ApiException(HttpStatus.PAYLOAD_TOO_LARGE, "ATTACHMENT_TOO_LARGE",
+                            "文件大小超过上限 " + maxSizeBytes + " 字节");
+                }
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "ATTACHMENT_READ_FAILED", "读取附件内容失败");
+        }
     }
 
     /**
