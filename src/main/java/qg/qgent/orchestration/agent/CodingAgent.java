@@ -218,7 +218,7 @@ public class CodingAgent implements Agent {
                 input.getRetryContext());
         List<Message> history = new ArrayList<>();
         history.add(buildUserMessage(input, files, qualityRepairSkills));
-        String system = promptBuilder.buildSystem(true);
+        String system = promptBuilder.buildSystem(true, input.getAgentPrompt());
         ChatHistorySearchTool chatHistorySearchTool = new ChatHistorySearchTool(contextService, input.getActorId(),
                 input.getProjectId(), input.getRequirementGroupId(), contextSearchProperties.getMaxPerRun());
         List<ToolCallback> callbacks = List.of(ToolCallbacks.from(tools, activateSkillTool, chatHistorySearchTool));
@@ -344,7 +344,7 @@ public class CodingAgent implements Agent {
                 input.getPhase(), input.getWorkspaceId(), files.size());
         List<LlmMessage> history = new ArrayList<>();
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files)));
-        String system = promptBuilder.buildSystem(false);
+        String system = promptBuilder.buildSystem(false, input.getAgentPrompt());
         CodingToolExecutor toolExecutor = new CodingToolExecutor(codeAccess, writer, input.getAllowedPaths(),
                 input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts());
         toolExecutor.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),

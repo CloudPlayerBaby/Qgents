@@ -21,19 +21,30 @@ public class CodingPromptBuilder {
     static final int MAX_FILE_TREE_CHARS = 20_000;
 
     /**
-     * 默认使用原生协议的系统提示。
+     * 默认使用原生协议的系统提示（无叠加，供内置兜底调用）。
      */
     public String buildSystem() {
-        return buildSystem(true);
+        return buildSystem(true, null);
     }
 
     /**
-     * 按协议选择系统提示。
+     * 按协议选择系统提示（无叠加）。
      *
      * @param nativeProtocol true=原生 Tool Calling；false=legacy 手写 JSON 工具协议。
      */
     public String buildSystem(boolean nativeProtocol) {
-        return nativeProtocol ? buildSystemNative() : buildSystemLegacy();
+        return buildSystem(nativeProtocol, null);
+    }
+
+    /**
+     * 按协议选择系统提示，并可按需追加自定义 Agent 补充指引。
+     *
+     * @param nativeProtocol true=原生 Tool Calling；false=legacy 手写 JSON 工具协议。
+     * @param overlayPrompt  自定义 Agent 的补充指引（来自 AgentEntity.prompt）；null/空白表示无叠加。
+     */
+    public String buildSystem(boolean nativeProtocol, String overlayPrompt) {
+        String base = nativeProtocol ? buildSystemNative() : buildSystemLegacy();
+        return base + CustomAgentPrompt.overlay(overlayPrompt);
     }
 
     private String buildSystemNative() {

@@ -112,4 +112,10 @@ public class AgentInput {
     private List<ContextMemory> memories;
     /** 当前 Task 实际可见的仓库清单及其 Workspace/分支映射。 */
     private List<ContextRepository> repositories;
+    /**
+     * 自定义 Agent 的补充系统提示（overlay）：由 {@code PromptBoundAgent} 在复用内置引擎时注入，
+     * 用于在不改变内置 Agent 确定性门禁的前提下叠加自定义分析指引；可为 null，表示无叠加。
+     * 该值仅作用于本轮提示词，不参与持久化，不属于业务字段。
+     */
+    private String agentPrompt;
 }

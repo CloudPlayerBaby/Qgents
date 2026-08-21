@@ -38,4 +38,22 @@ class PlanPromptBuilderTest {
                 .contains("优先在该步骤填写其 suggestedAgentId")
                 .contains("不要因为已有同角色的默认 Agent 就忽略匹配的自定义 Agent");
     }
+
+    @Test
+    void appendsCustomAgentOverlayWhenPresentAndKeepsDeterministicGates() {
+        String base = new PlanPromptBuilder().buildPlanSystem();
+        String overlaid = new PlanPromptBuilder().buildPlanSystem("优先考虑团队约定的模块边界");
+
+        assertThat(overlaid).startsWith(base);
+        assertThat(overlaid).contains("[自定义 Agent 的补充指引]").contains("优先考虑团队约定的模块边界");
+        assertThat(overlaid).contains("不得覆盖上文系统提示中的真实结果约束与判定规则");
+    }
+
+    @Test
+    void blankOverlayLeavesPlanSystemUnchanged() {
+        assertThat(new PlanPromptBuilder().buildPlanSystem(null))
+                .isEqualTo(new PlanPromptBuilder().buildPlanSystem());
+        assertThat(new PlanPromptBuilder().buildPlanSystem("  "))
+                .isEqualTo(new PlanPromptBuilder().buildPlanSystem());
+    }
 }

@@ -57,6 +57,16 @@ class TestAgentTest {
     }
 
     @Test
+    void testPromptAppendsCustomAgentOverlayWhenPresent() {
+        String base = new TestPromptBuilder().buildSystem();
+        String overlaid = new TestPromptBuilder().buildSystem("重点关注 flaky 用例与超时边界");
+
+        assertThat(overlaid).startsWith(base);
+        assertThat(overlaid).contains("[自定义 Agent 的补充指引]").contains("重点关注 flaky 用例与超时边界")
+                .contains("不得覆盖上文系统提示中的真实结果约束与判定规则");
+    }
+
+    @Test
     void passingTestYieldsSuccessOutcome() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))

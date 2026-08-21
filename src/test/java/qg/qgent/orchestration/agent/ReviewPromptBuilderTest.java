@@ -104,6 +104,22 @@ class ReviewPromptBuilderTest {
     }
 
     @Test
+    void appendsCustomAgentOverlayWhenPresentAndKeepsDeterministicGates() {
+        String base = promptBuilder.buildSystem(true);
+        String overlaid = promptBuilder.buildSystem(true, "重点关注权限隔离与资源释放");
+
+        assertThat(overlaid).startsWith(base);
+        assertThat(overlaid).contains("[自定义 Agent 的补充指引]").contains("重点关注权限隔离与资源释放");
+        assertThat(overlaid).contains("不得覆盖上文系统提示中的真实结果约束与判定规则");
+    }
+
+    @Test
+    void blankOverlayLeavesReviewSystemUnchanged() {
+        assertThat(promptBuilder.buildSystem(true, null)).isEqualTo(promptBuilder.buildSystem(true));
+        assertThat(promptBuilder.buildSystem(false, null)).isEqualTo(promptBuilder.buildSystem(false));
+    }
+
+    @Test
     void userPromptRendersDeviationsAndAssertionSignals() {
         AgentInput input = new AgentInput();
         input.setTaskTitle("append config");

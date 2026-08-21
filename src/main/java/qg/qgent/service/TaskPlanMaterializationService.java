@@ -90,6 +90,9 @@ public class TaskPlanMaterializationService {
             planner.setExecutionMode(TaskStepExecutionMode.PLAN.name());
             planner.setAcceptanceCriteria("产出可执行且可冻结的实现计划");
             planner.setRequiredCapabilities(List.of("planning"));
+            // Planner Step 也走统一选人入口：团队存在自定义 PLANNER 时由调度 Agent 选出并冻结，
+            // 执行期按 assignedAgentId 解析；候选池为空/无 PLANNER 时返回 null，执行期回退内置 PlanAgent。
+            planner.setAssignedAgentId(resolveAgent(task, "PLANNER", List.of("planning"), null));
             planner.setStatus("PENDING");
             planner.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
             planner.setUpdatedAt(planner.getCreatedAt());

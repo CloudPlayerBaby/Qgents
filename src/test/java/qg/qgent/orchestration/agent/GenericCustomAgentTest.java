@@ -32,6 +32,8 @@ import static org.mockito.Mockito.when;
  * 自定义 Agent 运行时单元测试：以 mock {@link LlmClient#nextToolTurn} 驱动原生 Tool Calling 循环，
  * 覆盖成功/失败结果映射（success→SUCCEEDED、!success→FAILED_QUALITY）、多轮工具循环、角色→工具
  * 白名单门禁（DEVELOPER 授 CodingTools，其余角色 ReviewTools）、基础设施中止与协议错误码分类。
+ * 该类按类单元测试，直接构造 {@link GenericCustomAgent} 验证运行时行为；运行时路由（自定义内置角色
+ * 走 {@link PromptBoundAgent} 复用内置引擎）由 AgentRegistryTest 覆盖，两者不混用。
  */
 class GenericCustomAgentTest {
 
@@ -74,6 +76,7 @@ class GenericCustomAgentTest {
         input.setWorkspaceId(workspaceId);
         return input;
     }
+
 
     @Test
     void successResultMapsToSucceeded() {
