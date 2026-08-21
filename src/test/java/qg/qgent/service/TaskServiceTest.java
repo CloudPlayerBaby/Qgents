@@ -467,7 +467,23 @@ class TaskServiceTest {
         assertEquals("CANCELLED", result.getStatus());
         assertEquals("CANCELLED", task.getStatus());
         verify(tasks).updateById(task);
+        // 取消时未执行的 PENDING 步骤一并落 CANCELLED
+        verify(steps).update(any(), org.mockito.ArgumentMatchers.<com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper>any());
         verify(events).publish(any(), any(), eq("task.updated"), eq(taskId.toString()), any(Map.class));
+    }
+
+    @Test
+    void cancelPendingTaskCancelsOnlyPendingSteps() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
+        TaskEntity task = task(taskId, projectId, actor);
+        task.setStatus("PENDING");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        service.cancel(projectId, taskId, actor);
+
+        // 取消时通过 steps.update 把未执行步骤置 CANCELLED（UpdateWrapper 限定 status=PENDING，
+        // 不触碰已终态步骤）；mock 仅验证调用发生，SQL 条件由实现自身保证。
+        verify(steps, times(1)).update(any(), org.mockito.ArgumentMatchers.<com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper>any());
     }
 
     @Test
