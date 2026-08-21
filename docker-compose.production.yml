@@ -29,7 +29,7 @@ services:
     environment:
       SANDBOX_DB_URL: jdbc:mysql://${DB_HOST:-172.17.0.1}:${DB_PORT:-3306}/qgents_sandbox_worker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
       SANDBOX_DB_USERNAME: ${SANDBOX_DB_USERNAME:-root}
-      SANDBOX_DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+      SANDBOX_DB_PASSWORD: ${SANDBOX_DB_PASSWORD:?Set SANDBOX_DB_PASSWORD}
       SANDBOX_RUNTIME: docker
       SANDBOX_DOCKER_HOST: unix:///var/run/docker.sock
       SANDBOX_DEV_TOOLS_IMAGE: qgents/sandbox-dev-tools:production
