@@ -10,16 +10,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties("github.proxy")
 public class GitHubProxyProperties {
-    private String host = System.getProperty("https.proxyHost", "");
-    private int port = proxyPort();
-
-    private static int proxyPort() {
-        try {
-            return Integer.parseInt(System.getProperty("https.proxyPort", "0"));
-        } catch (NumberFormatException ignored) {
-            return 0;
-        }
-    }
+    private String host = "";
+    private int port = 0;
 
     public boolean configured() {
         return host != null && !host.isBlank() && port >= 1 && port <= 65535;
