@@ -53,6 +53,8 @@ public class TaskTriggerService {
     private final GroupService groupService;
     private final ProjectAccessService access;
     private final ObjectMapper mapper;
+    /** 引用 Diff 续作的分支状态门禁；轻量领域单测可不注入。 */
+    private WorkBranchDevelopmentGuard developmentGuard;
 
     public TaskTriggerService(MessageMapper messageMapper, RequirementGroupMapper groupMapper,
                               RequirementGroupRepositoryMapper groupRepoMapper, TaskMapper taskMapper,
@@ -69,6 +71,11 @@ public class TaskTriggerService {
         this.groupService = groupService;
         this.access = access;
         this.mapper = mapper;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setDevelopmentGuard(WorkBranchDevelopmentGuard developmentGuard) {
+        this.developmentGuard = developmentGuard;
     }
 
     /**
@@ -252,6 +259,9 @@ public class TaskTriggerService {
         if (!diff.getWorkspaceId().equals(sourceTask.getWorkspaceId())) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "QUOTED_DIFF_INVALID",
                     "被引用 Diff 与源 Task 的 Workspace 不一致");
+        }
+        if (developmentGuard != null) {
+            developmentGuard.requireQuotedDiffContinuationAllowed(projectId, diff.getWorkspaceId());
         }
         return new ContinuationRef(sourceTask.getId(), diff.getWorkspaceId());
     }
