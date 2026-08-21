@@ -13,6 +13,7 @@ import qg.qgent.orchestration.llm.LlmClient;
 import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
+import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.service.ContextService;
 
 import java.util.List;
@@ -235,8 +236,9 @@ class GenericCustomAgentTest {
         verify(llm).nextToolTurn(systemCaptor.capture(), anyList(), toolsCaptor.capture());
         List<String> names = toolsCaptor.getValue().stream()
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
-        assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory", "list_files",
-                "read_file", "replace_file", "search_chat_history", "search_code", "write_file");
+        assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory",
+                "ensure_trailing_newline", "list_files", "read_file", "replace_file", "run_development_command",
+                "search_chat_history", "search_code", "write_file");
         assertThat(systemCaptor.getValue())
                 .contains("先审阅目录并主动发现可能有助于本次任务的 Skill")
                 .contains("对最相关的 Skill 优先调用 activate_skill 获取全文")
@@ -321,6 +323,9 @@ class GenericCustomAgentTest {
     @Test
     void writeRoleSuccessWithoutWritesIsSatisfiedWhenTargetExists() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
+        // 收紧 satisfied 语义：目标存在且内容可读（非空）才算满足，故除 listFiles 外还需 stub readFile。
+        when(codeAccess.readFile(any(), any())).thenReturn(
+                WorkspaceFileReadResult.ok("src/main/java/X.java", "class X {}", "abc", true, "LF"));
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"success\":true,\"summary\":\"目标已由前序步骤完成\",\"message\":\"ok\"}", "stop"));
         AgentInput input = customInput(OrchestrationPhase.CODING);

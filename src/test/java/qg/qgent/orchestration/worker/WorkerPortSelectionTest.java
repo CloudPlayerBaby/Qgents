@@ -20,6 +20,7 @@ import qg.qgent.orchestration.tool.LocalWorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceDiffAccess;
+import qg.qgent.service.TaskRunWorkerExecutionService;
 import qg.qgent.service.WorkspaceService;
 
 /**
@@ -35,6 +36,7 @@ class WorkerPortSelectionTest {
             .withBean(SandboxWorkerProperties.class, SandboxWorkerProperties::new)
             .withBean(WorkspaceRepositoryMapper.class, () -> mock(WorkspaceRepositoryMapper.class))
             .withBean(WorkspaceService.class, () -> new WorkspaceService(mock(WorkspaceMapper.class), null))
+            .withBean(TaskRunWorkerExecutionService.class, () -> mock(TaskRunWorkerExecutionService.class))
             .withUserConfiguration(Ports.class);
 
     @Test

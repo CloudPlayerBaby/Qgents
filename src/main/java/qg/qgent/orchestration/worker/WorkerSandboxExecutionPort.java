@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Autowired;
 import lombok.extern.slf4j.Slf4j;
+import qg.qgent.api.ApiException;
 import qg.qgent.orchestration.ExecutionContentSanitizer;
 import qg.qgent.orchestration.tool.ExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionResult;
@@ -86,9 +87,15 @@ public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implement
             }
             return new ExecutionResult(true, exitCode, stdout, stderr, null);
         } catch (RuntimeException e) {
-            log.warn("FIXED_DEVELOPMENT_COMMAND_INFRASTRUCTURE workspaceId={} repositoryId={} category={}",
-                    workspaceId, repositoryId, e.getClass().getSimpleName());
-            return new ExecutionResult(false, -1, "", "", "fixed development command infrastructure unavailable");
+            // 保留具体失败原因（如 Sandbox 被清理的 404），供 Test/Review 判断失败是否环境所致；
+            // 仅错误文案，不含命令输出，无需脱敏。executionId 缺失时仍按执行失败而非异常返回。
+            String reason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            if (e instanceof ApiException api) {
+                reason = api.code() + ": " + reason;
+            }
+            log.warn("FIXED_DEVELOPMENT_COMMAND_INFRASTRUCTURE workspaceId={} repositoryId={} category={} reason={}",
+                    workspaceId, repositoryId, e.getClass().getSimpleName(), reason);
+            return new ExecutionResult(false, -1, "", "", reason);
         }
     }
 

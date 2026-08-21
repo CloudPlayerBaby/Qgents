@@ -192,7 +192,8 @@ class WorkerToolExecutionLeaseRenewTest {
         when(client.renewSandbox(sandboxId))
                 .thenThrow(new ApiException(HttpStatus.NOT_FOUND, "SANDBOX_NOT_FOUND", "Sandbox missing"));
 
-        ExecutionResult result = executionPort.execute(workspaceId, List.of("ls"), Duration.ofSeconds(10));
+        // 固定命令目录内选 MAVEN_TEST，确保 execute 真正走到 sandbox 续租再触发 404（"ls" 不在目录内会提前拒绝）。
+        ExecutionResult result = executionPort.execute(workspaceId, List.of("mvn", "test"), Duration.ofSeconds(10));
 
         assertThat(result.ok()).isFalse();
         assertThat(result.exitCode()).isEqualTo(-1);

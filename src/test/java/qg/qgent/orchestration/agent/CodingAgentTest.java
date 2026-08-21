@@ -148,7 +148,7 @@ class CodingAgentTest {
                 .map(c -> c.getToolDefinition().name()).sorted().toList();
         assertThat(names).containsExactly("activate_skill", "apply_patch", "create_directory",
                 "ensure_trailing_newline", "list_files", "read_file",
-                "replace_file", "search_chat_history", "search_code", "write_file");
+                "replace_file", "run_development_command", "search_chat_history", "search_code", "write_file");
     }
 
     @Test
