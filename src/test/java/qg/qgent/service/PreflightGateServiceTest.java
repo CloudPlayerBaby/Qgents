@@ -7,6 +7,7 @@ import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 import qg.qgent.api.ApiException;
+import qg.qgent.dto.PreflightGateResponse;
 import qg.qgent.entity.DryRunEntity;
 import qg.qgent.entity.PreflightCqReviewEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
@@ -28,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.inOrder;
@@ -107,6 +109,33 @@ class PreflightGateServiceTest {
 
         assertDoesNotThrow(() -> service.requireReady(context.task(), context.worktree(), context.repositoryId(),
                 "main", "target-commit"));
+    }
+
+    @Test
+    void readProjectionDoesNotRefreshTargetBranch() {
+        Context context = context();
+        context.task().setWorkspaceId(UUID.randomUUID());
+        context.worktree().setProjectRepositoryId(context.repositoryId());
+        context.dryRun().setProjectId(context.task().getProjectId());
+        context.dryRun().setTaskId(context.task().getId());
+        context.dryRun().setProjectRepositoryId(context.repositoryId());
+        context.dryRun().setTargetBranch("main");
+        when(tasks.selectById(context.task().getId())).thenReturn(context.task());
+        when(worktrees.selectByWorkspace(context.task().getWorkspaceId())).thenReturn(java.util.List.of(context.worktree()));
+        when(dryRuns.selectOne(any())).thenReturn(context.dryRun());
+        when(cqReviews.selectOne(any())).thenReturn(null);
+        GitStoreSyncService gitStores = mock(GitStoreSyncService.class);
+        when(gitStores.normalizeTargetBranch("main")).thenReturn("main");
+        PreflightGateService readService = new PreflightGateService(dryRuns, cqReviews, tasks, worktrees,
+                repositories, mock(ProjectAccessService.class), gitStores, mock(EventService.class),
+                mock(ApplicationEventPublisher.class), immediateTransactions());
+
+        PreflightGateResponse response = readService.get(context.task().getProjectId(), context.task().getId(),
+                context.repositoryId(), "main", UUID.randomUUID());
+
+        assertEquals("PENDING", response.getStatus());
+        assertEquals("target-commit", response.getTargetCommit());
+        verify(gitStores, never()).refreshTargetBranch(any(), any(), anyString());
     }
 
     @Test
