@@ -86,6 +86,15 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
     int failAfterStaleRun(@Param("projectId") UUID projectId, @Param("taskId") UUID taskId);
 
     /**
+     * MR 预检确认源分支与目标分支无差异时，收敛自动交付任务，避免补偿调度器永久重复申请预检。
+     */
+    @Update("update tasks set status='FAILED', failure_code='MR_NO_CHANGES', "
+            + "failure_reason='源分支与目标分支当前提交相同，没有可创建 MR 的变更', failure_retryable=0, "
+            + "failure_occurred_at=UTC_TIMESTAMP(6), updated_at=UTC_TIMESTAMP(6) where id=#{taskId} "
+            + "and project_id=#{projectId} and status in ('WAITING_PREFLIGHT','SUCCEEDED')")
+    int failMrPreflightNoChanges(@Param("projectId") UUID projectId, @Param("taskId") UUID taskId);
+
+    /**
      * 找出尚未创建活跃 Run、且关联 Workspace 当前没有有效写租约的 PENDING 任务。
      * 恢复器只发布续跑事件，实际认领仍由 claimForResume 的 CAS 完成。
      */

@@ -153,7 +153,15 @@ public class MrFirstAutomationService {
                 log.info("preflight requested projectId={} taskId={} repositoryId={}",
                         projectId, taskId, worktree.getProjectRepositoryId());
             } catch (RuntimeException failure) {
-                // 预检申请失败（如分支被锁定）不应把已交付的 Task 标成开发失败；恢复调度器稍后重试。
+                if (isNoChangesFailure(failure)) {
+                    tasks.failMrPreflightNoChanges(projectId, taskId);
+                    log.warn("preflight stopped because source and target have no changes "
+                                    + "projectId={} taskId={} repositoryId={}",
+                            projectId, taskId, worktree.getProjectRepositoryId());
+                    // 这是任务级终态，当前 Workspace 的其他仓库不应继续申请预检。
+                    break;
+                }
+                // 其他预检申请失败（如分支被锁定）暂不改变 Task，恢复调度器稍后重试。
                 if (isGitRepositoryLockFailure(failure)) {
                     scheduleLockRetry(repositoryKey);
                 }
@@ -193,6 +201,20 @@ public class MrFirstAutomationService {
             String message = current.getMessage();
             if (message != null && (message.contains("GIT_REPOSITORY_LOCK_FAILED")
                     || message.toLowerCase(java.util.Locale.ROOT).contains("cannot lock shared git repository"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isNoChangesFailure(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof ApiException apiException
+                    && "MR_NO_CHANGES".equals(apiException.code())) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null && message.contains("MR_NO_CHANGES")) {
                 return true;
             }
         }
