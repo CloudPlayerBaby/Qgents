@@ -20,7 +20,7 @@ import qg.qgent.orchestration.tool.ExecutionResult;
 
 /**
  * {@link WorkerSandboxExecutionPort} 单测：异步工具执行收敛为同步 {@link ExecutionResult}，
- * 并从执行日志聚合 stdout/stderr。纯 Mock，不启动 Spring。
+ * 只读取已脱敏日志并在主端再次处理，供 TestAgent 做环境/质量分流。纯 Mock，不启动 Spring。
  */
 class WorkerSandboxExecutionPortTest {
 
@@ -40,7 +40,7 @@ class WorkerSandboxExecutionPortTest {
     }
 
     @Test
-    void executeReturnsExitCodeAndCollectedLogs() {
+    void executeMapsFixedCommandAndReturnsRedactedDiagnosticsForTestClassification() {
         when(sessions.require(WORKSPACE)).thenReturn(new SandboxSession(UUID.randomUUID(), WORKSPACE, SANDBOX,
                 "workspaces/" + WORKSPACE, List.of(REPO), Map.of("repo-1", REPO)));
         when(client.submitToolExecution(any(), any())).thenAnswer(inv -> {
@@ -54,25 +54,27 @@ class WorkerSandboxExecutionPortTest {
             WorkerToolExecution terminal = new WorkerToolExecution();
             terminal.setId(inv.getArgument(0));
             terminal.setStatus("SUCCEEDED");
-            terminal.setExitCode(0);
+            terminal.setExitCode(1);
             return terminal;
         });
-        when(client.getToolExecutionLogs(any(), anyLong(), anyInt())).thenAnswer(inv -> {
-            long after = inv.getArgument(1);
-            List<WorkerExecutionLogEntry> all = List.of(
-                    new WorkerExecutionLogEntry(1, "STDOUT", "BUILD SUCCESS", null),
-                    new WorkerExecutionLogEntry(2, "STDERR", "warn", null));
-            List<WorkerExecutionLogEntry> page = all.stream().filter(e -> e.getSequence() > after).toList();
-            long cursor = page.isEmpty() ? after : page.get(page.size() - 1).getSequence();
-            return new WorkerExecutionLogs(page, cursor);
+        when(client.getToolExecutionLogs(any(), anyLong(), anyInt())).thenAnswer(invocation -> {
+            long after = invocation.getArgument(1);
+            List<WorkerExecutionLogEntry> logs = List.of(
+                    new WorkerExecutionLogEntry(1, "STDERR", "Connection refused to host mysql:3306", null),
+                    new WorkerExecutionLogEntry(2, "STDERR", "TOKEN=should-not-leak", null),
+                    new WorkerExecutionLogEntry(3, "STDERR", "JAVA_HOME=C:\\Users\\host", null),
+                    new WorkerExecutionLogEntry(4, "STDERR", "file C:\\Users\\host\\build.log", null));
+            List<WorkerExecutionLogEntry> page = logs.stream().filter(log -> log.getSequence() > after).toList();
+            return new WorkerExecutionLogs(page, page.isEmpty() ? after : page.get(page.size() - 1).getSequence());
         });
-
         ExecutionResult result = port.execute(WORKSPACE, List.of("mvn", "test"), Duration.ofMinutes(1));
 
         assertThat(result.ok()).isTrue();
-        assertThat(result.exitCode()).isEqualTo(0);
-        assertThat(result.stdout()).isEqualTo("BUILD SUCCESS");
-        assertThat(result.stderr()).isEqualTo("warn");
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.stdout()).isEmpty();
+        assertThat(result.stderr()).contains("Connection refused to host mysql:3306")
+                .contains("[environment omitted]").contains("[host path omitted]")
+                .doesNotContain("should-not-leak").doesNotContain("C:\\Users\\host");
     }
 
     @Test
@@ -93,13 +95,10 @@ class WorkerSandboxExecutionPortTest {
             terminal.setFailureReason("工具执行超时或被中断");
             return terminal;
         });
-        when(client.getToolExecutionLogs(any(), anyLong(), anyInt()))
-                .thenReturn(new WorkerExecutionLogs(List.of(), 0));
-
         ExecutionResult result = port.execute(WORKSPACE, List.of("mvn", "test"), Duration.ofMinutes(1));
 
         assertThat(result.ok()).isFalse();
         assertThat(result.exitCode()).isEqualTo(-1);
-        assertThat(result.error()).contains("超时");
+        assertThat(result.error()).isEqualTo("fixed development command failed");
     }
 }

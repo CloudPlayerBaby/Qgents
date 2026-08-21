@@ -118,7 +118,7 @@ public class SandboxWorkerProperties {
     /**
      * 网络策略：none 禁止网络，outbound 使用 Docker bridge 网络。
      */
-    private String networkPolicy = "outbound";
+    private String networkPolicy = "none";
 
     /**
      * stdout 和 stderr 各自在 Worker 内存中允许保留的最大字节数。

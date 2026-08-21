@@ -7,6 +7,9 @@ import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.orchestration.tool.WorkspaceInfraException;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
+import qg.qgent.orchestration.tool.DevelopmentCommandId;
+import qg.qgent.orchestration.tool.DevelopmentCommandPort;
+import qg.qgent.orchestration.tool.DevelopmentCommandResult;
 
 import java.util.List;
 import java.util.Map;
@@ -43,6 +46,34 @@ class CodingToolsTest {
 
     private CodingTools scopedTools(String... allowedPaths) {
         return new CodingTools(workspaceId, codeAccess, writer, List.of(allowedPaths));
+    }
+
+    @Test
+    void developmentCommandUsesOnlyCommandIdAndDoesNotReturnRawOutput() {
+        DevelopmentCommandPort commands = mock(DevelopmentCommandPort.class);
+        when(commands.run(workspaceId, "repo-1", DevelopmentCommandId.MAVEN_TEST))
+                .thenReturn(new DevelopmentCommandResult(false, "MAVEN_TEST", 1,
+                        "PROCESS_EXIT_NONZERO", "固定开发命令执行失败"));
+        CodingTools tools = new CodingTools(workspaceId, codeAccess, writer, List.of(), Map.of(), commands);
+
+        Map<String, Object> result = tools.runDevelopmentCommand("MAVEN_TEST", "repo-1");
+
+        assertThat(result).containsEntry("ok", false)
+                .containsEntry("commandId", "MAVEN_TEST")
+                .containsEntry("exitCode", 1)
+                .doesNotContainKeys("command", "argv", "stdout", "stderr", "output");
+        verify(commands).run(workspaceId, "repo-1", DevelopmentCommandId.MAVEN_TEST);
+    }
+
+    @Test
+    void developmentCommandRejectsUnknownIdBeforeCallingPort() {
+        DevelopmentCommandPort commands = mock(DevelopmentCommandPort.class);
+        CodingTools tools = new CodingTools(workspaceId, codeAccess, writer, List.of(), Map.of(), commands);
+
+        Map<String, Object> result = tools.runDevelopmentCommand("GIT_STATUS", null);
+
+        assertThat(result).containsEntry("ok", false);
+        verify(commands, never()).run(any(), any(), any());
     }
 
     @Test

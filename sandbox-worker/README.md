@@ -3,7 +3,7 @@
 本模块承载 Workspace Manager 与 Sandbox Manager 的内部执行面实现。
 
 - Workspace Manager：从共享 bare Git Store 创建 linked worktree，并提供受控 `status/diff/commit/push`。
-- Sandbox Manager：按 `repositoryIds` 读取 Workspace 元数据，逐仓 bind mount，只提供文件、目录和进程工具（`file.read`、`file.list`、`file.search`、`file.write`、`file.patch`、`directory.create`、`process.exec`）。
+- Sandbox Manager：按 `repositoryIds` 读取 Workspace 元数据，逐仓 bind mount，只提供文件、目录和固定开发命令工具（`file.read`、`file.list`、`file.search`、`file.write`、`file.patch`、`directory.create`、`development.run`）。
 - Agent Sandbox 镜像不安装 Git；Worker 镜像保留 Git CLI。
 
 ## 文件工具

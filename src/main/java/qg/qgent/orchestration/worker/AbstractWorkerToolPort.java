@@ -61,7 +61,7 @@ abstract class AbstractWorkerToolPort {
                                               Map<String, Object> arguments, Duration timeout) {
         SandboxSession session = session(workspaceId);
         // 先续持久 Workspace 写租约，再续 Sandbox；二者都成功后才允许提交可能改动文件的工具。
-        // 即便调用方声称执行只读命令，也保守地走同一护栏，因为 process.exec 可写入工作树。
+        // 固定开发命令当前仍可能生成测试报告或构建缓存，因此保守地走同一护栏。
         sessions.renewWriteLease(workspaceId);
         UUID sandboxId = session.sandboxId();
         client.renewSandbox(sandboxId);

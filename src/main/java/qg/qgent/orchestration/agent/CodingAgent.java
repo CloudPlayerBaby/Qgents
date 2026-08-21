@@ -20,6 +20,7 @@ import qg.qgent.orchestration.llm.LlmObservation;
 import qg.qgent.orchestration.llm.ToolTurnResult;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.tool.Sha256;
+import qg.qgent.orchestration.tool.DevelopmentCommandPort;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.service.ContextService;
@@ -43,7 +44,7 @@ import java.util.List;
  * 超循环上限等协议失败抛 {@link CodingParseException}（携带 {@link ProtocolFailureCode}），
  * 统一转为 FAILED_INFRASTRUCTURE，由状态机决定同相位重试。每轮模型调用生成一条脱敏观测
  * {@link LlmObservation} 随 Run 产物落库。只经 {@link WorkspaceCodeWriter} 写工作区，不执行
- * Git 或沙箱命令。
+ * Git 或任意沙箱命令；仅允许调用固定模板的开发测试/构建命令。
  */
 @Slf4j
 @Component
@@ -75,11 +76,23 @@ public class CodingAgent implements Agent {
      * 群聊图片/文件附件加载器：IMAGE 转 base64 媒体、文本文件内联，供多模态编码。
      */
     private final AttachmentMediaLoader attachmentMediaLoader;
+    /** Coding Agent 的固定开发命令入口，不提供通用进程执行能力。 */
+    private final DevelopmentCommandPort developmentCommands;
 
     public CodingAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
                        AgentProtocol protocol, ContextService contextService,
                        ContextSearchProperties contextSearchProperties,
                        AttachmentMediaLoader attachmentMediaLoader) {
+        this(llm, codeAccess, writer, protocol, contextService, contextSearchProperties, attachmentMediaLoader,
+                DevelopmentCommandPort.unavailable());
+    }
+
+    @Autowired
+    public CodingAgent(LlmClient llm, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
+                       AgentProtocol protocol, ContextService contextService,
+                       ContextSearchProperties contextSearchProperties,
+                       AttachmentMediaLoader attachmentMediaLoader,
+                       DevelopmentCommandPort developmentCommands) {
         this.llm = llm;
         this.codeAccess = codeAccess;
         this.writer = writer;
@@ -87,6 +100,7 @@ public class CodingAgent implements Agent {
         this.contextService = contextService;
         this.contextSearchProperties = contextSearchProperties;
         this.attachmentMediaLoader = attachmentMediaLoader;
+        this.developmentCommands = developmentCommands;
     }
 
     /**
@@ -190,7 +204,8 @@ public class CodingAgent implements Agent {
         log.info("coding agent workspace files phase={} workspaceId={} files={}",
                 input.getPhase(), input.getWorkspaceId(), files.size());
         CodingTools tools = new CodingTools(input.getWorkspaceId(), codeAccess, writer, input.getAllowedPaths(),
-                input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts());
+                input.getRetryContext() == null ? null : input.getRetryContext().getPatchFailureCounts(),
+                developmentCommands);
         tools.setWriteObserver(trackingObserver(observedWrites), input.getProjectId(), input.getTaskId(),
                 input.getTaskRunId());
         ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),

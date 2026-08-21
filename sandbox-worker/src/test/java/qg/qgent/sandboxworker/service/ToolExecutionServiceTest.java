@@ -59,13 +59,13 @@ class ToolExecutionServiceTest {
         UUID executionId = UUID.randomUUID();
         SandboxAllocation sandbox = allocation(sandboxId);
         when(sandboxes.findAllocation(sandboxId)).thenReturn(sandbox);
-        when(tools.requiresRepository("process.exec")).thenReturn(true);
+        when(tools.requiresRepository("development.run")).thenReturn(true);
         when(tools.execute(anyString(), any(), any())).thenReturn(ToolResult.value(Map.of("ok", true)));
         ToolExecutionService service = new ToolExecutionService(sandboxes, paths, tools, executions, logMapper,
                 new ObjectMapper().findAndRegisterModules(), properties, pool, Clock.systemUTC());
         ToolExecutionRequest request = new ToolExecutionRequest();
         request.setExecutionId(executionId);
-        request.setTool("process.exec");
+        request.setTool("development.run");
         request.setRepositoryId(UUID.randomUUID());
 
         String submitted = service.submit(sandboxId, request).getStatus();
@@ -169,12 +169,12 @@ class ToolExecutionServiceTest {
         UUID sandboxId = UUID.randomUUID();
         UUID executionId = UUID.randomUUID();
         when(sandboxes.findAllocation(sandboxId)).thenReturn(allocation(sandboxId));
-        when(tools.requiresRepository("process.exec")).thenReturn(true);
+        when(tools.requiresRepository("development.run")).thenReturn(true);
         ToolExecutionService service = new ToolExecutionService(sandboxes, paths, tools, executions, logMapper,
                 new ObjectMapper().findAndRegisterModules(), properties, waitingPool, Clock.systemUTC());
         ToolExecutionRequest request = new ToolExecutionRequest();
         request.setExecutionId(executionId);
-        request.setTool("process.exec");
+        request.setTool("development.run");
         request.setRepositoryId(UUID.randomUUID());
 
         service.submit(sandboxId, request);
@@ -212,7 +212,7 @@ class ToolExecutionServiceTest {
         UUID sandboxId = UUID.randomUUID();
         UUID executionId = UUID.randomUUID();
         when(sandboxes.findAllocation(sandboxId)).thenReturn(allocation(sandboxId));
-        when(tools.requiresRepository("process.exec")).thenReturn(true);
+        when(tools.requiresRepository("development.run")).thenReturn(true);
         ToolExecutionService service = new ToolExecutionService(sandboxes, paths, tools, executions, logMapper,
                 new ObjectMapper().findAndRegisterModules(), new SandboxWorkerProperties(), rejectedPool, Clock.systemUTC());
         ToolExecutionRequest request = request(executionId);
@@ -317,7 +317,7 @@ class ToolExecutionServiceTest {
         UUID sandboxId = UUID.randomUUID();
         UUID executionId = UUID.randomUUID();
         when(sandboxes.findAllocation(sandboxId)).thenReturn(allocation(sandboxId));
-        when(tools.requiresRepository("process.exec")).thenReturn(true);
+        when(tools.requiresRepository("development.run")).thenReturn(true);
         ToolExecutionService service = new ToolExecutionService(sandboxes, paths, tools, executions, logMapper,
                 new ObjectMapper().findAndRegisterModules(), properties, pool, Clock.systemUTC());
         return new ToolExecutionFixture(service, tools, rows, sandboxId, executionId, request(executionId));
@@ -326,7 +326,7 @@ class ToolExecutionServiceTest {
     private ToolExecutionRequest request(UUID executionId) {
         ToolExecutionRequest request = new ToolExecutionRequest();
         request.setExecutionId(executionId);
-        request.setTool("process.exec");
+        request.setTool("development.run");
         request.setRepositoryId(UUID.randomUUID());
         return request;
     }
@@ -336,7 +336,7 @@ class ToolExecutionServiceTest {
         entity.setId(executionId.toString());
         entity.setOwnerWorkerId("local");
         entity.setSandboxId(sandboxId.toString());
-        entity.setToolName("process.exec");
+        entity.setToolName("development.run");
         entity.setStatus("QUEUED");
         entity.setCreatedAt(java.time.LocalDateTime.now());
         return entity;

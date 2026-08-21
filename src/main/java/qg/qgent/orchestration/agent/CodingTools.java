@@ -6,6 +6,9 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceChangeResult;
+import qg.qgent.orchestration.tool.DevelopmentCommandId;
+import qg.qgent.orchestration.tool.DevelopmentCommandPort;
+import qg.qgent.orchestration.tool.DevelopmentCommandResult;
 import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
 import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.orchestration.tool.WorkspaceInfraException;
@@ -52,6 +55,8 @@ public class CodingTools {
     private final UUID workspaceId;
     private final WorkspaceCodeAccess codeAccess;
     private final WorkspaceCodeWriter writer;
+    /** 仅允许固定 commandId 的开发命令端口；绝不接收或回传 argv、环境变量、cwd、stdout/stderr。 */
+    private final DevelopmentCommandPort developmentCommands;
     /**
      * 已确认的文件最新 sha256 快照（read_file / 成功写后更新），用于省略重复读取。
      */
@@ -96,9 +101,20 @@ public class CodingTools {
      */
     public CodingTools(UUID workspaceId, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
                        Collection<String> allowedPaths, Map<String, Integer> previousPatchFailures) {
+        this(workspaceId, codeAccess, writer, allowedPaths, previousPatchFailures,
+                DevelopmentCommandPort.unavailable());
+    }
+
+    /**
+     * 创建带固定开发命令端口的 Coding 工具。端口只接收枚举标识，不能成为任意进程执行的旁路。
+     */
+    public CodingTools(UUID workspaceId, WorkspaceCodeAccess codeAccess, WorkspaceCodeWriter writer,
+                       Collection<String> allowedPaths, Map<String, Integer> previousPatchFailures,
+                       DevelopmentCommandPort developmentCommands) {
         this.workspaceId = workspaceId;
         this.codeAccess = codeAccess;
         this.writer = writer;
+        this.developmentCommands = developmentCommands == null ? DevelopmentCommandPort.unavailable() : developmentCommands;
         this.pathPolicy = TaskStepPathPolicy.of(allowedPaths);
         if (previousPatchFailures != null) {
             previousPatchFailures.forEach((path, count) -> {
@@ -202,6 +218,39 @@ public class CodingTools {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("ok", true);
         result.put("matches", codeAccess.searchCode(workspaceId, query));
+        return result;
+    }
+
+    /**
+     * 执行由 Worker 固定模板定义的测试或构建命令。该工具不接收原始命令、参数、环境变量或工作目录，
+     * 也不向模型回传 stdout/stderr；详细脱敏日志仅保留在 Worker 的受控运维通道。
+     */
+    @Tool(name = "run_development_command", description = "执行固定的离线测试或构建命令。"
+            + "commandId 只能是 MAVEN_TEST、MAVEN_PACKAGE、MAVEN_WRAPPER_TEST、GRADLE_TEST、"
+            + "GRADLE_WRAPPER_TEST、NPM_TEST；不可传递命令、argv、环境变量或 cwd。"
+            + "可选 repositoryPath 必须是当前工作区已绑定仓库的一级相对路径，多仓库时必填。")
+    public Map<String, Object> runDevelopmentCommand(
+            @ToolParam(description = "固定开发命令枚举") String commandId,
+            @ToolParam(description = "可选：当前工作区已绑定仓库的一级相对路径", required = false) String repositoryPath) {
+        DevelopmentCommandId id;
+        try {
+            id = DevelopmentCommandId.valueOf(commandId == null ? "" : commandId);
+        } catch (IllegalArgumentException exception) {
+            return error("run_development_command requires a supported commandId");
+        }
+        DevelopmentCommandResult execution = developmentCommands.run(workspaceId, repositoryPath, id);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("ok", execution != null && execution.ok());
+        result.put("commandId", id.name());
+        if (execution != null && execution.exitCode() != null) {
+            result.put("exitCode", execution.exitCode());
+        }
+        if (execution == null || !execution.ok()) {
+            result.put("errorCode", execution == null || execution.failureCode() == null
+                    ? "DEVELOPMENT_COMMAND_FAILED" : execution.failureCode());
+            result.put("error", execution == null || execution.failureReason() == null
+                    ? "固定开发命令执行失败" : execution.failureReason());
+        }
         return result;
     }
 

@@ -45,11 +45,11 @@ class WorkerExecutionTraceContextTest {
         UUID executionId = UUID.randomUUID();
         WorkerToolExecution submitted = new WorkerToolExecution();
         submitted.setId(executionId);
-        submitted.setTool("process.exec");
+        submitted.setTool("development.run");
         submitted.setStatus("QUEUED");
         WorkerToolExecution completed = new WorkerToolExecution();
         completed.setId(executionId);
-        completed.setTool("process.exec");
+        completed.setTool("development.run");
         completed.setStatus("FAILED");
         completed.setExitCode(127);
 

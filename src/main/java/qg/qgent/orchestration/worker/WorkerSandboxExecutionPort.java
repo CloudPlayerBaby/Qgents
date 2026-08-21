@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Autowired;
 import lombok.extern.slf4j.Slf4j;
+import qg.qgent.orchestration.ExecutionContentSanitizer;
 import qg.qgent.orchestration.tool.ExecutionPort;
 import qg.qgent.orchestration.tool.ExecutionResult;
 import qg.qgent.service.TaskRunWorkerExecutionService;
@@ -15,12 +16,12 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * {@link ExecutionPort} 的 Worker 实现：通过 Worker 的 {@code process.exec} 在沙箱内执行命令，
- * 并以真实 exitCode 判定结果，替代主后端宿主机进程执行。
+ * {@link ExecutionPort} 的 Worker 兼容实现：只将既有测试白名单映射为 Worker 的固定
+ * {@code development.run} commandId，绝不向 Worker 传递原始 argv。
  * <p>
- * Worker 工具执行是异步的（202 入队后轮询），stdout/stderr 存于执行日志，本类把"提交 → 轮询
- * 终态 → 拉取 STDOUT/STDERR 日志"收敛为一次同步 {@link ExecutionResult}：
- * exitCode 非空表示命令真实执行（ok=true，即使退出码非零），否则为基础设施/超时失败（ok=false）。
+ * Worker 工具执行是异步的（202 入队后轮询）。仅为旧 TestAgent 的环境/质量分流，本类读取
+ * {@code development.run} 已脱敏日志，并在主端再次脱敏、头尾限长后返回；Coding Agent 端口不读取
+ * stdout/stderr。exitCode 非空表示命令真实执行（ok=true，即使退出码非零）。
  * <p>
  * 命令在沙箱内执行，由 Worker 隔离边界保证安全，不再需要主后端的宿主机白名单。
  * {@code app.worker.enabled=true} 时作为默认 ExecutionPort 启用。
@@ -30,6 +31,8 @@ import java.util.UUID;
 @Slf4j
 @ConditionalOnProperty(name = "app.worker.enabled", havingValue = "true")
 public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implements ExecutionPort {
+
+    private static final int MAX_TEST_DIAGNOSTIC_CHARS = 24_000;
 
     /** 兼容无 Spring 容器的端口单元测试；生产装配使用带诊断持久化服务的构造器。 */
     public WorkerSandboxExecutionPort(SandboxWorkerClient client, SandboxSessionManager sessions,
@@ -65,33 +68,40 @@ public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implement
                     return new ExecutionResult(false, -1, "", "", "repository path is not part of the workspace");
                 }
             }
-            WorkerToolExecution execution = executeTool(workspaceId, repositoryId, "process.exec",
-                    Map.of("command", command), timeout);
-            String stdout = collectLogs(execution.getId(), "STDOUT");
-            String stderr = collectLogs(execution.getId(), "STDERR");
+            String commandId = developmentCommandId(command);
+            if (commandId == null) {
+                return new ExecutionResult(false, -1, "", "", "command not allowed by fixed development catalog");
+            }
+            WorkerToolExecution execution = executeTool(workspaceId, repositoryId, "development.run",
+                    Map.of("commandId", commandId), timeout);
             Integer exitCode = execution.getExitCode();
+            // 仅旧 TestAgent 兼容端口读取 development.run 已脱敏日志，供环境/质量分流；
+            // Coding Agent 的 DevelopmentCommandPort 明确不读取日志。主端再次脱敏并限制长度。
+            String stdout = collectDiagnosticLogs(execution.getId(), "STDOUT");
+            String stderr = collectDiagnosticLogs(execution.getId(), "STDERR");
             if (exitCode == null) {
-                String reason = execution.getFailureReason() == null ? "process execution failed" : execution.getFailureReason();
-                log.warn("tester process execution failed workspaceId={} repositoryId={} executionId={} status={} reason={}",
-                        workspaceId, repositoryId, execution.getId(), execution.getStatus(), reason);
-                return new ExecutionResult(false, -1, stdout, stderr, reason);
+                log.warn("FIXED_DEVELOPMENT_COMMAND_FAILED workspaceId={} repositoryId={} executionId={} status={}",
+                        workspaceId, repositoryId, execution.getId(), execution.getStatus());
+                return new ExecutionResult(false, -1, stdout, stderr, "fixed development command failed");
             }
             return new ExecutionResult(true, exitCode, stdout, stderr, null);
         } catch (RuntimeException e) {
-            String reason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            if (e instanceof qg.qgent.api.ApiException api) {
-                reason = api.code() + ": " + reason;
-            }
-            log.warn("tester process execution infrastructure failure workspaceId={} repositoryId={} command={} reason={}",
-                    workspaceId, repositoryId, command, reason);
-            return new ExecutionResult(false, -1, "", "", reason);
+            log.warn("FIXED_DEVELOPMENT_COMMAND_INFRASTRUCTURE workspaceId={} repositoryId={} category={}",
+                    workspaceId, repositoryId, e.getClass().getSimpleName());
+            return new ExecutionResult(false, -1, "", "", "fixed development command infrastructure unavailable");
         }
     }
 
-    /**
-     * 按游标拉取指定流的全部日志并合并为文本。
-     */
-    private String collectLogs(UUID executionId, String stream) {
+    private String developmentCommandId(List<String> command) {
+        if (List.of("mvn", "test").equals(command)) return "MAVEN_TEST";
+        if (List.of("gradle", "test").equals(command)) return "GRADLE_TEST";
+        if (List.of("sh", "./mvnw", "test").equals(command)) return "MAVEN_WRAPPER_TEST";
+        if (List.of("sh", "./gradlew", "test").equals(command)) return "GRADLE_WRAPPER_TEST";
+        if (List.of("npm", "test").equals(command)) return "NPM_TEST";
+        return null;
+    }
+
+    private String collectDiagnosticLogs(UUID executionId, String stream) {
         StringBuilder buffer = new StringBuilder();
         long after = 0;
         while (true) {
@@ -104,7 +114,7 @@ public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implement
                     if (buffer.length() > 0) {
                         buffer.append('\n');
                     }
-                    buffer.append(entry.getContent());
+                    buffer.append(entry.getContent() == null ? "" : entry.getContent());
                 }
             }
             long next = logs.getNextCursor();
@@ -113,6 +123,17 @@ public class WorkerSandboxExecutionPort extends AbstractWorkerToolPort implement
             }
             after = next;
         }
-        return buffer.toString();
+        return limitDiagnostic(ExecutionContentSanitizer.sanitizeDiagnosticDetail(buffer.toString()));
+    }
+
+    private String limitDiagnostic(String value) {
+        String text = value == null ? "" : value;
+        if (text.length() <= MAX_TEST_DIAGNOSTIC_CHARS) {
+            return text;
+        }
+        String marker = "\n...[已裁剪]...\n";
+        int remaining = MAX_TEST_DIAGNOSTIC_CHARS - marker.length();
+        return text.substring(0, (remaining + 1) / 2) + marker
+                + text.substring(text.length() - remaining / 2);
     }
 }
