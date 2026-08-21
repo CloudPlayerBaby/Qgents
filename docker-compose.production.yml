@@ -1,0 +1,127 @@
+name: qgents-production
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD}"]
+    volumes: [redis_data:/data]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  sandbox-dev-tools:
+    build:
+      context: ./sandbox-images/dev-tools
+      dockerfile: Dockerfile
+    image: qgents/sandbox-dev-tools:production
+
+  sandbox-worker:
+    build:
+      context: .
+      dockerfile: sandbox-worker/Dockerfile.production
+    restart: unless-stopped
+    environment:
+      SANDBOX_DB_URL: jdbc:mysql://${DB_HOST:-172.17.0.1}:${DB_PORT:-3306}/qgents_sandbox_worker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+      SANDBOX_DB_USERNAME: ${SANDBOX_DB_USERNAME:-root}
+      SANDBOX_DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+      SANDBOX_RUNTIME: docker
+      SANDBOX_DOCKER_HOST: unix:///var/run/docker.sock
+      SANDBOX_DEV_TOOLS_IMAGE: qgents/sandbox-dev-tools:production
+      SANDBOX_BACKEND_URL: http://api:8080
+      SANDBOX_BACKEND_SERVICE_TOKEN: ${SANDBOX_BACKEND_SERVICE_TOKEN:?Set SANDBOX_BACKEND_SERVICE_TOKEN}
+      SANDBOX_GIT_STORE_ROOT: /var/lib/qgents/git-store
+      SANDBOX_WORKSPACE_LOCAL_ROOT: /srv/qgents/workspaces
+      SANDBOX_WORKSPACE_DOCKER_HOST_ROOT: /srv/qgents/workspaces
+      SANDBOX_WORKSPACE_METADATA_ROOT: /srv/qgents/workspace-metadata
+      SANDBOX_WORKER_ID: production-worker-1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${QGENTS_DATA_ROOT:-/srv/qgents}/git-store:/var/lib/qgents/git-store
+      - ${QGENTS_DATA_ROOT:-/srv/qgents}/workspaces:/srv/qgents/workspaces
+      - ${QGENTS_DATA_ROOT:-/srv/qgents}/workspace-metadata:/srv/qgents/workspace-metadata
+    group_add:
+      - "${DOCKER_GID:-999}"
+    expose: ["8091"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8091/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      sandbox-dev-tools: {condition: service_started}
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    restart: unless-stopped
+    environment:
+      DB_URL: jdbc:mysql://${DB_HOST:-172.17.0.1}:${DB_PORT:-3306}/qgents?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+      DB_USERNAME: ${DB_USERNAME:-root}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?Set DASHSCOPE_API_KEY}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      SANDBOX_WORKER_URL: http://sandbox-worker:8091
+      SANDBOX_WORKER_ENABLED: "true"
+      SANDBOX_BACKEND_SERVICE_TOKEN: ${SANDBOX_BACKEND_SERVICE_TOKEN:?Set SANDBOX_BACKEND_SERVICE_TOKEN}
+      FRONTEND_URL: ${FRONTEND_URL:-https://qgents.dpdns.org}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://qgents.dpdns.org}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:?Set GITHUB_APP_ID}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:?Set GITHUB_APP_SLUG}
+      GITHUB_APP_PRIVATE_KEY_PATH: /run/secrets/github_app.pem
+      GITHUB_APP_CALLBACK_URL: ${GITHUB_APP_CALLBACK_URL:?Set GITHUB_APP_CALLBACK_URL}
+      GITHUB_APP_STATE_SECRET: ${GITHUB_APP_STATE_SECRET:?Set GITHUB_APP_STATE_SECRET}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?Set GITHUB_WEBHOOK_SECRET}
+      APP_AGENT_PROTOCOL: native
+      MANAGEMENT_SERVER_ADDRESS: 0.0.0.0
+      MANAGEMENT_SERVER_PORT: "8081"
+    volumes:
+      - ./github_app.pem:/run/secrets/github_app.pem:ro
+      - api_data:/app/data
+      - api_logs:/app/logs
+    expose: ["8080", "8081"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      redis: {condition: service_healthy}
+      sandbox-worker: {condition: service_healthy}
+
+  web:
+    build:
+      context: ../前端/qgents
+      dockerfile: Dockerfile.production
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-https://api.qgents.dpdns.org/api/v1}
+    restart: unless-stopped
+    ports: ["80:80"]
+    networks: [backend]
+    depends_on: {api: {condition: service_started}}
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: [tunnel]
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN}
+    networks: [backend]
+
+volumes:
+  redis_data:
+  api_data:
+  api_logs:
+
+networks:
+  backend:
+    driver: bridge
