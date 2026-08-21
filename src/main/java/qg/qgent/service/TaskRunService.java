@@ -256,10 +256,25 @@ public class TaskRunService {
         if (source.getTaskStepId() == null) {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NO_STEP", "该运行没有关联步骤，无法续跑");
         }
+        // 该运行已被后续重试替代：存在 retry_of_task_run_id = source.id 的运行，说明用户已对
+        // 它发起过续跑。此时再重试源运行是无效操作（新运行已接管同一 TaskStep 的后续执行），
+        // 后端强制拒绝返回 409，前端按钮显隐只是防误操作，这里才是最终保证。
+        Long successorCount = taskRunMapper.selectCount(Wrappers.<TaskRunEntity>lambdaQuery()
+                .eq(TaskRunEntity::getRetryOfTaskRunId, source.getId()));
+        if (successorCount != null && successorCount > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_ALREADY_RETRIED",
+                    "该运行已有后续重试运行接管，不能再次重试");
+        }
         // 进行中的任务由编排器内部重试/质量循环负责，不接受外部续跑；已交付/已完成的任务不接受重试。
         if (!RESUMABLE_TASK_STATUSES.contains(task.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_NOT_RESUMABLE",
                     "任务当前状态（" + task.getStatus() + "）不允许续跑");
+        }
+        // FAILED 本身可续跑，但被后续 Workspace 修改取代的任务没有可恢复路径：旧 Diff 快照
+        // 已失效，续跑只会让已移交给新任务的工作区被重复改写。这里直接拒绝。
+        if ("DIFF_REVIEW_SUPERSEDED".equals(task.getFailureCode())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_SUPERSEDED_NOT_RESUMABLE",
+                    "该任务的 Diff 已被后续修改取代，不能续跑；请基于最新任务重新发起");
         }
         // 确定性配置错误拒绝异步续跑：基线分支不存在等配置问题不会因重试自动恢复，异步受理后
         // 编排器必然再次失败，且失败被监听器静默吞掉，前端只会看到「重试已受理」却永远等不到

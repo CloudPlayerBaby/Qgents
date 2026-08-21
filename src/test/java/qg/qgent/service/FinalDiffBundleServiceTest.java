@@ -9,12 +9,14 @@ import org.springframework.transaction.support.TransactionTemplate;
 import qg.qgent.entity.DiffReviewBatchEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.entity.TaskRunEntity;
+import qg.qgent.entity.WorkspaceEntity;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.mapper.DiffFileMapper;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.DiffReviewBatchMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TaskRunMapper;
+import qg.qgent.mapper.WorkspaceMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.orchestration.worker.SandboxWorkerClient;
 import qg.qgent.orchestration.worker.WorkerGitDiff;
@@ -95,6 +97,86 @@ class FinalDiffBundleServiceTest {
         verify(domainEvents).publishEvent(domainEvent.capture());
         assertEquals(batchId, domainEvent.getValue().reviewBatchId());
         assertEquals(batch.getValue().getDeliveryOperationId(), domainEvent.getValue().operationId());
+    }
+
+    @Test
+    void createPendingBatchSupersedesStuckReviewAndTerminatesOldTask() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskRunMapper runs = mock(TaskRunMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        DiffReviewBatchMapper batches = mock(DiffReviewBatchMapper.class);
+        DiffMapper diffs = mock(DiffMapper.class);
+        SandboxWorkerClient worker = mock(SandboxWorkerClient.class);
+        DiffSnapshotStorage snapshots = mock(DiffSnapshotStorage.class);
+        EventService events = mock(EventService.class);
+        ApplicationEventPublisher domainEvents = mock(ApplicationEventPublisher.class);
+        WorkspaceMapper workspaces = mock(WorkspaceMapper.class);
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID oldTaskId = UUID.randomUUID();
+        UUID requirementGroupId = UUID.randomUUID();
+
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setRequirementGroupId(requirementGroupId);
+        task.setWorkspaceId(workspaceId);
+        task.setDeliveryMode("DIFF_FIRST");
+        TaskRunEntity coding = new TaskRunEntity();
+        coding.setId(UUID.randomUUID());
+        coding.setTaskId(taskId);
+        coding.setRole("DEVELOPER");
+        coding.setStatus("SUCCEEDED");
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setProjectRepositoryId(repositoryId);
+        worktree.setBaseCommit("a".repeat(40));
+        worktree.setSourceBranch("feat/pending");
+        WorkerGitDiff workerDiff = new WorkerGitDiff();
+        workerDiff.setBaseCommit("a".repeat(40));
+        workerDiff.setHeadCommit("b".repeat(40));
+        workerDiff.setDiffHash("sha256:" + "c".repeat(64));
+        workerDiff.setPatch("diff --git a/a b/a");
+        workerDiff.setFiles(List.of());
+
+        // 同一 Workspace 里已被后续续作取代的旧批次，属于一个卡在 WAITING_DIFF_CONFIRMATION 的旧任务。
+        TaskEntity oldTask = new TaskEntity();
+        oldTask.setId(oldTaskId);
+        oldTask.setProjectId(projectId);
+        oldTask.setRequirementGroupId(requirementGroupId);
+        oldTask.setWorkspaceId(workspaceId);
+        oldTask.setStatus("WAITING_DIFF_CONFIRMATION");
+        DiffReviewBatchEntity oldBatch = new DiffReviewBatchEntity();
+        oldBatch.setId(UUID.randomUUID());
+        oldBatch.setProjectId(projectId);
+        oldBatch.setTaskId(oldTaskId);
+        oldBatch.setWorkspaceId(workspaceId);
+        oldBatch.setReviewStatus("PENDING_CONFIRMATION");
+
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(tasks.selectByIdForUpdate(oldTaskId)).thenReturn(oldTask);
+        when(runs.selectById(coding.getId())).thenReturn(coding);
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree));
+        when(worker.createWorkspaceGitDiff(workspaceId, repositoryId)).thenReturn(workerDiff);
+        when(batches.selectOne(any())).thenReturn(null);
+        when(batches.selectPendingByWorkspaceForUpdate(workspaceId)).thenReturn(List.of(oldBatch));
+        when(snapshots.store(any(), any())).thenReturn("snapshot-key");
+        when(workspaces.selectByIdForUpdate(workspaceId)).thenReturn(new WorkspaceEntity());
+
+        FinalDiffBundleService service = new FinalDiffBundleService(tasks, runs, worktrees, batches, diffs,
+                mock(DiffFileMapper.class), worker, snapshots, events, domainEvents, immediateTransactions());
+        service.setWorkspaceMapper(workspaces);
+
+        service.createPendingBatch(projectId, taskId, coding.getId());
+
+        // 旧任务必须离开 WAITING_DIFF_CONFIRMATION，落到 FAILED + DIFF_REVIEW_SUPERSEDED。
+        assertEquals("FAILED", oldTask.getStatus());
+        assertEquals("DIFF_REVIEW_SUPERSEDED", oldTask.getFailureCode());
+        assertEquals(Boolean.FALSE, oldTask.getFailureRetryable());
+        verify(tasks).updateById(oldTask);
+        verify(events).publish(eq(projectId), eq(requirementGroupId), eq("task.updated"),
+                eq(oldTaskId.toString()), any());
     }
 
     @SuppressWarnings("unchecked")

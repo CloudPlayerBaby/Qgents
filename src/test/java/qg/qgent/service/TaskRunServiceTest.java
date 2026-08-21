@@ -732,6 +732,33 @@ class TaskRunServiceTest {
         verify(eventPublisher, never()).publishEvent(any());
     }
 
+    /** 源运行已被后续重试替代：存在 retry_of_task_run_id 指向它的运行 → 拒绝重试。 */
+    @Test
+    void retryRejectsRunAlreadySucceededByLaterRun() {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskRunEntity failed = run(projectId, runId);
+        failed.setTaskId(taskId);
+        failed.setTaskStepId(stepId);
+        failed.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(failed);
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("RUNNING");
+        when(tasks.selectById(taskId)).thenReturn(task);
+        // 已存在后续运行 B 指向 A（retry_of_task_run_id = A.id）→ A 已被替代，不能再重试
+        when(runs.selectCount(any())).thenReturn(1L);
+
+        ApiException e = assertThrows(ApiException.class,
+                () -> service.retry(projectId, runId, UUID.randomUUID()));
+
+        assertEquals("TASK_RUN_ALREADY_RETRIED", e.code());
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
     /** 任务 RUNNING（编排中）不接受外部续跑，避免与进行中的编排冲突。 */
     @Test
     void retryRejectsTaskAlreadyRunning() {
