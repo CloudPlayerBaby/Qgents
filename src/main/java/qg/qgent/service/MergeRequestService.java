@@ -264,6 +264,9 @@ public class MergeRequestService {
         boolean cursorIsPending = cursor != null && pendingIds.contains(cursor);
         QueryWrapper<MergeRequestEntity> query = Wrappers.<MergeRequestEntity>query()
                 .in("project_repository_id", repoIds)
+                // PENDING_CREATE is a transient projection built below. Older versions
+                // persisted those rows, so never let stale placeholders leak back as real MRs.
+                .ne("status", "PENDING_CREATE")
                 .eq(status != null && !status.isBlank(), "status", status)
                 .eq(repositoryId != null, "project_repository_id", repositoryId)
                 // While paging through synthetic pending rows, do not apply the synthetic UUID
@@ -1821,16 +1824,37 @@ public class MergeRequestService {
         }
         List<TaskEntity> tasks = taskMapper.selectList(taskQuery);
         if (tasks == null) tasks = List.of();
-        Map<UUID, TaskEntity> taskByWorkspace = new HashMap<>();
+        Map<UUID, TaskEntity> taskById = new HashMap<>();
         for (TaskEntity task : tasks) {
             if (task == null || task.getWorkspaceId() == null) continue;
             if (!matchesPlaceholderTaskStatus(taskRequiredStatus, task.getStatus())) continue;
             if (requirementGroupId != null && !requirementGroupId.equals(task.getRequirementGroupId())) continue;
-            taskByWorkspace.merge(task.getWorkspaceId(), task, this::newerTask);
+            if (task.getId() != null) taskById.put(task.getId(), task);
         }
-        if (taskByWorkspace.isEmpty()) {
+        if (taskById.isEmpty()) {
             return List.of();
         }
+
+        // A Workspace is provisioned with every project repository, but a Task's AI
+        // changes only the repositories it actually touched. Use delivered Diff rows
+        // as the repository-level evidence instead of applying the newest Task to every
+        // worktree in the Workspace.
+        List<DiffEntity> deliveredDiffs = diffMapper == null
+                ? List.of()
+                : diffMapper.selectList(Wrappers.<DiffEntity>lambdaQuery()
+                .eq(DiffEntity::getProjectId, projectId)
+                .in(DiffEntity::getTaskId, taskById.keySet())
+                .eq(DiffEntity::getStatus, "ACCEPTED")
+                .in(DiffEntity::getDeliveryStatus, "PUSHED", "MR_CREATED"));
+        if (deliveredDiffs == null || deliveredDiffs.isEmpty()) {
+            return List.of();
+        }
+        Set<String> deliveredTaskRepositoryKeys = deliveredDiffs.stream()
+                .filter(Objects::nonNull)
+                .filter(diff -> diff.getTaskId() != null && diff.getProjectRepositoryId() != null)
+                .map(diff -> diff.getTaskId() + "|" + diff.getProjectRepositoryId()
+                        + "|" + (diff.getSourceBranch() == null ? "" : diff.getSourceBranch()))
+                .collect(Collectors.toSet());
 
         Set<UUID> projectRepositoryIds = worktrees.stream().map(WorkspaceRepositoryEntity::getProjectRepositoryId)
                 .filter(Objects::nonNull).collect(Collectors.toSet());
@@ -1840,6 +1864,7 @@ public class MergeRequestService {
         List<MergeRequestEntity> existing = mergeRequestMapper.selectList(
                 Wrappers.<MergeRequestEntity>query()
                         .in("project_repository_id", projectRepositoryIds)
+                        .ne("status", "PENDING_CREATE")
                         .ne("status", "MERGED")
                         .ne("status", "CLOSED"));
         if (existing == null) existing = List.of();
@@ -1855,8 +1880,7 @@ public class MergeRequestService {
                 .collect(Collectors.toMap(ProjectRepositoryEntity::getId, Function.identity(), (left, right) -> left));
         Map<String, PlaceholderCandidate> candidatesByBranch = new HashMap<>();
         for (WorkspaceRepositoryEntity worktree : worktrees) {
-            TaskEntity task = taskByWorkspace.get(worktree.getWorkspaceId());
-            if (task == null || worktree.getProjectRepositoryId() == null
+            if (worktree.getProjectRepositoryId() == null
                     || worktree.getSourceBranch() == null || worktree.getSourceBranch().isBlank()
                     || worktree.getHeadCommit() == null || worktree.getHeadCommit().isBlank()) {
                 continue;
@@ -1865,6 +1889,15 @@ public class MergeRequestService {
             // 这种记录可能因任务已进入 WAITING_PREFLIGHT/SUCCEEDED 而存在，但不能注入
             // PENDING_CREATE 占位，否则前端会展示一个永远无法创建的 MR 候选。
             if (sameCommit(worktree.getHeadCommit(), worktree.getBaseCommit())) {
+                continue;
+            }
+            TaskEntity task = taskById.values().stream()
+                    .filter(candidate -> Objects.equals(candidate.getWorkspaceId(), worktree.getWorkspaceId()))
+                    .filter(candidate -> deliveredTaskRepositoryKeys.contains(candidate.getId() + "|"
+                            + worktree.getProjectRepositoryId() + "|" + worktree.getSourceBranch()))
+                    .max(this::compareTasksForPlaceholder)
+                    .orElse(null);
+            if (task == null) {
                 continue;
             }
             String key = branchKey(worktree.getProjectRepositoryId(), worktree.getSourceBranch());
@@ -1988,15 +2021,9 @@ public class MergeRequestService {
 
     private record PlaceholderCandidate(TaskEntity task, WorkspaceRepositoryEntity worktree) { }
 
-    private TaskEntity newerTask(TaskEntity left, TaskEntity right) {
-        LocalDateTime leftTime = left.getUpdatedAt() == null ? left.getCreatedAt() : left.getUpdatedAt();
-        LocalDateTime rightTime = right.getUpdatedAt() == null ? right.getCreatedAt() : right.getUpdatedAt();
-        if (leftTime == null) return right;
-        if (rightTime == null) return left;
-        if (rightTime.isAfter(leftTime)) return right;
-        if (rightTime.equals(leftTime) && right.getId() != null && left.getId() != null
-                && right.getId().compareTo(left.getId()) > 0) return right;
-        return left;
+    private int compareTasksForPlaceholder(TaskEntity left, TaskEntity right) {
+        TaskEntity newer = newerPlaceholderTask(left, right);
+        return newer == right ? -1 : newer == left ? 1 : 0;
     }
 
     private String branchKey(UUID repositoryId, String sourceBranch) {
