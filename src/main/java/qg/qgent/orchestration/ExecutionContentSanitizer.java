@@ -61,7 +61,9 @@ public final class ExecutionContentSanitizer {
             return "FAILED_INFRASTRUCTURE";
         }
         return switch (code.toUpperCase(Locale.ROOT)) {
-            case "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "LLM_TOOL_NOT_ALLOWED",
+            case "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "LLM_ACCOUNT_ACCESS_DENIED", "LLM_AUTH_FAILED",
+                    "LLM_BILLING_REQUIRED", "LLM_RATE_LIMITED", "LLM_MODEL_NOT_FOUND", "LLM_REQUEST_INVALID",
+                    "LLM_SERVICE_UNAVAILABLE", "LLM_NETWORK_FAILED", "LLM_TIMEOUT", "LLM_TOOL_NOT_ALLOWED",
                     "LLM_TOOL_ARGUMENT_INVALID", "LLM_TOOL_CALL_MALFORMED", "AGENT_RUN_TIMEOUT",
                     "SANDBOX_WORKER_UNAVAILABLE", "SANDBOX_WORKER_ERROR", "GIT_BASE_REF_NOT_FOUND",
                     "GIT_BRANCH_NOT_FOUND", "GIT_REF_NOT_FOUND",
@@ -82,6 +84,15 @@ public final class ExecutionContentSanitizer {
         return switch (stableInfrastructureCode(code)) {
             case "LLM_FINISH_LENGTH" -> "模型结构化输出因长度上限未完成";
             case "LLM_CONTEXT_LIMIT" -> "模型在工具轮次上限内未能收敛";
+            case "LLM_ACCOUNT_ACCESS_DENIED" -> "模型服务账号当前不可用，请管理员检查账号状态和 API 权限";
+            case "LLM_AUTH_FAILED" -> "模型服务认证失败，请管理员检查 API Key";
+            case "LLM_BILLING_REQUIRED" -> "模型服务账户余额或账单状态异常，请管理员检查计费配置";
+            case "LLM_RATE_LIMITED" -> "模型服务调用频率或额度受限，请稍后重试";
+            case "LLM_MODEL_NOT_FOUND" -> "当前模型不可用，请检查模型配置和账号权限";
+            case "LLM_REQUEST_INVALID" -> "模型请求参数不合法，请检查模型配置";
+            case "LLM_SERVICE_UNAVAILABLE" -> "模型服务暂时不可用，请稍后重试";
+            case "LLM_NETWORK_FAILED" -> "模型服务网络连接失败，请稍后重试";
+            case "LLM_TIMEOUT" -> "模型服务响应超时，请稍后重试";
             case "LLM_TOOL_NOT_ALLOWED", "LLM_TOOL_ARGUMENT_INVALID", "LLM_TOOL_CALL_MALFORMED" ->
                     "模型工具协议未能稳定完成";
             case "AGENT_RUN_TIMEOUT" -> "Agent 执行超过相位时限";
@@ -125,6 +136,15 @@ public final class ExecutionContentSanitizer {
             case "TOOL_ARGUMENT_INVALID" -> "工具参数无效";
             case "PROCESS_EXIT_NONZERO" -> "工具进程执行失败";
             case "AGENT_RUN_TIMEOUT" -> "Agent 执行超时";
+            case "LLM_ACCOUNT_ACCESS_DENIED" -> "模型服务账号当前不可用，请管理员检查账号状态和 API 权限";
+            case "LLM_AUTH_FAILED" -> "模型服务认证失败，请管理员检查 API Key";
+            case "LLM_BILLING_REQUIRED" -> "模型服务账户余额或账单状态异常，请管理员检查计费配置";
+            case "LLM_RATE_LIMITED" -> "模型服务调用频率或额度受限，请稍后重试";
+            case "LLM_MODEL_NOT_FOUND" -> "当前模型不可用，请检查模型配置和账号权限";
+            case "LLM_REQUEST_INVALID" -> "模型请求参数不合法，请检查模型配置";
+            case "LLM_SERVICE_UNAVAILABLE" -> "模型服务暂时不可用，请稍后重试";
+            case "LLM_NETWORK_FAILED" -> "模型服务网络连接失败，请稍后重试";
+            case "LLM_TIMEOUT" -> "模型服务响应超时，请稍后重试";
             case "UNCLASSIFIED_FAILURE" -> "Agent 执行未完成且未能归类具体原因，请查看执行记录";
             case "TEST_COMMAND_NOT_FOUND" -> "未检测到受支持的项目/测试命令，未执行测试";
             case "REVIEW_ASSERTION_TARGET_NOT_FOUND" -> "审查未找到任务要求的验收目标（文件/函数/接口/选择器等），请补齐后重新审查";
@@ -158,7 +178,9 @@ public final class ExecutionContentSanitizer {
                     "FILE_HASH_MISMATCH", "TOOL_PATH_INVALID", "TOOL_ARGUMENT_INVALID",
                     "PROCESS_EXIT_NONZERO", "AGENT_RUN_TIMEOUT", "TOOL_EXECUTION_FAILED",
                     "UNCLASSIFIED_FAILURE", "DIFF_REVIEW_SUPERSEDED",
-                    "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
+                    "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "LLM_ACCOUNT_ACCESS_DENIED", "LLM_AUTH_FAILED",
+                    "LLM_BILLING_REQUIRED", "LLM_RATE_LIMITED", "LLM_MODEL_NOT_FOUND", "LLM_REQUEST_INVALID",
+                    "LLM_SERVICE_UNAVAILABLE", "LLM_NETWORK_FAILED", "LLM_TIMEOUT", "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
                     "TEST_DEPENDENCY_UNAVAILABLE", "TEST_NETWORK_UNAVAILABLE", "TEST_SERVICE_UNAVAILABLE",
@@ -186,7 +208,9 @@ public final class ExecutionContentSanitizer {
                     "LLM_TOOL_ARGUMENT_INVALID", "CODING_NO_ACTUAL_CHANGE", "FILE_PATCH_FAILED",
                     "FILE_HASH_MISMATCH", "TOOL_PATH_INVALID", "TOOL_ARGUMENT_INVALID",
                     "PROCESS_EXIT_NONZERO", "AGENT_RUN_TIMEOUT", "TOOL_EXECUTION_FAILED",
-                    "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
+                    "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT",
+                    "LLM_RATE_LIMITED", "LLM_SERVICE_UNAVAILABLE", "LLM_NETWORK_FAILED", "LLM_TIMEOUT",
+                    "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
                     "TEST_DEPENDENCY_UNAVAILABLE", "TEST_NETWORK_UNAVAILABLE", "TEST_SERVICE_UNAVAILABLE",

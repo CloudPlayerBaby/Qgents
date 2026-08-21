@@ -13,6 +13,31 @@ import java.util.UUID;
 @Mapper
 public interface TaskRunMapper extends BaseMapper<TaskRunEntity> {
 
+    /**
+     * 任务中心列表只需要每个步骤的最新运行，避免把整个任务运行历史加载到内存。
+     * task_runs.id 为 UUIDv7，created_at 作为并列时的稳定兜底排序。
+     */
+    @Select({"<script>",
+            "select * from (",
+            "select tr.*, row_number() over (partition by tr.task_id, tr.task_step_id ",
+            "order by tr.created_at desc, tr.id desc) as row_num ",
+            "from task_runs tr where tr.task_id in ",
+            "<foreach collection='taskIds' item='taskId' open='(' separator=',' close=')'>#{taskId}</foreach>",
+            ") latest where latest.row_num = 1",
+            "</script>"})
+    List<TaskRunEntity> selectLatestForTaskList(@Param("taskIds") List<UUID> taskIds);
+
+    /** 失败提示需要最新失败运行，但不应为此重新加载全部历史运行。 */
+    @Select({"<script>",
+            "select * from (",
+            "select tr.*, row_number() over (partition by tr.task_id "
+                    + "order by coalesce(tr.failure_occurred_at, tr.updated_at) desc, tr.id desc) as row_num ",
+            "from task_runs tr where tr.status = 'FAILED' and tr.task_id in ",
+            "<foreach collection='taskIds' item='taskId' open='(' separator=',' close=')'>#{taskId}</foreach>",
+            ") latest where latest.row_num = 1",
+            "</script>"})
+    List<TaskRunEntity> selectLatestFailedForTaskList(@Param("taskIds") List<UUID> taskIds);
+
     /** 查找同一失败运行已经创建的活动重试，避免网络重试重复创建 TaskRun。 */
     @Select("select * from task_runs where task_id=#{taskId} and task_step_id=#{taskStepId} "
             + "and retry_of_task_run_id=#{retryOfTaskRunId} and status in ('QUEUED','RUNNING') "

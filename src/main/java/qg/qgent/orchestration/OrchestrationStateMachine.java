@@ -22,6 +22,16 @@ public class OrchestrationStateMachine {
      * 依据相位与结果决策下一步；会推进传入 counters 的循环计数。
      */
     public StateMachineDecision decide(OrchestrationPhase phase, RunOutcome outcome, OrchestrationCounters counters) {
+        return decide(phase, outcome, null, counters);
+    }
+
+    /** 带稳定失败码的决策入口；确定性模型配置/账号错误不应重复自动调用上游。 */
+    public StateMachineDecision decide(OrchestrationPhase phase, RunOutcome outcome, String failureCode,
+                                       OrchestrationCounters counters) {
+        if (outcome == RunOutcome.FAILED_INFRASTRUCTURE && failureCode != null
+                && !ExecutionContentSanitizer.userFailureRetryable(failureCode)) {
+            return StateMachineDecision.failed();
+        }
         if (outcome != RunOutcome.FAILED_INFRASTRUCTURE) {
             counters.resetInfraRetries(phase);
         }

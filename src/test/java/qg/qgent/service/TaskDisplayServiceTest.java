@@ -149,7 +149,7 @@ class TaskDisplayServiceTest {
         TaskStepEntity step = step(stepId, task.getId(), "RUNNING");
         when(steps.selectList(any())).thenReturn(List.of(step));
         TaskRunEntity run = run(projectId, task.getId(), stepId, runId, "WAITING_INPUT");
-        when(runs.selectList(any())).thenReturn(List.of(run));
+        when(runs.selectLatestForTaskList(any())).thenReturn(List.of(run));
         InputRequestEntity request = new InputRequestEntity();
         request.setId(UUID.randomUUID());
         request.setTaskRunId(runId);
@@ -194,7 +194,7 @@ class TaskDisplayServiceTest {
         TaskEntity task = task(projectId, groupId, creatorId, workspaceId, "WAITING_DIFF_CONFIRMATION");
         when(tasks.selectList(any())).thenReturn(List.of(task));
         when(steps.selectList(any())).thenReturn(List.of());
-        when(runs.selectList(any())).thenReturn(List.of());
+        when(runs.selectLatestForTaskList(any())).thenReturn(List.of());
         UserEntity creator = new UserEntity();
         creator.setId(creatorId);
         creator.setDisplayName("陈同学");
@@ -227,7 +227,7 @@ class TaskDisplayServiceTest {
         TaskEntity task = task(projectId, groupId, actor, workspaceId, "DIFF_REJECTED");
         when(tasks.selectList(any())).thenReturn(List.of(task));
         when(steps.selectList(any())).thenReturn(List.of());
-        when(runs.selectList(any())).thenReturn(List.of());
+        when(runs.selectLatestForTaskList(any())).thenReturn(List.of());
         when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
 
         DiffReviewBatchEntity batch = new DiffReviewBatchEntity();
@@ -346,6 +346,7 @@ class TaskDisplayServiceTest {
         TaskRunEntity failed = run(projectId, task.getId(), stepId, runId, "FAILED");
         failed.setFailureCode("FILE_PATCH_FAILED");
         failed.setFailureReason("补丁无法应用，请重新读取文件后重试");
+        when(runs.selectLatestForTaskList(any())).thenReturn(List.of(failed));
         when(runs.selectList(any())).thenReturn(List.of(failed));
         when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
 
@@ -471,7 +472,7 @@ class TaskDisplayServiceTest {
         TaskStepEntity planner = step(UUID.randomUUID(), task.getId(), "PENDING");
         planner.setRole("PLANNER");
         when(steps.selectList(any())).thenReturn(List.of(planner));
-        when(runs.selectList(any())).thenReturn(List.of());
+        when(runs.selectLatestForTaskList(any())).thenReturn(List.of());
         UserEntity creator = new UserEntity();
         creator.setId(creatorId);
         creator.setDisplayName("陈同学");
