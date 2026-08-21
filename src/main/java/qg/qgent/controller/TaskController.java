@@ -50,19 +50,23 @@ public class TaskController {
     }
 
     /**
-     * 契约 §16.1：任务中心列表，游标分页并支持 groupId/status/createdBy/repositoryId/keyword 筛选。
+     * 契约 §16.1：任务中心列表，游标分页并支持 groupId/status/createdBy/repositoryId/keyword/excludeStatus 筛选。
      * keyword 按不区分大小写包含匹配 displayCode/title/requirement/需求群名/创建人/绑定仓库展示名与全名。
+     * status 与 excludeStatus 均支持逗号分隔多值（如 status=SUCCEEDED,FAILED 或 excludeStatus=SUCCEEDED）；
+     * excludeStatus 为排除语义（not in），与 status（in）可同时使用——任务中心「隐藏已完成任务」即传
+     * excludeStatus=SUCCEEDED，由服务端过滤保证分页正确，而非前端本地过滤。
      * 返回卡片摘要 DTO，避免前端逐条发起 Group/Member/Repository/Agent 查询。
      */
     @Operation(summary = "查询项目 Task 列表")
     @GetMapping
     public PagedApiResponse<TaskListItemResponse> list(@PathVariable UUID projectId,
                                                        @AuthenticationPrincipal UUID actor, @RequestParam(required = false) String groupId,
-                                                       @RequestParam(required = false) String status, @RequestParam(required = false) String createdBy,
+                                                       @RequestParam(required = false) String status, @RequestParam(required = false) String excludeStatus,
+                                                       @RequestParam(required = false) String createdBy,
                                                        @RequestParam(required = false) String repositoryId, @RequestParam(required = false) String keyword,
                                                        @RequestParam(required = false) String cursor,
                                                        @RequestParam(required = false) Integer limit, HttpServletRequest request) {
-        return display.list(projectId, actor, groupId, status, createdBy, repositoryId, keyword, cursor, limit,
+        return display.list(projectId, actor, groupId, status, excludeStatus, createdBy, repositoryId, keyword, cursor, limit,
                 (String) request.getAttribute(RequestIdFilter.ATTRIBUTE));
     }
 
