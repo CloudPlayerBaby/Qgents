@@ -1671,6 +1671,44 @@ class MergeRequestServiceTest {
     }
 
     @Test
+    void listDoesNotInjectPendingPlaceholderForTaskAwaitingDeliveryConfirmation() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setDefaultBranch("main");
+        when(projectRepositoryMapper.selectList(any())).thenReturn(java.util.List.of(repository));
+        when(projectRepositoryMapper.selectBatchIds(anyCollection())).thenReturn(java.util.List.of(repository));
+
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setWorkspaceId(workspaceId);
+        worktree.setProjectRepositoryId(repositoryId);
+        worktree.setBaseRef("main");
+        worktree.setSourceBranch("feat/task-unconfirmed");
+        worktree.setHeadCommit("base-head");
+        when(workspaceRepositoryMapper.selectByProject(projectId, null)).thenReturn(java.util.List.of(worktree));
+
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setWorkspaceId(workspaceId);
+        task.setStatus("WAITING_DIFF_CONFIRMATION");
+        task.setDeliveryMode("DIFF_FIRST");
+        task.setTitle("尚未确认交付");
+        when(taskMapper.selectList(any())).thenReturn(java.util.List.of(task));
+        when(mergeRequestMapper.selectList(any())).thenReturn(java.util.List.of());
+
+        var response = service.list(projectId, userId, null, null, "PENDING_CREATE", null, 20, "req-unconfirmed");
+
+        assertTrue(response.data().isEmpty());
+    }
+
+    @Test
     void choosesNewestWorkspaceCandidateWhenMultipleWorkspacesReuseBranch() {
         UUID projectId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();

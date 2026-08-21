@@ -266,6 +266,33 @@ class MrPreflightServiceTest {
         verify(testRuns, never()).createAutomaticDryRun(any(), any(), any(), any());
     }
 
+    @Test
+    void requestPreflightRejectsWhenSourceAndTargetCommitsAreEqual() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String commit = "0123456789012345678901234567890123456789";
+
+        TaskEntity task = task(projectId, taskId, workspaceId, userId);
+        WorkspaceRepositoryEntity worktree = worktree(workspaceId, repositoryId, "feat/task", commit, "main");
+        ProjectRepositoryEntity repository = repository(projectId, repositoryId, "main");
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree));
+        when(repositories.selectById(repositoryId)).thenReturn(repository);
+        when(gitStores.normalizeTargetBranch("main")).thenReturn("main");
+        when(gitStores.refreshTargetBranch(projectId, repository, "main")).thenReturn(commit);
+        when(mergeRequests.selectOne(any())).thenReturn(null);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.requestPreflight(projectId, userId, taskId, repositoryId, null));
+
+        assertEquals("MR_NO_CHANGES", error.code());
+        verify(testRuns, never()).createAutomaticDryRun(any(), any(), any(), any());
+        verify(preflightRequests, never()).insert(any(MrPreflightRequestEntity.class));
+    }
+
     private void runTransactionCallback() {
         doAnswer(invocation -> {
             java.util.function.Consumer<?> callback = invocation.getArgument(0);
