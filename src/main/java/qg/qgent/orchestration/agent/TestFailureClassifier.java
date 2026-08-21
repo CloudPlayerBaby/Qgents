@@ -53,7 +53,11 @@ public class TestFailureClassifier {
             "could not resolve dependencies",
             "could not find artifact",
             "failed to collect dependencies",
-            "could not find the selected project"
+            "could not find the selected project",
+            // Maven 在 --offline 下找不到本地缓存中的父 POM、插件或依赖时，不能通过重试
+            // Coding 修复；需要预热受控依赖缓存或提供受限 Maven 镜像。
+            "in offline mode",
+            "has not been downloaded from it before"
     };
 
     /** 网络不可达（下载依赖、registry、DNS）。 */

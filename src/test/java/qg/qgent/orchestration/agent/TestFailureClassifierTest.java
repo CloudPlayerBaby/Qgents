@@ -45,6 +45,17 @@ class TestFailureClassifierTest {
     }
 
     @Test
+    void mavenOfflineCacheMissIsEnvironment() {
+        TestFailureClassifier.Verdict verdict = classify(1, "",
+                "Cannot access central (https://repo.maven.apache.org/maven2) in offline mode and the artifact "
+                        + "org.springframework.boot:spring-boot-starter-parent:pom:4.1.0 has not been downloaded from it before",
+                List.of("src/test/java/example/LoginControllerTest.java"));
+
+        assertThat(verdict.classification()).isEqualTo(TestFailureClassifier.Classification.ENVIRONMENT);
+        assertThat(verdict.failureCode()).isEqualTo("TEST_DEPENDENCY_UNAVAILABLE");
+    }
+
+    @Test
     void modifiedBuildFileKeepsDependencyFailureAsCodeDefect() {
         // 改动了 pom.xml 仍出现依赖解析失败：更可能是改动引入（坐标/版本错误），不得归环境。
         TestFailureClassifier.Verdict verdict = classify(1, "",
