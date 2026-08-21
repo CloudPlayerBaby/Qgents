@@ -246,7 +246,7 @@ public class TestAgent implements Agent {
      * 由 LLM 分析真实输出；分析失败或非法时退回基于真实执行的结果，不伪造分析。
      */
     private TestResult analyze(AgentInput input, List<String> command, ExecutionResult exec) {
-        String system = promptBuilder.buildSystem();
+        String system = promptBuilder.buildSystem(input.getAgentPrompt());
         try {
             String raw = llm.complete(system,
                     List.of(LlmMessage.user(promptBuilder.buildUser(input, command, exec))));

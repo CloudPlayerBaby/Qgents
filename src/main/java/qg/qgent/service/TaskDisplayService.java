@@ -374,6 +374,8 @@ public class TaskDisplayService {
             } else if ("FAILED".equals(stepStatus)) {
                 failed++;
             }
+            // CANCELLED/SKIPPED 步骤既不待执行也不算失败：取消/跳过是既定终态，
+            // 不应让它们把任务误判为"仍有待执行步骤"。
             TaskRunEntity latest = latestRun(runsByStep.getOrDefault(step.getId(), List.of()));
             if (latest != null) {
                 if (RUN_WAITING.contains(latest.getStatus())) {

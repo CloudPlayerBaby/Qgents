@@ -145,7 +145,7 @@ public class ReviewAgent implements Agent {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         List<Message> history = new ArrayList<>();
         history.add(new UserMessage(promptBuilder.buildUser(input, files, diff)));
-        String system = promptBuilder.buildSystem(true);
+        String system = promptBuilder.buildSystem(true, input.getAgentPrompt());
         ReviewTools tools = new ReviewTools(input.getWorkspaceId(), codeAccess);
         ActivateSkillTool activateSkillTool = new ActivateSkillTool(contextService, input.getActorId(),
                 input.getProjectId());
@@ -257,7 +257,7 @@ public class ReviewAgent implements Agent {
         List<String> files = codeAccess.listFiles(input.getWorkspaceId());
         List<LlmMessage> history = new ArrayList<>();
         history.add(LlmMessage.user(promptBuilder.buildUser(input, files, diff)));
-        String system = promptBuilder.buildSystem(false);
+        String system = promptBuilder.buildSystem(false, input.getAgentPrompt());
         ReviewToolExecutor toolExecutor = new ReviewToolExecutor(codeAccess);
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             String raw = llm.complete(system, history);

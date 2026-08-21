@@ -134,6 +134,66 @@ class TaskServiceTest {
     }
 
     @Test
+    void createResolvesPerRepositoryBaseRefOverPublicFallback() {
+        // 多仓库各自不同基准分支：baseRefs 命中仓库用其分支，未命中仓库用公共 baseRef。
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID backend = UUID.randomUUID(), frontend = UUID.randomUUID(), docs = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
+        when(projectRepositories.selectById(frontend)).thenReturn(repository(frontend, projectId));
+        when(projectRepositories.selectById(docs)).thenReturn(repository(docs, projectId));
+        when(repositories.selectByWorkspace(any(UUID.class))).thenReturn(List.of());
+
+        TaskCreateRequest request = request(groupId, List.of(backend, frontend, docs));
+        request.setBaseRef("master");
+        request.setBaseRefs(Map.of(frontend, "main"));
+        service.create(projectId, actor, request);
+
+        ArgumentCaptor<UUID> repoCaptor = ArgumentCaptor.forClass(UUID.class);
+        ArgumentCaptor<String> baseRefCaptor = ArgumentCaptor.forClass(String.class);
+        verify(repositories, times(3)).insertLink(any(), repoCaptor.capture(), any(), baseRefCaptor.capture(), any());
+        java.util.List<UUID> repos = repoCaptor.getAllValues();
+        java.util.List<String> baseRefs = baseRefCaptor.getAllValues();
+        int backendIdx = repos.indexOf(backend);
+        int frontendIdx = repos.indexOf(frontend);
+        int docsIdx = repos.indexOf(docs);
+        assertThat(baseRefs.get(backendIdx)).isEqualTo("master"); // 未在 baseRefs → 公共 baseRef
+        assertThat(baseRefs.get(frontendIdx)).isEqualTo("main");  // baseRefs 命中 → 仓库自己的分支
+        assertThat(baseRefs.get(docsIdx)).isEqualTo("master");    // 未在 baseRefs → 公共 baseRef
+    }
+
+    @Test
+    void createLeavesBaseRefNullWhenNeitherSpecifiedForDefaultBranchFallback() {
+        // 全部未指定 baseRef：insertLink 传 null，Worker provision 按各仓库 defaultBranch 兜底。
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID backend = UUID.randomUUID(), frontend = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
+        when(projectRepositories.selectById(frontend)).thenReturn(repository(frontend, projectId));
+        when(repositories.selectByWorkspace(any(UUID.class))).thenReturn(List.of());
+
+        service.create(projectId, actor, request(groupId, List.of(backend, frontend)));
+
+        ArgumentCaptor<String> baseRefCaptor = ArgumentCaptor.forClass(String.class);
+        verify(repositories, times(2)).insertLink(any(), any(), any(), baseRefCaptor.capture(), any());
+        assertThat(baseRefCaptor.getAllValues()).containsExactly(null, null);
+    }
+
+    @Test
+    void createRejectsIllegalPerRepositoryBaseRef() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID backend = UUID.randomUUID();
+        when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
+        when(projectRepositories.selectById(backend)).thenReturn(repository(backend, projectId));
+
+        TaskCreateRequest request = request(groupId, List.of(backend));
+        request.setBaseRefs(Map.of(backend, "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"));
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.create(projectId, actor, request));
+        assertEquals("INVALID_BASE_REF", error.code());
+    }
+
+    @Test
     void createPublishesTaskCreatedEvent() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
         UUID backend = UUID.randomUUID();
@@ -407,7 +467,23 @@ class TaskServiceTest {
         assertEquals("CANCELLED", result.getStatus());
         assertEquals("CANCELLED", task.getStatus());
         verify(tasks).updateById(task);
+        // 取消时未执行的 PENDING 步骤一并落 CANCELLED
+        verify(steps).update(any(), org.mockito.ArgumentMatchers.<com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper>any());
         verify(events).publish(any(), any(), eq("task.updated"), eq(taskId.toString()), any(Map.class));
+    }
+
+    @Test
+    void cancelPendingTaskCancelsOnlyPendingSteps() {
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), taskId = UUID.randomUUID();
+        TaskEntity task = task(taskId, projectId, actor);
+        task.setStatus("PENDING");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        service.cancel(projectId, taskId, actor);
+
+        // 取消时通过 steps.update 把未执行步骤置 CANCELLED（UpdateWrapper 限定 status=PENDING，
+        // 不触碰已终态步骤）；mock 仅验证调用发生，SQL 条件由实现自身保证。
+        verify(steps, times(1)).update(any(), org.mockito.ArgumentMatchers.<com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper>any());
     }
 
     @Test

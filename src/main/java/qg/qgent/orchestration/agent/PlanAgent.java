@@ -83,7 +83,7 @@ public class PlanAgent implements Agent {
                     contents.values().stream().mapToInt(String::length).sum(),
                     AgentContextLogFormatter.fileTreeSummary(files));
             List<AgentEntity> pool = loadCandidatePool(input);
-            String planSystem = promptBuilder.buildPlanSystem();
+            String planSystem = promptBuilder.buildPlanSystem(input.getAgentPrompt());
             String planUser = promptBuilder.buildPlanUser(input, files, contents, pool);
             AttachmentMediaLoader.Result attachments =
                     attachmentMediaLoader.load(input.getActorId(), input.getProjectId(), input.getConversation());

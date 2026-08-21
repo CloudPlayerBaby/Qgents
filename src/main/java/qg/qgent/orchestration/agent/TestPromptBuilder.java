@@ -18,9 +18,18 @@ public class TestPromptBuilder {
     static final int MAX_STDERR_CHARS = 24_000;
 
     /**
-     * 系统提示：TESTER 角色、真实结果约束与 JSON 输出契约。
+     * 系统提示：TESTER 角色、真实结果约束与 JSON 输出契约（无叠加，供内置兜底调用）。
      */
     public String buildSystem() {
+        return buildSystem(null);
+    }
+
+    /**
+     * 系统提示：TESTER 角色、真实结果约束与 JSON 输出契约，可按需追加自定义 Agent 补充指引。
+     *
+     * @param overlayPrompt 自定义 Agent 的补充指引（来自 AgentEntity.prompt）；null/空白表示无叠加。
+     */
+    public String buildSystem(String overlayPrompt) {
         return """
                 你是多智能体协作平台中的 TESTER。你会收到一个测试命令或纯文件断言结果、真实的 exit code 以及 stdout/stderr。请基于真实结果分析测试结果，只输出 JSON，不要输出任何多余文本或代码围栏。
                 
@@ -39,7 +48,7 @@ public class TestPromptBuilder {
                 - 如果 stderr/stdout 表明命令不存在、找不到 PATH、Wrapper 无法启动、权限不足或 exit code 为 126/127，必须将其归类为测试环境/基础设施问题：needsCodingFix 必须为 false，失败原因中明确写出原始命令和建议使用工作区相对路径（例如 sh ./gradlew test、sh ./mvnw test），不得要求 Coding Agent 修改业务代码。
                 - 当验证方式为 FILE_ASSERTION 时，必须以文件存在性、可读性和明确的内容/大小断言为准，不得因为没有 Maven/Gradle/npm 命令就判定失败。
                 - 当任务只修改了非代码文件（README/markdown/txt/json/yaml/资源/目录等文档或配置文件）时，不应运行 gradle/mvn/npm 测试，直接以文件断言结果为准。
-                """;
+                """ + CustomAgentPrompt.overlay(overlayPrompt);
     }
 
     /**

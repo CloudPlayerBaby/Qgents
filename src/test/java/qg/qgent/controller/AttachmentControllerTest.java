@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletRequest;
 import qg.qgent.api.ApiException;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
@@ -15,13 +16,18 @@ import qg.qgent.dto.AttachmentPreviewUrlResponse;
 import qg.qgent.service.AttachmentService;
 import qg.qgent.service.AttachmentService.AttachmentPreviewContent;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -167,5 +173,20 @@ class AttachmentControllerTest {
         ApiResponse<?> resp = controller.previewUrl(actor, projectId, attachmentId, request);
 
         assertThat(resp.data()).isSameAs(dto);
+    }
+
+    @Test
+    void uploadDelegatesRawBytesToService() throws IOException {
+        UUID projectId = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        MockHttpServletRequest req = new MockHttpServletRequest("PUT",
+                "/api/v1/projects/" + projectId + "/attachments/" + attachmentId);
+        req.setContent("file-bytes".getBytes(StandardCharsets.UTF_8));
+
+        controller.upload(actor, projectId, attachmentId, "application/octet-stream", req);
+
+        verify(service).uploadBytes(eq(actor), eq(projectId), eq(attachmentId), any(InputStream.class),
+                eq("application/octet-stream"));
     }
 }

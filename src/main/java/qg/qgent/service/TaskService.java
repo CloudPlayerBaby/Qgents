@@ -30,6 +30,7 @@ import java.util.stream.Collectors;
  */
 @Service
 public class TaskService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TaskService.class);
     private final TaskMapper tasks;
     private final WorkspaceMapper workspaces;
     private final WorkspaceRepositoryMapper repositories;
@@ -108,12 +109,11 @@ public class TaskService {
         }
         // baseRef 只接受分支名：Git Store 同步按 refs/heads/<name> fetch，commit SHA 形态
         // 必然找不到远端分支，提前拒绝而不是在 Worker 侧报晦涩错误。
-        if (body.getBaseRef() != null && (!body.getBaseRef().trim().matches("[A-Za-z0-9][A-Za-z0-9._/-]{0,254}")
-                || body.getBaseRef().trim().startsWith("/") || body.getBaseRef().trim().contains("//")
-                || body.getBaseRef().trim().contains("..") || body.getBaseRef().trim().endsWith(".lock")
-                || body.getBaseRef().trim().matches("[0-9a-fA-F]{40,64}"))) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BASE_REF",
-                    "baseRef 必须是合法分支名，且不能是 commit SHA 或 Git 引用路径");
+        validateBaseRef(body.getBaseRef(), "baseRef");
+        if (body.getBaseRefs() != null) {
+            for (Map.Entry<UUID, String> entry : body.getBaseRefs().entrySet()) {
+                validateBaseRef(entry.getValue(), "baseRefs[" + entry.getKey() + "]");
+            }
         }
         // 锁定项目行串行化同项目内的 Task 创建，保证 display_code 序号在项目内单调且不重复（沿用消息序号的持行锁模式）。
         ProjectEntity project = projects.selectByIdForUpdate(projectId);
@@ -227,7 +227,10 @@ public class TaskService {
         if (!reuseWorkspace) {
             int index = 1;
             for (UUID repositoryId : repositoryIds) {
-                repositories.insertLink(workspace.getId(), repositoryId, "repo-" + index++, body.getBaseRef(),
+                // 基线分支按仓库解析：per-repository baseRefs 优先，其次公共 baseRef，
+                // 最后 null（Worker provision 按该仓库项目绑定的 defaultBranch 兜底）。
+                repositories.insertLink(workspace.getId(), repositoryId, "repo-" + index++,
+                        resolveBaseRef(body, repositoryId),
                         featureBranch(task.getId(), body.getTitle()));
             }
         }
@@ -299,6 +302,9 @@ public class TaskService {
                 task.setStatus("CANCELLED");
                 task.setUpdatedAt(now);
                 tasks.updateById(task);
+                // 计划可能已物化：把尚未执行的步骤一并落 CANCELLED，避免前端显示
+                // 「任务已取消」但步骤仍停留在 PENDING（待执行）的矛盾状态。
+                cancelPendingSteps(task.getId());
             }
             case "RUNNING" -> {
                 task.setStatus("CANCELLING");
@@ -611,8 +617,58 @@ public class TaskService {
         return continuation == null ? null : continuation.getDeliveryMode();
     }
 
+    /**
+     * 解析指定仓库的基线分支名。优先级：per-repository {@code baseRefs} &gt; 公共
+     * {@code baseRef} &gt; null（Worker provision 按该仓库项目绑定的 defaultBranch 兜底）。
+     * 多仓库各自不同的基准分支由此支持，不再要求所有仓库使用同名基线。
+     */
+    private String resolveBaseRef(TaskCreateRequest body, UUID repositoryId) {
+        if (body.getBaseRefs() != null && body.getBaseRefs().containsKey(repositoryId)) {
+            String perRepository = body.getBaseRefs().get(repositoryId);
+            if (perRepository != null && !perRepository.isBlank()) {
+                return perRepository.trim();
+            }
+        }
+        return body.getBaseRef() == null || body.getBaseRef().isBlank() ? null : body.getBaseRef().trim();
+    }
+
+    /**
+     * baseRef 只接受合法分支名（不含 commit SHA、Git 引用路径、..、//、.lock）。
+     * 仅校验非空值；null/空白表示「未指定」，由各仓库默认分支兜底。
+     */
+    private void validateBaseRef(String baseRef, String field) {
+        if (baseRef == null || baseRef.isBlank()) {
+            return;
+        }
+        String value = baseRef.trim();
+        if (!value.matches("[A-Za-z0-9][A-Za-z0-9._/-]{0,254}")
+                || value.startsWith("/") || value.contains("//")
+                || value.contains("..") || value.endsWith(".lock")
+                || value.matches("[0-9a-fA-F]{40,64}")) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BASE_REF",
+                    field + " 必须是合法分支名，且不能是 commit SHA 或 Git 引用路径");
+        }
+    }
+
     private ApiException validation(String code, String message) {
         return new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, code, message);
+    }
+
+    /**
+     * 任务取消时把尚未执行的步骤置 CANCELLED：只覆盖 PENDING 步骤，
+     * 不触碰已 RUNNING/SUCCEEDED/FAILED/SKIPPED/CANCELLED 的步骤
+     * （RUNNING 步骤由编排器取消收敛负责，见 {@code TaskOrchestrator}）。
+     */
+    private void cancelPendingSteps(UUID taskId) {
+        try {
+            steps.update(null, Wrappers.<qg.qgent.entity.TaskStepEntity>update()
+                    .set("status", "CANCELLED")
+                    .set("updated_at", LocalDateTime.now(ZoneOffset.UTC))
+                    .eq("task_id", taskId)
+                    .eq("status", "PENDING"));
+        } catch (RuntimeException e) {
+            log.warn("cancel pending steps skipped taskId={}: {}", taskId, e.getMessage());
+        }
     }
 
     private String id(UUID value) {

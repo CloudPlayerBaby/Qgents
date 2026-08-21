@@ -600,6 +600,73 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void environmentBlockedReviewQualityFailureFailsTaskWithoutRequeueingCoding() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome environmentBlockedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.TEST_FAILED);
+        TestResult blockedTest = new TestResult();
+        blockedTest.setSuccess(false);
+        blockedTest.setEnvironmentFailureCode("TEST_DEPENDENCY_UNAVAILABLE");
+        blockedTest.setSummary("测试因环境问题未能完成验证");
+        environmentBlockedTest.setTestResult(blockedTest);
+
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("BLOCKER");
+        finding.setIssue("missing ownership check");
+        reviewResult.setFindings(List.of(finding));
+        failedReview.setReviewResult(reviewResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                environmentBlockedTest, failedReview)).orchestrate(task.getProjectId(), task.getId());
+
+        // 环境失败转 Review 兜底：Review 判代码有疑点直接落 FAILED，不再回 Coding（环境问题
+        // 不是本次代码可修复，回修只会空转）。Task 失败码复用测试环境失败码，失败文案由
+        // userFailureDescription(环境码) 生成（含「环境」），Review 发现的代码疑点在 Run 诊断。
+        assertThat(fixture.updatedStatuses()).contains("FAILED");
+        assertThat(task.getFailureCode()).isEqualTo("TEST_DEPENDENCY_UNAVAILABLE");
+        assertThat(task.getFailureReason()).contains("环境");
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void environmentBlockedReviewPassReleasesTaskWithTestNotExecuted() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome environmentBlockedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.TEST_FAILED);
+        TestResult blockedTest = new TestResult();
+        blockedTest.setSuccess(false);
+        blockedTest.setEnvironmentFailureCode("TEST_SERVICE_UNAVAILABLE");
+        blockedTest.setSummary("测试因环境问题未能完成验证");
+        environmentBlockedTest.setTestResult(blockedTest);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                environmentBlockedTest, fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        // 环境失败转 Review：Review 判代码无误时放行（终态卡片标注测试未执行），任务继续交付。
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
+                eq(developer.getId()), anyString(), any(), any(), any());
+    }
+
+    @Test
     void codingSelfReportFailureWithRealChangesRetriesOnce() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();

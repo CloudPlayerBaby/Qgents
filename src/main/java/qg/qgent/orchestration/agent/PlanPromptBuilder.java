@@ -43,9 +43,18 @@ public class PlanPromptBuilder {
     }
 
     /**
-     * 第二轮系统提示：PLANNER 角色、输出约束与 JSON 结构。
+     * 第二轮系统提示：PLANNER 角色、输出约束与 JSON 结构（无叠加，供内置兜底调用）。
      */
     public String buildPlanSystem() {
+        return buildPlanSystem(null);
+    }
+
+    /**
+     * 第二轮系统提示：PLANNER 角色、输出约束与 JSON 结构，可按需追加自定义 Agent 补充指引。
+     *
+     * @param overlayPrompt 自定义 Agent 的补充指引（来自 AgentEntity.prompt）；null/空白表示无叠加。
+     */
+    public String buildPlanSystem(String overlayPrompt) {
         return """
                 你是多智能体协作平台中的 PLANNER。请基于开发任务、工作区代码与「可用 Agent 清单」，制定一份可执行、可被后续 Coding Agent 直接消费的实现计划，并在计划中判定该任务的交付模式。
                 
@@ -82,7 +91,7 @@ public class PlanPromptBuilder {
                 - MR_FIRST（大功能，自动 commit/push 后等待 MR 前预检）：改动涉及多个仓库；或实现步骤超过 2 个（多模块/跨前后端）；或属于新功能模块/架构级改动；或风险高、需要人逐行审查；或验证复杂度高（需要 Dry Run 验证合并冲突/兼容性）。MR 只能在 Dry Run 和独立 CQ+1 通过后由用户显式创建。
                 - DIFF_FIRST（小功能，先回 Diff 供用户确认）：补丁式修改（修 bug、加接口、小重构）、单仓库、实现步骤 1~2 个、风险低、现有测试跑一遍即可。
                 - scaleReason 必须用一句话说明选择该模式的具体依据（如"涉及前后端 2 个仓库、4 个开发步骤，属跨模块新功能"），不得为空。
-                """;
+                """ + CustomAgentPrompt.overlay(overlayPrompt);
     }
 
     /**

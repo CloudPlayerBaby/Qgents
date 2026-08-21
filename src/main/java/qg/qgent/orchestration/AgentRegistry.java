@@ -10,6 +10,7 @@ import qg.qgent.orchestration.agent.CodingWriteObserver;
 import qg.qgent.orchestration.agent.ContextSearchProperties;
 import qg.qgent.orchestration.agent.GenericCustomAgent;
 import qg.qgent.orchestration.agent.PlanAgent;
+import qg.qgent.orchestration.agent.PromptBoundAgent;
 import qg.qgent.orchestration.agent.ReviewAgent;
 import qg.qgent.orchestration.agent.TestAgent;
 import qg.qgent.orchestration.llm.LlmClient;
@@ -28,8 +29,10 @@ import java.util.UUID;
  *       DEVELOPER→CodingAgent、TESTER→TestAgent、REVIEWER→ReviewAgent；角色未知 → 空；</li>
  *   <li>{@code assignedAgentId != null}：查 {@link AgentEntity}——团队默认 Agent（isDefault=true，
  *       系统预置、用户不可编辑）直接复用对应内置 Agent 类（详细系统提示 + 专属解析器）；
- *       其余（自定义 Agent）以 {@link GenericCustomAgent} 包装（DB prompt + 角色→工具白名单）；
- *       实体不存在 → 空（调用方跳步，不硬跑）；</li>
+ *       其余（自定义 Agent）且角色在内置映射内（PLANNER/DEVELOPER/TESTER/REVIEWER）时，以
+ *       {@link PromptBoundAgent} 装饰内置引擎并叠加自定义 prompt 作为补充指引；自定义角色无内置
+ *       映射时以 {@link GenericCustomAgent} 包装（DB prompt + 角色→工具白名单）；实体不存在 → 空
+ *       （调用方跳步，不硬跑）；</li>
  *   <li>角色匹配 / ACTIVE / 可见性的静态授权已在 {@link qg.qgent.service.TaskService#validateAgent}
  *       落库时校验，运行时只做存在性检查。</li>
  * </ul>
@@ -109,15 +112,18 @@ public class AgentRegistry {
         if (entity == null) {
             return Optional.empty();
         }
-        // 团队默认 Agent（isDefault=true，系统预置、用户不可编辑）：直接复用对应内置 Agent 类，
-        // 使用其详细系统提示与专属解析器，保证「团队默认四 Agent」就是代码内置实现（并发安全：
-        // 内置 Agent 为无状态单例，可变数据全在 run() 方法内局部创建）。仅当角色不在内置映射内
-        // （防御路径，理论上不出现）时回退通用自定义运行时，避免缺 Agent 挂起。
-        if (Boolean.TRUE.equals(entity.getIsDefault())) {
-            Agent builtin = builtin(entity.getRole(), executionMode);
-            if (builtin != null) {
+        // 先按实体声明角色解析内置引擎（保留 executionMode 对 VERIFY/TEST/REVIEW 的覆盖）：
+        // 团队默认 Agent（isDefault=true，系统预置、用户不可编辑）直接复用内置 Agent 类，使用其
+        // 详细系统提示与专属解析器（内置 Agent 为无状态单例，可变数据全在 run() 方法内局部创建）；
+        // 自定义 Agent 且角色有内置映射时，用 PromptBoundAgent 装饰内置引擎并叠加自定义 prompt 作为
+        // 补充指引——内置确定性门禁（真实 exit code / 严重度策略 / 写证据 / 结构化校验）保持不变。
+        // 仅当角色不在内置映射内（自定义标签或防御路径）时回退通用自定义运行时，避免缺 Agent 挂起。
+        Agent builtin = builtin(entity.getRole(), executionMode);
+        if (builtin != null) {
+            if (Boolean.TRUE.equals(entity.getIsDefault())) {
                 return Optional.of(builtin);
             }
+            return Optional.of(new PromptBoundAgent(builtin, entity.getPrompt()));
         }
         return Optional.of(new GenericCustomAgent(llm, codeAccess, toolRegistry, entity, writeObserver,
                 contextService, contextSearchProperties));

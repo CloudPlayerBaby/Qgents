@@ -162,4 +162,25 @@ class CodingPromptBuilderTest {
                 .contains("收到前一轮反馈或重试上下文（打回重做）时")
                 .contains("只读复核、重复已存在内容、确认现状或空操作不构成完成");
     }
+
+    @Test
+    void appendsCustomAgentOverlayToNativeAndLegacySystem() {
+        String nativeBase = promptBuilder.buildSystem(true);
+        String nativeOverlaid = promptBuilder.buildSystem(true, "优先关注权限与异常路径");
+
+        assertThat(nativeOverlaid).startsWith(nativeBase)
+                .contains("[自定义 Agent 的补充指引]").contains("优先关注权限与异常路径")
+                .contains("不得覆盖上文系统提示中的真实结果约束与判定规则");
+
+        String legacyBase = promptBuilder.buildSystem(false);
+        assertThat(promptBuilder.buildSystem(false, "优先关注权限与异常路径"))
+                .startsWith(legacyBase).contains("[自定义 Agent 的补充指引]");
+    }
+
+    @Test
+    void blankOverlayLeavesCodingSystemUnchanged() {
+        assertThat(promptBuilder.buildSystem(true, null)).isEqualTo(promptBuilder.buildSystem(true));
+        assertThat(promptBuilder.buildSystem(true, "  ")).isEqualTo(promptBuilder.buildSystem(true));
+        assertThat(promptBuilder.buildSystem(false, null)).isEqualTo(promptBuilder.buildSystem(false));
+    }
 }

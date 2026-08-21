@@ -248,6 +248,57 @@ class TaskPlanMaterializationServiceTest {
     }
 
     @Test
+    void ensurePlannerStepFreezesDispatchedPlannerWhenCustomPlannerExists() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        TaskStepDependencyMapper dependencies = mock(TaskStepDependencyMapper.class);
+        AgentDispatcher dispatcher = mock(AgentDispatcher.class);
+        TaskEntity task = task();
+        AgentEntity customPlanner = new AgentEntity();
+        customPlanner.setId(UUID.randomUUID());
+        customPlanner.setName("业务规划师");
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of());
+        when(dispatcher.dispatch(any(), eq("PLANNER"), eq(List.of("planning")), isNull()))
+                .thenReturn(Optional.of(customPlanner));
+        TaskPlanMaterializationService service = service(tasks, steps, dependencies, mock(TaskStepRepositoryMapper.class),
+                mock(WorkspaceRepositoryMapper.class), mock(TaskExecutionArtifactService.class),
+                mock(EventService.class), dispatcher);
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.ensurePlannerStep(task);
+
+        ArgumentCaptor<TaskStepEntity> inserted = ArgumentCaptor.forClass(TaskStepEntity.class);
+        verify(steps).insert(inserted.capture());
+        assertThat(inserted.getValue().getRole()).isEqualTo("PLANNER");
+        // Planner Step 与开发/测试/审查步骤一样经统一选人入口：团队存在自定义 PLANNER 时冻结其 id。
+        assertThat(inserted.getValue().getAssignedAgentId()).isEqualTo(customPlanner.getId());
+        verify(dispatcher).dispatch(eq(task), eq("PLANNER"), eq(List.of("planning")), isNull());
+    }
+
+    @Test
+    void ensurePlannerStepLeavesNullAssignedIdWhenNoPlannerCandidate() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        AgentDispatcher dispatcher = mock(AgentDispatcher.class);
+        TaskEntity task = task();
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of());
+        when(dispatcher.dispatch(any(), any(), any(), any())).thenReturn(Optional.empty());
+        TaskPlanMaterializationService service = service(tasks, steps, mock(TaskStepDependencyMapper.class),
+                mock(TaskStepRepositoryMapper.class), mock(WorkspaceRepositoryMapper.class),
+                mock(TaskExecutionArtifactService.class), mock(EventService.class), dispatcher);
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.ensurePlannerStep(task);
+
+        ArgumentCaptor<TaskStepEntity> inserted = ArgumentCaptor.forClass(TaskStepEntity.class);
+        verify(steps).insert(inserted.capture());
+        // 候选池无 PLANNER → 不绑 Agent，执行期由 AgentRegistry 内置 PlanAgent 兜底，不抛错。
+        assertThat(inserted.getValue().getAssignedAgentId()).isNull();
+    }
+
+    @Test
     void explicitDeliveryModeWinsOverPlannerAndRule() {
         TaskMapper tasks = mock(TaskMapper.class);
         TaskStepMapper steps = mock(TaskStepMapper.class);

@@ -24,6 +24,7 @@ import qg.qgent.service.AttachmentContent;
 import qg.qgent.service.AttachmentService;
 import qg.qgent.service.AttachmentService.AttachmentPreviewContent;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
@@ -71,6 +72,22 @@ public class AttachmentController {
                                   @PathVariable UUID attachmentId, HttpServletRequest request) {
         AttachmentStatusResponse data = attachmentService.confirmUpload(userId, projectId, attachmentId);
         return ok(data, request);
+    }
+
+    /**
+     * 契约 §7：服务端代理接收上传——客户端把文件字节 PUT 到后端，由服务端写入当前存储策略（OSS / 本地磁盘）。
+     * <p>
+     * 鉴权（JWT）与幂等（Idempotency-Key，/api/v1/projects/** 写接口强制）由安全链承担；
+     * 请求体为原始文件字节，Content-Type 可选。响应 204，随后客户端照常调用 confirm 置 READY。
+     */
+    @Operation(summary = "代理上传附件字节", description = "客户端把文件字节 PUT 到后端，服务端写入当前存储策略（OSS/本地磁盘）；响应 204，随后调用 confirm 置 READY。")
+    @PutMapping("/projects/{projectId}/attachments/{attachmentId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void upload(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
+                       @PathVariable UUID attachmentId,
+                       @RequestHeader(value = HttpHeaders.CONTENT_TYPE, required = false) String contentType,
+                       HttpServletRequest request) throws IOException {
+        attachmentService.uploadBytes(userId, projectId, attachmentId, request.getInputStream(), contentType);
     }
 
     /**

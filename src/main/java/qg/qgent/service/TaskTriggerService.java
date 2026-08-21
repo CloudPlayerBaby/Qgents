@@ -99,7 +99,8 @@ public class TaskTriggerService {
         }
         ContinuationRef continuation = resolveQuotedDiffContinuation(projectId, groupId, message);
         TaskCreateRequest request = assembleRequest(group, message, body.getTitle(),
-                body.getRequirement(), continuation, body.getRepositoryIds(), body.getBaseRef());
+                body.getRequirement(), continuation, body.getRepositoryIds(), body.getBaseRef(),
+                body.getBaseRefs());
         // 新建 Workspace 且仓库范围解析为空（请求未传 repositoryIds、需求群也未绑定仓库）时，
         // 用独立错误码明确指引前端引导用户先绑定仓库，而不是落到模糊的 TASK_REPOSITORY_REQUIRED。
         if (continuation == null && (request.getRepositoryIds() == null || request.getRepositoryIds().isEmpty())) {
@@ -150,7 +151,8 @@ public class TaskTriggerService {
         if (title == null || title.isBlank()) {
             title = group.getName();
         }
-        TaskCreateRequest request = assembleRequest(group, message, title, null, continuation, groupRepositories, null);
+        TaskCreateRequest request = assembleRequest(group, message, title, null, continuation, groupRepositories, null,
+                null);
         return createIdempotent(projectId, actor, message, request);
     }
 
@@ -174,7 +176,8 @@ public class TaskTriggerService {
 
     private TaskCreateRequest assembleRequest(RequirementGroupEntity group,
                                               MessageEntity message, String title, String requirement,
-                                              ContinuationRef continuation, List<UUID> repositoryIds, String baseRef) {
+                                              ContinuationRef continuation, List<UUID> repositoryIds, String baseRef,
+                                              Map<UUID, String> baseRefs) {
         TaskCreateRequest request = new TaskCreateRequest();
         request.setRequirementGroupId(group.getId());
         request.setTriggerMessageId(message.getId());
@@ -191,6 +194,7 @@ public class TaskTriggerService {
                     ? groupRepoMapper.selectRepositoryIds(group.getId()) : repositoryIds);
         }
         request.setBaseRef(baseRef);
+        request.setBaseRefs(baseRefs);
         return request;
     }
 

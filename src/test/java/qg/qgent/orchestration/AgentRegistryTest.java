@@ -8,6 +8,7 @@ import qg.qgent.orchestration.agent.CodingAgent;
 import qg.qgent.orchestration.agent.ContextSearchProperties;
 import qg.qgent.orchestration.agent.GenericCustomAgent;
 import qg.qgent.orchestration.agent.PlanAgent;
+import qg.qgent.orchestration.agent.PromptBoundAgent;
 import qg.qgent.orchestration.agent.ReviewAgent;
 import qg.qgent.orchestration.agent.TestAgent;
 import qg.qgent.orchestration.llm.LlmClient;
@@ -24,8 +25,9 @@ import static org.mockito.Mockito.when;
 
 /**
  * Agent 运行时注册表解析测试：assignedAgentId==null 按角色回退内置 Agent；非空则查实体——团队默认
- * Agent（isDefault=true）复用对应内置 Agent 类，自定义 Agent 包装为 {@link GenericCustomAgent}；
- * 实体缺失或内置角色未知返回空 Optional（调用方「缺 Agent 不硬跑」）。
+ * Agent（isDefault=true）复用对应内置 Agent 类；自定义 Agent 中角色在内置映射内的（PLANNER/DEVELOPER/
+ * TESTER/REVIEWER）包装为 {@link PromptBoundAgent}（复用内置引擎 + 叠加自定义 prompt），无内置映射的
+ * 包装为 {@link GenericCustomAgent}；实体缺失或内置角色未知返回空 Optional（调用方「缺 Agent 不硬跑」）。
  */
 class AgentRegistryTest {
 
@@ -87,6 +89,25 @@ class AgentRegistryTest {
             assertThat(resolved).as("default agent for role %s", role).isPresent();
             assertThat(resolved.get()).as("default agent for role %s", role)
                     .isInstanceOf(mappedBuiltinType(role));
+        }
+    }
+
+    @Test
+    void customEntityWithBuiltinRoleWrapsPromptBoundAgent() {
+        for (String role : new String[]{"PLANNER", "DEVELOPER", "TESTER", "REVIEWER"}) {
+            AgentEntity entity = new AgentEntity();
+            entity.setId(UUID.randomUUID());
+            entity.setRole(role);
+            entity.setStatus("ACTIVE");
+            entity.setIsDefault(false);
+            entity.setPrompt("custom " + role + " spec");
+            when(agentMapper.selectById(entity.getId())).thenReturn(entity);
+
+            Optional<Agent> resolved = registry.resolve(entity.getId(), role);
+
+            assertThat(resolved).as("custom agent for role %s", role).isPresent();
+            assertThat(resolved.get()).as("custom agent for role %s", role)
+                    .isInstanceOf(PromptBoundAgent.class);
         }
     }
 
