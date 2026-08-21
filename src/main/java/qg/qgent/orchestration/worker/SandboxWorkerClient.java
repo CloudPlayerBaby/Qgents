@@ -16,7 +16,10 @@ import java.net.ConnectException;
 import java.net.NoRouteToHostException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
+import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -56,15 +59,28 @@ public class SandboxWorkerClient {
     private final RestClient client;
     private final ObjectMapper objectMapper;
     private final PerformanceMetrics metrics;
+    /**
+     * Testset 接口是同步长连接；其读取超时必须覆盖本次已冻结的测试预算，不能复用普通
+     * Worker API 的短请求超时。
+     */
+    private final Function<Duration, RestClient> testExecutionClientFactory;
+
+    private static final Duration TEST_EXECUTION_TRANSPORT_MARGIN = Duration.ofMinutes(10);
 
     public SandboxWorkerClient(RestClient client, ObjectMapper objectMapper) {
         this(client, objectMapper, null);
     }
 
     public SandboxWorkerClient(RestClient client, ObjectMapper objectMapper, PerformanceMetrics metrics) {
+        this(client, objectMapper, metrics, null);
+    }
+
+    SandboxWorkerClient(RestClient client, ObjectMapper objectMapper, PerformanceMetrics metrics,
+                        Function<Duration, RestClient> testExecutionClientFactory) {
         this.client = client;
         this.objectMapper = objectMapper;
         this.metrics = metrics;
+        this.testExecutionClientFactory = testExecutionClientFactory;
     }
 
     /**
@@ -280,8 +296,27 @@ public class SandboxWorkerClient {
      * 同步执行已由主后端校验的 Testset 定义。
      */
     public WorkerTestExecutionResponse executeTests(WorkerTestExecutionRequest request) {
-        return execute(() -> client.post().uri(TEST_EXECUTIONS).body(request).retrieve()
+        RestClient testClient = testExecutionClientFactory == null
+                ? client
+                : testExecutionClientFactory.apply(testExecutionTimeout(request));
+        return execute(() -> testClient.post().uri(TEST_EXECUTIONS).body(request).retrieve()
                 .body(WorkerTestExecutionResponse.class));
+    }
+
+    /**
+     * Worker 会串行运行本次 Testset。主后端因此要等待所有单项预算，而不是在默认 30 秒
+     * 响应超时后把仍在正常执行的 Maven/Gradle 误判为 Worker 不可用。
+     */
+    static Duration testExecutionTimeout(WorkerTestExecutionRequest request) {
+        List<WorkerTestExecutionItemRequest> testsets = request == null || request.getTestsets() == null
+                ? List.of() : request.getTestsets();
+        long seconds = testsets.stream()
+                .map(WorkerTestExecutionItemRequest::getTimeoutSeconds)
+                .filter(java.util.Objects::nonNull)
+                .mapToLong(Integer::longValue)
+                .filter(value -> value > 0)
+                .sum();
+        return Duration.ofSeconds(Math.max(1L, seconds)).plus(TEST_EXECUTION_TRANSPORT_MARGIN);
     }
 
     /**

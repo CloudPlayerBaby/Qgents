@@ -9,6 +9,8 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import qg.qgent.config.PerformanceMetrics;
 
+import java.time.Duration;
+
 /**
  * Worker 客户端装配：启用 {@link SandboxWorkerProperties} 并基于 {@link RestClient#builder()}
  * 静态工厂构建 {@link SandboxWorkerClient}（与 {@code GitHubConfiguration} 的既有约定一致，
@@ -26,16 +28,24 @@ public class SandboxWorkerConfiguration {
     @Bean
     SandboxWorkerClient sandboxWorkerClient(SandboxWorkerProperties properties, ObjectMapper objectMapper,
                                             ObjectProvider<PerformanceMetrics> metricsProvider) {
+        RestClient client = workerClient(properties, properties.getResponseTimeout());
+        return new SandboxWorkerClient(client, objectMapper, metricsProvider.getIfAvailable(),
+                timeout -> workerClient(properties, timeout));
+    }
+
+    /**
+     * 普通 Worker API 使用短读取超时；同步 Testset API 由调用方传入本次运行的总预算。
+     */
+    private RestClient workerClient(SandboxWorkerProperties properties, Duration responseTimeout) {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-        requestFactory.setReadTimeout((int) properties.getResponseTimeout().toMillis());
+        requestFactory.setReadTimeout(Math.toIntExact(responseTimeout.toMillis()));
         RestClient.Builder builder = RestClient.builder().baseUrl(properties.getBaseUrl())
                 .requestFactory(requestFactory);
         if (properties.getBackendServiceToken() != null
                 && !properties.getBackendServiceToken().isBlank()) {
             builder.defaultHeaders(headers -> headers.setBearerAuth(properties.getBackendServiceToken()));
         }
-        RestClient client = builder.build();
-        return new SandboxWorkerClient(client, objectMapper, metricsProvider.getIfAvailable());
+        return builder.build();
     }
 }

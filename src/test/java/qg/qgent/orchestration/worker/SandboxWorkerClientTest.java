@@ -16,6 +16,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.net.ConnectException;
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -276,6 +278,34 @@ class SandboxWorkerClientTest {
         assertEquals(HttpStatus.CONFLICT, exception.status());
         assertEquals("执行编号已经存在", exception.getMessage());
         server.verify();
+    }
+
+    @Test
+    void testExecutionUsesTheSumOfSerializedTestsetBudgets() {
+        AtomicReference<Duration> timeout = new AtomicReference<>();
+        RestClient.Builder builder = RestClient.builder().baseUrl(BASE);
+        MockRestServiceServer testServer = MockRestServiceServer.bindTo(builder).build();
+        client = new SandboxWorkerClient(builder.build(), new ObjectMapper(), null, value -> {
+            timeout.set(value);
+            return builder.build();
+        });
+        testServer.expect(once(), requestTo(BASE + "/internal/v1/test-executions"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {"executionId":"%s","status":"PASSED","resolvedHeadCommit":"abc","results":[]}
+                        """.formatted(EXECUTION), MediaType.APPLICATION_JSON));
+        WorkerTestExecutionItemRequest first = new WorkerTestExecutionItemRequest();
+        first.setTimeoutSeconds(60);
+        WorkerTestExecutionItemRequest second = new WorkerTestExecutionItemRequest();
+        second.setTimeoutSeconds(120);
+        WorkerTestExecutionRequest request = new WorkerTestExecutionRequest();
+        request.setExecutionId(EXECUTION); request.setProjectId(UUID.randomUUID()); request.setRepositoryId(REPO);
+        request.setWorkspaceId(WORKSPACE); request.setTestsets(List.of(first, second));
+
+        client.executeTests(request);
+
+        assertEquals(Duration.ofMinutes(13), timeout.get());
+        testServer.verify();
     }
 
     @Test
