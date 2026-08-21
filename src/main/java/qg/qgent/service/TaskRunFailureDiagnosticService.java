@@ -104,7 +104,9 @@ public class TaskRunFailureDiagnosticService {
 
     private boolean isFailed(AgentRunOutcome outcome) {
         return outcome != null && outcome.getOutcome() != null && switch (outcome.getOutcome()) {
-            case FAILED, FAILED_QUALITY, FAILED_INFRASTRUCTURE -> true;
+            // TEST_FAILED 也是失败：验证/测试未通过必须落诊断（derivedFailureCode 已为其
+            // 设计 PROCESS_EXIT_NONZERO），否则这类失败在前端 diagnostics 中永远查不到。
+            case FAILED, FAILED_QUALITY, FAILED_INFRASTRUCTURE, TEST_FAILED -> true;
             default -> false;
         };
     }

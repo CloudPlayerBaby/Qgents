@@ -15,6 +15,22 @@ services:
       timeout: 5s
       retries: 20
 
+  clash:
+    image: docker.io/metacubex/mihomo:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7890:7890"
+    volumes:
+      - ./deploy/mihomo:/root/.config/mihomo
+    expose: ["7890"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qi ':1ED2' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
   sandbox-dev-tools:
     build:
       context: ./sandbox-images/dev-tools
@@ -30,6 +46,9 @@ services:
       SANDBOX_DB_URL: jdbc:mysql://${DB_HOST:-172.17.0.1}:${DB_PORT:-3306}/qgents_sandbox_worker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
       SANDBOX_DB_USERNAME: ${SANDBOX_DB_USERNAME:-root}
       SANDBOX_DB_PASSWORD: ${SANDBOX_DB_PASSWORD:?Set SANDBOX_DB_PASSWORD}
+      HTTP_PROXY: http://${PROXY_HOST:-clash}:${PROXY_PORT:-7890}
+      HTTPS_PROXY: http://${PROXY_HOST:-clash}:${PROXY_PORT:-7890}
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal,redis,api,sandbox-worker,clash
       SANDBOX_RUNTIME: docker
       SANDBOX_DOCKER_HOST: unix:///var/run/docker.sock
       SANDBOX_DEV_TOOLS_IMAGE: qgents/sandbox-dev-tools:production
@@ -45,6 +64,8 @@ services:
       - ${QGENTS_DATA_ROOT:-/srv/qgents}/git-store:/var/lib/qgents/git-store
       - ${QGENTS_DATA_ROOT:-/srv/qgents}/workspaces:/srv/qgents/workspaces
       - ${QGENTS_DATA_ROOT:-/srv/qgents}/workspace-metadata:/srv/qgents/workspace-metadata
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     group_add:
       - "${DOCKER_GID:-999}"
     expose: ["8091"]
@@ -55,6 +76,7 @@ services:
       timeout: 5s
       retries: 20
     depends_on:
+      clash: {condition: service_healthy}
       sandbox-dev-tools: {condition: service_started}
 
   api:
@@ -66,6 +88,10 @@ services:
       DB_URL: jdbc:mysql://${DB_HOST:-172.17.0.1}:${DB_PORT:-3306}/qgents?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
       DB_USERNAME: ${DB_USERNAME:-root}
       DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+      SMTP_HOST: ${SMTP_HOST:-smtp.qq.com}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USERNAME: ${SMTP_USERNAME:?Set SMTP_USERNAME}
+      SMTP_AUTH_CODE: ${SMTP_AUTH_CODE:?Set SMTP_AUTH_CODE}
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?Set DASHSCOPE_API_KEY}
@@ -74,21 +100,45 @@ services:
       SANDBOX_WORKER_ENABLED: "true"
       SANDBOX_BACKEND_SERVICE_TOKEN: ${SANDBOX_BACKEND_SERVICE_TOKEN:?Set SANDBOX_BACKEND_SERVICE_TOKEN}
       FRONTEND_URL: ${FRONTEND_URL:-https://qgents.dpdns.org}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://qgents.dpdns.org}
+      FRONTEND_URL_WEB: ${FRONTEND_URL_WEB:-https://qgents.dpdns.org}
+      FRONTEND_URL_MOBILE: ${FRONTEND_URL_MOBILE:-https://mobile.qgents.dpdns.org}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://qgents.dpdns.org,https://mobile.qgents.dpdns.org}
       GITHUB_APP_ID: ${GITHUB_APP_ID:?Set GITHUB_APP_ID}
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:?Set GITHUB_APP_SLUG}
       GITHUB_APP_PRIVATE_KEY_PATH: /run/secrets/github_app.pem
       GITHUB_APP_CALLBACK_URL: ${GITHUB_APP_CALLBACK_URL:?Set GITHUB_APP_CALLBACK_URL}
       GITHUB_APP_STATE_SECRET: ${GITHUB_APP_STATE_SECRET:?Set GITHUB_APP_STATE_SECRET}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?Set GITHUB_WEBHOOK_SECRET}
+      GITHUB_OAUTH_ENABLED: ${GITHUB_OAUTH_ENABLED:-false}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GITHUB_OAUTH_CALLBACK_URL: ${GITHUB_OAUTH_CALLBACK_URL:-}
+      GITHUB_OAUTH_STATE_SECRET: ${GITHUB_OAUTH_STATE_SECRET:-}
+      GITHUB_OAUTH_TOKEN_ENCRYPTION_KEY: ${GITHUB_OAUTH_TOKEN_ENCRYPTION_KEY:-}
+      GITHUB_OAUTH_SCOPES: ${GITHUB_OAUTH_SCOPES:-repo}
+      ALIYUN_OSS_ENABLED: ${ALIYUN_OSS_ENABLED:-false}
+      ALIYUN_OSS_ENDPOINT: ${ALIYUN_OSS_ENDPOINT:-}
+      ALIYUN_OSS_BUCKET_NAME: ${ALIYUN_OSS_BUCKET_NAME:-}
+      ALIYUN_OSS_ACCESS_KEY_ID: ${ALIYUN_OSS_ACCESS_KEY_ID:-}
+      ALIYUN_OSS_ACCESS_KEY_SECRET: ${ALIYUN_OSS_ACCESS_KEY_SECRET:-}
+      ALIYUN_OSS_PRESIGN_EXPIRY_SECONDS: ${ALIYUN_OSS_PRESIGN_EXPIRY_SECONDS:-900}
+      ALIYUN_OSS_PUBLIC_BASE_URL: ${ALIYUN_OSS_PUBLIC_BASE_URL:-}
+      GITHUB_PROXY_HOST: ${PROXY_HOST:-clash}
+      GITHUB_PROXY_PORT: ${PROXY_PORT:-7890}
+      HTTP_PROXY: http://${PROXY_HOST:-clash}:${PROXY_PORT:-7890}
+      HTTPS_PROXY: http://${PROXY_HOST:-clash}:${PROXY_PORT:-7890}
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal,redis,api,sandbox-worker,clash
       APP_AGENT_PROTOCOL: native
       MANAGEMENT_SERVER_ADDRESS: 0.0.0.0
       MANAGEMENT_SERVER_PORT: "8081"
     volumes:
+      - ./src/main/resources/rsa/private_key.pem:/app/src/main/resources/rsa/private_key.pem:ro
       - ./github_app.pem:/run/secrets/github_app.pem:ro
       - api_data:/app/data
       - api_logs:/app/logs
     expose: ["8080", "8081"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/actuator/health | grep -q UP"]
@@ -96,6 +146,7 @@ services:
       timeout: 5s
       retries: 20
     depends_on:
+      clash: {condition: service_healthy}
       redis: {condition: service_healthy}
       sandbox-worker: {condition: service_healthy}
 

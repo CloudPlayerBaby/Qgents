@@ -777,7 +777,12 @@ public class TaskOrchestrator {
         switch (decision.getAction()) {
             case ADVANCE -> {
                 ctx.retryOf = null;
-                route = "next";
+                // TESTING 相位失败（验证/测试未通过）→ 交下一个 REVIEW 步骤裁决，而不是按序列
+                // next 继续执行后续步骤——否则 VERIFY 失败后仍会继续执行 MUTATE 写步骤
+                // （Test 不判任务失败，Review 是最终裁决，见 OrchestrationStateMachine）。
+                // TESTING SUCCEEDED 与其他相位仍正常按序推进。
+                route = phase == OrchestrationPhase.TESTING
+                        && outcome.getOutcome() != RunOutcome.SUCCEEDED ? "review" : "next";
             }
             case REQUEUE_CODING -> {
                 resetStepsForQualityRework(task, ctx.steps, ctx.repairCodingStepId());

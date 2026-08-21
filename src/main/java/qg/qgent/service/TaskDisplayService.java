@@ -97,16 +97,18 @@ public class TaskDisplayService {
     }
 
     /**
-     * 任务中心列表：游标分页并支持 groupId/status/createdBy/repositoryId/keyword 筛选。
+     * 任务中心列表：游标分页并支持 groupId/status/excludeStatus/createdBy/repositoryId/keyword 筛选。
      * <p>
      * repositoryId 筛选在 SQL 层完成（workspace_id IN 子查询），避免只过滤当前页导致的漏数据；
      * keyword 同样在 SQL 层完成（参数化 LIKE，跨任务/需求群/创建人/绑定仓库匹配），
      * cursor 与分页基于关键词筛选后的结果集计算。
+     * status（in）与 excludeStatus（not in）均支持逗号分隔多值，可同时使用：
+     * 任务中心「隐藏已完成任务」传 excludeStatus=SUCCEEDED，由服务端过滤保证游标分页正确。
      * 一页任务的后置数据（步骤/运行/输入请求/仓库/用户/群）批量加载后内存组装。
      */
     public PagedApiResponse<TaskListItemResponse> list(UUID projectId, UUID actor, String groupId, String status,
-                                                       String createdBy, String repositoryId, String keyword,
-                                                       String cursor, Integer limit, String requestId) {
+                                                       String excludeStatus, String createdBy, String repositoryId,
+                                                       String keyword, String cursor, Integer limit, String requestId) {
         access.requireProjectMember(projectId, actor);
         int size = clampLimit(limit);
         UUID cursorUuid = parseCursor(cursor);
@@ -128,6 +130,7 @@ public class TaskDisplayService {
                 .in(TaskEntity::getRequirementGroupId, visibleGroups)
                 .eq(groupUuid != null, TaskEntity::getRequirementGroupId, groupUuid)
                 .in(!splitStatuses(status).isEmpty(), TaskEntity::getStatus, splitStatuses(status))
+                .notIn(!splitStatuses(excludeStatus).isEmpty(), TaskEntity::getStatus, splitStatuses(excludeStatus))
                 .eq(creatorUuid != null, TaskEntity::getCreatedBy, creatorUuid)
                 .apply(repositoryUuid != null,
                         "workspace_id in (select workspace_id from workspace_repositories where project_repository_id = {0})",
