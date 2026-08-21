@@ -324,6 +324,28 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void reviewSuccessWithoutMutableStepFinishesWithoutFinalCodingRun() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity verification = fixture.step(task, "DEVELOPER", 2);
+        verification.setExecutionMode("VERIFY");
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 3);
+        fixture.stubPlan(task, planner, List.of(planner, verification, reviewer));
+
+        fixture.orchestrator(fixture.sequenceAgent(
+                fixture.planSuccess(),
+                fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED),
+                fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        verify(fixture.diffs, never()).createPendingBatch(any(), any(), any());
+        verify(fixture.events).publish(eq(task.getProjectId()), eq(task.getRequirementGroupId()),
+                eq("diff-review.skipped"), eq(task.getId().toString()), any());
+    }
+
+    @Test
     void qualityLoopExhaustionPersistsExplicitFailureCodeInsteadOfFinalization() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();

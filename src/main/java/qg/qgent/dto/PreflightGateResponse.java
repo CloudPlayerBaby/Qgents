@@ -43,6 +43,7 @@ public class PreflightGateResponse {
         /** PENDING / APPROVED / REJECTED。 */
         private String status;
         private String reviewerUserId;
+        private String reviewerName;
         private String reason;
         private String reviewedAt;
     }

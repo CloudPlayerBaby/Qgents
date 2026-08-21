@@ -1671,6 +1671,44 @@ class MergeRequestServiceTest {
     }
 
     @Test
+    void listSkipsPlaceholderWhenWorkspaceHeadStillEqualsBaseCommit() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setDefaultBranch("main");
+        when(projectRepositoryMapper.selectList(any())).thenReturn(java.util.List.of(repository));
+        when(projectRepositoryMapper.selectBatchIds(anyCollection())).thenReturn(java.util.List.of(repository));
+
+        WorkspaceRepositoryEntity worktree = new WorkspaceRepositoryEntity();
+        worktree.setWorkspaceId(workspaceId);
+        worktree.setProjectRepositoryId(repositoryId);
+        worktree.setBaseRef("main");
+        worktree.setBaseCommit("same-sha");
+        worktree.setSourceBranch("feat/task-no-change");
+        worktree.setHeadCommit("same-sha");
+        when(workspaceRepositoryMapper.selectByProject(projectId, null)).thenReturn(java.util.List.of(worktree));
+
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setWorkspaceId(workspaceId);
+        task.setStatus("WAITING_PREFLIGHT");
+        task.setDeliveryMode("MR_FIRST");
+        when(taskMapper.selectList(any())).thenReturn(java.util.List.of(task));
+        when(mergeRequestMapper.selectList(any())).thenReturn(java.util.List.of());
+
+        var response = service.list(projectId, userId, null, null, null, null, 20, "req-no-change");
+
+        assertTrue(response.data().isEmpty());
+    }
+
+    @Test
     void listDoesNotInjectPendingPlaceholderForTaskAwaitingDeliveryConfirmation() {
         UUID projectId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();

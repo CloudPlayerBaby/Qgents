@@ -293,6 +293,34 @@ class MrPreflightServiceTest {
         verify(preflightRequests, never()).insert(any(MrPreflightRequestEntity.class));
     }
 
+    @Test
+    void rejectsWhenGithubSourceHeadDiffersFromAcceptedWorkspaceHead() {
+        UUID projectId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String workspaceHead = "0".repeat(40);
+        String remoteHead = "1".repeat(40);
+
+        TaskEntity task = task(projectId, taskId, workspaceId, userId);
+        WorkspaceRepositoryEntity worktree = worktree(workspaceId, repositoryId, "feat/task", workspaceHead, "main");
+        ProjectRepositoryEntity repository = repository(projectId, repositoryId, "main");
+        when(tasks.selectById(taskId)).thenReturn(task);
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of(worktree));
+        when(repositories.selectById(repositoryId)).thenReturn(repository);
+        when(gitStores.normalizeTargetBranch("main")).thenReturn("main");
+        when(gitStores.resolveSourceBranchHead(projectId, repository, "feat/task")).thenReturn(remoteHead);
+        when(mergeRequests.selectOne(any())).thenReturn(null);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> service.requestPreflight(projectId, userId, taskId, repositoryId, null));
+
+        assertEquals("MR_SOURCE_HEAD_CHANGED", error.code());
+        verify(gitStores, never()).refreshTargetBranch(any(), any(), any());
+        verify(preflightRequests, never()).insert(any(MrPreflightRequestEntity.class));
+    }
+
     private void runTransactionCallback() {
         doAnswer(invocation -> {
             java.util.function.Consumer<?> callback = invocation.getArgument(0);

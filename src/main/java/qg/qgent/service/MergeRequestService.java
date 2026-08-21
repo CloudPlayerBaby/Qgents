@@ -88,6 +88,8 @@ public class MergeRequestService {
     private final MergeRequestDeliveryOperationMapper deliveryOperationMapper;
     private final TransactionTemplate transactions;
     private final DiffMapper diffMapper;
+    /** 人工 CQ 审查记录的显示名快照；缺失时仍保留 reviewerUserId。 */
+    private UserMapper userMapper;
     /** GitHub 合并属于慢速外部 IO，生产环境复用编排线程池异步执行。 */
     private Executor mergeExecutor;
     /**
@@ -133,6 +135,11 @@ public class MergeRequestService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setRepositoryContextService(TaskStatusRepositoryContextService repositoryContextService) {
         this.repositoryContextService = repositoryContextService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setUserMapper(UserMapper userMapper) {
+        this.userMapper = userMapper;
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -1118,6 +1125,7 @@ public class MergeRequestService {
         review.setMergeRequestId(mr.getId());
         review.setReviewKind("HUMAN");
         review.setReviewerUserId(userId);
+        review.setReviewerName(reviewerName(userId));
         review.setDecision("APPROVED");
         review.setSummary(reason);
         review.setReviewedAt(now);
@@ -1142,7 +1150,19 @@ public class MergeRequestService {
         if (reason == null || reason.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "CQ_REJECTION_REASON_REQUIRED", "拒绝 CQ 必须给出修改意见");
         }
-        writeCheck(mr, "CQ_PLUS_ONE", "FAILED", "cq_rejection", reason, LocalDateTime.now(ZoneOffset.UTC));
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        MergeRequestReviewEntity review = new MergeRequestReviewEntity();
+        review.setId(UuidV7.next());
+        review.setMergeRequestId(mr.getId());
+        review.setReviewKind("HUMAN");
+        review.setReviewerUserId(userId);
+        review.setReviewerName(reviewerName(userId));
+        review.setDecision("REJECTED");
+        review.setSummary(reason);
+        review.setReviewedAt(now);
+        review.setCreatedAt(now);
+        reviewMapper.insert(review);
+        writeCheck(mr, "CQ_PLUS_ONE", "FAILED", "cq_rejection", reason, now);
         refreshQualityGate(mr);
         publishUpdated(mr);
         return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr),
@@ -1841,6 +1861,12 @@ public class MergeRequestService {
                     || worktree.getHeadCommit() == null || worktree.getHeadCommit().isBlank()) {
                 continue;
             }
+            // 工作树 HEAD 仍停留在创建时的基线提交时，源分支没有可创建 MR 的新增变更。
+            // 这种记录可能因任务已进入 WAITING_PREFLIGHT/SUCCEEDED 而存在，但不能注入
+            // PENDING_CREATE 占位，否则前端会展示一个永远无法创建的 MR 候选。
+            if (sameCommit(worktree.getHeadCommit(), worktree.getBaseCommit())) {
+                continue;
+            }
             String key = branchKey(worktree.getProjectRepositoryId(), worktree.getSourceBranch());
             candidatesByBranch.merge(key, new PlaceholderCandidate(task, worktree),
                     this::newerPlaceholderCandidate);
@@ -1975,6 +2001,14 @@ public class MergeRequestService {
 
     private String branchKey(UUID repositoryId, String sourceBranch) {
         return repositoryId + "|" + sourceBranch;
+    }
+
+    private String reviewerName(UUID userId) {
+        if (userMapper == null || userId == null) {
+            return null;
+        }
+        UserEntity user = userMapper.selectById(userId);
+        return user == null ? null : user.getDisplayName();
     }
 
     private String placeholderMrId(UUID taskId, UUID repositoryId) {

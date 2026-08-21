@@ -17,6 +17,7 @@ import qg.qgent.mapper.DryRunMapper;
 import qg.qgent.mapper.PreflightCqReviewMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
+import qg.qgent.mapper.UserMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 
@@ -43,7 +44,7 @@ class PreflightGateServiceTest {
     private final WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
     private final ProjectRepositoryMapper repositories = mock(ProjectRepositoryMapper.class);
     private final PreflightGateService service = new PreflightGateService(dryRuns, cqReviews, tasks, worktrees,
-            repositories, mock(ProjectAccessService.class), mock(GitStoreSyncService.class), mock(EventService.class),
+        repositories, mock(ProjectAccessService.class), mock(UserMapper.class), mock(GitStoreSyncService.class), mock(EventService.class),
             mock(ApplicationEventPublisher.class), immediateTransactions());
 
     @Test
@@ -127,7 +128,7 @@ class PreflightGateServiceTest {
         GitStoreSyncService gitStores = mock(GitStoreSyncService.class);
         when(gitStores.normalizeTargetBranch("main")).thenReturn("main");
         PreflightGateService readService = new PreflightGateService(dryRuns, cqReviews, tasks, worktrees,
-                repositories, mock(ProjectAccessService.class), gitStores, mock(EventService.class),
+                repositories, mock(ProjectAccessService.class), mock(UserMapper.class), gitStores, mock(EventService.class),
                 mock(ApplicationEventPublisher.class), immediateTransactions());
 
         PreflightGateResponse response = readService.get(context.task().getProjectId(), context.task().getId(),
@@ -218,7 +219,7 @@ class PreflightGateServiceTest {
         EventService events = mock(EventService.class);
         ApplicationEventPublisher domainEvents = mock(ApplicationEventPublisher.class);
         PreflightGateService local = new PreflightGateService(localDryRuns, localReviews, localTasks, localWorktrees,
-                localRepositories, mock(ProjectAccessService.class), localGitStores, events, domainEvents,
+                localRepositories, mock(ProjectAccessService.class), mock(UserMapper.class), localGitStores, events, domainEvents,
                 immediateTransactions());
         UUID projectId = UUID.randomUUID(), taskId = UUID.randomUUID(), dryRunId = UUID.randomUUID();
         UUID repositoryId = UUID.randomUUID(), reviewerId = UUID.randomUUID();

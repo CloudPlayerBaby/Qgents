@@ -21,6 +21,7 @@ import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -28,6 +29,8 @@ import java.util.UUID;
  */
 @Service
 public class TestsetService {
+    private static final Set<String> SUPPORTED_EXECUTION_COMMANDS = Set.of(
+            "mvn test", "gradle test", "npm test", "./mvnw test", "./gradlew test");
     private final TestsetMapper testsets;
     private final ProjectRepositoryMapper repositories;
     private final RepositoryBranchConfigTestsetMapper gateReferences;
@@ -168,6 +171,10 @@ public class TestsetService {
         if (normalizedCommand.isEmpty() || normalizedCommand.length() > 4096) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET_COMMAND", "Testset 命令不能为空且最多 4096 字符");
         }
+        if (!isSupportedExecutionCommand(normalizedCommand)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET_COMMAND",
+                    "Testset 命令不受支持，只能使用 mvn test、gradle test、npm test、./mvnw test 或 ./gradlew test");
+        }
         if (timeout == null || timeout < 1 || timeout > 3600) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET_TIMEOUT", "Testset 超时必须为 1 到 3600 秒");
         }
@@ -192,8 +199,21 @@ public class TestsetService {
         return switch (normalized) {
             case "gradlew test" -> "./gradlew test";
             case "mvnw test" -> "./mvnw test";
+            case "sh ./gradlew test" -> "./gradlew test";
+            case "sh ./mvnw test" -> "./mvnw test";
             default -> normalized;
         };
+    }
+
+    /** 判断命令是否能被 Worker 的固定测试命令白名单执行。 */
+    static boolean isSupportedExecutionCommand(String command) {
+        if (command == null) return false;
+        String normalized = command.trim();
+        return SUPPORTED_EXECUTION_COMMANDS.contains(normalized)
+                || switch (normalized) {
+                    case "mvnw test", "sh ./mvnw test", "gradlew test", "sh ./gradlew test" -> true;
+                    default -> false;
+                };
     }
 
     private TestsetResponse response(TestsetEntity value) {

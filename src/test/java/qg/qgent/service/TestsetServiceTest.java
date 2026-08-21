@@ -106,6 +106,29 @@ class TestsetServiceTest {
                 assertThrows(ApiException.class, () -> service.create(projectId, actor, duplicate)).code());
     }
 
+    @Test
+    void unsupportedWorkerCommandIsRejectedBeforePersistence() {
+        TestsetCreateRequest invalid = request();
+        invalid.setCommand("mvn clean test");
+
+        ApiException error = assertThrows(ApiException.class, () -> service.create(projectId, actor, invalid));
+
+        assertEquals("INVALID_TESTSET_COMMAND", error.code());
+        verify(testsets, never()).insert(any(TestsetEntity.class));
+    }
+
+    @Test
+    void wrapperCommandVariantsAreNormalizedToWorkerContract() {
+        TestsetCreateRequest invalid = request();
+        invalid.setCommand("sh ./gradlew test");
+
+        service.create(projectId, actor, invalid);
+
+        ArgumentCaptor<TestsetEntity> captor = ArgumentCaptor.forClass(TestsetEntity.class);
+        verify(testsets).insert(captor.capture());
+        assertEquals("./gradlew test", captor.getValue().getDefinition().get("command"));
+    }
+
     private TestsetCreateRequest request() {
         TestsetPassRule rule = new TestsetPassRule();
         rule.setType("EXIT_CODE");

@@ -626,6 +626,15 @@ public class TaskOrchestrator {
     private Map<String, Object> runStepNode(TaskStepEntity stepTemplate, TaskOrchestrationState state) {
         TaskExecutionContext ctx = executions.get(state.getTaskId());
         TaskEntity task = ctx.task;
+        // 任务已经由恢复器、取消操作或其他编排器收敛后，旧图不得再创建后续 Run。
+        // 尤其是 Review 可能在旧线程中迟到返回；终态检查必须发生在 markStepRunning 之前。
+        TaskEntity latestTask = taskMapper.selectById(task.getId());
+        if (latestTask == null || !STARTABLE_TASK_STATUSES.contains(latestTask.getStatus())) {
+            ctx.aborted = true;
+            log.info("skip step for non-startable task taskId={} stepId={} status={}", task.getId(),
+                    stepTemplate.getId(), latestTask == null ? "MISSING" : latestTask.getStatus());
+            return routeState(state, GraphDefinition.END);
+        }
         TaskStepEntity step = stepMapper.selectById(stepTemplate.getId());
         if (step == null) {
             log.warn("STEP_MISSING taskId={} stepId={}", task.getId(), stepTemplate.getId());
@@ -1390,6 +1399,11 @@ public class TaskOrchestrator {
     private FinishingStatus completeWithMrFirst(TaskEntity task, TaskExecutionContext ctx) {
         log.info("mr-first task enters delivery taskId={} mode={} reason={}", task.getId(), task.getDeliveryMode(),
                 task.getDeliveryReason());
+        if (!hasMutableStep(ctx.steps)) {
+            log.info("mr-first task has no mutable step, finishes without code delivery taskId={}", task.getId());
+            publishDiffReviewSkipped(task, "NO_MUTATION_STEP");
+            return new FinishingStatus("SUCCEEDED", null, NO_CODE_CHANGES_MESSAGE);
+        }
         try {
             UUID finalCodingRunId = ctx.lastCodingRunId;
             if (finalCodingRunId == null) {
@@ -1419,11 +1433,16 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 成功终态：生成待用户确认的 Diff 批次。无未提交改动（FINAL_DIFF_EMPTY）视为业务上的成功
-     * 降级为 SUCCEEDED 并发布 diff-review.skipped 事件作为依据；其余失败（内部一致性、快照无效、
-     * Worker 不可用等）落 FAILED，不伪装成成功（后端3 决策：按异常类型区分，不统一降级）。
+     * 成功终态：有可写步骤时生成待用户确认的 Diff 批次。只有 VERIFY/TEST/REVIEW 的只读计划
+     * 没有代码交付来源，直接以无代码变更成功收敛；无未提交改动（FINAL_DIFF_EMPTY）同样视为业务上的
+     * 成功并发布 diff-review.skipped 事件。其余失败（内部一致性、快照无效、Worker 不可用等）落 FAILED。
      */
     private FinishingStatus completeWithDiffBatch(TaskEntity task, TaskExecutionContext ctx) {
+        if (!hasMutableStep(ctx.steps)) {
+            log.info("diff-first task has no mutable step, finishes without diff taskId={}", task.getId());
+            publishDiffReviewSkipped(task, "NO_MUTATION_STEP");
+            return new FinishingStatus("SUCCEEDED", null, NO_CODE_CHANGES_MESSAGE);
+        }
         try {
             UUID finalCodingRunId = ctx.lastCodingRunId;
             if (finalCodingRunId == null) {
