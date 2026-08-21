@@ -1082,11 +1082,23 @@ public class TaskOrchestrator {
     }
 
     private void markStepSettled(TaskEntity task, TaskStepEntity step, RunOutcome outcome) {
-        step.setStatus(outcome == RunOutcome.SUCCEEDED ? "SUCCEEDED" : "FAILED");
+        step.setStatus(stepStatus(outcome));
         step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         stepMapper.updateById(step);
         publishStepUpdated(task, step);
         sendAgentCard(task, "step-" + step.getId(), step.getStatus(), step.getRole(), stepSettledMessage(step));
+    }
+
+    /**
+     * Run 终态 → TaskStep 状态。取消（RunOutcome.CANCELLED）必须落 CANCELLED，
+     * 不能降级为 FAILED——否则前端「已取消」状态永远收不到，且会被计入失败统计。
+     */
+    private String stepStatus(RunOutcome outcome) {
+        return switch (outcome == null ? RunOutcome.FAILED : outcome) {
+            case SUCCEEDED -> "SUCCEEDED";
+            case CANCELLED -> "CANCELLED";
+            default -> "FAILED";
+        };
     }
 
     private void publishStepUpdated(TaskEntity task, TaskStepEntity step) {
@@ -1107,6 +1119,7 @@ public class TaskOrchestrator {
         if (latest != null && ("CANCELLING".equals(latest.getStatus()) || "CANCELLED".equals(latest.getStatus()))) {
             // 取消后当前正在执行的 run 不再产生真实结果，随任务一并落 CANCELLED 终态，避免遗留 RUNNING。
             settleRunForCancellation(ctx);
+            cancelRemainingSteps(ctx);
             if (!"CANCELLED".equals(latest.getStatus())) {
                 // CANCELLING → CANCELLED 收敛：取消已受理且编排到达终态点，落终态。
                 updateTaskStatus(latest, "CANCELLED");
@@ -1195,6 +1208,36 @@ public class TaskOrchestrator {
         } catch (RuntimeException e) {
             log.warn("settle cancelled run skipped taskId={} runId={}: {}", ctx.task.getId(), ctx.lastRunId,
                     e.getMessage());
+        }
+    }
+
+    /**
+     * 任务取消收敛：把尚未执行的 PENDING 步骤一并置 CANCELLED，避免「任务已取消」但
+     * 后续步骤仍停留在 PENDING（待执行）的矛盾状态。只覆盖 PENDING，不触碰已终态步骤。
+     */
+    private void cancelRemainingSteps(TaskExecutionContext ctx) {
+        if (ctx == null || ctx.steps == null) {
+            return;
+        }
+        for (TaskStepEntity step : ctx.steps) {
+            if (!"PENDING".equals(step.getStatus())) {
+                continue;
+            }
+            try {
+                TaskStepEntity latest = stepMapper.selectById(step.getId());
+                if (latest == null || !"PENDING".equals(latest.getStatus())) {
+                    continue;
+                }
+                latest.setStatus("CANCELLED");
+                latest.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+                stepMapper.updateById(latest);
+                publishStepUpdated(ctx.task, latest);
+                sendAgentCard(ctx.task, "step-" + latest.getId(), "CANCELLED", latest.getRole(),
+                        roleLabel(latest.getRole()) + "步骤已取消");
+            } catch (RuntimeException e) {
+                log.warn("cancel remaining step skipped taskId={} stepId={}: {}", ctx.task.getId(),
+                        step.getId(), e.getMessage());
+            }
         }
     }
 
@@ -1508,6 +1551,7 @@ public class TaskOrchestrator {
     private String stepSettledMessage(TaskStepEntity step) {
         return switch (step.getStatus()) {
             case "SUCCEEDED" -> roleLabel(step.getRole()) + "步骤已完成";
+            case "CANCELLED" -> roleLabel(step.getRole()) + "步骤已取消";
             default -> roleLabel(step.getRole()) + "步骤失败，已按重试或修复策略处理";
         };
     }

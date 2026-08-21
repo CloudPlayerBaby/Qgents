@@ -30,6 +30,7 @@ import java.util.stream.Collectors;
  */
 @Service
 public class TaskService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TaskService.class);
     private final TaskMapper tasks;
     private final WorkspaceMapper workspaces;
     private final WorkspaceRepositoryMapper repositories;
@@ -297,6 +298,9 @@ public class TaskService {
                 task.setStatus("CANCELLED");
                 task.setUpdatedAt(now);
                 tasks.updateById(task);
+                // 计划可能已物化：把尚未执行的步骤一并落 CANCELLED，避免前端显示
+                // 「任务已取消」但步骤仍停留在 PENDING（待执行）的矛盾状态。
+                cancelPendingSteps(task.getId());
             }
             case "RUNNING" -> {
                 task.setStatus("CANCELLING");
@@ -644,6 +648,23 @@ public class TaskService {
 
     private ApiException validation(String code, String message) {
         return new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, code, message);
+    }
+
+    /**
+     * 任务取消时把尚未执行的步骤置 CANCELLED：只覆盖 PENDING 步骤，
+     * 不触碰已 RUNNING/SUCCEEDED/FAILED/SKIPPED/CANCELLED 的步骤
+     * （RUNNING 步骤由编排器取消收敛负责，见 {@code TaskOrchestrator}）。
+     */
+    private void cancelPendingSteps(UUID taskId) {
+        try {
+            steps.update(null, Wrappers.<qg.qgent.entity.TaskStepEntity>update()
+                    .set("status", "CANCELLED")
+                    .set("updated_at", LocalDateTime.now(ZoneOffset.UTC))
+                    .eq("task_id", taskId)
+                    .eq("status", "PENDING"));
+        } catch (RuntimeException e) {
+            log.warn("cancel pending steps skipped taskId={}: {}", taskId, e.getMessage());
+        }
     }
 
     private String id(UUID value) {

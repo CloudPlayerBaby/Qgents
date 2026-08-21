@@ -513,6 +513,33 @@ class TaskDisplayServiceTest {
     }
 
     @Test
+    void cancelledStepIsNotCountedAsPendingInExecutionSummary() {
+        // 回归：任务取消后步骤落 CANCELLED，不应再计入 pendingSteps（否则前端显示
+        // 「待执行」但任务已取消）；CANCELLED 是既定终态，不参与待执行/运行统计。
+        UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        TaskEntity task = task(projectId, groupId, actor, workspaceId, "CANCELLED");
+        when(tasks.selectById(task.getId())).thenReturn(task);
+        when(workspaces.selectById(workspaceId)).thenReturn(workspace(workspaceId));
+        when(worktrees.selectByWorkspace(workspaceId)).thenReturn(List.of());
+        TaskStepEntity done = step(UUID.randomUUID(), task.getId(), "SUCCEEDED");
+        done.setSequenceNo(1);
+        TaskStepEntity cancelled = step(UUID.randomUUID(), task.getId(), "CANCELLED");
+        cancelled.setSequenceNo(2);
+        when(steps.selectList(any())).thenReturn(List.of(done, cancelled));
+        when(runs.selectList(any())).thenReturn(List.of());
+        when(access.isOwnerOrAdmin(actor, projectId, actor)).thenReturn(true);
+
+        TaskDetailResponse detail = service.detail(projectId, task.getId(), actor);
+
+        assertThat(detail.getExecutionSummary().getTotalSteps()).isEqualTo(2);
+        assertThat(detail.getExecutionSummary().getPendingSteps()).isZero();
+        assertThat(detail.getExecutionSummary().getSucceededSteps()).isEqualTo(1);
+        // CANCELLED 步骤不落入 pending/running/failed 任一桶
+        assertThat(detail.getExecutionSummary().getFailedSteps()).isZero();
+    }
+
+    @Test
     void detailExposesTaskStartupFailureWithoutTaskRun() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
         UUID groupId = UUID.randomUUID(), workspaceId = UUID.randomUUID();

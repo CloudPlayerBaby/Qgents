@@ -1,6 +1,7 @@
 package qg.qgent.service;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
 import qg.qgent.auth.TokenService;
 import qg.qgent.dto.AttachmentPreviewUrlResponse;
@@ -10,6 +11,7 @@ import qg.qgent.service.AttachmentService.AttachmentPreviewContent;
 import qg.qgent.service.AttachmentService.AttachmentPreviewMetadata;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
@@ -20,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -181,6 +184,78 @@ class AttachmentServiceTest {
                     assertThat(((ApiException) e).code()).isEqualTo("ATTACHMENT_CONTENT_UNSUPPORTED");
                     assertThat(((ApiException) e).status().value()).isEqualTo(501);
                 });
+    }
+
+    @Test
+    void uploadBytesStoresPendingAttachmentBytes() {
+        UUID projectId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        byte[] payload = "hello qwen".getBytes(StandardCharsets.UTF_8);
+        when(mapper.selectById(attachmentId)).thenReturn(attachment(attachmentId, projectId, "doc.pdf", "application/pdf", "PENDING"));
+
+        service.uploadBytes(actor, projectId, attachmentId, new ByteArrayInputStream(payload), "application/pdf");
+
+        verify(storage).storeBytes(eq("projects/" + projectId + "/attachments/" + attachmentId),
+                any(InputStream.class), eq("application/pdf"));
+    }
+
+    @Test
+    void uploadBytesRejectsNotPending() {
+        UUID projectId = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        when(mapper.selectById(attachmentId)).thenReturn(attachment(attachmentId, projectId, "x.txt", "text/plain", "READY"));
+
+        assertThatThrownBy(() -> service.uploadBytes(UUID.randomUUID(), projectId, attachmentId,
+                new ByteArrayInputStream("data".getBytes(StandardCharsets.UTF_8)), null))
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> {
+                    assertThat(((ApiException) e).code()).isEqualTo("ATTACHMENT_NOT_PENDING");
+                    assertThat(((ApiException) e).status().value()).isEqualTo(409);
+                });
+    }
+
+    @Test
+    void uploadBytesRejectsMissingAttachment() {
+        UUID projectId = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        when(mapper.selectById(attachmentId)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.uploadBytes(UUID.randomUUID(), projectId, attachmentId,
+                new ByteArrayInputStream("data".getBytes(StandardCharsets.UTF_8)), null))
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> assertThat(((ApiException) e).code()).isEqualTo("ATTACHMENT_NOT_FOUND"));
+    }
+
+    @Test
+    void uploadBytesRejectsExceedingMaxSize() {
+        AttachmentService small = new AttachmentService(mapper, storage, access, tokens, 10, 900);
+        UUID projectId = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        byte[] oversized = "more-than-ten-bytes".getBytes(StandardCharsets.UTF_8);
+        when(mapper.selectById(attachmentId)).thenReturn(attachment(attachmentId, projectId, "big.txt", "text/plain", "PENDING"));
+
+        assertThatThrownBy(() -> small.uploadBytes(UUID.randomUUID(), projectId, attachmentId,
+                new ByteArrayInputStream(oversized), "text/plain"))
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> {
+                    assertThat(((ApiException) e).code()).isEqualTo("ATTACHMENT_TOO_LARGE");
+                    assertThat(((ApiException) e).status().value()).isEqualTo(413);
+                });
+    }
+
+    @Test
+    void uploadBytesRejectsNonMember() {
+        UUID projectId = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        doThrow(new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权访问"))
+                .when(access).requireProjectMember(projectId, actor);
+
+        assertThatThrownBy(() -> service.uploadBytes(actor, projectId, attachmentId,
+                new ByteArrayInputStream("data".getBytes(StandardCharsets.UTF_8)), null))
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> assertThat(((ApiException) e).code()).isEqualTo("FORBIDDEN"));
     }
 
     @Test
