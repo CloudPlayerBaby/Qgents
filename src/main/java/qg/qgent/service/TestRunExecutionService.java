@@ -112,6 +112,7 @@ public class TestRunExecutionService {
         if (token == null) return;
         DryRunEntity run = dryRuns.selectById(runId);
         publishDry(run);
+        String failureStage = "MERGE_PREVIEW";
         try {
             WorkerMergePreviewRequest previewRequest = new WorkerMergePreviewRequest();
             previewRequest.setRepositoryId(run.getProjectRepositoryId());
@@ -130,6 +131,7 @@ public class TestRunExecutionService {
                     report.put("tests", Map.of("status", "NOT_REQUIRED", "results", List.of()));
                     status = "PASSED";
                 } else {
+                    failureStage = "EXECUTE_TESTS";
                     WorkerTestExecutionRequest tests = new WorkerTestExecutionRequest();
                     tests.setExecutionId(run.getId());
                     tests.setProjectId(run.getProjectId());
@@ -156,7 +158,15 @@ public class TestRunExecutionService {
             }
             completeDry(run, token, status, report, run.getHeadCommit());
         } catch (RuntimeException failure) {
-            completeDry(run, token, "FAILED", failureSummary(failure), null);
+            Map<String, Object> summary = failureSummary(failure);
+            summary.put("failureStage", failureStage);
+            if ("MERGE_PREVIEW".equals(failureStage) && failure instanceof qg.qgent.api.ApiException api
+                    && !(failure instanceof SandboxWorkerTransportException)
+                    && !"DRY_RUN_CONTEXT_MISMATCH".equals(api.code())) {
+                summary.put("workerCode", api.code());
+                summary.put("workerHttpStatus", api.status().value());
+            }
+            completeDry(run, token, "FAILED", summary, null);
         }
     }
 

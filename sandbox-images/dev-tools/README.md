@@ -20,11 +20,11 @@ docker run --rm \
   --tmpfs /var/tmp:rw,noexec,nosuid,size=512m \
   --tmpfs /run:rw,noexec,nosuid,size=64m \
   --tmpfs /home/developer:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=8g \
-  --tmpfs /home/developer/.m2:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=2g \
-  --tmpfs /home/developer/.gradle:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=3g \
+  --tmpfs /home/developer/.m2:rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=2g \
+  --tmpfs /home/developer/.gradle:rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=3g \
   --tmpfs /home/developer/.npm:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=1g \
-  --tmpfs /home/developer/.cache:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=512m \
-  --tmpfs /opt/pnpm:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=1g \
+  --tmpfs /home/developer/.cache:rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=512m \
+  --tmpfs /opt/pnpm:rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=1g \
   qgents/sandbox-dev-tools:0.2.0 \
   sh -lc 'set -eu; java -version; mvn -version; gradle --version; node --version; npm --version; test -d "$ANDROID_HOME/platform-tools"; test -d "$ANDROID_HOME/platforms/android-35"; test -d "$ANDROID_HOME/build-tools/35.0.0"; sdkmanager --version; test -w /home/developer; test -w /home/developer/.m2; test -w /home/developer/.gradle; test -w /home/developer/.npm; mkdir -p "$ANDROID_USER_HOME" /home/developer/.config /home/developer/.local; test -w "$ANDROID_USER_HOME"'
 ```

@@ -185,11 +185,11 @@ components:
         results: {type: array, items: {type: object, properties: {testsetId: {type: string, format: uuid}, status: {type: string}, exitCode: {type: [integer, 'null']}, durationMs: {type: integer}, failureCode: {type: [string, 'null']}}}}
     MergePreviewRequest:
       type: object
-      required: [repositoryId, sourceRef, targetBranch]
+      required: [repositoryId, sourceRef, targetCommit]
       properties:
         repositoryId: {type: string, format: uuid}
         sourceRef: {type: string, minLength: 1, maxLength: 512}
-        targetBranch: {type: string, minLength: 1, maxLength: 512}
+        targetCommit: {type: string, minLength: 1, maxLength: 512, description: 主后端已冻结的目标提交 SHA}
     MergePreviewResponse:
       type: object
       properties:

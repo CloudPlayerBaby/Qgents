@@ -25,7 +25,7 @@ class DevelopmentRunToolTest {
     private final DevelopmentRunTool tool = new DevelopmentRunTool(executor);
 
     @Test
-    void executesOnlyFixedOfflineTemplateAndReturnsNoArgv() throws Exception {
+    void executesOnlyFixedTemplateAndReturnsNoArgv() throws Exception {
         ToolContext context = context();
         when(executor.execute(any(), any(), any(), any()))
                 .thenReturn(new CommandExecutionResult(0, List.of("ok"), List.of()));
@@ -33,7 +33,7 @@ class DevelopmentRunToolTest {
         ToolResult result = tool.execute(context, Map.of("commandId", "MAVEN_WRAPPER_TEST"));
 
         verify(executor).execute(any(), eq(context.getContainerRepository()),
-                eq(List.of("sh", "./mvnw", "--offline", "test")), eq(context.getTimeout()));
+                eq(List.of("sh", "./mvnw", "test")), eq(context.getTimeout()));
         assertThat(result.getResult()).containsOnly(Map.entry("commandId", "MAVEN_WRAPPER_TEST"));
         assertThat(result.getResult()).doesNotContainKeys("command", "argv", "cwd", "environment");
     }

@@ -149,17 +149,20 @@ public class DockerContainerRuntime implements ContainerRuntime {
      * 不挂载宿主机路径；rootfs 可写仅影响当前容器，Workspace 仍由逐仓库 bind 控制。
      */
     Map<String, String> tmpfsMounts() {
-        String developerCacheOptions = "rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=";
+        String developerHomeOptions = "rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=";
+        // Maven Wrapper、Gradle native 组件和 Jansi 都需要从各自缓存目录加载可执行文件。
+        // Docker tmpfs 默认包含 noexec，必须显式声明 exec；HOME 本身仍保持 noexec。
+        String executableCacheOptions = "rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=";
         return Map.of(
                 "/tmp", "rw,noexec,nosuid,size=512m",
                 "/var/tmp", "rw,noexec,nosuid,size=512m",
                 "/run", "rw,noexec,nosuid,size=64m",
-                "/home/developer", developerCacheOptions + properties.getDeveloperHomeSize(),
-                "/home/developer/.m2", developerCacheOptions + properties.getMavenCacheSize(),
-                "/home/developer/.gradle", developerCacheOptions + properties.getGradleCacheSize(),
-                "/home/developer/.npm", developerCacheOptions + properties.getNpmCacheSize(),
-                "/home/developer/.cache", developerCacheOptions + "512m",
-                "/opt/pnpm", developerCacheOptions + "1g");
+                "/home/developer", developerHomeOptions + properties.getDeveloperHomeSize(),
+                "/home/developer/.m2", executableCacheOptions + properties.getMavenCacheSize(),
+                "/home/developer/.gradle", executableCacheOptions + properties.getGradleCacheSize(),
+                "/home/developer/.npm", developerHomeOptions + properties.getNpmCacheSize(),
+                "/home/developer/.cache", executableCacheOptions + "512m",
+                "/opt/pnpm", executableCacheOptions + "1g");
     }
 
     @Override

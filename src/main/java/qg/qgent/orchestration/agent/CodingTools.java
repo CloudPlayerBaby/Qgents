@@ -233,7 +233,7 @@ public class CodingTools {
      * 执行由 Worker 固定模板定义的测试或构建命令。该工具不接收原始命令、参数、环境变量或工作目录，
      * 也不向模型回传 stdout/stderr；详细脱敏日志仅保留在 Worker 的受控运维通道。
      */
-    @Tool(name = "run_development_command", description = "执行固定的离线测试或构建命令。"
+    @Tool(name = "run_development_command", description = "执行固定的测试或构建命令。"
             + "commandId 只能是 MAVEN_TEST、MAVEN_PACKAGE、MAVEN_WRAPPER_TEST、GRADLE_TEST、"
             + "GRADLE_WRAPPER_TEST、NPM_TEST；不可传递命令、argv、环境变量或 cwd。"
             + "可选 repositoryPath 必须是当前工作区已绑定仓库的一级相对路径，多仓库时必填。")

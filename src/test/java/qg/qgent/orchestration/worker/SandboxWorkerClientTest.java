@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
@@ -273,6 +275,33 @@ class SandboxWorkerClientTest {
         assertEquals("EXECUTION_ID_CONFLICT", exception.code());
         assertEquals(HttpStatus.CONFLICT, exception.status());
         assertEquals("执行编号已经存在", exception.getMessage());
+        server.verify();
+    }
+
+    @Test
+    void submitsMergePreviewWithFrozenTargetCommit() {
+        server.expect(once(), requestTo(BASE + "/internal/v1/merge-previews"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().json("""
+                        {"repositoryId":"00000000-0000-0000-0000-000000000002",
+                         "sourceRef":"0123456789012345678901234567890123456789",
+                         "targetCommit":"abcdefabcdefabcdefabcdefabcdefabcdefabcd"}
+                        """))
+                .andRespond(withSuccess("""
+                        {"resolvedHeadCommit":"0123456789012345678901234567890123456789",
+                         "resolvedTargetCommit":"abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+                         "mergeable":true,"conflicts":[]}
+                        """, MediaType.APPLICATION_JSON));
+
+        WorkerMergePreviewRequest request = new WorkerMergePreviewRequest();
+        request.setRepositoryId(REPO);
+        request.setSourceRef("0123456789012345678901234567890123456789");
+        request.setTargetCommit("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+
+        WorkerMergePreviewResponse response = client.mergePreview(request);
+
+        assertTrue(response.isMergeable());
+        assertEquals(request.getTargetCommit(), response.getResolvedTargetCommit());
         server.verify();
     }
 

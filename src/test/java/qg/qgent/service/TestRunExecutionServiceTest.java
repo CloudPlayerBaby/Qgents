@@ -280,6 +280,32 @@ class TestRunExecutionServiceTest {
     }
 
     @Test
+    void dryRunMergePreviewFailurePersistsStageAndWorkerDiagnostics() {
+        UUID runId = UUID.randomUUID();
+        DryRunEntity run = new DryRunEntity();
+        run.setId(runId);
+        run.setProjectId(UUID.randomUUID());
+        run.setProjectRepositoryId(UUID.randomUUID());
+        run.setHeadCommit("0123456789012345678901234567890123456789");
+        run.setResolvedTargetCommit("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+        run.setTestsetSnapshot(List.of());
+        when(dryRuns.claim(eq(runId), anyString(), any(), any())).thenReturn(1);
+        when(dryRuns.selectById(runId)).thenReturn(run);
+        when(worker.mergePreview(any())).thenThrow(
+                new ApiException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "请求参数不合法"));
+        when(dryRuns.complete(eq(runId), anyString(), eq("FAILED"), any(), isNull())).thenReturn(1);
+
+        service.executeDryRun(runId);
+
+        verify(dryRuns).complete(eq(runId), anyString(), eq("FAILED"),
+                argThat(report -> "INVALID_REQUEST".equals(report.get("failureCode"))
+                        && "MERGE_PREVIEW".equals(report.get("failureStage"))
+                        && "INVALID_REQUEST".equals(report.get("workerCode"))
+                        && Integer.valueOf(400).equals(report.get("workerHttpStatus"))), isNull());
+        verify(worker, never()).executeTests(any());
+    }
+
+    @Test
     void dryRunRejectsWorkerPreviewForAnotherFrozenGitContext() {
         UUID runId = UUID.randomUUID();
         DryRunEntity run = new DryRunEntity();
