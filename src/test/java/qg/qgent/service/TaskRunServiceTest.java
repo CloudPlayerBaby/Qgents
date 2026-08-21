@@ -451,7 +451,7 @@ class TaskRunServiceTest {
 
         assertEquals(1, page.data().size());
         assertEquals("DEVELOPER", page.data().getFirst().getNode());
-        assertTrue(page.data().getFirst().getContent().contains("任务执行失败，请查看执行记录"));
+        assertTrue(page.data().getFirst().getContent().contains("执行步骤未通过，请查看脱敏失败摘要"));
         assertEquals(1L, page.data().getFirst().getSequence());
         assertFalse(page.page().getHasMore());
     }

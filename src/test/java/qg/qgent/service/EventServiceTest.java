@@ -152,9 +152,10 @@ class EventServiceTest {
         PlatformTransactionManager transactions = mock(PlatformTransactionManager.class);
         when(transactions.getTransaction(any(TransactionDefinition.class))).thenReturn(new SimpleTransactionStatus());
         doNothing().when(transactions).commit(any(TransactionStatus.class));
-        doThrow(new DeadlockLoserDataAccessException("deadlock", null))
-                .doThrow(new DeadlockLoserDataAccessException("deadlock", null))
-                .doNothing().when(events).insert(any(EventEntity.class));
+        when(events.insert(any(EventEntity.class)))
+                .thenThrow(new DeadlockLoserDataAccessException("deadlock", null))
+                .thenThrow(new DeadlockLoserDataAccessException("deadlock", null))
+                .thenReturn(1);
         when(events.nextSequence(projectId)).thenReturn(1L);
         EventService service = productionService(events, projects, transactions);
 

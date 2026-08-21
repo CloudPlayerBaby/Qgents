@@ -138,6 +138,7 @@ class GitRepositoryManagerTest {
         assertEquals(created.baseCommit(), created.headCommit());
         Files.writeString(worktree.resolve("README.md"), "changed\n");
         Files.writeString(worktree.resolve("new.txt"), "new\n");
+        Files.writeString(worktree.resolve("新增文件.txt"), "unicode path\n");
         GitStatusResponse status = manager.status(worktree);
         GitDiffResponse diff = manager.diff(worktree);
         assertFalse(status.isClean());

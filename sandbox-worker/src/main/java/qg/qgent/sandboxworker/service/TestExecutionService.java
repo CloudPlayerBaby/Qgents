@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Pattern;
 
 /**
  * 在受控 Sandbox 中同步执行一组 Testset，并始终清理本次 Sandbox。
@@ -32,6 +33,18 @@ import java.nio.charset.StandardCharsets;
 @Service
 @RequiredArgsConstructor
 public class TestExecutionService {
+    private static final int MAX_FAILURE_SUMMARY_LENGTH = 500;
+    private static final int FAILURE_SUMMARY_TAIL_LINES = 8;
+    private static final Pattern BEARER = Pattern.compile("(?i)\\bBearer\\s+[^\\s,;]+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SENSITIVE_VALUE = Pattern.compile(
+            "(?i)\\b(token|password|secret|api[-_]?key|authorization)\\b\\s*[:=]\\s*([^\\s,;}]*)");
+    private static final Pattern WINDOWS_HOST_PATH = Pattern.compile(
+            "(?i)(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\\\/])[^\\s,;\"']+");
+    private static final Pattern UNIX_HOST_PATH = Pattern.compile(
+            "(?<![A-Za-z0-9_])/(?:home|Users|root|tmp|var|etc|opt|srv)(?:/[^\\s,;\"']*)?");
+    private static final Pattern ENVIRONMENT_ASSIGNMENT = Pattern.compile(
+            "\\b[A-Z][A-Z0-9_]{2,}\\s*=\\s*[^\\s,;}\\\"]+");
+    private static final Pattern URL = Pattern.compile("(?i)https?://[^\\s,;\"']+");
     private static final Set<List<String>> ALLOWED_TEST_COMMANDS = Set.of(
             List.of("mvn", "test"),
             List.of("gradle", "test"),
@@ -145,7 +158,7 @@ public class TestExecutionService {
             boolean passed = result.getExitCode() == testset.getExpectedExitCode();
             return new TestExecutionItemResponse(testset.getTestsetId(), passed ? "PASSED" : "FAILED",
                     result.getExitCode(), elapsed(started), passed ? null : "UNEXPECTED_EXIT_CODE",
-                    passed ? null : "测试命令退出码与 Testset 预期不一致");
+                    passed ? null : failureMessage(result));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started), "TIMED_OUT",
@@ -158,6 +171,38 @@ public class TestExecutionService {
             }
             return new TestExecutionItemResponse(testset.getTestsetId(), "FAILED", null, elapsed(started),
                     "EXECUTION_FAILED", "测试执行未能完成");
+        }
+    }
+
+    /**
+     * 只保留命令输出尾部的有限诊断信息，并移除凭据、环境变量、端点和宿主机路径。
+     * Maven/Gradle 的失败原因通常位于输出末尾；完整原始输出不能进入用户可见结果。
+     */
+    static String failureMessage(CommandExecutionResult result) {
+        List<String> lines = new ArrayList<>();
+        appendTail(lines, result == null ? null : result.getStandardError());
+        appendTail(lines, result == null ? null : result.getStandardOutput());
+        String detail = String.join(" | ", lines).replaceAll("[\\r\\n]+", " ").strip();
+        detail = BEARER.matcher(detail).replaceAll("Bearer [redacted]");
+        detail = SENSITIVE_VALUE.matcher(detail).replaceAll("$1=[redacted]");
+        detail = WINDOWS_HOST_PATH.matcher(detail).replaceAll("[host path omitted]");
+        detail = UNIX_HOST_PATH.matcher(detail).replaceAll("[host path omitted]");
+        detail = ENVIRONMENT_ASSIGNMENT.matcher(detail).replaceAll("[environment omitted]");
+        detail = URL.matcher(detail).replaceAll("[endpoint omitted]");
+        if (detail.isBlank()) {
+            return "测试命令退出码与 Testset 预期不一致";
+        }
+        String message = "测试命令退出码与 Testset 预期不一致：" + detail;
+        return message.length() <= MAX_FAILURE_SUMMARY_LENGTH
+                ? message : message.substring(0, MAX_FAILURE_SUMMARY_LENGTH - 3) + "...";
+    }
+
+    private static void appendTail(List<String> destination, List<String> source) {
+        if (source == null || source.isEmpty()) return;
+        int start = Math.max(0, source.size() - FAILURE_SUMMARY_TAIL_LINES);
+        for (int index = start; index < source.size(); index++) {
+            String line = source.get(index);
+            if (line != null && !line.isBlank()) destination.add(line.strip());
         }
     }
 

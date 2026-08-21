@@ -90,4 +90,17 @@ class TestExecutionServiceTest {
         assertEquals(List.of("sh", "./mvnw", "test"),
                 TestExecutionService.normalizeWrapperCommand(List.of("./mvnw", "test")));
     }
+
+    @Test
+    void failureMessageIncludesSafeTailOfMavenOutput() {
+        String message = TestExecutionService.failureMessage(new CommandExecutionResult(1,
+                List.of("BUILD FAILURE", "password=top-secret"),
+                List.of("[ERROR] Tests run: 3, Failures: 1", "at C:\\workspace\\project\\Test.java:10")));
+
+        assertTrue(message.contains("Tests run: 3, Failures: 1"));
+        assertTrue(message.contains("[redacted]"));
+        assertTrue(message.contains("[host path omitted]"));
+        assertFalse(message.contains("top-secret"));
+        assertTrue(message.length() <= 500);
+    }
 }

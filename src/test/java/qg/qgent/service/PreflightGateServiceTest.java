@@ -211,6 +211,7 @@ class PreflightGateServiceTest {
         when(localTasks.selectById(taskId)).thenReturn(task);
         when(localWorktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(java.util.List.of(worktree));
         when(localRepositories.selectById(repositoryId)).thenReturn(repository);
+        when(localGitStores.normalizeTargetBranch("main")).thenReturn("main");
         when(localGitStores.refreshTargetBranch(projectId, repository, "main")).thenReturn("target");
         when(localDryRuns.selectOne(any())).thenReturn(dryRun);
         when(localReviews.selectOne(any())).thenReturn(approved);

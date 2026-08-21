@@ -339,7 +339,8 @@ public class GitRepositoryManager {
         }
         requireSuccess(run(List.of("git", "-C", repository.toString(), "add", "-A"), Map.of()),
                 "GIT_COMMIT_FAILED", "Cannot stage Workspace changes");
-        CommandResult staged = requireSuccess(runLimited(List.of("git", "-C", repository.toString(), "diff", "--cached",
+        CommandResult staged = requireSuccess(runLimited(List.of("git", "-c", "core.quotepath=false", "-C",
+                        repository.toString(), "diff", "--cached",
                         "--binary", "--no-ext-diff", "--no-color", "HEAD"), Map.of(), MAX_DIFF_BYTES),
                 "GIT_COMMIT_FAILED", "Cannot verify staged snapshot");
         String stagedHash = sha256(staged.stdout().getBytes(StandardCharsets.UTF_8));
