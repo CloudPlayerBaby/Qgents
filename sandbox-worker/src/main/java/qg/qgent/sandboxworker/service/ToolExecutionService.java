@@ -56,7 +56,7 @@ public class ToolExecutionService {
     private static final Pattern WINDOWS_HOST_PATH = Pattern.compile(
             "(?i)(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\\\/])[^\\s,;\\\"']+");
     private static final Pattern UNIX_HOST_PATH = Pattern.compile(
-            "(?<![A-Za-z0-9_])/(?:home|Users|root|tmp|var|etc|opt|srv)(?:/[^\\s,;\\\"']*)?");
+            "(?<![A-Za-z0-9_/:])/(?:home|Users|root|tmp|var|etc|opt|srv)(?:/[^\\s,;\\\"']*)?");
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
     private final SandboxService sandboxes;

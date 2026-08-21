@@ -98,7 +98,8 @@ class ToolExecutionServiceTest {
     @Test
     void workerExceptionFailureReasonIsRedactedAndBounded() throws Exception {
         ToolExecutionFixture fixture = fixture();
-        String detail = "Bearer super-secret token=abc C:\\Users\\Administrator\\private.txt " + "x".repeat(1200);
+        String detail = "Bearer super-secret token=abc https://example.invalid/test?api_key=abc "
+                + "C:\\Users\\Administrator\\private.txt " + "x".repeat(1200);
         when(fixture.tools().execute(anyString(), any(), any()))
                 .thenThrow(new WorkerException(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY,
                         "TOOL_PATH_INVALID", detail));
@@ -111,6 +112,7 @@ class ToolExecutionServiceTest {
         assertFalse(reason.contains("super-secret"));
         assertFalse(reason.contains("token=abc"));
         assertFalse(reason.contains("C:\\Users\\Administrator"));
+        assertTrue(reason.contains("https://example.invalid/test?api_key=[redacted]"));
         assertTrue(reason.contains("[redacted]"));
         assertTrue(reason.contains("[host path omitted]"));
         assertTrue(reason.length() <= 1024);

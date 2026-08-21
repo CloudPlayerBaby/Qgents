@@ -22,8 +22,9 @@ public class DevelopmentRunTool implements SandboxTool {
     private static final Pattern SENSITIVE = Pattern.compile(
             "(?i)\\\"?(token|password|secret|api[-_]?key|authorization)\\\"?\\s*[:=]\\s*"
                     + "(?:\\\"[^\\\"]*\\\"|[^\\s,;}]*)");
-    private static final Pattern WINDOWS_HOST_PATH = Pattern.compile("(?i)(?:[A-Z]:[\\\\/])[^\\s,;\\\"]+");
-    private static final Pattern UNIX_HOST_PATH = Pattern.compile("(?<![A-Za-z0-9_])/(?:home|Users|root|tmp|var|etc|opt|srv)(?:/[^\\s,;\\\"]*)?");
+    private static final Pattern WINDOWS_HOST_PATH = Pattern.compile(
+            "(?i)(?<![A-Za-z0-9_])(?:[A-Z]:[\\\\/])[^\\s,;\\\"]+");
+    private static final Pattern UNIX_HOST_PATH = Pattern.compile("(?<![A-Za-z0-9_/:])/(?:home|Users|root|tmp|var|etc|opt|srv)(?:/[^\\s,;\\\"]*)?");
     private static final Pattern REDACTED_BEARER_TAIL = Pattern.compile("(?i)(authorization=\\[redacted])\\s+\\[redacted]");
     private final CommandExecutor executor;
 

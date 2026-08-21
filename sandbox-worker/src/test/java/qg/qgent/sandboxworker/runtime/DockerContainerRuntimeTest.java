@@ -48,7 +48,6 @@ class DockerContainerRuntimeTest {
         assertEquals("rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=512m", tmpfs.get("/home/developer/.cache"));
         assertEquals("rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=700,size=1g", tmpfs.get("/opt/pnpm"));
     }
-
     @Test
     void createUsesWritableRootfsAndPreservesUserAndResourceLimits() throws Exception {
         Path localRoot = Files.createDirectory(root.resolve("local"));
