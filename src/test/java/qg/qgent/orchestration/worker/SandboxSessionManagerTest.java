@@ -17,6 +17,8 @@ import static org.mockito.Mockito.when;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +50,7 @@ class SandboxSessionManagerTest {
     private static final UUID PROJECT = UUID.fromString("00000000-0000-0000-0000-000000000002");
     private static final UUID WORKSPACE = UUID.fromString("00000000-0000-0000-0000-000000000003");
     private static final UUID REPO = UUID.fromString("00000000-0000-0000-0000-000000000004");
+    private static final UUID OTHER_TASK = UUID.fromString("00000000-0000-0000-0000-000000000005");
 
     private SandboxWorkerClient client;
     private WorkspaceMapper workspaceMapper;
@@ -163,6 +166,35 @@ class SandboxSessionManagerTest {
         verify(client, never()).provisionWorkspace(any(), any());
         verify(client, never()).createSandbox(any());
         verifyNoInteractions(writeLeases);
+    }
+
+    @Test
+    void acquireDoesNotBlockBehindAnotherWorkspaceInitialization() throws Exception {
+        SandboxSessionManager manager = enabledManager();
+        CountDownLatch firstAcquireEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstAcquire = new CountDownLatch(1);
+        when(writeLeases.acquire(any(), eq(WORKSPACE), any())).thenAnswer(invocation -> {
+            firstAcquireEntered.countDown();
+            releaseFirstAcquire.await(5, TimeUnit.SECONDS);
+            throw new IllegalStateException("simulated initialization failure");
+        });
+
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<?> first = executor.submit(() ->
+                    assertThatThrownBy(() -> manager.acquire(TASK, PROJECT, WORKSPACE))
+                            .isInstanceOf(IllegalStateException.class));
+            assertThat(firstAcquireEntered.await(1, TimeUnit.SECONDS)).isTrue();
+
+            ApiException conflict = assertThrows(ApiException.class,
+                    () -> manager.acquire(OTHER_TASK, PROJECT, WORKSPACE));
+            assertThat(conflict.code()).isEqualTo("WORKSPACE_WRITE_LEASE_HELD");
+            releaseFirstAcquire.countDown();
+            first.get(2, TimeUnit.SECONDS);
+        } finally {
+            releaseFirstAcquire.countDown();
+            executor.shutdownNow();
+        }
     }
 
     @Test

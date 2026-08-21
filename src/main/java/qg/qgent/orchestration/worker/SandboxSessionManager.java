@@ -89,7 +89,13 @@ public class SandboxSessionManager {
         }
         requireWorkerWriteAllowed(projectId, workspaceId);
         ReentrantLock acquireLock = acquireLocks.computeIfAbsent(workspaceId, ignored -> new ReentrantLock());
-        acquireLock.lock();
+        // 进程内锁只用于串行化初始化/释放，不能让编排线程无限等待。持锁者可能正卡在
+        // Worker/GitHub 请求；把冲突交给既有 PENDING/恢复器路径，避免 Task 已 RUNNING
+        // 但永远没有 Sandbox 或 TaskRun。
+        if (!acquireLock.tryLock()) {
+            throw new ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                    "WORKSPACE_WRITE_LEASE_HELD", "Workspace is currently being initialized by another Task");
+        }
         try {
             SandboxSession existing = sessions.get(workspaceId);
             if (existing != null) {
@@ -134,7 +140,11 @@ public class SandboxSessionManager {
             return;
         }
         ReentrantLock acquireLock = acquireLocks.computeIfAbsent(workspaceId, ignored -> new ReentrantLock());
-        acquireLock.lock();
+        // acquire() 失败后编排器仍会进入 finally；释放路径不能再次阻塞在同一把卡死的锁上。
+        // 持锁者完成后会负责自己的会话/租约清理，当前 Task 没有可安全移除的会话时直接返回。
+        if (!acquireLock.tryLock()) {
+            return;
+        }
         try {
             SandboxSession session = sessions.get(workspaceId);
             if (session == null || !taskId.equals(session.taskId())) {

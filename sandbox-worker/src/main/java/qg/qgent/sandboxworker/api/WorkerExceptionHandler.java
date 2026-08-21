@@ -11,6 +11,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import jakarta.validation.ConstraintViolationException;
 
+import java.util.stream.Collectors;
+
 /**
  * 将工作节点异常转换为稳定且不泄露内部信息的响应。
  * <p>
@@ -28,13 +30,29 @@ public class WorkerExceptionHandler {
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<WorkerErrorResponse> handleValidationException() {
-        return ResponseEntity.badRequest().body(new WorkerErrorResponse("INVALID_REQUEST", "请求参数不合法"));
+    public ResponseEntity<WorkerErrorResponse> handleValidationException(MethodArgumentNotValidException exception) {
+        String fields = exception.getBindingResult().getFieldErrors().stream()
+                .map(error -> error.getField() + ":" + error.getDefaultMessage())
+                .distinct()
+                .collect(Collectors.joining(","));
+        log.warn("sandbox worker rejected request, invalid fields: {}", fields);
+        return ResponseEntity.badRequest()
+                .body(new WorkerErrorResponse("INVALID_REQUEST", validationMessage(fields)));
     }
 
     @ExceptionHandler(ConstraintViolationException.class)
-    public ResponseEntity<WorkerErrorResponse> handleConstraintViolation() {
-        return ResponseEntity.badRequest().body(new WorkerErrorResponse("INVALID_REQUEST", "请求参数不合法"));
+    public ResponseEntity<WorkerErrorResponse> handleConstraintViolation(ConstraintViolationException exception) {
+        String fields = exception.getConstraintViolations().stream()
+                .map(error -> error.getPropertyPath() + ":" + error.getMessage())
+                .distinct()
+                .collect(Collectors.joining(","));
+        log.warn("sandbox worker rejected request, constraint violations: {}", fields);
+        return ResponseEntity.badRequest()
+                .body(new WorkerErrorResponse("INVALID_REQUEST", validationMessage(fields)));
+    }
+
+    private String validationMessage(String fields) {
+        return fields == null || fields.isBlank() ? "请求参数不合法" : "请求参数不合法: " + fields;
     }
 
     /**
