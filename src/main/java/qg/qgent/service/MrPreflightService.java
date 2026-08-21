@@ -146,6 +146,10 @@ public class MrPreflightService {
         // 目标分支 SHA 必须在短事务外解析（GitHub/Worker 外调），并作为预检上下文固定。
         String targetCommit = gitStores.refreshTargetBranch(projectId, repository, targetBranch);
         if (worktree.getHeadCommit().equalsIgnoreCase(targetCommit)) {
+            log.warn("preflight no changes projectId={} repositoryId={} sourceBranch={} targetBranch={} "
+                            + "workspaceHead={} remoteSourceHead={} targetCommit={}",
+                    projectId, repositoryId, worktree.getSourceBranch(), targetBranch,
+                    worktree.getHeadCommit(), sourceCommit, targetCommit);
             throw new ApiException(HttpStatus.CONFLICT, "MR_NO_CHANGES",
                     "源分支与目标分支当前提交相同，没有可创建 MR 的变更");
         }
