@@ -1553,13 +1553,17 @@ public class TaskOrchestrator {
         String kind = switch (status) {
             case "SUCCEEDED" -> "TASK_COMPLETED";
             case "FAILED" -> "TASK_FAILED";
+            case "WAITING_DIFF_CONFIRMATION" -> "TASK_AWAITING_CONFIRMATION";
             default -> null;
         };
         if (kind == null) {
             return;
         }
         notificationService.notify(task.getCreatedBy(), task.getProjectId(), task.getRequirementGroupId(), kind,
-                (kind.equals("TASK_COMPLETED") ? "任务完成：" : "任务失败：") + task.getTitle(), task.getRequirement(),
+                (kind.equals("TASK_COMPLETED") ? "任务完成："
+                        : kind.equals("TASK_FAILED") ? "任务失败："
+                        : "任务 Diff 待确认：") + task.getTitle(),
+                kind.equals("TASK_AWAITING_CONFIRMATION") ? "已生成待确认 Diff，请前往任务详情确认或拒绝交付" : task.getRequirement(),
                 task.getId().toString());
     }
 
