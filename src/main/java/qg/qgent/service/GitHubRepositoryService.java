@@ -744,16 +744,29 @@ public class GitHubRepositoryService {
 
     /**
      * 校验 installation 是否已被其他团队占用：返回 null 表示可绑定，否则返回冲突错误码。
-     * 回调场景使用，避免冲突直接抛异常导致网关把 409 转成 502。
+     * 仅当安装仍被其他团队活跃占用（存在 AUTHORIZED 仓库）时判定冲突；已删除/挂起或无可用仓库的
+     * 历史安装不阻塞，允许当前发起团队接管。回调场景使用，避免冲突直接抛异常导致网关把 409 转成 502。
      */
     private String installationTeamConflict(long providerInstallationId, UUID teamId) {
         GitHubInstallationEntity existing = installationMapper.selectOne(
                 new LambdaQueryWrapper<GitHubInstallationEntity>().eq(
                         GitHubInstallationEntity::getProviderInstallationId, providerInstallationId));
-        if (existing != null && !existing.getTeamId().equals(teamId)) {
+        if (existing != null && !existing.getTeamId().equals(teamId)
+                && hasAuthorizedRepositories(existing.getId())) {
             return "GITHUB_INSTALLATION_TEAM_CONFLICT";
         }
         return null;
+    }
+
+    /**
+     * 安装是否仍被活跃使用：其下存在 AUTHORIZED 状态的仓库镜像。
+     * 没有可用仓库的安装视为闲置，允许其他团队在 GitHub 重新授权后接管归属。
+     */
+    private boolean hasAuthorizedRepositories(UUID installationId) {
+        Long count = repositoryMapper.selectCount(new LambdaQueryWrapper<GitHubRepositoryEntity>()
+                .eq(GitHubRepositoryEntity::getInstallationId, installationId)
+                .eq(GitHubRepositoryEntity::getAuthorizationStatus, "AUTHORIZED"));
+        return count != null && count > 0;
     }
 
     /**
@@ -794,18 +807,26 @@ public class GitHubRepositoryService {
 
         boolean newInstallation = installationEntity == null;
 
-        if (!newInstallation && !installationEntity.getTeamId().equals(teamId)) {
+        // 归属冲突只针对仍被其他团队活跃占用的安装（存在 AUTHORIZED 仓库）。
+        // 已删除/挂起或无可用仓库的历史安装不阻塞：允许当前发起团队接管（见下方 repoint）。
+        if (!newInstallation && !installationEntity.getTeamId().equals(teamId)
+                && hasAuthorizedRepositories(installationEntity.getId())) {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_TEAM_CONFLICT",
                     "This GitHub installation is already bound to another team");
         }
-        // 已存在且被 Webhook suspend/deleted：不得用旧快照恢复 ACTIVE/AUTHORIZED，直接返回当前状态
-        if (!newInstallation && !"ACTIVE".equals(installationEntity.getStatus())) {
+        // 已存在且被 Webhook 置为 SUSPENDED：安装仍被 GitHub 挂起，不得恢复 ACTIVE/AUTHORIZED，直接返回当前状态
+        if (!newInstallation && "SUSPENDED".equals(installationEntity.getStatus())) {
             return toInstallationResponse(installationEntity);
         }
 
         if (newInstallation) {
             installationEntity = new GitHubInstallationEntity();
             installationEntity.setId(UUID.randomUUID());
+            installationEntity.setTeamId(teamId);
+        } else if (!installationEntity.getTeamId().equals(teamId)) {
+            // 接管其他团队的闲置安装（无 AUTHORIZED 仓库）：重新归属当前发起团队并恢复绑定。
+            // 只有本请求刚成功拉取 GitHub 实时快照（getInstallation/listRepositories 均成功）才走到这里，
+            // 不会被陈旧快照误恢复；GitHub 侧已确认用户重新授权了该安装。
             installationEntity.setTeamId(teamId);
         }
 
