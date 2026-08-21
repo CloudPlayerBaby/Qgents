@@ -548,6 +548,21 @@ class TaskRunServiceTest {
     }
 
     @Test
+    void completeCannotOverwriteCancellingRunWithSuccess() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("CANCELLING");
+        when(runs.selectById(runId)).thenReturn(run);
+        when(logs.nextSequence(runId)).thenReturn(0L);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+
+        service.complete(runId, "SUCCEEDED");
+
+        assertEquals("CANCELLED", run.getStatus());
+        assertNotNull(run.getFinishedAt());
+    }
+
+    @Test
     void executionContextKeepsStableFieldsWhenTaskHasNoRepository() {
         UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
         TaskRunEntity run = run(projectId, runId);
@@ -632,7 +647,7 @@ class TaskRunServiceTest {
         assertEquals("TASK_RUN_NOT_WAITABLE", notWaitable.code());
     }
 
-    /** 重试受理：失败运行从源步骤发布续跑事件（携带 retryOfTaskRunId），不再创建无人消费的 QUEUED run。 */
+    /** 重试受理：先创建可追踪的 QUEUED 新运行，再发布续跑事件。 */
     @Test
     void retryPublishesResumeEventInsteadOfOrphanQueuedRun() {
         UUID projectId = UUID.randomUUID();
@@ -652,12 +667,43 @@ class TaskRunServiceTest {
 
         TaskRunSummaryResponse response = service.retry(projectId, runId, UUID.randomUUID());
 
-        assertEquals(runId.toString(), response.getId());
-        assertEquals("FAILED", response.getStatus());
-        verify(runs, never()).insert(any(TaskRunEntity.class));
+        assertNotEquals(runId.toString(), response.getId());
+        assertEquals("QUEUED", response.getStatus());
+        verify(runs).insert(any(TaskRunEntity.class));
         verify(eventPublisher).publishEvent(argThat((TaskResumeRequestedEvent e) -> e.taskId().equals(taskId)
                 && e.projectId().equals(projectId) && e.startStepId().equals(stepId)
                 && e.retryOfTaskRunId().equals(runId)));
+    }
+
+    @Test
+    void retryReusesExistingActiveRetry() {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskRunEntity failed = run(projectId, runId);
+        failed.setTaskId(taskId);
+        failed.setTaskStepId(stepId);
+        failed.setStatus("FAILED");
+        TaskRunEntity queued = run(projectId, UUID.randomUUID());
+        queued.setTaskId(taskId);
+        queued.setTaskStepId(stepId);
+        queued.setRetryOfTaskRunId(runId);
+        queued.setStatus("QUEUED");
+        when(runs.selectById(runId)).thenReturn(failed);
+        when(runs.selectActiveRetry(taskId, stepId, runId)).thenReturn(queued);
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("FAILED");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        TaskRunSummaryResponse response = service.retry(projectId, runId, UUID.randomUUID());
+
+        assertEquals(queued.getId().toString(), response.getId());
+        assertEquals("QUEUED", response.getStatus());
+        verify(runs, never()).insert(any(TaskRunEntity.class));
+        verify(eventPublisher).publishEvent(any(TaskResumeRequestedEvent.class));
     }
 
     /** 确定性配置错误（如基线分支不存在）拒绝异步续跑：同步返回 409，不发布续跑事件。 */

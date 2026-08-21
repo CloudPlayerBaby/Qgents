@@ -170,9 +170,14 @@ public class TaskOrchestrator {
         // 步骤物化后由下方统一原子认领。已物化 / 续跑路径才在入口原子认领。
         boolean freshPlanning = startStepId == null && task.getPlanMaterializedAt() == null;
         if (!freshPlanning) {
-            int claimed = startStepId == null
-                    ? taskMapper.claimForOrchestration(projectId, taskId)
-                    : taskMapper.claimForResume(projectId, taskId);
+            int claimed;
+            if (startStepId == null) {
+                claimed = taskMapper.claimForOrchestration(projectId, taskId);
+            } else if (retryOfTaskRunId != null) {
+                claimed = taskMapper.claimForRetry(projectId, taskId, retryOfTaskRunId);
+            } else {
+                claimed = taskMapper.claimForResume(projectId, taskId);
+            }
             if (claimed != 1) {
                 throw new IllegalStateException("Task " + taskId + " already claimed or not startable (status="
                         + task.getStatus() + ")");
@@ -675,7 +680,11 @@ public class TaskOrchestrator {
         }
         taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
                 outcome.getMessage());
-        markStepSettled(task, step, outcome.getOutcome());
+        // complete() 会在并发取消已先落库时把结果强制收敛为 CANCELLED；按持久化后的真实状态
+        // 更新 Step，不能继续使用 Agent 原始的 SUCCEEDED/FAILED 结果。
+        TaskRunEntity settledRun = taskRunService.findById(run.getId());
+        markStepSettled(task, step, settledRun != null && "CANCELLED".equals(settledRun.getStatus())
+                ? RunOutcome.CANCELLED : outcome.getOutcome());
         if (decision.getAction() == StateMachineDecision.Action.COMPLETE_SUCCESS
                 && hasFollowingStep(step, ctx.steps)) {
             decision = StateMachineDecision.advance(phase);
@@ -1069,7 +1078,12 @@ public class TaskOrchestrator {
     }
 
     private void markStepSettled(TaskEntity task, TaskStepEntity step, RunOutcome outcome) {
-        step.setStatus(outcome == RunOutcome.SUCCEEDED ? "SUCCEEDED" : "FAILED");
+        String status = switch (outcome) {
+            case SUCCEEDED -> "SUCCEEDED";
+            case CANCELLED -> "CANCELLED";
+            default -> "FAILED";
+        };
+        step.setStatus(status);
         step.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
         stepMapper.updateById(step);
         publishStepUpdated(task, step);

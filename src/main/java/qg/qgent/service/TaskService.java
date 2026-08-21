@@ -287,7 +287,11 @@ public class TaskService {
      */
     @Transactional
     public TaskResponse cancel(UUID projectId, UUID taskId, UUID actor) {
-        TaskEntity task = requireTask(projectId, taskId);
+        // 取消与编排终态收敛必须串行化，避免旧的内存对象覆盖用户取消。
+        TaskEntity task = tasks.selectByIdForUpdate(taskId);
+        if (task == null || !projectId.equals(task.getProjectId())) {
+            task = requireTask(projectId, taskId);
+        }
         requireTaskManager(task, actor);
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         switch (task.getStatus()) {

@@ -233,10 +233,8 @@ public class TaskRunService {
     /**
      * 重试 FAILED/CANCELLED/BLOCKED 的运行：受理后从该运行所属步骤续跑编排（202 受理）。
      * <p>
-     * 不再创建无人消费的 QUEUED run；改为发布 {@link TaskResumeRequestedEvent}，由编排触发监听器
-     * （AFTER_COMMIT + @Async）从源步骤调用 {@code TaskOrchestrator.orchestrate(projectId, taskId, stepId)}
-     * 续跑，续跑产生的实际执行 run 以 {@code retryOfTaskRunId} 指向源运行。任务 RUNNING（仍在编排）
-     * 或已交付（WAITING_DIFF_CONFIRMATION 及以后）时拒绝，防止与进行中的编排冲突。
+     * 先创建一条带 {@code retryOfTaskRunId} 的 QUEUED 运行，再发布续跑事件；编排器会复用该运行，
+     * 这样接口立即返回真实的新运行 ID，客户端可以准确追踪重试进度，网络重复请求也不会产生第二条活动重试。
      */
     @Transactional
     public TaskRunSummaryResponse retry(UUID projectId, UUID taskRunId, UUID userId) {
@@ -247,7 +245,11 @@ public class TaskRunService {
         if (!RETRYABLE.contains(source.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_RETRYABLE", "仅 FAILED/CANCELLED/BLOCKED 状态可重试");
         }
-        TaskEntity task = taskMapper.selectById(source.getTaskId());
+        // 锁住 Task，串行化“检查可续跑 + 创建重试运行”，避免双击/网络重试产生两条活动运行。
+        TaskEntity task = taskMapper.selectByIdForUpdate(source.getTaskId());
+        if (task == null) {
+            task = taskMapper.selectById(source.getTaskId());
+        }
         if (task == null || !projectId.equals(task.getProjectId())) {
             throw new ApiException(HttpStatus.NOT_FOUND, "TASK_NOT_FOUND", "任务不存在或不可见");
         }
@@ -268,11 +270,15 @@ public class TaskRunService {
                     "任务因配置问题失败（" + taskFailureCode + "），请先修复配置后重试："
                             + ExecutionContentSanitizer.userFailureDescription(taskFailureCode));
         }
-        // 异步续跑在事务提交后触发；认领（claimForResume）在编排侧原子完成，此处仅受理。
-        // retryOfTaskRunId = 源失败运行 ID，续跑产生的首个 TaskRun 指向它，审计链可追溯。
+        TaskRunEntity retryRun = taskRunMapper.selectActiveRetry(source.getTaskId(), source.getTaskStepId(), source.getId());
+        if (retryRun == null) {
+            retryRun = createForStep(projectId, source.getTaskId(), source.getTaskStepId(), source.getRole(),
+                    source.getAgentId(), source.getCreatedBy(), source.getId());
+        }
+        // 异步续跑在事务提交后触发；编排侧认领 Task 并把上面的 QUEUED 运行切到 RUNNING。
         eventPublisher.publishEvent(new TaskResumeRequestedEvent(projectId, source.getTaskId(),
                 source.getTaskStepId(), source.getId()));
-        return toSummary(source);
+        return toSummary(retryRun);
     }
 
     /**
@@ -300,7 +306,10 @@ public class TaskRunService {
     @Transactional
     public TaskRunSummaryResponse cancel(UUID projectId, UUID taskRunId, UUID userId) {
         projectAccess.requireProjectMember(projectId, userId);
-        TaskRunEntity run = requireRun(projectId, taskRunId);
+        TaskRunEntity run = taskRunMapper.selectByIdForUpdate(taskRunId);
+        if (run == null) {
+            run = requireRun(projectId, taskRunId);
+        }
         requireTaskVisible(projectId, run.getTaskId(), userId);
         requireOwner(run, projectId, userId);
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
@@ -470,6 +479,12 @@ public class TaskRunService {
     @Transactional
     public TaskRunEntity createForStep(UUID projectId, UUID taskId, UUID taskStepId, String role, UUID agentId,
                                        UUID createdBy, UUID retryOfTaskRunId) {
+        if (retryOfTaskRunId != null) {
+            TaskRunEntity existing = taskRunMapper.selectActiveRetry(taskId, taskStepId, retryOfTaskRunId);
+            if (existing != null) {
+                return existing;
+            }
+        }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         TaskRunEntity run = new TaskRunEntity();
         run.setId(UuidV7.next());
@@ -536,7 +551,11 @@ public class TaskRunService {
      */
     @Transactional
     public void markRunning(UUID taskRunId) {
-        TaskRunEntity run = taskRunMapper.selectById(taskRunId);
+        // 完成与取消必须在同一行锁上串行化，避免迟到的 Agent 结果覆盖用户取消。
+        TaskRunEntity run = taskRunMapper.selectByIdForUpdate(taskRunId);
+        if (run == null) {
+            run = taskRunMapper.selectById(taskRunId);
+        }
         if (run == null || !"QUEUED".equals(run.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_STARTABLE", "仅 QUEUED 运行可开始");
         }
@@ -569,6 +588,11 @@ public class TaskRunService {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_COMPLETABLE", "仅 RUNNING/CANCELLING 运行可完成");
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        // 取消是用户已经确认的终态意图。执行器可能在读取状态后才收到取消请求，
+        // 因此不能让迟到的成功/失败结果覆盖 RUNNING -> CANCELLING。
+        if ("CANCELLING".equals(run.getStatus())) {
+            terminalStatus = "CANCELLED";
+        }
         // CANCELLING → CANCELLED 收敛：取消受理后编排器在安全点把运行终态化为 CANCELLED，
         // 不再要求必须是 RUNNING（否则取消请求发出后 run 永远无法落终态）。
         run.setStatus(terminalStatus);

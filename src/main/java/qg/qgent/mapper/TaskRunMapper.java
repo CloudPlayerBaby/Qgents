@@ -13,6 +13,14 @@ import java.util.UUID;
 @Mapper
 public interface TaskRunMapper extends BaseMapper<TaskRunEntity> {
 
+    /** 查找同一失败运行已经创建的活动重试，避免网络重试重复创建 TaskRun。 */
+    @Select("select * from task_runs where task_id=#{taskId} and task_step_id=#{taskStepId} "
+            + "and retry_of_task_run_id=#{retryOfTaskRunId} and status in ('QUEUED','RUNNING') "
+            + "order by created_at desc limit 1")
+    TaskRunEntity selectActiveRetry(@Param("taskId") UUID taskId,
+                                    @Param("taskStepId") UUID taskStepId,
+                                    @Param("retryOfTaskRunId") UUID retryOfTaskRunId);
+
     /** 按 TaskRun 串行化日志序号分配，避免并发 Worker/Agent 输出撞唯一键。 */
     @Select("select * from task_runs where id = #{runId} for update")
     TaskRunEntity selectByIdForUpdate(@Param("runId") UUID runId);

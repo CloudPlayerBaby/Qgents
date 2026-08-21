@@ -35,6 +35,19 @@ public interface TaskMapper extends BaseMapper<TaskEntity> {
             + "and r.status in ('QUEUED','RUNNING','WAITING_INPUT','WAITING_APPROVAL'))))")
     int claimForResume(@Param("projectId") UUID projectId, @Param("taskId") UUID taskId);
 
+    /** 用户重试专用认领：允许已预创建、且明确指向本次源运行的 QUEUED TaskRun。 */
+    @Update("update tasks set status='RUNNING',failure_code=null,failure_reason=null,failure_retryable=null,"
+            + "failure_occurred_at=null,updated_at=UTC_TIMESTAMP(6) where id=#{taskId} and project_id=#{projectId} "
+            + "and (status in ('PLANNING','PENDING','FAILED') or (status='CANCELLED' and exists "
+            + "(select 1 from task_runs r where r.task_id=#{taskId} and r.retry_of_task_run_id=#{retryOfTaskRunId} "
+            + "and r.status='QUEUED' and r.created_at >= tasks.updated_at)) or (status='RUNNING' and exists "
+            + "(select 1 from task_runs r where r.task_id=#{taskId} and r.retry_of_task_run_id=#{retryOfTaskRunId} "
+            + "and r.status='QUEUED')))"
+            + " and not exists (select 1 from task_runs r where r.task_id=#{taskId} "
+            + "and r.status in ('RUNNING','WAITING_INPUT','WAITING_APPROVAL'))")
+    int claimForRetry(@Param("projectId") UUID projectId, @Param("taskId") UUID taskId,
+                      @Param("retryOfTaskRunId") UUID retryOfTaskRunId);
+
     /**
      * Locks one Task while changing execution or continuation state.
      */
