@@ -23,14 +23,17 @@ spring:
     # 启用连接泄漏检测（阈值内未归还的连接由 Hikari 记录告警，便于定位未释放点）与
     # 定期清理陈旧连接。参数可经环境变量覆盖（生产按实际 QPS/事务耗时核算）。
     hikari:
-      # 获取连接的最长等待：池耗尽时在此期限内返回 503/超时，而不是让请求线程无限排队
-      connection-timeout: ${DB_CONNECTION_TIMEOUT:8000}
+      # 获取连接的最长等待：池耗尽时在此期限内返回 503/超时，而不是让请求线程无限排队。
+      # 多任务编排 + 前端轮询叠加的并发峰值下 8s 出现过池耗尽（active=10/idle=0/waiting=5），
+      # 放宽到 10s 并配合池扩容（见下）缓解瞬时窗口，仍保持快速失败不无限排队。
+      connection-timeout: ${DB_CONNECTION_TIMEOUT:10000}
       # 连接有效性校验的最长等待：获取连接前的活连接探测不超过此值
       validation-timeout: ${DB_VALIDATION_TIMEOUT:2000}
-      # 最大池大小（默认 10）；并发任务编排 + SSE 轮询 + 前端查询叠加时按实测调整
-      maximum-pool-size: ${DB_MAX_POOL_SIZE:10}
-      # 最小空闲连接：低峰期保留少量就绪连接，避免频繁建连
-      minimum-idle: ${DB_MIN_IDLE:2}
+      # 最大池大小（默认 20）：并发任务编排 + SSE 轮询 + 前端查询叠加时按实测调整；
+      # 多实例部署需按「实例数 × 池大小 ≤ MySQL max_connections 留余量」核算
+      maximum-pool-size: ${DB_MAX_POOL_SIZE:20}
+      # 最小空闲连接：低峰期保留少量就绪连接，避免频繁建连；调高到 5 减少高峰建连抖动
+      minimum-idle: ${DB_MIN_IDLE:5}
       # 连接最大存活时间略短于 MySQL wait_timeout，避免服务端断连后复用失效连接
       max-lifetime: ${DB_MAX_LIFETIME:1800000}
       # 空闲连接回收前的最大空闲时间
