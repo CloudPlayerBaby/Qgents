@@ -90,8 +90,12 @@ class TaskPlanMaterializationServiceTest {
         assertThat(generated.get(0).getRequiredCapabilities()).containsExactly("java", "spring-boot");
         assertThat(generated.get(0).getAssignedAgentId()).isEqualTo(javaAgent.getId());
         assertThat(generated.get(1).getAssignedAgentId()).isEqualTo(javaAgent.getId());
-        assertThat(generated.get(0).getAllowedPaths()).containsExactly("src/App.java");
-        // Planner 声明的文件同时冻结为目标文件，供运行期“目标已满足”判定；空声明保持为空。
+        // 多实现步骤共享同一可写文件集（各步声明文件的并集）：后续步骤可补写前序步骤漏写文件。
+        assertThat(generated.get(0).getAllowedPaths())
+                .containsExactlyInAnyOrder("src/App.java", "README.md");
+        assertThat(generated.get(1).getAllowedPaths())
+                .containsExactlyInAnyOrder("src/App.java", "README.md");
+        // Planner 声明的文件按步骤独立冻结为目标文件，供运行期“目标已满足”判定；空声明保持为空。
         assertThat(generated.get(0).getTargetFiles()).containsExactly("src/App.java");
         assertThat(generated.get(1).getTargetFiles()).containsExactly("README.md");
         // 非开发步骤不声明目标文件（null 即关闭“目标已满足”判定），与 allowedPaths 语义一致。
@@ -102,6 +106,48 @@ class TaskPlanMaterializationServiceTest {
         verify(dependencies, times(4)).insertLink(any(), any());
         verify(artifacts).createPlan(eq(task), any());
         assertThat(task.getPlanMaterializedAt()).isNotNull();
+    }
+
+    @Test
+    void unionizesDeveloperWriteScopeAcrossMutuallyExclusiveFiles() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        TaskStepDependencyMapper dependencies = mock(TaskStepDependencyMapper.class);
+        TaskStepRepositoryMapper scopes = mock(TaskStepRepositoryMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        WorkspaceRepositoryEntity repository = new WorkspaceRepositoryEntity();
+        repository.setProjectRepositoryId(UUID.randomUUID());
+        repository.setWorkspacePath("repo-1");
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository));
+        PlanResult plan = plan();
+        // 两个实现步骤声明互斥文件：后续步骤可补写前序步骤声明文件，但不可越出 Planner 声明范围。
+        plan.getImplementationSteps().get(0).setFiles(List.of("repo-1/src/App.java"));
+        plan.getImplementationSteps().get(1).setFiles(List.of("repo-1/README.md"));
+        TransactionSynchronizationManager.initSynchronization();
+
+        service(tasks, steps, dependencies, scopes, worktrees,
+                mock(TaskExecutionArtifactService.class), mock(EventService.class), mock(AgentDispatcher.class))
+                .materialize(task, plan);
+
+        ArgumentCaptor<TaskStepEntity> inserted = ArgumentCaptor.forClass(TaskStepEntity.class);
+        verify(steps, times(4)).insert(inserted.capture());
+        TaskStepEntity first = inserted.getAllValues().get(0);
+        TaskStepEntity second = inserted.getAllValues().get(1);
+        // 两个 DEVELOPER 步骤可写范围均为并集：步骤 B 可补写步骤 A 声明但漏写的文件。
+        assertThat(first.getAllowedPaths())
+                .containsExactlyInAnyOrder("repo-1/src/App.java", "repo-1/README.md");
+        assertThat(second.getAllowedPaths())
+                .containsExactlyInAnyOrder("repo-1/src/App.java", "repo-1/README.md");
+        // targetFiles 仍按步骤独立冻结，“目标已满足”判定保持每步语义。
+        assertThat(first.getTargetFiles()).containsExactly("repo-1/src/App.java");
+        assertThat(second.getTargetFiles()).containsExactly("repo-1/README.md");
+        // 仓库级 WRITE scope 仍按各步骤声明的文件归属仓库，不因并集扩大。
+        verify(scopes).insertLink(first.getId(), repository.getProjectRepositoryId(), "WRITE");
+        verify(scopes).insertLink(second.getId(), repository.getProjectRepositoryId(), "WRITE");
     }
 
     @Test

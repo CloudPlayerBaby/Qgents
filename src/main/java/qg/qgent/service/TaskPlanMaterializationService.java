@@ -147,12 +147,21 @@ public class TaskPlanMaterializationService {
         List<TaskStepEntity> created = new ArrayList<>();
         UUID previous = planner.getId();
         int sequence = planner.getSequenceNo() + 1;
+        // 顺序执行的多个实现步骤共享同一可写文件集（各步声明文件的并集）：后续步骤可补充或修正
+        // 前序步骤声明但漏写的文件，避免“B 发现 A 少写文件却无权补写”导致质量循环空转或任务失败。
+        // 空文件声明的步骤仍按 allowedPathsFor 回退仓库根；并集不超出各步骤原有可写范围的合并，
+        // 不放开到 Planner 声明之外。targetFiles 仍按步骤独立冻结（“目标已满足”判定保持每步语义）。
+        List<String> unionAllowedPaths = plan.getImplementationSteps().stream()
+                .map(item -> allowedPathsFor(item, worktreeList))
+                .flatMap(List::stream)
+                .distinct()
+                .toList();
         for (PlanResult.ImplementationStep item : plan.getImplementationSteps()) {
             TaskStepEntity step = step(task, sequence++, item.getTitle(), developerInstruction(plan, item), "DEVELOPER",
                     item.getRequiredCapabilities(), "完成 " + item.getTitle() + " 并通过相关自检",
                     item.getSuggestedAgentId(), item.getExecutionMode());
             TaskStepExecutionMode mode = TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole());
-            step.setAllowedPaths(allowedPathsFor(item, worktreeList));
+            step.setAllowedPaths(unionAllowedPaths);
             step.setTargetFiles(targetFilesFor(item, worktreeList));
             steps.insert(step);
             dependencies.insertLink(step.getId(), previous);
@@ -314,6 +323,9 @@ public class TaskPlanMaterializationService {
      * because local access exposes the prefix while Worker accepts the
      * repository-relative alias. Empty file lists fall back to repository
      * roots rather than an unrestricted new step.
+     * <p>
+     * 返回的是单个步骤的声明可写范围；{@code createGeneratedSteps} 会把所有实现步骤的该范围
+     * 取并集写入各 DEVELOPER 步骤，使后续步骤可补写前序步骤声明但漏写的文件。
      */
     private List<String> allowedPathsFor(PlanResult.ImplementationStep item,
                                          List<WorkspaceRepositoryEntity> worktreeList) {
