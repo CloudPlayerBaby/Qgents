@@ -1080,7 +1080,9 @@ public class TaskRunService {
             return publicCode;
         }
         // 未定义内部码不进入项目成员可读的 TaskRun 字段；原码由失败诊断表受限保存。
-        return "FAILED_INFRASTRUCTURE";
+        // 无码失败（如验证类 TEST_FAILED）折叠为通用「执行失败」，不能折叠成语义明确的
+        // FAILED_INFRASTRUCTURE——后者会让前端误读为「基础设施暂不可用却没自动重试」。
+        return "EXECUTION_FAILED";
     }
 
     private String safeFailureReason(String publicFailureCode) {
