@@ -451,6 +451,98 @@ class CodingAgentTest {
                 .contains("hunk 声明行数与正文不一致");
     }
 
+    // ---------- "未尝试即放弃"有界纠正重试（绿地任务兜底） ----------
+
+    @Test
+    void nativeGaveUpWithoutToolCallRetriesOnceAndSucceedsWithCorrectiveInstruction() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(writer.writeFile(workspaceId, "src/main/java/Book.java", "code"))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/Book.java", "new-hash", true));
+        AtomicInteger call = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            int current = call.getAndIncrement();
+            if (current == 0) {
+                // 首次运行：模型未调用任何工具，直接输出散文并自报失败。
+                return finalTurn(bareResult(false, "cannot start", null), "stop");
+            }
+            if (current == 1) {
+                // 纠正重试：模型开始真实写文件。
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream()
+                        .filter(callback -> "write_file".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow()
+                        .call("{\"path\":\"src/main/java/Book.java\",\"content\":\"code\"}");
+                return toolTurn("write_file");
+            }
+            return finalTurn(bareResult(true, "done", "src/main/java/Book.java"), "stop");
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).containsExactly("src/main/java/Book.java");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Message>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm, times(3)).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
+        // 首次执行（放弃）的首条 user 消息：绿地引导存在、纠正指令不存在。
+        UserMessage firstUser = (UserMessage) historyCaptor.getAllValues().get(0).get(0);
+        assertThat(firstUser.getText()).contains("绿地任务：工作区为空").doesNotContain("纠正指令");
+        // 纠正重试的首条 user 消息：必须携带纠正指令。
+        UserMessage retryUser = (UserMessage) historyCaptor.getAllValues().get(1).get(0);
+        assertThat(retryUser.getText()).contains("纠正指令").contains("未动手就放弃");
+    }
+
+    @Test
+    void nativeGaveUpWithoutToolCallRetryAlsoGivesUpStaysBoundedUnclassifiedFailure() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenAnswer(invocation -> finalTurn(bareResult(false, "still cannot start", null), "stop"));
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        // 纠正重试上限 1 次：仍失败时保持原有 UNCLASSIFIED_FAILURE 终态语义。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo("UNCLASSIFIED_FAILURE");
+        assertThat(outcome.getMessage()).contains("已执行 1 次纠正性重试");
+        verify(llm, times(2)).nextToolTurn(anyString(), anyList(), anyList());
+        assertThat(outcome.getObservations()).hasSize(2);
+    }
+
+    @Test
+    void nativeToolCallThenDeclaredFailureDoesNotTriggerCorrectiveRetry() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(toolTurn("list_files"),
+                        finalTurn(bareResult(false, "workspace looks empty", null), "stop"));
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        // 已调用过工具（哪怕只读）就不属于"未尝试即放弃"，不触发纠正重试：
+        // 仅 2 次调用（工具轮 + 终态轮），而非纠正重试带来的第 3 次。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo("UNCLASSIFIED_FAILURE");
+        verify(llm, times(2)).nextToolTurn(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void nativeGaveUpWithRetryContextDoesNotTriggerCorrectiveRetry() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of());
+        when(llm.nextToolTurn(anyString(), anyList(), anyList()))
+                .thenReturn(finalTurn(bareResult(false, "cannot", null), "stop"));
+        AgentInput input = codingInput();
+        RetryContext retry = new RetryContext();
+        retry.setQualityRepair(false);
+        input.setRetryContext(retry);
+
+        AgentRunOutcome outcome = nativeAgent().run(input);
+
+        // 已在重试/质量回修链路上，不叠加纠正重试，避免多层递归。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo("UNCLASSIFIED_FAILURE");
+        verify(llm, times(1)).nextToolTurn(anyString(), anyList(), anyList());
+    }
+
     @Test
     void repeatedPatchFailureBecomesUnrecoverableToolFailure() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
