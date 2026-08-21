@@ -68,7 +68,12 @@ public class PreflightGateService {
         TaskEntity task = requireTask(projectId, taskId);
         WorkspaceRepositoryEntity worktree = requireWorktree(task, repositoryId);
         String branch = normalizeTargetBranch(targetBranch);
-        String targetCommit = resolveTargetCommit(projectId, repositoryId, branch);
+        // This endpoint is polled by the MR list. It must remain a read-only projection:
+        // the target commit is the one captured by the latest persisted Dry Run. A fresh
+        // GitHub/Worker sync belongs to the explicit preflight request/refresh flow.
+        DryRunEntity snapshot = latestDryRunForRead(task.getProjectId(), task.getId(), repositoryId,
+                worktree.getHeadCommit(), branch);
+        String targetCommit = snapshot == null ? null : snapshot.getResolvedTargetCommit();
         return evaluate(task, worktree, repositoryId, branch, targetCommit);
     }
 
@@ -213,6 +218,18 @@ public class PreflightGateService {
                 .eq(DryRunEntity::getProjectId, projectId).eq(DryRunEntity::getTaskId, taskId)
                 .eq(DryRunEntity::getProjectRepositoryId, repositoryId).eq(DryRunEntity::getHeadCommit, sourceCommit)
                 .eq(DryRunEntity::getTargetBranch, targetBranch).eq(DryRunEntity::getResolvedTargetCommit, targetCommit)
+                .orderByDesc(DryRunEntity::getCreatedAt).orderByDesc(DryRunEntity::getId).last("LIMIT 1"));
+    }
+
+    private DryRunEntity latestDryRunForRead(UUID projectId, UUID taskId, UUID repositoryId, String sourceCommit,
+                                             String targetBranch) {
+        if (sourceCommit == null || sourceCommit.isBlank()) {
+            return null;
+        }
+        return dryRuns.selectOne(Wrappers.<DryRunEntity>lambdaQuery()
+                .eq(DryRunEntity::getProjectId, projectId).eq(DryRunEntity::getTaskId, taskId)
+                .eq(DryRunEntity::getProjectRepositoryId, repositoryId).eq(DryRunEntity::getHeadCommit, sourceCommit)
+                .eq(DryRunEntity::getTargetBranch, targetBranch)
                 .orderByDesc(DryRunEntity::getCreatedAt).orderByDesc(DryRunEntity::getId).last("LIMIT 1"));
     }
 

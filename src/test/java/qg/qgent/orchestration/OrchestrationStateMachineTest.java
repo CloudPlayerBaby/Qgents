@@ -84,6 +84,14 @@ class OrchestrationStateMachineTest {
         assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.COMPLETE_FAILED);
     }
 
+    @Test void deterministicLlmAccountFailureDoesNotRetry() {
+        StateMachineDecision d = stateMachine.decide(OrchestrationPhase.CODING,
+                RunOutcome.FAILED_INFRASTRUCTURE, "LLM_ACCOUNT_ACCESS_DENIED", counters);
+
+        assertThat(d.getAction()).isEqualTo(StateMachineDecision.Action.COMPLETE_FAILED);
+        assertThat(counters.getInfraRetries(OrchestrationPhase.CODING)).isZero();
+    }
+
     @Test void infrastructureRetryBudgetsAreIndependentPerPhase() {
         counters.setInfraRetries(OrchestrationPhase.PLAN, counters.getMaxInfraRetries());
 
