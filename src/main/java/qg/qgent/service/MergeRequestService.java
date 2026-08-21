@@ -104,6 +104,8 @@ public class MergeRequestService {
     /** 已确认创建真实 MR 后的群聊回卡依赖；发送失败不得改变远端 MR 事实。 */
     private MessageService messageService;
     private OrchestratorAgentService orchestratorAgents;
+    /** 需求群可见性复用任务中心规则，避免 MR 列表展示用户无法申请的分支。 */
+    private GroupService groupService;
     /** TASK_STATUS 卡片仓库映射；通知增强失败不得改变真实 MR 状态。 */
     private TaskStatusRepositoryContextService repositoryContextService;
 
@@ -135,6 +137,11 @@ public class MergeRequestService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setRepositoryContextService(TaskStatusRepositoryContextService repositoryContextService) {
         this.repositoryContextService = repositoryContextService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setGroupService(GroupService groupService) {
+        this.groupService = groupService;
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -245,6 +252,14 @@ public class MergeRequestService {
                                                                        UUID groupId, String status, String cursor,
                                                                        int limit, String requestId) {
         projectAccess.requireProjectMember(projectId, userId);
+        boolean projectAdmin = projectAccess.isProjectAdmin(projectId, userId);
+        Set<UUID> visibleGroupIds = projectAdmin || groupService == null ? null : visibleGroupIds(projectId, userId);
+        if (!projectAdmin && groupService != null && visibleGroupIds.isEmpty()) {
+            return emptyPage(requestId);
+        }
+        if (!projectAdmin && groupService != null && groupId != null && !visibleGroupIds.contains(groupId)) {
+            return emptyPage(requestId);
+        }
         int size = clampLimit(limit);
         List<UUID> repoIds = projectRepositoryMapper.selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
                         .eq(ProjectRepositoryEntity::getProjectId, projectId)).stream()
@@ -256,7 +271,7 @@ public class MergeRequestService {
                 || "PENDING_CREATE".equalsIgnoreCase(status);
         List<MergeRequestSummaryResponse> pendingCandidates = includePendingCreate
                 ? placeholderMergeRequests(projectId, repositoryId, groupId,
-                "WAITING_PREFLIGHT")
+                "WAITING_PREFLIGHT", visibleGroupIds)
                 : List.of();
         Set<String> pendingIds = pendingCandidates.stream()
                 .map(MergeRequestSummaryResponse::getId).filter(Objects::nonNull).collect(Collectors.toSet());
@@ -283,6 +298,15 @@ public class MergeRequestService {
             } else {
                 query.in("id", mrIds);
             }
+        }
+        if (!projectAdmin && groupService != null) {
+            List<UUID> visibleTaskIds = visibleTaskIds(projectId, visibleGroupIds);
+            query.and(wrapper -> {
+                wrapper.isNull("task_id");
+                if (!visibleTaskIds.isEmpty()) {
+                    wrapper.or().in("task_id", visibleTaskIds);
+                }
+            });
         }
         List<MergeRequestEntity> rows = mergeRequestMapper.selectList(query);
         if (rows == null) rows = List.of();
@@ -1800,7 +1824,8 @@ public class MergeRequestService {
      */
     private List<MergeRequestSummaryResponse> placeholderMergeRequests(UUID projectId, UUID repositoryId,
                                                                         UUID requirementGroupId,
-                                                                        String taskRequiredStatus) {
+                                                                        String taskRequiredStatus,
+                                                                        Set<UUID> visibleGroupIds) {
         List<WorkspaceRepositoryEntity> worktrees = workspaceRepositoryMapper.selectByProject(projectId, repositoryId);
         if (worktrees == null || worktrees.isEmpty()) {
             return List.of();
@@ -1814,6 +1839,10 @@ public class MergeRequestService {
         QueryWrapper<TaskEntity> taskQuery = Wrappers.<TaskEntity>query()
                 .eq("project_id", projectId).in("workspace_id", workspaceIds)
                 .eq(requirementGroupId != null, "requirement_group_id", requirementGroupId);
+        if (visibleGroupIds != null) {
+            if (visibleGroupIds.isEmpty()) return List.of();
+            taskQuery.in("requirement_group_id", visibleGroupIds);
+        }
         // 待创建占位只代表已经完成交付、可以进入 MR 前门禁的任务。
         // 默认列表和显式 PENDING_CREATE 查询都必须排除仍在开发/等待交付确认的 Task。
         if ("WAITING_PREFLIGHT".equalsIgnoreCase(taskRequiredStatus)) {
@@ -1945,6 +1974,23 @@ public class MergeRequestService {
         result.sort(Comparator.comparing(MergeRequestSummaryResponse::getId,
                 Comparator.nullsLast(Comparator.reverseOrder())));
         return result;
+    }
+
+    private Set<UUID> visibleGroupIds(UUID projectId, UUID userId) {
+        if (groupService == null) {
+            return Set.of();
+        }
+        return new HashSet<>(groupService.visibleGroupIds(projectId, userId));
+    }
+
+    private List<UUID> visibleTaskIds(UUID projectId, Set<UUID> visibleGroupIds) {
+        if (visibleGroupIds == null || visibleGroupIds.isEmpty()) {
+            return List.of();
+        }
+        return taskMapper.selectList(Wrappers.<TaskEntity>query()
+                        .eq("project_id", projectId)
+                        .in("requirement_group_id", visibleGroupIds))
+                .stream().map(TaskEntity::getId).filter(Objects::nonNull).toList();
     }
 
     private PlaceholderCandidate newerPlaceholderCandidate(PlaceholderCandidate left,
