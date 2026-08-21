@@ -134,6 +134,15 @@ public class MrPreflightService {
             }
         }
         String targetBranch = resolveTargetBranch(worktree, repository);
+        // 预检必须基于已确认交付的真实源分支 HEAD。只比较数据库 head 与 target
+        // 会把仓库绑定错误、推送回写滞后或远端出现未审核提交误报为 MR_NO_CHANGES。
+        String sourceCommit = gitStores.resolveSourceBranchHead(projectId, repository, worktree.getSourceBranch());
+        if (sourceCommit != null && !worktree.getHeadCommit().equalsIgnoreCase(sourceCommit)) {
+            log.warn("preflight source head mismatch projectId={} repositoryId={} branch={} workspaceHead={} remoteHead={}",
+                    projectId, repositoryId, worktree.getSourceBranch(), worktree.getHeadCommit(), sourceCommit);
+            throw new ApiException(HttpStatus.CONFLICT, "MR_SOURCE_HEAD_CHANGED",
+                    "GitHub 源分支已出现与当前交付不同的提交，请重新确认交付后再申请 MR");
+        }
         // 目标分支 SHA 必须在短事务外解析（GitHub/Worker 外调），并作为预检上下文固定。
         String targetCommit = gitStores.refreshTargetBranch(projectId, repository, targetBranch);
         if (worktree.getHeadCommit().equalsIgnoreCase(targetCommit)) {
