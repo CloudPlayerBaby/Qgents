@@ -135,6 +135,10 @@ public class CodingAgent implements Agent {
             outcome.setHasRealChanges(observedWrites.hasChangedWrite());
             if (patchUnrecoverable) {
                 outcome.setFailureCode(ProtocolFailureCode.TOOL_PATCH_UNRECOVERABLE.name());
+            } else if (!coding.isSuccess() && outcome.getFailureCode() == null) {
+                // 模型自报失败但无分类码（如未写文件、半途放弃）：显式标记为未分类失败，
+                // 避免 TaskRun/Task 层把无码失败兜底成 FAILED_INFRASTRUCTURE（误导为基础设施故障）。
+                outcome.setFailureCode("UNCLASSIFIED_FAILURE");
             }
             outcome.setCodingResult(coding);
             outcome.setMessage((coding.isSuccess() ? coding.getSummary() : firstError(coding))

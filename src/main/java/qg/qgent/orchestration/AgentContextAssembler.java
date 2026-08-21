@@ -109,7 +109,7 @@ public class AgentContextAssembler {
         input.setAllowedPaths(step.getAllowedPaths());
         input.setTargetFiles(step.getTargetFiles());
         input.setFeedback(feedback == null ? null : formatFeedback(feedback, phase));
-        input.setRetryContext(retryContext(feedback, inheritedPatchFailureCounts));
+        input.setRetryContext(retryContext(feedback, inheritedPatchFailureCounts, step.getTargetFiles()));
         input.setPlanResult(planResult);
         input.setCodingResult(codingResult);
         input.setTestResult(testResult);
@@ -376,7 +376,8 @@ public class AgentContextAssembler {
         return message == null ? "前一轮执行未通过" : message;
     }
 
-    private RetryContext retryContext(AgentRunOutcome outcome, Map<String, Integer> inheritedCounts) {
+    private RetryContext retryContext(AgentRunOutcome outcome, Map<String, Integer> inheritedCounts,
+                                      List<String> stepTargetFiles) {
         if (outcome == null && (inheritedCounts == null || inheritedCounts.isEmpty())) {
             return null;
         }
@@ -423,6 +424,10 @@ public class AgentContextAssembler {
         if (counts != null) {
             context.setPatchFailureCounts(counts.entrySet().stream()
                     .filter(entry -> entry.getKey() != null && entry.getValue() != null && entry.getValue() > 0)
+                    // 只保留属于当前步骤目标文件的补丁失败计数：上一轮的计数按文件路径积累，
+                    // 若原样跨步骤继承，会把"前一步文件 patch 失败"误注入当前步骤的重试上下文，
+                    // 让 Coding Agent 对与本步骤无关的文件反复 read 确认、迟迟不写目标文件。
+                    .filter(entry -> patchCountRelevant(entry.getKey(), stepTargetFiles))
                     .limit(100)
                     .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
                             (left, right) -> right, java.util.LinkedHashMap::new)));
@@ -437,6 +442,35 @@ public class AgentContextAssembler {
         if (value == null) return "";
         String sanitized = ExecutionContentSanitizer.sanitize(value);
         return sanitized.length() <= max ? sanitized : sanitized.substring(0, max);
+    }
+
+    /**
+     * 补丁失败计数是否与当前步骤相关：路径命中步骤声明的目标文件，或步骤未声明
+     * 目标文件（历史数据兼容）时视为相关；否则视为前序步骤残留，不注入当前步骤。
+     * 路径按规范化（反斜杠转斜杠、去尾部斜杠）比较，兼容 workspacePath 前缀。
+     */
+    private boolean patchCountRelevant(String path, List<String> stepTargetFiles) {
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+        if (stepTargetFiles == null || stepTargetFiles.isEmpty()) {
+            return true; // 未声明目标文件的步骤保留全部计数（历史兼容）
+        }
+        String normalized = normalizeForComparison(path);
+        for (String target : stepTargetFiles) {
+            if (target != null && normalized.equals(normalizeForComparison(target))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String normalizeForComparison(String path) {
+        String value = path.replace('\\', '/').trim();
+        while (value.startsWith("./")) {
+            value = value.substring(2);
+        }
+        return value.replaceFirst("/+$", "");
     }
 
 }

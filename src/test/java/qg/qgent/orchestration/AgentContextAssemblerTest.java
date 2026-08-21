@@ -400,4 +400,51 @@ class AgentContextAssemblerTest {
         assertThat(input.getConversation()).hasSize(1);
         assertThat(input.getConversation().get(0).getType()).isEqualTo("DIFF");
     }
+
+    @Test
+    void patchFailureCountsAreFilteredToCurrentStepTargetFiles() {
+        // 回归：前序步骤（如 strings.xml）的补丁失败计数不得跨步骤污染当前步骤的重试上下文——
+        // 否则 Coding Agent 会对与本步骤无关的文件反复 read 确认、迟迟不写目标文件。
+        TaskEntity task = task();
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setInstruction("创建 BookListActivity.kt");
+        step.setTargetFiles(List.of("repo-1/app/src/main/java/com/example/hellokotlin/BookListActivity.kt"));
+
+        // 模拟上一轮 run 遗留的计数：既有当前步骤目标文件的失败，也有无关旧文件的失败
+        AgentRunOutcome previous = new AgentRunOutcome();
+        previous.setPhase(OrchestrationPhase.CODING);
+        previous.setOutcome(RunOutcome.FAILED);
+        previous.setPatchFailureCounts(Map.of(
+                "repo-1/app/src/main/res/values/strings.xml", 2,
+                "repo-1/app/src/main/java/com/example/hellokotlin/BookListActivity.kt", 1));
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, previous,
+                UUID.randomUUID(), null, null, null, null);
+
+        RetryContext retry = input.getRetryContext();
+        assertThat(retry).isNotNull();
+        assertThat(retry.getPatchFailureCounts()).containsOnlyKeys(
+                "repo-1/app/src/main/java/com/example/hellokotlin/BookListActivity.kt");
+        assertThat(retry.getPatchFailureCounts()).doesNotContainKey(
+                "repo-1/app/src/main/res/values/strings.xml");
+    }
+
+    @Test
+    void patchFailureCountsAreKeptWhenStepDeclaresNoTargetFiles() {
+        // 历史步骤未声明目标文件时保留全部计数（兼容旧数据），不误杀。
+        TaskEntity task = task();
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setInstruction("实现");
+        AgentRunOutcome previous = new AgentRunOutcome();
+        previous.setPhase(OrchestrationPhase.CODING);
+        previous.setOutcome(RunOutcome.FAILED);
+        previous.setPatchFailureCounts(Map.of("repo-1/conf/app.yml", 1));
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, previous,
+                UUID.randomUUID(), null, null, null, null);
+
+        assertThat(input.getRetryContext().getPatchFailureCounts()).containsOnlyKeys("repo-1/conf/app.yml");
+    }
 }
