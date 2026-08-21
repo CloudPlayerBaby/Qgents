@@ -2,6 +2,8 @@ package qg.qgent.orchestration.preview;
 
 import qg.qgent.dto.WorkspaceDiffPreviewFileResponse;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -138,9 +140,68 @@ public final class DiffPatchFileParser {
 
     private static String unquote(String path) {
         if (path.length() >= 2 && path.startsWith("\"") && path.endsWith("\"")) {
-            return path.substring(1, path.length() - 1).replace("\\\"", "\"");
+            path = path.substring(1, path.length() - 1);
         }
-        return path;
+        return decodeGitQuotedPath(path);
+    }
+
+    /**
+     * Decode Git's C-style quoted path. With core.quotepath=true, non-ASCII UTF-8
+     * bytes are emitted as three-digit octal escapes, e.g. \344\275\240.
+     * Keep this compatibility path for snapshots created before the Worker fix.
+     */
+    private static String decodeGitQuotedPath(String path) {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream(path.length());
+        for (int index = 0; index < path.length();) {
+            char value = path.charAt(index);
+            if (value != '\\' || index + 1 >= path.length()) {
+                int codePoint = path.codePointAt(index);
+                byte[] encoded = new String(Character.toChars(codePoint)).getBytes(StandardCharsets.UTF_8);
+                bytes.writeBytes(encoded);
+                index += Character.charCount(codePoint);
+                continue;
+            }
+
+            char escaped = path.charAt(index + 1);
+            if (escaped >= '0' && escaped <= '7') {
+                int end = index + 1;
+                int octal = 0;
+                int digits = 0;
+                while (end < path.length() && digits < 3) {
+                    char digit = path.charAt(end);
+                    if (digit < '0' || digit > '7') {
+                        break;
+                    }
+                    octal = octal * 8 + (digit - '0');
+                    end++;
+                    digits++;
+                }
+                bytes.write(octal);
+                index = end;
+                continue;
+            }
+
+            Character escapedCharacter = switch (escaped) {
+                case 'a' -> 7;
+                case 'b' -> 8;
+                case 't' -> 9;
+                case 'n' -> 10;
+                case 'v' -> 11;
+                case 'f' -> 12;
+                case 'r' -> 13;
+                case '\\' -> '\\';
+                case '"' -> '"';
+                default -> null;
+            };
+            if (escapedCharacter == null) {
+                bytes.write('\\');
+                bytes.write(escaped);
+            } else {
+                bytes.write(escapedCharacter);
+            }
+            index += 2;
+        }
+        return bytes.toString(StandardCharsets.UTF_8);
     }
 
     private static void close(FileCursor current, List<WorkspaceDiffPreviewFileResponse> files,

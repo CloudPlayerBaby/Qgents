@@ -123,4 +123,19 @@ class DiffPatchFileParserTest {
         assertThat(files.get(0).getAdditions()).isEqualTo(1);
         assertThat(files.get(0).getDeletions()).isEqualTo(1);
     }
+
+    @Test
+    void decodesGitOctalEscapedUtf8Path() {
+        String patch = "diff --git \"a/\\344\\275\\240\\345\\245\\275.txt\" \"b/\\344\\275\\240\\345\\245\\275.txt\"\n"
+                + "--- \"a/\\344\\275\\240\\345\\245\\275.txt\"\n"
+                + "+++ \"b/\\344\\275\\240\\345\\245\\275.txt\"\n"
+                + "@@ -1 +1 @@\n"
+                + "-old\n"
+                + "+new\n";
+
+        List<WorkspaceDiffPreviewFileResponse> files = DiffPatchFileParser.parse(patch);
+
+        assertThat(files).hasSize(1);
+        assertThat(files.get(0).getPath()).isEqualTo("你好.txt");
+    }
 }

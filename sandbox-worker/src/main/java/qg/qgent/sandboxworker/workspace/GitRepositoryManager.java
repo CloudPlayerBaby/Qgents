@@ -191,7 +191,7 @@ public class GitRepositoryManager {
             requireSuccess(run(List.of("git", "-C", repository.toString(), "add", "-A"), environment),
                     "GIT_DIFF_FAILED", "Cannot collect worktree changes");
             CommandResult result = requireSuccess(
-                    runLimited(List.of("git", "-C", repository.toString(), "diff", "--cached",
+                    runLimited(List.of("git", "-c", "core.quotepath=false", "-C", repository.toString(), "diff", "--cached",
                             "--binary", "--no-ext-diff", "--no-color", "HEAD"), environment, MAX_DIFF_BYTES),
                     "GIT_DIFF_FAILED", "Cannot generate Git diff");
             byte[] patch = result.stdout().getBytes(StandardCharsets.UTF_8);
