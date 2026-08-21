@@ -198,6 +198,50 @@ class CodingToolsTest {
     }
 
     @Test
+    void ensureTrailingNewlineOmitsExpectedHashUsesKnownHashFromPriorRead() {
+        when(codeAccess.readFile(workspaceId, "src/main/java/X.java"))
+                .thenReturn(WorkspaceFileReadResult.ok("src/main/java/X.java", "code", HASH));
+        when(writer.ensureTrailingNewline(workspaceId, "src/main/java/X.java", HASH))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", "new-hash", true));
+        CodingTools tools = tools();
+        tools.readFile("src/main/java/X.java");
+
+        Map<String, Object> result = tools.ensureTrailingNewline("src/main/java/X.java", null);
+
+        assertThat(result.get("ok")).isEqualTo(true);
+        assertThat(result.get("changed")).isEqualTo(true);
+        // 省略 expectedHash 时用本会话 read_file 确认过的哈希兜底，不再因参数缺失直接拒绝。
+        verify(writer).ensureTrailingNewline(workspaceId, "src/main/java/X.java", HASH);
+    }
+
+    @Test
+    void ensureTrailingNewlineOmitsExpectedHashWithoutPriorReadIsToolError() {
+        Map<String, Object> result = tools().ensureTrailingNewline("src/main/java/X.java", null);
+
+        assertThat(result.get("ok")).isEqualTo(false);
+        assertThat((String) result.get("error")).contains("read_file first");
+        verify(writer, never()).ensureTrailingNewline(any(), any(), any());
+    }
+
+    @Test
+    void ensureTrailingNewlineChainsNewHashFromSuccessfulWriteWithoutReread() {
+        // 第一次成功后账本更新为 NEW_HASH；第二次省略 expectedHash 直接命中新哈希。
+        when(writer.ensureTrailingNewline(workspaceId, "src/main/java/X.java", HASH))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", NEW_HASH, true));
+        when(writer.ensureTrailingNewline(workspaceId, "src/main/java/X.java", NEW_HASH))
+                .thenReturn(WorkspaceWriteResult.ok("src/main/java/X.java", NEWER_HASH, false));
+        CodingTools tools = tools();
+
+        tools.ensureTrailingNewline("src/main/java/X.java", HASH);
+        Map<String, Object> second = tools.ensureTrailingNewline("src/main/java/X.java", null);
+
+        assertThat(second.get("ok")).isEqualTo(true);
+        assertThat(second.get("changed")).isEqualTo(false);
+        assertThat(second.get("newSha")).isEqualTo(NEWER_HASH);
+        verify(writer).ensureTrailingNewline(workspaceId, "src/main/java/X.java", NEW_HASH);
+    }
+
+    @Test
     void applyPatchInfraFailureThrowsInfraException() {
         when(writer.patchFile(workspaceId, "src/main/java/X.java", HASH, "patch"))
                 .thenReturn(WorkspaceWriteResult.infraFail("src/main/java/X.java", "workspace root is not available"));

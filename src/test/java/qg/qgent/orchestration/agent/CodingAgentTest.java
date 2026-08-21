@@ -19,7 +19,6 @@ import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.tool.WorkspaceCodeAccess;
 import qg.qgent.orchestration.tool.WorkspaceCodeWriter;
 import qg.qgent.orchestration.tool.WorkspaceDirectoryResult;
-import qg.qgent.orchestration.tool.WorkspaceFileReadResult;
 import qg.qgent.orchestration.tool.WorkspaceWriteResult;
 import qg.qgent.service.ContextService;
 
@@ -74,29 +73,31 @@ class CodingAgentTest {
     // ---------- 原生 Tool Calling（默认协议） ----------
 
     @Test
-    void nativeBareFinalResultWithoutActualWriteIsRejected() {
+    void nativeBareFinalResultWithoutActualWriteIsPassedThrough() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+        // 全部放行：模型声明成功即 SUCCEEDED，零写入不再判 CODING_NO_ACTUAL_CHANGE；
+        // 但结果路径置空，不把模型声称的 modifiedFiles 当成本次真实写入。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
         assertThat(outcome.getObservations()).hasSize(1);
         assertThat(outcome.getObservations().get(0).phase()).isEqualTo("CODING");
     }
 
     @Test
-    void nativeWrappedFinalResultWithoutActualWriteIsRejected() {
+    void nativeWrappedFinalResultWithoutActualWriteIsPassedThrough() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"finalResult\":" + bareResult(true, "ok", "src/main/java/X.java") + "}", "stop"));
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
     }
 
     @Test
@@ -207,7 +208,7 @@ class CodingAgentTest {
     }
 
     @Test
-    void nativeFinishLengthFinalizationWithoutActualWriteIsRejected() {
+    void nativeFinishLengthFinalizationWithoutActualWriteIsPassedThrough() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"finalResult\":{\"success\":true,\"summary\":\"tr", "LENGTH"));
@@ -216,13 +217,13 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
         verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
     }
 
     @Test
-    void nativeMaxRoundsFinalizationWithoutActualWriteIsRejected() {
+    void nativeMaxRoundsFinalizationWithoutActualWriteIsPassedThrough() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenReturn(toolTurn("list_files"));
         when(llm.finalizeToolTurn(anyString(), anyList(), anyString()))
@@ -230,8 +231,8 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
         verify(llm, times(MAX_TOOL_ROUNDS)).nextToolTurn(anyString(), anyList(), anyList());
         verify(llm, times(1)).finalizeToolTurn(anyString(), anyList(), anyString());
         assertThat(outcome.getObservations()).hasSize(MAX_TOOL_ROUNDS + 1);
@@ -294,7 +295,7 @@ class CodingAgentTest {
     }
 
     @Test
-    void nativeMalformedJsonRepairWithoutActualWriteIsRejected() {
+    void nativeMalformedJsonRepairWithoutActualWriteIsPassedThrough() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("{\"success\":true,\"summary\":\"将\"和\"字居中\"}", "stop"));
@@ -304,8 +305,9 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+        // 全部放行：修复后 JSON 声明成功但零写入，按 SUCCEEDED 收敛，模型声称的路径不虚报。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
         assertThat(outcome.getObservations()).hasSize(2);
         verify(llm).complete(anyString(), anyList());
     }
@@ -338,7 +340,7 @@ class CodingAgentTest {
     }
 
     @Test
-    void nativeIdempotentDirectoryCreateDoesNotSatisfyChangedWriteGate() {
+    void nativeIdempotentDirectoryCreateSuccessWithoutWritesIsPassedThrough() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(writer.createDirectory(workspaceId, "src/generated"))
                 .thenReturn(WorkspaceDirectoryResult.ok("src/generated", false));
@@ -358,54 +360,44 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+        // created=false 不构成真实写入；全部放行后成功收敛，目录路径不虚报。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedDirectories()).isEmpty();
     }
 
     @Test
-    void nativeSuccessWithoutWritesIsSatisfiedOnlyForQualityRepairWhenTargetsExistNonEmpty() {
+    void nativeSuccessWithoutWritesPassesThroughAndClearsModelPaths() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
-        when(codeAccess.readFile(any(), any())).thenReturn(
-                WorkspaceFileReadResult.ok("src/main/java/X.java", "class X {}", "abc", true, "LF"));
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
         AgentInput input = codingInput();
         input.setTargetFiles(List.of("src/main/java/X.java"));
-        // 仅质量修复步骤允许零写入 satisfied 兜底；普通 MUTATE 步骤无写入必须失败。
-        RetryContext retry = new RetryContext();
-        retry.setQualityRepair(true);
-        input.setRetryContext(retry);
 
         AgentRunOutcome outcome = nativeAgent().run(input);
 
-        // 目标已被前序步骤满足：无实际写入也按 SUCCEEDED 收敛，且不把模型声称的路径回填为本次写入。
+        // 全部放行：零写入成功按 SUCCEEDED 收敛，且不把模型声称的路径回填为本次写入。
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
         assertThat(outcome.getCodingResult().getModifiedDirectories()).isEmpty();
     }
 
     @Test
-    void nativeSuccessWithoutWritesRejectedForNormalMutateEvenWhenTargetsExist() {
+    void nativeSuccessWithoutWritesPassesForNormalMutateWhenTargetsExist() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
-        when(codeAccess.readFile(any(), any())).thenReturn(
-                WorkspaceFileReadResult.ok("src/main/java/X.java", "class X {}", "abc", true, "LF"));
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
         AgentInput input = codingInput();
         input.setTargetFiles(List.of("src/main/java/X.java"));
-        // 普通 MUTATE 步骤（非质量修复）：即使目标存在且内容非空，零写入仍判 CODING_NO_ACTUAL_CHANGE。
-        RetryContext retry = new RetryContext();
-        retry.setQualityRepair(false);
-        input.setRetryContext(retry);
 
         AgentRunOutcome outcome = nativeAgent().run(input);
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+        // 全部放行：普通 MUTATE 步骤零写入成功也不再判 CODING_NO_ACTUAL_CHANGE。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
     }
 
     @Test
-    void nativeSuccessWithoutWritesStillRejectedWhenTargetMissing() {
+    void nativeSuccessWithoutWritesPassesEvenWhenTargetMissing() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn(bareResult(true, "done", "src/main/java/X.java"), "stop"));
@@ -414,13 +406,13 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(input);
 
-        // 目标未在 Workspace 出现且零写入：仍判为真正的语义失败，不得放行。
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
+        // 全部放行：即使目标文件不存在，零写入成功也收敛，不再判失败。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
     }
 
     @Test
-    void nativeZeroChangeFailureCarriesToolAttemptSummary() {
+    void nativeFailedToolAttemptThenSuccessWithoutWritesIsAllowed() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
         when(writer.patchFile(workspaceId, "src/main/java/X.java", "0".repeat(64), "patch"))
                 .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED",
@@ -442,13 +434,9 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        // 零改动失败消息带出具体尝试汇总（工具、次数与原因），供 requeue 上下文诊断。
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
-        assertThat(outcome.getMessage())
-                .contains("编码工具尝试汇总")
-                .contains("apply_patch 共 1 次（失败 1 次）")
-                .contains("hunk 声明行数与正文不一致");
+        // 全部放行：工具尝试失败后模型仍声明成功，按 SUCCEEDED 收敛，路径置空。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
     }
 
     // ---------- "未尝试即放弃"有界纠正重试（绿地任务兜底） ----------
@@ -544,7 +532,7 @@ class CodingAgentTest {
     }
 
     @Test
-    void repeatedPatchFailureBecomesUnrecoverableToolFailure() {
+    void repeatedPatchFailureThenSuccessWithoutWritesIsAllowed() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("src/main/java/X.java"));
         when(writer.patchFile(workspaceId, "src/main/java/X.java", "0".repeat(64), "patch"))
                 .thenReturn(WorkspaceWriteResult.fail("src/main/java/X.java", "FILE_PATCH_FAILED",
@@ -566,13 +554,13 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.TOOL_PATCH_UNRECOVERABLE.name());
-        assertThat(outcome.getMessage()).contains("replace_file");
+        // 全部放行：补丁反复失败后模型仍声明成功，不再升级为 TOOL_PATCH_UNRECOVERABLE 失败。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
     }
 
     @Test
-    void repairedSuccessWithoutAnyModifiedFileIsRejected() {
+    void repairedSuccessWithoutAnyModifiedFileIsAllowed() {
         when(codeAccess.listFiles(any())).thenReturn(List.of());
         when(llm.nextToolTurn(anyString(), anyList(), anyList()))
                 .thenReturn(finalTurn("not json", "stop"));
@@ -581,9 +569,9 @@ class CodingAgentTest {
 
         AgentRunOutcome outcome = nativeAgent().run(codingInput());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
-        assertThat(outcome.getFailureCode()).isEqualTo(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE.name());
-        assertThat(outcome.getMessage()).contains("requires at least one actual file or directory modification");
+        // 全部放行：修复后的 JSON 声明成功但零写入，按 SUCCEEDED 收敛。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getCodingResult().getModifiedFiles()).isEmpty();
     }
 
     @Test

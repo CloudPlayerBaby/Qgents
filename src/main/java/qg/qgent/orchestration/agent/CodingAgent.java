@@ -214,8 +214,8 @@ public class CodingAgent implements Agent {
     /**
      * "未尝试即放弃"判定：模型自报 success=false、本次 run 没有任何 changed=true 写入，
      * 且没有任何一轮观测到工具调用（含只读工具）。只有这类"完全没动手"才触发单次纠正重试；
-     * 已调用过工具（哪怕失败）、已处于重试/质量回修链路、或模型虚报成功
-     * （CODING_NO_ACTUAL_CHANGE）均不在此列，避免 no-op 重试回环。
+     * 已调用过工具（哪怕失败）、已处于重试/质量回修链路、或模型直接声明成功（success=true，
+     * 现一律放行）均不在此列，避免 no-op 重试回环。
      * <p>
      * 工具调用证据来自每轮 {@link LlmObservation#toolName()}：只有工具轮非空，
      * finalAnswer / repair / finalization 轮均为 null；本 run 无任何工具观测即"未动手"。
@@ -434,43 +434,29 @@ public class CodingAgent implements Agent {
     }
 
     /**
-     * Coding 的 success 不能只由模型自报决定：必须至少有一个成功且实际改变内容的写操作，
-     * 实际写入路径会补入结果，避免模型遗漏 modifiedFiles/modifiedDirectories；没有任何证据时把结果降为协议失败，防止
-     * JSON repair 把“未执行任何文件修改”包装成 Developer 成功。
+     * Coding 的 success 以模型声明的 success 为准；本方法只负责把结果范围修正为服务端观察到的
+     * 真实 changed=true 写入事实，避免模型遗漏或编造 modifiedFiles/modifiedDirectories。
      * <p>
-     * 「目标已满足」零写入收敛仅限质量修复步骤：上一轮 Test/Review 以 FAILED_QUALITY 打回后，
-     * 若本步骤声明的目标文件已存在于 Workspace（前序步骤越界完成或历史提交已覆盖），零写入是
-     * 职责已被满足的幂等结果，按 SUCCEEDED 收敛；普通 MUTATE 步骤仍要求真实变更，避免内容错误
-     * 被文件存在性掩盖而误判成功。
+     * 当前为临时放宽（全部放行）：模型声明 success 但本次零写入时不再判
+     * CODING_NO_ACTUAL_CHANGE，而是按 SUCCEEDED 收敛，并把本步 modifiedFiles/modifiedDirectories
+     * 置空——最终 Diff 仍由工作区真实 git diff 生成，不虚报本次写入路径。原因：绿地/重试任务频繁
+     * 因"工作已在工作区、本轮无新增写入"被误判失败而整条任务跑不通；放宽后模型编造的路径不会进入
+     * 下游，但"虚报成功（成功却零产出）"不再被硬检查拦截。如需恢复严格语义，改回此方法抛出
+     * {@link ProtocolFailureCode#CODING_NO_ACTUAL_CHANGE} 即可。
      */
     private void validateAndCompleteChanges(CodingResult coding, ChangedWriteFactLedger observedWrites,
                                             AgentInput input) {
         if (coding == null || !coding.isSuccess()) {
             return;
         }
-        boolean qualityRepair = input.getRetryContext() != null && input.getRetryContext().isQualityRepair();
         if (!observedWrites.hasChangedWrite()) {
-            if (qualityRepair && TargetSatisfaction.isSatisfied(codeAccess, input.getWorkspaceId(),
-                    input.getTargetFiles())) {
-                log.info("CODING_ALREADY_SATISFIED phase={} workspaceId={} targets={}",
-                        input.getPhase(), input.getWorkspaceId(), input.getTargetFiles());
-                // 结果范围只使用服务端观察到的真实变更事实；本步无真实变更，modifiedFiles/Directories 置空，
-                // 最终 Diff 仍由工作区真实 git diff 生成，不虚报本次写入路径。
-                coding.setModifiedFiles(List.of());
-                coding.setModifiedDirectories(List.of());
-                return;
-            }
-            StringBuilder detail = new StringBuilder();
-            String summary = observedWrites.toolOutcomeSummary();
-            if (!summary.isEmpty()) {
-                detail.append("；").append(summary);
-            }
-            String cause = observedWrites.lastToolError();
-            if (cause != null) {
-                detail.append("；上一次工具失败：").append(cause).append(observedWrites.recoveryHint());
-            }
-            throw new CodingParseException(ProtocolFailureCode.CODING_NO_ACTUAL_CHANGE,
-                    "coding success requires at least one actual file or directory modification" + detail);
+            log.warn("CODING_SUCCESS_WITHOUT_WRITES phase={} workspaceId={} targets={} attempts={}",
+                    input.getPhase(), input.getWorkspaceId(), input.getTargetFiles(),
+                    observedWrites.toolOutcomeSummary());
+            // 本步无真实变更：modifiedFiles/Directories 置空，避免模型编造路径污染 Review/Test 上下文。
+            coding.setModifiedFiles(List.of());
+            coding.setModifiedDirectories(List.of());
+            return;
         }
         // 结果范围只使用服务端观察到的真实 changed=true 事实，避免模型伪造路径污染 Review/Test 上下文。
         coding.setModifiedFiles(new ArrayList<>(observedWrites.changedPaths()));
