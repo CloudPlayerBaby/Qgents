@@ -255,6 +255,20 @@ public class TaskService {
             batch.setUpdatedAt(now);
             diffReviewBatches.updateById(batch);
             taskDiffs.markReviewBatchSuperseded(batch.getId(), now);
+            // 被取代批次只可能属于已完成编码、正在等待确认的旧任务（其状态必为
+            // WAITING_DIFF_CONFIRMATION）。若不同步把它迁出，该任务会永远卡在
+            // 「未确认 Diff」：confirm/reject/cancel 均被 409 拒绝且无恢复调度兜底。
+            TaskEntity owner = tasks.selectByIdForUpdate(batch.getTaskId());
+            if (owner != null && "WAITING_DIFF_CONFIRMATION".equals(owner.getStatus())) {
+                owner.setStatus("FAILED");
+                owner.setFailureCode("DIFF_REVIEW_SUPERSEDED");
+                owner.setFailureReason("最终 Diff 已被同一 Workspace 的后续修改取代，无法继续确认");
+                owner.setFailureRetryable(false);
+                owner.setFailureOccurredAt(now);
+                owner.setUpdatedAt(now);
+                tasks.updateById(owner);
+                publishTaskUpdated(owner);
+            }
             eventService.publish(batch.getProjectId(), requirementGroupId, "diff-review.superseded", batch.getId().toString(),
                     Map.of("projectId", batch.getProjectId(), "workspaceId", workspaceId,
                             "taskId", batch.getTaskId(), "reviewBatchId", batch.getId(),

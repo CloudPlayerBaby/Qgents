@@ -115,6 +115,7 @@ public final class ExecutionContentSanitizer {
         }
         return switch (code.toUpperCase(Locale.ROOT)) {
             case "EXECUTION_FAILED" -> "执行步骤未通过，请查看脱敏失败摘要";
+            case "DIFF_REVIEW_SUPERSEDED" -> "Diff 已被后续修改取代";
             case "LLM_TOOL_CALL_MALFORMED", "LLM_TOOL_NOT_ALLOWED", "LLM_TOOL_ARGUMENT_INVALID" ->
                     "模型工具协议未能稳定完成";
             case "CODING_NO_ACTUAL_CHANGE" -> "代码步骤未产生实际文件变更";
@@ -156,7 +157,7 @@ public final class ExecutionContentSanitizer {
                     "LLM_TOOL_ARGUMENT_INVALID", "CODING_NO_ACTUAL_CHANGE", "FILE_PATCH_FAILED",
                     "FILE_HASH_MISMATCH", "TOOL_PATH_INVALID", "TOOL_ARGUMENT_INVALID",
                     "PROCESS_EXIT_NONZERO", "AGENT_RUN_TIMEOUT", "TOOL_EXECUTION_FAILED",
-                    "UNCLASSIFIED_FAILURE",
+                    "UNCLASSIFIED_FAILURE", "DIFF_REVIEW_SUPERSEDED",
                     "LLM_FINISH_LENGTH", "LLM_CONTEXT_LIMIT", "SANDBOX_WORKER_UNAVAILABLE",
                     "SANDBOX_WORKER_ERROR", "WORKSPACE_WRITE_LEASE_LOST", "SANDBOX_NOT_FOUND",
                     "DOCKER_EXEC_FAILED", "TEST_EXECUTION_TIMEOUT", "BUILD_ENVIRONMENT_UNAVAILABLE",
@@ -195,6 +196,8 @@ public final class ExecutionContentSanitizer {
                     "REVIEW_ASSERTION_TARGET_NOT_FOUND", "TASK_QUALITY_LOOPS_EXHAUSTED",
                     "QUALITY_REPAIR_STEP_UNAVAILABLE", "TASK_FINALIZATION_DIFF",
                     "WORKER_PUSH_FAILED", "DRY_RUN_TIMEOUT" -> true;
+            // 被取代的任务没有可自动恢复的路径：旧 Diff 快照已失效，重试无法重新交付。
+            case "DIFF_REVIEW_SUPERSEDED" -> false;
             default -> false;
         };
     }

@@ -311,6 +311,7 @@ class TaskServiceTest {
     void createContinuationSupersedesPendingDiffInSameWorkspace() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
         UUID continuationTaskId = UUID.randomUUID(), workspaceId = UUID.randomUUID(), repositoryId = UUID.randomUUID();
+        UUID oldTaskId = UUID.randomUUID();
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
         TaskEntity continuation = task(continuationTaskId, projectId, actor);
         continuation.setRequirementGroupId(groupId);
@@ -324,11 +325,20 @@ class TaskServiceTest {
         when(repositories.selectByWorkspace(workspaceId))
                 .thenReturn(List.of(worktree(repositoryId, "repo-1", "base", "feat/task-x")));
 
+        // 被取代的旧批次归属一个已进入 WAITING_DIFF_CONFIRMATION 的旧任务。
+        TaskEntity oldTask = task(oldTaskId, projectId, actor);
+        oldTask.setRequirementGroupId(groupId);
+        oldTask.setWorkspaceId(workspaceId);
+        oldTask.setStatus("WAITING_DIFF_CONFIRMATION");
+        when(tasks.selectByIdForUpdate(oldTaskId)).thenReturn(oldTask);
+
         DiffReviewBatchMapper reviewBatches = mock(DiffReviewBatchMapper.class);
         DiffMapper taskDiffs = mock(DiffMapper.class);
         DiffReviewBatchEntity oldBatch = new DiffReviewBatchEntity();
         oldBatch.setId(UUID.randomUUID());
         oldBatch.setWorkspaceId(workspaceId);
+        oldBatch.setTaskId(oldTaskId);
+        oldBatch.setProjectId(projectId);
         oldBatch.setReviewStatus("PENDING_CONFIRMATION");
         when(reviewBatches.selectPendingByWorkspaceForUpdate(workspaceId)).thenReturn(List.of(oldBatch));
         service.setDiffReviewStateMappers(reviewBatches, taskDiffs);
@@ -343,6 +353,12 @@ class TaskServiceTest {
         assertEquals("被同一 Workspace 的后续修改取代", oldBatch.getReviewReason());
         verify(reviewBatches).updateById(oldBatch);
         verify(taskDiffs).markReviewBatchSuperseded(eq(oldBatch.getId()), any());
+        // 旧任务必须从 WAITING_DIFF_CONFIRMATION 迁到 FAILED，避免永远卡在「未确认 Diff」。
+        assertEquals("FAILED", oldTask.getStatus());
+        assertEquals("DIFF_REVIEW_SUPERSEDED", oldTask.getFailureCode());
+        assertEquals(Boolean.FALSE, oldTask.getFailureRetryable());
+        verify(tasks).updateById(oldTask);
+        verify(events).publish(eq(projectId), eq(groupId), eq("task.updated"), eq(oldTaskId.toString()), any());
     }
 
     @Test

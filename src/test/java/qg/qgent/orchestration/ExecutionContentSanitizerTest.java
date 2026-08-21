@@ -80,4 +80,14 @@ class ExecutionContentSanitizerTest {
         assertThat(ExecutionContentSanitizer.infrastructureDescription("GIT_REMOTE_AUTH_FAILED"))
                 .isEqualTo("代码仓库同步失败");
     }
+
+    @Test
+    void supersededDiffReviewIsPublicNonRetryableAndHasNoRecovery() {
+        // 被后续 Workspace 修改取代：稳定码公开、不可重试（重试无法重新交付旧 Diff 快照）。
+        assertThat(ExecutionContentSanitizer.publicFailureCode("DIFF_REVIEW_SUPERSEDED"))
+                .isEqualTo("DIFF_REVIEW_SUPERSEDED");
+        assertThat(ExecutionContentSanitizer.userFailureDescription("DIFF_REVIEW_SUPERSEDED"))
+                .isEqualTo("Diff 已被后续修改取代");
+        assertThat(ExecutionContentSanitizer.userFailureRetryable("DIFF_REVIEW_SUPERSEDED")).isFalse();
+    }
 }

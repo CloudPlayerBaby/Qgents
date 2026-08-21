@@ -295,6 +295,20 @@ public class FinalDiffBundleService {
             old.setUpdatedAt(now);
             batches.updateById(old);
             diffs.markReviewBatchSuperseded(old.getId(), now);
+            // 与 TaskService.supersedePendingReviews 同口径：被取代批次所属的旧任务若仍停在
+            // WAITING_DIFF_CONFIRMATION，必须一并迁到 FAILED，避免其永久卡在「未确认 Diff」。
+            TaskEntity owner = tasks.selectByIdForUpdate(old.getTaskId());
+            if (owner != null && "WAITING_DIFF_CONFIRMATION".equals(owner.getStatus())) {
+                owner.setStatus("FAILED");
+                owner.setFailureCode("DIFF_REVIEW_SUPERSEDED");
+                owner.setFailureReason("最终 Diff 已被同一 Workspace 的后续修改取代，无法继续确认");
+                owner.setFailureRetryable(false);
+                owner.setFailureOccurredAt(now);
+                owner.setUpdatedAt(now);
+                tasks.updateById(owner);
+                events.publish(owner.getProjectId(), owner.getRequirementGroupId(), "task.updated",
+                        owner.getId().toString(), TaskEventPayloads.taskUpdated(owner));
+            }
         }
     }
 
