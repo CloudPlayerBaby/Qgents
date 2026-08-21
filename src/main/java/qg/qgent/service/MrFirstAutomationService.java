@@ -9,6 +9,7 @@ import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 import qg.qgent.dto.MergeRequestCreateRequest;
 import qg.qgent.dto.MergeRequestSummaryResponse;
+import qg.qgent.api.ApiException;
 import qg.qgent.entity.DryRunEntity;
 import qg.qgent.entity.MrPreflightRequestEntity;
 import qg.qgent.entity.ProjectRepositoryEntity;
@@ -24,6 +25,10 @@ import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
 import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 
 import java.util.List;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.UUID;
 
 /**
@@ -37,6 +42,9 @@ import java.util.UUID;
 @Service
 @Slf4j
 public class MrFirstAutomationService {
+    private static final Duration INITIAL_LOCK_RETRY_DELAY = Duration.ofSeconds(5);
+    private static final Duration MAX_LOCK_RETRY_DELAY = Duration.ofMinutes(1);
+
     private final TaskMapper tasks;
     private final WorkspaceRepositoryMapper worktrees;
     private final ProjectRepositoryMapper repositories;
@@ -46,6 +54,10 @@ public class MrFirstAutomationService {
     private final MergeRequestService mrService;
     private final PreflightGateService preflightGates;
     private final MrPreflightService preflightService;
+    /** 防止事件监听器与恢复调度器在同一进程内同时刷新同一个 Git Store。 */
+    private final Map<String, Boolean> preflightInFlight = new ConcurrentHashMap<>();
+    /** Git Store 锁竞争时的短暂退避，避免失败请求形成重试风暴。 */
+    private final Map<String, LockRetryState> lockRetryStates = new ConcurrentHashMap<>();
 
     public MrFirstAutomationService(TaskMapper tasks, WorkspaceRepositoryMapper worktrees,
                                     ProjectRepositoryMapper repositories, DryRunMapper dryRuns,
@@ -123,17 +135,71 @@ public class MrFirstAutomationService {
         }
         List<WorkspaceRepositoryEntity> values = worktrees.selectByWorkspace(task.getWorkspaceId());
         for (WorkspaceRepositoryEntity worktree : values) {
+            String repositoryKey = repositoryKey(projectId, worktree);
+            if (isInLockRetry(repositoryKey)) {
+                log.debug("preflight request deferred during Git Store lock backoff projectId={} taskId={} repositoryId={}",
+                        projectId, taskId, worktree.getProjectRepositoryId());
+                continue;
+            }
+            if (preflightInFlight.putIfAbsent(repositoryKey, Boolean.TRUE) != null) {
+                log.debug("preflight request deduplicated while in flight projectId={} taskId={} repositoryId={}",
+                        projectId, taskId, worktree.getProjectRepositoryId());
+                continue;
+            }
             try {
                 preflightService.requestPreflight(projectId, task.getCreatedBy(), taskId,
                         worktree.getProjectRepositoryId(), null);
+                lockRetryStates.remove(repositoryKey);
                 log.info("preflight requested projectId={} taskId={} repositoryId={}",
                         projectId, taskId, worktree.getProjectRepositoryId());
             } catch (RuntimeException failure) {
                 // 预检申请失败（如分支被锁定）不应把已交付的 Task 标成开发失败；恢复调度器稍后重试。
+                if (isGitRepositoryLockFailure(failure)) {
+                    scheduleLockRetry(repositoryKey);
+                }
                 log.warn("preflight request failed projectId={} taskId={} repositoryId={}: {}",
                         projectId, taskId, worktree.getProjectRepositoryId(), failure.getMessage());
+            } finally {
+                preflightInFlight.remove(repositoryKey);
             }
         }
+    }
+
+    private String repositoryKey(UUID projectId, WorkspaceRepositoryEntity worktree) {
+        return projectId + ":" + worktree.getProjectRepositoryId() + ":"
+                + (worktree.getSourceBranch() == null ? "" : worktree.getSourceBranch());
+    }
+
+    private boolean isInLockRetry(String repositoryKey) {
+        LockRetryState state = lockRetryStates.get(repositoryKey);
+        return state != null && Instant.now().isBefore(state.nextAttemptAt());
+    }
+
+    private void scheduleLockRetry(String repositoryKey) {
+        lockRetryStates.compute(repositoryKey, (key, previous) -> {
+            int failures = previous == null ? 1 : previous.failures() + 1;
+            long delaySeconds = Math.min(MAX_LOCK_RETRY_DELAY.toSeconds(),
+                    INITIAL_LOCK_RETRY_DELAY.toSeconds() << Math.min(failures - 1, 10));
+            return new LockRetryState(failures, Instant.now().plusSeconds(delaySeconds));
+        });
+    }
+
+    private boolean isGitRepositoryLockFailure(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof ApiException apiException
+                    && "GIT_REPOSITORY_LOCK_FAILED".equals(apiException.code())) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null && (message.contains("GIT_REPOSITORY_LOCK_FAILED")
+                    || message.toLowerCase(java.util.Locale.ROOT).contains("cannot lock shared git repository"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private record LockRetryState(int failures, Instant nextAttemptAt) {
     }
 
     private void createMergeRequest(UUID projectId, UUID dryRunId) {
