@@ -259,11 +259,37 @@ public class TaskRunService {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_NOT_RESUMABLE",
                     "任务当前状态（" + task.getStatus() + "）不允许续跑");
         }
+        // 确定性配置错误拒绝异步续跑：基线分支不存在等配置问题不会因重试自动恢复，异步受理后
+        // 编排器必然再次失败，且失败被监听器静默吞掉，前端只会看到「重试已受理」却永远等不到
+        // 新运行。这里同步返回 409，让前端立即展示可修复原因（如「修改基线分支后重试」）。
+        String taskFailureCode = task.getFailureCode();
+        if (isDeterministicConfigError(taskFailureCode)) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_RETRY_BLOCKED_BY_CONFIG",
+                    "任务因配置问题失败（" + taskFailureCode + "），请先修复配置后重试："
+                            + ExecutionContentSanitizer.userFailureDescription(taskFailureCode));
+        }
         // 异步续跑在事务提交后触发；认领（claimForResume）在编排侧原子完成，此处仅受理。
         // retryOfTaskRunId = 源失败运行 ID，续跑产生的首个 TaskRun 指向它，审计链可追溯。
         eventPublisher.publishEvent(new TaskResumeRequestedEvent(projectId, source.getTaskId(),
                 source.getTaskStepId(), source.getId()));
         return toSummary(source);
+    }
+
+    /**
+     * 确定性配置错误：重试无法自动修复，必须先由用户修改仓库/分支/环境配置。
+     * 这类失败码当前由 {@code ExecutionContentSanitizer.userFailureRetryable} 标为可重试，
+     * 但那是对「基础设施瞬态」的语义；配置错误即使重试也必然再次失败，不应 202 受理后静默吞掉。
+     */
+    private static boolean isDeterministicConfigError(String failureCode) {
+        if (failureCode == null || failureCode.isBlank()) {
+            return false;
+        }
+        return switch (failureCode.toUpperCase(Locale.ROOT)) {
+            case "GIT_BRANCH_NOT_FOUND", "GIT_BASE_REF_NOT_FOUND", "GIT_REF_NOT_FOUND",
+                    "TEST_COMMAND_NOT_FOUND", "BUILD_ENVIRONMENT_UNAVAILABLE", "REVIEW_ASSERTION_TARGET_NOT_FOUND",
+                    "QUALITY_REPAIR_STEP_UNAVAILABLE" -> true;
+            default -> false;
+        };
     }
 
     /**

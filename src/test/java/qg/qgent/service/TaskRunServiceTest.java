@@ -660,6 +660,32 @@ class TaskRunServiceTest {
                 && e.retryOfTaskRunId().equals(runId)));
     }
 
+    /** 确定性配置错误（如基线分支不存在）拒绝异步续跑：同步返回 409，不发布续跑事件。 */
+    @Test
+    void retryRejectsDeterministicConfigError() {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskRunEntity failed = run(projectId, runId);
+        failed.setTaskId(taskId);
+        failed.setTaskStepId(stepId);
+        failed.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(failed);
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("FAILED");
+        task.setFailureCode("GIT_BRANCH_NOT_FOUND");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        ApiException e = assertThrows(ApiException.class,
+                () -> service.retry(projectId, runId, UUID.randomUUID()));
+
+        assertEquals("TASK_RETRY_BLOCKED_BY_CONFIG", e.code());
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
     /** 任务 RUNNING（编排中）不接受外部续跑，避免与进行中的编排冲突。 */
     @Test
     void retryRejectsTaskAlreadyRunning() {
