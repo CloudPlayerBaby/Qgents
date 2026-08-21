@@ -356,10 +356,7 @@ public class TaskOrchestrator {
                 recordFailureDiagnostic(task, run, planner, outcome);
                 artifactService.createRunArtifact(task, run, planner, "PLAN", runArtifactSummary(planner, outcome));
                 taskRunService.complete(run.getId(), "FAILED", stableFailureCode(outcome), outcome.getMessage());
-                // 基础设施失败同相位重试：规划步骤不落 FAILED 终态，保持 RUNNING 表达「重试中」，
-                // 避免前端把可恢复中间态误读为规划失败。
-                sendAgentCard(task, "step-" + planner.getId(), "RUNNING", planner.getRole(),
-                        "规划步骤未通过，正在重试");
+                markStepSettled(task, planner, outcome.getOutcome());
                 continue;
             }
             recordFailureDiagnostic(task, run, planner, outcome);
@@ -440,9 +437,6 @@ public class TaskOrchestrator {
         latest.setFailureReason(failure.reason());
         latest.setFailureRetryable(failure.retryable());
         latest.setFailureOccurredAt(now);
-        // 编排意外中止的失败终态同样收敛剩余步骤：PENDING→SKIPPED、RUNNING→FAILED，
-        // 避免崩溃/异常后任务已 FAILED 但步骤仍停留在 PENDING/RUNNING。
-        settleRemainingStepsOnTerminal(latest, ctx);
         updateTaskStatus(latest, "FAILED");
         sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null,
                 "任务启动失败：" + failure.title() + "。" + failure.reason()
@@ -746,11 +740,10 @@ public class TaskOrchestrator {
         taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
                 outcome.getMessage());
         // complete() 会在并发取消已先落库时把结果强制收敛为 CANCELLED；按持久化后的真实状态
-        // 更新 Step，不能继续使用 Agent 原始的 SUCCEEDED/FAILED 结果。重试/修复
-        // （RETRY_PHASE/REQUEUE_CODING）回合的失败不是任务级失败：步骤不落 FAILED 终态
-        // （保持 RUNNING 表达「未通过、正在重试/修复」），避免前端把可恢复中间态误读为任务失败。
+        // 更新 Step，不能继续使用 Agent 原始的 SUCCEEDED/FAILED 结果。
         TaskRunEntity settledRun = taskRunService.findById(run.getId());
-        settleStepAfterRun(task, step, settledRun, outcome.getOutcome(), decision);
+        markStepSettled(task, step, settledRun != null && "CANCELLED".equals(settledRun.getStatus())
+                ? RunOutcome.CANCELLED : outcome.getOutcome());
         if (decision.getAction() == StateMachineDecision.Action.COMPLETE_SUCCESS
                 && hasFollowingStep(step, ctx.steps)) {
             decision = StateMachineDecision.advance(phase);
@@ -1193,35 +1186,6 @@ public class TaskOrchestrator {
     }
 
     /**
-     * 依据状态机决策把一次 Run 的执行结果落为步骤状态：
-     * <ul>
-     *   <li>Run 被并发取消收敛为 CANCELLED → 步骤落 CANCELLED（沿用原收敛逻辑）；</li>
-     *   <li>决策为同相位重试（RETRY_PHASE）或质量修复打回（REQUEUE_CODING）且本回合未成功 →
-     *       步骤保持 RUNNING 不落 FAILED，仅发群卡片说明「未通过，正在重试/修复」——单次 Run
-     *       失败是修复闭环中的中间事实而非任务终局失败，不能按终局失败广播给前端/移动端；</li>
-     *   <li>其余（终局成功/失败/取消，含 Test 失败进入 REVIEWING 裁决）→ 按 RunOutcome 落
-     *       SUCCEEDED/FAILED/CANCELLED，其中 Test 失败的步骤终态由前端在任务非终态时弱化展示。</li>
-     * </ul>
-     */
-    private void settleStepAfterRun(TaskEntity task, TaskStepEntity step, TaskRunEntity settledRun,
-                                    RunOutcome outcome, StateMachineDecision decision) {
-        if (settledRun != null && "CANCELLED".equals(settledRun.getStatus())) {
-            markStepSettled(task, step, RunOutcome.CANCELLED);
-            return;
-        }
-        StateMachineDecision.Action action = decision.getAction();
-        boolean recoverableFailure = (action == StateMachineDecision.Action.RETRY_PHASE
-                || action == StateMachineDecision.Action.REQUEUE_CODING)
-                && outcome != RunOutcome.SUCCEEDED;
-        if (recoverableFailure) {
-            sendAgentCard(task, "step-" + step.getId(), "RUNNING", step.getRole(),
-                    roleLabel(step.getRole()) + "步骤未通过，正在重试/修复");
-            return;
-        }
-        markStepSettled(task, step, outcome);
-    }
-
-    /**
      * Run 终态 → TaskStep 状态。取消（RunOutcome.CANCELLED）必须落 CANCELLED，
      * 不能降级为 FAILED——否则前端「已取消」状态永远收不到，且会被计入失败统计。
      */
@@ -1303,9 +1267,6 @@ public class TaskOrchestrator {
             }
             task.setFailureRetryable(true);
             task.setFailureOccurredAt(LocalDateTime.now(ZoneOffset.UTC));
-            // 失败终态收敛：未执行/被打断的步骤不残留 PENDING/RUNNING，避免「任务已失败但
-            // 进度条不满」与步骤状态矛盾（前端进度条按终态步骤占比计算）。
-            settleRemainingStepsOnTerminal(task, ctx);
         } else if ("SUCCEEDED".equals(finishing.status()) || "DELIVERING".equals(finishing.status())) {
             task.setFailureCode(null);
             task.setFailureReason(null);
@@ -1375,42 +1336,6 @@ public class TaskOrchestrator {
             } catch (RuntimeException e) {
                 log.warn("cancel remaining step skipped taskId={} stepId={}: {}", ctx.task.getId(),
                         step.getId(), e.getMessage());
-            }
-        }
-    }
-
-    /**
-     * 任务落入失败终态时收敛尚未终态的步骤：PENDING（未执行）置 SKIPPED，RUNNING（执行被
-     * 编排中止打断）置 FAILED（与其失败 Run 一致）。避免「任务已终态但步骤仍 PENDING/RUNNING」
-     * 的残留——前端进度条按终态步骤占比计算，残留未终态步骤会让进度永远不满；同时 SKIPPED/
-     * FAILED 都是恢复调度器认可的「已走过」状态，用户重试仍从第一个未完成步骤（FAILED）续跑。
-     * 只收敛步骤状态，不改已落库的 Run 历史；不向群聊补发步骤卡片（任务失败卡片已说明终态）。
-     */
-    private void settleRemainingStepsOnTerminal(TaskEntity task, TaskExecutionContext ctx) {
-        if (ctx == null || ctx.steps == null) {
-            return;
-        }
-        for (TaskStepEntity template : ctx.steps) {
-            TaskStepEntity latest = stepMapper.selectById(template.getId());
-            if (latest == null) {
-                continue;
-            }
-            String terminal = switch (latest.getStatus()) {
-                case "PENDING" -> "SKIPPED";
-                case "RUNNING" -> "FAILED";
-                default -> null;
-            };
-            if (terminal == null) {
-                continue;
-            }
-            try {
-                latest.setStatus(terminal);
-                latest.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
-                stepMapper.updateById(latest);
-                publishStepUpdated(task, latest);
-            } catch (RuntimeException e) {
-                log.warn("settle terminal step skipped taskId={} stepId={} terminal={}: {}", task.getId(),
-                        latest.getId(), terminal, e.getMessage());
             }
         }
     }
