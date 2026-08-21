@@ -309,11 +309,14 @@ public class TaskOrchestrator {
         }
         while (true) {
             sendPlanningStartedCard(task);
+            ctx.activeStepId = planner.getId();
+            ctx.activeRunId = null;
             markStepRunning(task, planner);
             TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), planner.getId(),
                     planner.getRole(), planner.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
-            taskRunService.markRunning(run.getId());
+            ctx.activeRunId = run.getId();
             ctx.lastRunId = run.getId();
+            taskRunService.markRunning(run.getId());
             // 规划期心跳：刷新任务 updated_at，防止恢复调度器把长规划任务误判为卡死续跑
             taskMapper.touchUpdatedAt(task.getId());
             AgentInput input = contextAssembler.assemble(task, planner, OrchestrationPhase.PLAN,
@@ -393,13 +396,20 @@ public class TaskOrchestrator {
         StartupFailure failure = startupFailure(cause);
         AgentRunOutcome startupOutcome = infrastructureFailure(OrchestrationPhase.PLAN, failure.reason(), failure.code(),
                 "ORCHESTRATOR_STARTUP", cause);
-        // Sandbox 获取、上下文组装等异常可能发生在 Planner 调用前。仍然创建一条失败的
-        // Planner Run，保证 diagnostics 能通过 latestFailedRun 返回可追踪的根因。
-        if (ctx != null && ctx.lastRunId != null) {
+        // Step 在 TaskRun 创建前已被置为 RUNNING。此处必须跟踪本次节点，不能用前一条已成功的
+        // lastRunId 代替，否则 createForStep/markRunning 失败会遗留 RUNNING Step。
+        TaskStepEntity activeStep = ctx == null || ctx.activeStepId == null
+                ? null : stepMapper.selectById(ctx.activeStepId);
+        TaskRunEntity activeRun = ctx == null || ctx.activeRunId == null
+                ? null : taskRunService.findById(ctx.activeRunId);
+        if (activeRun != null) {
+            settleUnexpectedFailureRun(task, activeRun, activeStep, startupOutcome, failure);
+        } else if (activeStep != null) {
+            createStartupFailureRun(task, ctx, activeStep, startupOutcome, failure);
+        } else if (ctx != null && ctx.lastRunId != null) {
             TaskRunEntity run = taskRunService.findById(ctx.lastRunId);
-            if (run != null && "RUNNING".equals(run.getStatus())) {
-                recordFailureDiagnostic(task, run, stepMapper.selectById(run.getTaskStepId()), startupOutcome);
-                taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
+            if (run != null && ("QUEUED".equals(run.getStatus()) || "RUNNING".equals(run.getStatus()))) {
+                settleUnexpectedFailureRun(task, run, stepMapper.selectById(run.getTaskStepId()), startupOutcome, failure);
             }
         } else {
             // 续跑/重试时启动阶段失败（如 Sandbox 获取失败）发生在任何 step 节点执行之前，此时
@@ -417,15 +427,9 @@ public class TaskOrchestrator {
                         .last("LIMIT 1"));
                 step = plannerSteps == null || plannerSteps.isEmpty() ? null : plannerSteps.get(0);
             }
-            if (step != null) {
-                TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
-                        step.getRole(), step.getAssignedAgentId(), task.getCreatedBy(),
-                        ctx == null ? null : ctx.retryOf);
-                taskRunService.markRunning(run.getId());
-                recordFailureDiagnostic(task, run, step, startupOutcome);
-                taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
-            }
+            if (step != null) createStartupFailureRun(task, ctx, step, startupOutcome, failure);
         }
+        markActiveStepFailed(task, activeStep);
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         String publicFailureCode = clientFailureCode(failure.code());
         latest.setFailureCode(publicFailureCode);
@@ -437,6 +441,43 @@ public class TaskOrchestrator {
         sendAgentCard(latest, "task-" + latest.getId(), "FAILED", null,
                 "任务启动失败：" + failure.title() + "。" + failure.reason()
                         + (failure.retryable() ? "，可以稍后重试" : "，请先修复配置后重试"));
+    }
+
+    /** 为节点启动异常补写失败 Run；补写自身失败时仍必须继续收敛 Task 与 Step。 */
+    private void createStartupFailureRun(TaskEntity task, TaskExecutionContext ctx, TaskStepEntity step,
+                                         AgentRunOutcome outcome, StartupFailure failure) {
+        try {
+            TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
+                    step.getRole(), step.getAssignedAgentId(), task.getCreatedBy(), ctx == null ? null : ctx.retryOf);
+            if (ctx != null) {
+                ctx.activeRunId = run.getId();
+                ctx.lastRunId = run.getId();
+            }
+            taskRunService.markRunning(run.getId());
+            settleUnexpectedFailureRun(task, run, step, outcome, failure);
+        } catch (RuntimeException diagnosticFailure) {
+            log.warn("startup failure run could not be persisted taskId={} stepId={} exceptionType={}", task.getId(),
+                    step.getId(), diagnosticFailure.getClass().getSimpleName());
+        }
+    }
+
+    /** 将已创建但尚未完成的当前 Run 收敛为 FAILED，覆盖 QUEUED 与 RUNNING 两种异常窗口。 */
+    private void settleUnexpectedFailureRun(TaskEntity task, TaskRunEntity run, TaskStepEntity step,
+                                            AgentRunOutcome outcome, StartupFailure failure) {
+        try {
+            if (step != null) recordFailureDiagnostic(task, run, step, outcome);
+            taskRunService.failIfActive(run.getId(), failure.code());
+        } catch (RuntimeException settlementFailure) {
+            log.warn("startup failure run settlement skipped taskId={} runId={} exceptionType={}", task.getId(),
+                    run.getId(), settlementFailure.getClass().getSimpleName());
+        }
+    }
+
+    /** 当前 Step 已写入 RUNNING 时，任务失败必须同步收敛该 Step，避免前端继续展示执行中。 */
+    private void markActiveStepFailed(TaskEntity task, TaskStepEntity step) {
+        if (step != null && ("RUNNING".equals(step.getStatus()) || "PENDING".equals(step.getStatus()))) {
+            markStepSettled(task, step, RunOutcome.FAILED);
+        }
     }
 
     /**
@@ -588,9 +629,13 @@ public class TaskOrchestrator {
             ctx.retryOf = null;
             return routeState(state, "next");
         }
+        ctx.activeStepId = step.getId();
+        ctx.activeRunId = null;
         markStepRunning(task, step);
         TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
                 step.getRole(), step.getAssignedAgentId(), task.getCreatedBy(), ctx.retryOf);
+        ctx.activeRunId = run.getId();
+        ctx.lastRunId = run.getId();
         taskRunService.markRunning(run.getId());
         AgentRunOutcome feedback = ctx.feedbackFor(step.getId());
         AgentInput input = contextAssembler.assemble(task, step, phase, feedback, run.getId(), ctx.planResult,
@@ -599,7 +644,6 @@ public class TaskOrchestrator {
         for (WorkerToolExecution execution : WorkerExecutionTraceContext.drain(run.getId())) {
             taskRunService.appendWorkerToolExecution(run, execution);
         }
-        ctx.lastRunId = run.getId();
         if (phase == OrchestrationPhase.CODING && outcome.getOutcome() == RunOutcome.SUCCEEDED) {
             ctx.lastCodingRunId = run.getId();
         }
@@ -1691,6 +1735,10 @@ public class TaskOrchestrator {
          * 各相位最近一次基础设施失败，仅在该相位重试时优先回灌；不覆盖仍待复核的质量反馈。
          */
         private final java.util.Map<UUID, AgentRunOutcome> infraFeedback = new java.util.HashMap<>();
+        /** 当前正在启动或执行的步骤，供异常补偿使用。 */
+        private UUID activeStepId;
+        /** 当前步骤的 TaskRun；创建成功后立即记录，覆盖 QUEUED/RUNNING 异常窗口。 */
+        private UUID activeRunId;
         private UUID lastRunId;
         private UUID retryOf;
         /**

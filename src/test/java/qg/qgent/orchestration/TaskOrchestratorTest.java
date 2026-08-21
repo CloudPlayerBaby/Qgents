@@ -95,6 +95,30 @@ class TaskOrchestratorTest {
     }
 
     @Test
+    void settlesCurrentStepWhenRunCreationFailsAfterStepMarkedRunning() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity first = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity failed = fixture.step(task, "DEVELOPER", 3);
+        TaskStepEntity following = fixture.step(task, "DEVELOPER", 4);
+        List<TaskStepEntity> all = List.of(planner, first, failed, following);
+        fixture.stubPlan(task, planner, all);
+        doThrow(new RuntimeException("task run insert failed")).when(fixture.taskRuns).createForStep(
+                eq(task.getProjectId()), eq(task.getId()), eq(failed.getId()), anyString(), any(), any(), any());
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(task.getStatus()).isEqualTo("FAILED");
+        assertThat(first.getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(failed.getStatus()).isEqualTo("FAILED");
+        assertThat(following.getStatus()).isEqualTo("PENDING");
+        assertThat(fixture.captureStepStatuses()).containsSubsequence(
+                failed.getId() + "=RUNNING", failed.getId() + "=FAILED");
+    }
+
+    @Test
     void sendingDiffCardPostsQuotableDiffMessage() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();

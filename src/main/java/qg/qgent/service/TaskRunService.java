@@ -584,6 +584,34 @@ public class TaskRunService {
     }
 
     /**
+     * 节点启动阶段出现未预期异常时，将仍活动的 Run 收敛为 FAILED。
+     * 只覆盖 QUEUED/RUNNING，不能覆盖取消或既有终态。
+     */
+    @Transactional
+    public boolean failIfActive(UUID taskRunId, String failureCode) {
+        TaskRunEntity run = taskRunMapper.selectByIdForUpdate(taskRunId);
+        if (run == null || (!"QUEUED".equals(run.getStatus()) && !"RUNNING".equals(run.getStatus()))) {
+            return false;
+        }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        String safeFailureCode = safeFailureCode(failureCode);
+        run.setStatus("FAILED");
+        run.setFinishedAt(now);
+        run.setUpdatedAt(now);
+        run.setFailureCode(safeFailureCode);
+        run.setFailureReason(safeFailureReason(safeFailureCode));
+        run.setFailureOccurredAt(now);
+        taskRunMapper.updateById(run);
+        String publicFailureCode = ExecutionContentSanitizer.publicFailureCode(failureCode);
+        String message = publicFailureCode == null ? "执行失败：任务执行失败，请查看执行记录"
+                : "执行失败（" + publicFailureCode + "）："
+                + ExecutionContentSanitizer.userFailureDescription(publicFailureCode);
+        taskRunLogService.append(run, "TERMINAL", run.getRole(), message);
+        eventService.publish(run.getProjectId(), null, "task-run.updated", run.getId().toString(), eventPayload(run, 0));
+        return true;
+    }
+
+    /**
      * RUNNING → 终态（SUCCEEDED/FAILED/CANCELLED），记录结束时间并发布事件。
      * 属于受控执行接缝：状态由确定性 Orchestrator 依据 Agent 结果映射，本方法不自行判断。
      */
