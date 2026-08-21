@@ -2,6 +2,7 @@ package qg.qgent.orchestration.agent;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
 import qg.qgent.orchestration.OrchestrationPhase;
@@ -197,15 +198,17 @@ class TestAgentTest {
     }
 
     @Test
-    void missingCommandMapsToInfrastructureFailureWithoutLlmAnalysis() {
+    void missingCommandMapsToEnvironmentBlocked() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 127, "", "gradlew: command not found", null));
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
-        assertThat(outcome.getMessage()).contains("workspace-relative wrapper");
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
+        assertThat(outcome.getFailureCode()).isEqualTo("BUILD_ENVIRONMENT_UNAVAILABLE");
+        assertThat(outcome.getTestResult().getEnvironmentFailureCode())
+                .isEqualTo("BUILD_ENVIRONMENT_UNAVAILABLE");
         verify(llm, never()).complete(anyString(), anyList());
     }
 
@@ -480,33 +483,36 @@ class TestAgentTest {
     }
 
     @Test
-    void environmentFailureIsClassifiedAsInfrastructureWithoutLlmAnalysis() {
+    void environmentFailureRoutesToReviewForAdjudication() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 1, "", "Connection refused to host mysql:3306", null));
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("TEST_SERVICE_UNAVAILABLE");
+        assertThat(outcome.getTestResult().getEnvironmentFailureCode()).isEqualTo("TEST_SERVICE_UNAVAILABLE");
+        assertThat(outcome.getTestResult().isSuccess()).isFalse();
         verify(llm, never()).complete(anyString(), anyList());
     }
 
     @Test
-    void timeoutExitCodeMapsToInfrastructureFailureWithoutLlm() {
+    void timeoutExitCodeMapsToDeterministicFailureWithoutLlm() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 124, "partial", "reached the timeout of 10 minutes", null));
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        // 超时是确定性失败：不再走 FAILED_INFRASTRUCTURE 同相位重试，直接 FAILED 让任务落到终态。
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("TEST_EXECUTION_TIMEOUT");
         verify(llm, never()).complete(anyString(), anyList());
     }
 
     @Test
-    void dependencyResolutionFailureMapsToInfrastructureWithoutLlm() {
+    void dependencyResolutionFailureRoutesToReviewForAdjudication() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 1, "",
@@ -514,8 +520,9 @@ class TestAgentTest {
 
         AgentRunOutcome outcome = agent().run(input());
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_INFRASTRUCTURE);
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         assertThat(outcome.getFailureCode()).isEqualTo("TEST_DEPENDENCY_UNAVAILABLE");
+        assertThat(outcome.getTestResult().getEnvironmentFailureCode()).isEqualTo("TEST_DEPENDENCY_UNAVAILABLE");
         verify(llm, never()).complete(anyString(), anyList());
     }
 
@@ -679,6 +686,81 @@ class TestAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         assertThat(outcome.getTestResult().getAssertionResults()).isEmpty();
+    }
+
+    // ---------- Plan/Step 结构化验证命令消费 ----------
+
+    @Test
+    void consumesPlannedNodeVerificationCommand() {
+        // Planner 明确要求 node tests/todo.test.js（无 package.json 也能执行），
+        // TaskStep 持久化的 verificationCommands 优先于自动探测。
+        when(codeAccess.listFiles(any())).thenReturn(List.of("src/todo.js", "tests/todo.test.js"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 0, "all todo tests passed", "", null));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"success\":true,\"summary\":\"node tests passed\",\"failures\":[],\"needsCodingFix\":false}");
+
+        AgentInput input = input();
+        input.setVerificationCommands(List.of(plannedCommand(null, List.of("node", "tests/todo.test.js"))));
+
+        AgentRunOutcome outcome = agent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        TestResult test = outcome.getTestResult();
+        assertThat(test.isSuccess()).isTrue();
+        assertThat(test.getCommand()).isEqualTo("node tests/todo.test.js");
+        verify(executionPort).execute(eq(workspaceId), eq(List.of("node", "tests/todo.test.js")), any());
+    }
+
+    @Test
+    void consumesPerRepositoryPlannedCommandsAndMergesFailure() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("backend/pom.xml", "frontend/tests/a.test.js"));
+        // backend 通过、frontend 失败 → 整体 FAILED_QUALITY。
+        when(executionPort.execute(any(), eq("backend"), eq(List.of("mvn", "test")), any()))
+                .thenReturn(new ExecutionResult(true, 0, "backend ok", "", null));
+        when(executionPort.execute(any(), eq("frontend"), eq(List.of("node", "tests/a.test.js")), any()))
+                .thenReturn(new ExecutionResult(true, 1, "", "1 test failed", null));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"success\":false,\"summary\":\"frontend test failed\",\"failures\":[{\"name\":\"a\",\"reason\":\"boom\",\"severity\":\"ERROR\"}],\"needsCodingFix\":true}");
+
+        AgentInput input = input();
+        input.setVerificationCommands(List.of(
+                plannedCommand("backend", List.of("mvn", "test")),
+                plannedCommand("frontend", List.of("node", "tests/a.test.js"))));
+
+        AgentRunOutcome outcome = agent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        TestResult test = outcome.getTestResult();
+        assertThat(test.isSuccess()).isFalse();
+        assertThat(test.getCommand()).isEqualTo("mvn test && node tests/a.test.js");
+        verify(executionPort).execute(eq(workspaceId), eq("backend"), eq(List.of("mvn", "test")), any());
+        verify(executionPort).execute(eq(workspaceId), eq("frontend"), eq(List.of("node", "tests/a.test.js")), any());
+    }
+
+    @Test
+    void plannedCommandsNotAllowedByWhitelistFallBackToAutoDetection() {
+        // TaskStep 里的命令被白名单过滤（历史脏数据或手动篡改）→ 回退自动探测。
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml"));
+        when(executionPort.execute(any(), anyList(), any()))
+                .thenReturn(new ExecutionResult(true, 0, "BUILD SUCCESS", "", null));
+        when(llm.complete(anyString(), anyList()))
+                .thenReturn("{\"success\":true,\"summary\":\"mvn tests passed\",\"failures\":[],\"needsCodingFix\":false}");
+
+        AgentInput input = input();
+        input.setVerificationCommands(List.of(plannedCommand(null, List.of("rm", "-rf", "/"))));
+
+        AgentRunOutcome outcome = agent().run(input);
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().getCommand()).isEqualTo("mvn test");
+    }
+
+    private TaskStepEntity.VerificationCommand plannedCommand(String repositoryPath, List<String> command) {
+        TaskStepEntity.VerificationCommand planned = new TaskStepEntity.VerificationCommand();
+        planned.setRepositoryPath(repositoryPath);
+        planned.setCommand(command);
+        return planned;
     }
 
     private AgentInput input() {

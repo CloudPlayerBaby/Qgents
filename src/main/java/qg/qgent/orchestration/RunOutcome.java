@@ -18,6 +18,11 @@ public enum RunOutcome {
      */
     FAILED,
     /**
+     * 测试命令已真实执行但非零退出，且非明显代码缺陷（环境/依赖/网络/服务/超时/构建工具不可用），
+     * 交由 Review 兜底审查代码逻辑：代码无误则放行（终态如实标注「测试未执行」），代码有误则回 Coding。
+     */
+    TEST_FAILED,
+    /**
      * LLM/Sandbox 等基础设施失败，可同相位重试。
      */
     FAILED_INFRASTRUCTURE,

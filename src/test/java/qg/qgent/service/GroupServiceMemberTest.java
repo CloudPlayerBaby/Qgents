@@ -21,6 +21,7 @@ import qg.qgent.mapper.ProjectMapper;
 import qg.qgent.mapper.ProjectMemberMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.RequirementGroupRepositoryMapper;
+import qg.qgent.mapper.UserGroupPreferenceMapper;
 import qg.qgent.mapper.UserMapper;
 
 import java.util.List;
@@ -52,12 +53,13 @@ class GroupServiceMemberTest {
     private final UserMapper userMapper = mock(UserMapper.class);
     private final MessageMapper messageMapper = mock(MessageMapper.class);
     private final GroupReadStateMapper groupReadStateMapper = mock(GroupReadStateMapper.class);
+    private final UserGroupPreferenceMapper userGroupPreferenceMapper = mock(UserGroupPreferenceMapper.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final EventService eventService = mock(EventService.class);
 
     private final GroupService service = new GroupService(groupMapper, groupRepoMapper, projectMemberMapper,
             projectMapper, groupAgentMapper, groupMemberMapper, agentMapper, userMapper,
-            messageMapper, groupReadStateMapper, access, eventService);
+            messageMapper, groupReadStateMapper, userGroupPreferenceMapper, access, eventService);
 
     private final UUID projectId = UUID.randomUUID();
     private final UUID creator = UUID.randomUUID();
@@ -87,6 +89,8 @@ class GroupServiceMemberTest {
         when(projectMemberMapper.countMembers(projectId)).thenReturn(0L);
         when(groupAgentMapper.selectAgentIds(any())).thenReturn(List.of());
         when(groupRepoMapper.selectRepositoryIds(any())).thenReturn(List.of());
+        // 置顶默认无记录（未置顶）
+        when(userGroupPreferenceMapper.selectPinnedGroupIds(any(), any())).thenReturn(List.of());
     }
 
     @Test

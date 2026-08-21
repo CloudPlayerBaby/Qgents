@@ -34,6 +34,7 @@ public class ReviewResultParser {
     private static final int MAX_SUGGESTIONS = 50;
     private static final Set<String> SEVERITIES = Set.of("BLOCKER", "MAJOR", "MINOR", "INFO");
     private static final Set<String> STABLE_FAILURE_CODES = Set.of("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+    private static final Set<String> REPAIR_ACTION_TYPES = Set.of("ENSURE_TRAILING_NEWLINE");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -92,6 +93,21 @@ public class ReviewResultParser {
             String normalized = codeNode.asText().strip().toUpperCase(java.util.Locale.ROOT);
             if (STABLE_FAILURE_CODES.contains(normalized)) {
                 result.setFailureCode(normalized);
+            }
+        }
+        // 结构化修复动作：仅接受白名单类型 + 合法相对路径；缺失/非法忽略，回退到打回 Coding 自行修复。
+        JsonNode actionNode = node.get("repairAction");
+        if (actionNode != null && actionNode.isObject()) {
+            String actionType = optionalText(actionNode, "type");
+            String normalizedType = actionType == null ? null : actionType.strip().toUpperCase(java.util.Locale.ROOT);
+            String actionFile = optionalText(actionNode, "file");
+            if (normalizedType != null && REPAIR_ACTION_TYPES.contains(normalizedType)
+                    && actionFile != null && !actionFile.isBlank()) {
+                ReviewResult.RepairAction action = new ReviewResult.RepairAction();
+                action.setType(normalizedType);
+                action.setFile(actionFile.trim());
+                action.setReason(optionalText(actionNode, "reason"));
+                result.setRepairAction(action);
             }
         }
         return result;

@@ -44,6 +44,38 @@ public class PlanResult {
      * 交付模式判定理由（规模/跨仓库/门禁等）；可为空。
      */
     private String scaleReason;
+    /**
+     * 结构化验证命令（可选）：Planner 明确给出的按仓库验证命令，供 TESTING 阶段优先消费。
+     * 命令必须命中 {@code TestCommandResolver} 的白名单模板（mvn/gradle/npm test 或
+     * node &lt;tests/*.test.js&gt;），解析器校验不通过的命令会被丢弃并回退自动检测；
+     * 缺失或为空时 Test Agent 依据文件树自动解析命令。
+     */
+    private Verification verification;
+
+    /**
+     * 结构化验证命令集合：每个仓库一条命令；按仓库解析执行。
+     */
+    @Data
+    public static class Verification {
+        private List<VerificationCommand> commands = new ArrayList<>();
+    }
+
+    /**
+     * 单个仓库的验证命令。
+     */
+    @Data
+    public static class VerificationCommand {
+        /**
+         * 目标仓库目录（Workspace 相对路径，与 worktree workspacePath 一致）；
+         * 空或 null 表示 Workspace 根目录（单仓库场景）。
+         */
+        private String repositoryPath;
+        /**
+         * 白名单验证命令，如 ["node", "tests/todo.test.js"] 或 ["mvn", "test"]；
+         * 空列表视为无效条目。
+         */
+        private List<String> command = new ArrayList<>();
+    }
 
     /**
      * 单个实现步骤。
@@ -83,15 +115,16 @@ public class PlanResult {
      * <p>
      * type 取值（白名单见 {@code PlanResultParser}）：EXISTS 目标文件存在；EMPTY 内容为空；
      * LINES_EQ/LINES_GT/LINES_LT 按 \n 统计的行数与 value 比较；CONTAINS/NOT_CONTAINS 内容
-     * 包含/不包含 value 子串。file 为 Workspace 相对路径（多仓库需带 workspacePath 前缀）。
+     * 包含/不包含 value 子串；ENDS_WITH_NEWLINE 内容是否以换行符结尾（value 为 true/false）。
+     * file 为 Workspace 相对路径（多仓库需带 workspacePath 前缀）。
      */
     @Data
     public static class Assertion {
-        /** 断言类型：EXISTS/EMPTY/LINES_EQ/LINES_GT/LINES_LT/CONTAINS/NOT_CONTAINS。 */
+        /** 断言类型：EXISTS/EMPTY/LINES_EQ/LINES_GT/LINES_LT/CONTAINS/NOT_CONTAINS/ENDS_WITH_NEWLINE。 */
         private String type;
         /** 断言目标文件（Workspace 相对路径）。 */
         private String file;
-        /** 断言参数：LINES_* 为整数行数，CONTAINS/NOT_CONTAINS 为子串；EXISTS/EMPTY 可为 null。 */
+        /** 断言参数：LINES_* 为整数行数，CONTAINS/NOT_CONTAINS 为子串；EXISTS/EMPTY 可为 null；ENDS_WITH_NEWLINE 为 true/false。 */
         private String value;
     }
 }

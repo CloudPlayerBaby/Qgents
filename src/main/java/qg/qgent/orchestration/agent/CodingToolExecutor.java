@@ -106,6 +106,7 @@ public class CodingToolExecutor {
             case "write_file" -> writeFile(workspaceId, name, args);
             case "apply_patch" -> applyPatch(workspaceId, name, args);
             case "replace_file" -> replaceFile(workspaceId, name, args);
+            case "ensure_trailing_newline" -> ensureTrailingNewline(workspaceId, name, args);
             default -> error(name, "unknown tool '" + name + "'");
         };
     }
@@ -142,6 +143,12 @@ public class CodingToolExecutor {
         result.put("path", path);
         result.put("content", read.getContent());
         result.put("sha256", read.getSha256());
+        if (read.getEndsWithNewline() != null) {
+            result.put("endsWithNewline", read.getEndsWithNewline());
+        }
+        if (read.getNewlineStyle() != null) {
+            result.put("newlineStyle", read.getNewlineStyle());
+        }
         return ok(name, result);
     }
 
@@ -291,6 +298,40 @@ public class CodingToolExecutor {
             lastToolError = "TOOL_PATCH_REPAIR_REQUIRED: replace_file failed: " + message;
         }
         return failure;
+    }
+
+    private String ensureTrailingNewline(UUID workspaceId, String name, JsonNode args) {
+        String path = args.path("path").asText("").trim();
+        String expectedHash = args.path("expectedHash").asText("").trim();
+        if (path.isBlank()) {
+            return error(name, "ensure_trailing_newline requires non-empty 'path'");
+        }
+        String denied = ensureWritablePath(path);
+        if (denied != null) {
+            return error(name, denied);
+        }
+        if (!expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return error(name, "ensure_trailing_newline requires 64-char hex 'expectedHash' from read_file");
+        }
+        WorkspaceWriteResult result = writer.ensureTrailingNewline(workspaceId, path, expectedHash);
+        if (result.isOk()) {
+            patchFailuresByPath.remove(path);
+            lastToolError = null;
+            if (result.isChanged()) {
+                notifyChange(result);
+            }
+            ObjectNode resultNode = objectMapper.createObjectNode();
+            resultNode.put("path", result.getPath());
+            resultNode.put("changed", result.isChanged());
+            resultNode.put("newSha", result.getNewSha256());
+            return ok(name, resultNode);
+        }
+        if (result.isInfrastructureFailure()) {
+            throw new IllegalStateException("ensure_trailing_newline infrastructure failure: "
+                    + (result.getError() == null ? "workspace unavailable" : result.getError()));
+        }
+        String message = result.getError() == null ? "ensure trailing newline failed" : result.getError();
+        return error(name, result.getFailureCode(), message);
     }
 
     private String patchFailed(String tool, String path, String failureCode, String message) {

@@ -59,6 +59,7 @@ import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.TeamMemberMapper;
 import qg.qgent.service.GitHubRepositoryService;
+import qg.qgent.service.GitHubOAuthService;
 
 @ExtendWith(MockitoExtension.class)
 class GitHubRepositoryServiceTest {
@@ -75,8 +76,11 @@ class GitHubRepositoryServiceTest {
     @Mock private TeamMemberMapper teamMemberMapper;
     @Mock private TaskMapper taskMapper;
     @Mock private GitHubAppClient gitHubClient;
+    @Mock private GitHubOAuthService githubOAuthService;
+    @Mock private GitHubOAuthClient githubOAuthClient;
 
     private GitHubRepositoryService service;
+    private PlatformTransactionManager transactionManager;
 
     @BeforeAll
     static void initializeMyBatisPlusMetadata() {
@@ -91,13 +95,20 @@ class GitHubRepositoryServiceTest {
 
     @BeforeEach
     void setUp() {
-        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        transactionManager = mock(PlatformTransactionManager.class);
         // lenient：仅 sync 相关测试会触发事务，其余测试该 stub 不被使用
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         // lenient：仅解绑相关测试触发活动任务占用查询，默认无占用
         lenient().when(taskMapper.countActiveTasksUsingRepository(any(UUID.class))).thenReturn(0);
         service = new GitHubRepositoryService(installationMapper, repositoryMapper, projectRepositoryMapper,
                 projectMapper, projectMemberMapper, teamMemberMapper, taskMapper, gitHubClient,
+                Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), transactionManager);
+    }
+
+    private GitHubRepositoryService serviceWithOAuth() {
+        return new GitHubRepositoryService(installationMapper, repositoryMapper, projectRepositoryMapper,
+                projectMapper, projectMemberMapper, teamMemberMapper, taskMapper, gitHubClient,
+                githubOAuthService, githubOAuthClient,
                 Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), transactionManager);
     }
 
@@ -951,6 +962,194 @@ class GitHubRepositoryServiceTest {
         assertEquals(installation, creation.installation());
         assertEquals("new-repo", creation.repository().getName());
         assertEquals("main", creation.repository().getDefaultBranch());
+    }
+
+    @Test
+    void rejectsPersonalRepositoryCreationBeforeCallingGitHubApp() {
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setTeamId(teamId);
+        installation.setProviderInstallationId(12345L);
+        installation.setAccountType("USER");
+        installation.setAccountLogin("personal-user");
+        installation.setStatus("ACTIVE");
+        when(installationMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(installation));
+
+        NewProjectRepositoryRequest request = new NewProjectRepositoryRequest();
+        request.setName("personal-repo");
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.createRemoteRepository(actorId, teamId, request));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, exception.status());
+        assertEquals("GITHUB_PERSONAL_REPOSITORY_CREATION_NOT_SUPPORTED", exception.code());
+        verify(gitHubClient, never()).createRepository(anyLong(), anyString(), anyString(),
+                any(GitHubRepositoryCreateRequest.class));
+    }
+
+    @Test
+    void personalRepositoryCreationRequiresAppVisibilityBeforeReturning() {
+        service = serviceWithOAuth();
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setTeamId(teamId);
+        installation.setProviderInstallationId(12345L);
+        installation.setAccountType("USER");
+        installation.setAccountLogin("personal-user");
+        installation.setStatus("ACTIVE");
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(githubOAuthService.requirePersonalCredential(actorId)).thenReturn(
+                new GitHubOAuthService.PersonalCredential("oauth-token", 77L, "personal-user", List.of("repo")));
+        GitHubRepositoryDetails created = new GitHubRepositoryDetails(
+                7001L, "personal-user", "personal-repo", "main", "PRIVATE", false);
+        when(githubOAuthClient.createPersonalRepository(eq("oauth-token"), any())).thenReturn(created);
+        when(gitHubClient.listRepositories(12345L)).thenReturn(List.of(), List.of(
+                new GitHubRepositoryDetails(7001L, "personal-user", "personal-repo", "main", "PRIVATE", false)));
+
+        GitHubRepositoryService.RemoteRepositoryCreation result = service.createRemoteRepository(actorId, teamId,
+                newRepositoryRequest("personal-repo", installationId));
+
+        assertEquals(created, result.repository());
+        verify(gitHubClient, org.mockito.Mockito.times(2)).listRepositories(12345L);
+        verify(githubOAuthClient, never()).deletePersonalRepository(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void personalRepositoryCreationRejectsWhenAppCannotSeeRepositoryAndCompensates() {
+        service = serviceWithOAuth();
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setTeamId(teamId);
+        installation.setProviderInstallationId(12345L);
+        installation.setAccountType("USER");
+        installation.setAccountLogin("personal-user");
+        installation.setStatus("ACTIVE");
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(githubOAuthService.requirePersonalCredential(actorId)).thenReturn(
+                new GitHubOAuthService.PersonalCredential("oauth-token", 77L, "personal-user", List.of("repo")));
+        GitHubRepositoryDetails created = new GitHubRepositoryDetails(
+                7002L, "personal-user", "personal-repo", "main", "PRIVATE", false);
+        when(githubOAuthClient.createPersonalRepository(eq("oauth-token"), any())).thenReturn(created);
+        when(gitHubClient.listRepositories(12345L)).thenReturn(List.of());
+
+        ApiException exception = assertThrows(ApiException.class, () -> service.createRemoteRepository(actorId, teamId,
+                newRepositoryRequest("personal-repo", installationId)));
+
+        assertEquals(HttpStatus.FORBIDDEN, exception.status());
+        assertEquals("GITHUB_REPOSITORY_NOT_AUTHORIZED", exception.code());
+        verify(githubOAuthClient).deletePersonalRepository("oauth-token", "personal-user", "personal-repo");
+        verify(repositoryMapper, never()).insert(any(GitHubRepositoryEntity.class));
+    }
+
+    @Test
+    void personalRepositoryCreationRejectsOwnerMismatchBeforeAppVisibilityCheck() {
+        service = serviceWithOAuth();
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setTeamId(teamId);
+        installation.setProviderInstallationId(12345L);
+        installation.setAccountType("USER");
+        installation.setAccountLogin("personal-user");
+        installation.setStatus("ACTIVE");
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(githubOAuthService.requirePersonalCredential(actorId)).thenReturn(
+                new GitHubOAuthService.PersonalCredential("oauth-token", 77L, "personal-user", List.of("repo")));
+        GitHubRepositoryDetails created = new GitHubRepositoryDetails(
+                7003L, "another-user", "personal-repo", "main", "PRIVATE", false);
+        when(githubOAuthClient.createPersonalRepository(eq("oauth-token"), any())).thenReturn(created);
+
+        ApiException exception = assertThrows(ApiException.class, () -> service.createRemoteRepository(actorId, teamId,
+                newRepositoryRequest("personal-repo", installationId)));
+
+        assertEquals(HttpStatus.CONFLICT, exception.status());
+        assertEquals("GITHUB_OAUTH_ACCOUNT_MISMATCH", exception.code());
+        verify(gitHubClient, never()).listRepositories(anyLong());
+        verify(githubOAuthClient).deletePersonalRepository("oauth-token", "another-user", "personal-repo");
+    }
+
+    @Test
+    void personalRepositoryCreationMarksInvalidWhenGitHubRejects401() {
+        service = serviceWithOAuth();
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setTeamId(teamId);
+        installation.setProviderInstallationId(12345L);
+        installation.setAccountType("USER");
+        installation.setAccountLogin("personal-user");
+        installation.setStatus("ACTIVE");
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(githubOAuthService.requirePersonalCredential(actorId)).thenReturn(
+                new GitHubOAuthService.PersonalCredential("oauth-token", 77L, "personal-user", List.of("repo")));
+        when(githubOAuthClient.createPersonalRepository(eq("oauth-token"), any()))
+                .thenThrow(new ApiException(HttpStatus.CONFLICT, "GITHUB_OAUTH_REVOKED",
+                        "GitHub OAuth 授权已失效，请重新授权"));
+
+        ApiException exception = assertThrows(ApiException.class, () -> service.createRemoteRepository(actorId, teamId,
+                newRepositoryRequest("personal-repo", installationId)));
+
+        assertEquals("GITHUB_OAUTH_REVOKED", exception.code());
+        verify(githubOAuthService).markInvalid(actorId, "GITHUB_OAUTH_REVOKED");
+        verify(gitHubClient, never()).listRepositories(anyLong());
+        verify(githubOAuthClient, never()).deletePersonalRepository(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void deleteRemoteRepositoryUsesOperationTokenForPersonalRepository() {
+        service = serviceWithOAuth();
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setAccountType("USER");
+        installation.setAccountLogin("personal-user");
+        GitHubRepositoryDetails created = new GitHubRepositoryDetails(
+                7004L, "personal-user", "personal-repo", "main", "PRIVATE", false);
+        GitHubRepositoryService.RemoteRepositoryCreation creation =
+                new GitHubRepositoryService.RemoteRepositoryCreation(actorId, installation, created, "operation-token");
+
+        service.deleteRemoteRepository(creation);
+
+        verify(githubOAuthClient).deletePersonalRepository("operation-token", "personal-user", "personal-repo");
+        verify(githubOAuthService, never()).requirePersonalCredential(any());
+    }
+
+    @Test
+    void deleteRemoteRepositoryFallsBackToCurrentCredentialWhenNoOperationToken() {
+        service = serviceWithOAuth();
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setAccountType("USER");
+        installation.setAccountLogin("personal-user");
+        GitHubRepositoryDetails created = new GitHubRepositoryDetails(
+                7005L, "personal-user", "personal-repo", "main", "PRIVATE", false);
+        GitHubRepositoryService.RemoteRepositoryCreation creation =
+                new GitHubRepositoryService.RemoteRepositoryCreation(actorId, installation, created);
+        when(githubOAuthService.requirePersonalCredential(actorId)).thenReturn(
+                new GitHubOAuthService.PersonalCredential("current-token", 77L, "personal-user", List.of("repo")));
+
+        service.deleteRemoteRepository(creation);
+
+        verify(githubOAuthClient).deletePersonalRepository("current-token", "personal-user", "personal-repo");
+    }
+
+    private NewProjectRepositoryRequest newRepositoryRequest(String name, UUID requestedInstallationId) {
+        NewProjectRepositoryRequest request = new NewProjectRepositoryRequest();
+        request.setName(name);
+        request.setInstallationId(requestedInstallationId);
+        return request;
     }
 
     @Test

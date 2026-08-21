@@ -186,6 +186,7 @@ public class TaskOrchestrator {
         TaskExecutionContext ctx = new TaskExecutionContext(task);
         // 续跑来源：首个 TaskRun 的 retryOfTaskRunId 指向被重试的失败运行
         ctx.retryOf = retryOfTaskRunId;
+        ctx.startStepId = startStepId;
         // 用户点击重试会进入新的编排会话；从最近一次 Coding 产物恢复同一 TaskStep 的
         // patch 失败计数，避免每个 TaskRun 都把三次失败门槛重新清零。
         if (startStepId != null) {
@@ -396,18 +397,27 @@ public class TaskOrchestrator {
                 taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
             }
         } else {
-            List<TaskStepEntity> plannerSteps = stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
-                    .eq(TaskStepEntity::getTaskId, task.getId())
-                    .eq(TaskStepEntity::getRole, "PLANNER")
-                    .orderByAsc(TaskStepEntity::getSequenceNo)
-                    .last("LIMIT 1"));
-            TaskStepEntity planner = plannerSteps == null || plannerSteps.isEmpty() ? null : plannerSteps.get(0);
-            if (planner != null) {
-                TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), planner.getId(),
-                        planner.getRole(), planner.getAssignedAgentId(), task.getCreatedBy(),
+            // 续跑/重试时启动阶段失败（如 Sandbox 获取失败）发生在任何 step 节点执行之前，此时
+            // 还没有 lastRunId。失败 run 必须关联到本次续跑的起始步骤（startStepId），否则会把
+            // 用户重试 TESTER 的失败错误地记成 PLANNER run，导致前端时间线 role 错乱、且重试
+            // 目标被引导到错误的步骤。仅在无 startStepId 时才回退到 PLANNER 步骤。
+            TaskStepEntity step = (ctx != null && ctx.startStepId != null)
+                    ? stepMapper.selectById(ctx.startStepId)
+                    : null;
+            if (step == null) {
+                List<TaskStepEntity> plannerSteps = stepMapper.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
+                        .eq(TaskStepEntity::getTaskId, task.getId())
+                        .eq(TaskStepEntity::getRole, "PLANNER")
+                        .orderByAsc(TaskStepEntity::getSequenceNo)
+                        .last("LIMIT 1"));
+                step = plannerSteps == null || plannerSteps.isEmpty() ? null : plannerSteps.get(0);
+            }
+            if (step != null) {
+                TaskRunEntity run = taskRunService.createForStep(task.getProjectId(), task.getId(), step.getId(),
+                        step.getRole(), step.getAssignedAgentId(), task.getCreatedBy(),
                         ctx == null ? null : ctx.retryOf);
                 taskRunService.markRunning(run.getId());
-                recordFailureDiagnostic(task, run, planner, startupOutcome);
+                recordFailureDiagnostic(task, run, step, startupOutcome);
                 taskRunService.complete(run.getId(), "FAILED", failure.code(), failure.reason());
             }
         }
@@ -654,6 +664,15 @@ public class TaskOrchestrator {
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
         // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
         artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
+        // 取消收敛：run 可能已在执行中被取消（RUNNING→CANCELLING）。此时结果由用户取消决定，
+        // 不能把 outcome 决定的终态（FAILED/SUCCEEDED）覆盖上去，统一落 CANCELLED。
+        TaskRunEntity latestRun = taskRunService.findById(run.getId());
+        if (latestRun != null && "CANCELLING".equals(latestRun.getStatus())) {
+            taskRunService.complete(run.getId(), "CANCELLED");
+            markStepSettled(task, step, RunOutcome.CANCELLED);
+            finishTask(task, ctx, StateMachineDecision.Action.COMPLETE_CANCELLED);
+            return routeState(state, GraphDefinition.END);
+        }
         taskRunService.complete(run.getId(), terminalStatus(outcome.getOutcome()), outcome.getFailureCode(),
                 outcome.getMessage());
         markStepSettled(task, step, outcome.getOutcome());
@@ -912,6 +931,9 @@ public class TaskOrchestrator {
         value.put("verificationMode", test.getVerificationMode());
         value.put("exitCode", test.getExitCode());
         value.put("needsCodingFix", test.isNeedsCodingFix());
+        if (test.getEnvironmentFailureCode() != null && !test.getEnvironmentFailureCode().isBlank()) {
+            value.put("environmentFailureCode", test.getEnvironmentFailureCode());
+        }
         List<TestResult.Failure> allFailures = test.getFailures() == null ? List.of() : test.getFailures();
         List<Map<String, Object>> failures = allFailures.stream().filter(java.util.Objects::nonNull).limit(4).map(failure -> {
                     Map<String, Object> item = new LinkedHashMap<>();
@@ -934,6 +956,7 @@ public class TaskOrchestrator {
         result.put("success", review.isSuccess());
         result.put("summary", truncate(review.getSummary(), 2000));
         result.put("needsCodingFix", review.isNeedsCodingFix());
+        result.put("testsNotExecuted", review.isTestsNotExecuted());
         Map<String, Integer> severityCount = new LinkedHashMap<>();
         List<Map<String, Object>> findings = new ArrayList<>();
         for (ReviewResult.Finding finding : review.getFindings()) {
@@ -1065,6 +1088,19 @@ public class TaskOrchestrator {
      * 落终态；随后以编码 Agent 身份把任务结果卡片回群（失败不阻断编排）。
      */
     private void finishTask(TaskEntity task, TaskExecutionContext ctx, StateMachineDecision.Action action) {
+        // 并发取消护栏：编排器走到终态时，任务可能已被用户取消（CANCELLING/CANCELLED）。
+        // 重查最新状态，避免用启动时缓存的内存对象把刚写入的 CANCELLING 全行覆盖回 FAILED/SUCCEEDED。
+        TaskEntity latest = taskMapper.selectById(task.getId());
+        if (latest != null && ("CANCELLING".equals(latest.getStatus()) || "CANCELLED".equals(latest.getStatus()))) {
+            // 取消后当前正在执行的 run 不再产生真实结果，随任务一并落 CANCELLED 终态，避免遗留 RUNNING。
+            settleRunForCancellation(ctx);
+            if (!"CANCELLED".equals(latest.getStatus())) {
+                // CANCELLING → CANCELLED 收敛：取消已受理且编排到达终态点，落终态。
+                updateTaskStatus(latest, "CANCELLED");
+                sendAgentCard(latest, "task-" + latest.getId(), "CANCELLED", null, "任务已取消");
+            }
+            return;
+        }
         FinishingStatus finishing = switch (action) {
             case COMPLETE_SUCCESS -> completeSuccess(task, ctx);
             case COMPLETE_CANCELLED -> new FinishingStatus("CANCELLED", null, null);
@@ -1119,7 +1155,34 @@ public class TaskOrchestrator {
         if (finishing.reviewBatchId() != null) {
             sendDiffCard(task, finishing.reviewBatchId());
         }
-        sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, taskResultMessage(finishing));
+        String cardMessage = taskResultMessage(finishing);
+        // 环境阻塞放行：测试因环境问题未执行，终态如实标注，不得描述为测试通过。
+        if (action == StateMachineDecision.Action.COMPLETE_SUCCESS && !"FAILED".equals(finishing.status())
+                && ctx.testResult != null && ctx.testResult.getEnvironmentFailureCode() != null
+                && !ctx.testResult.getEnvironmentFailureCode().isBlank()) {
+            cardMessage = cardMessage + "；代码审查通过，但测试因环境问题未执行（"
+                    + ctx.testResult.getEnvironmentFailureCode() + "）";
+        }
+        sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, cardMessage);
+    }
+
+    /**
+     * 取消收敛时把当前正在执行的 run 落 CANCELLED：任务被取消后，其进行中的 run 不再产生
+     * 真实结果，随任务一并收敛，避免 run 永久遗留 RUNNING/CANCELLING。
+     */
+    private void settleRunForCancellation(TaskExecutionContext ctx) {
+        if (ctx == null || ctx.lastRunId == null) {
+            return;
+        }
+        try {
+            TaskRunEntity run = taskRunService.findById(ctx.lastRunId);
+            if (run != null && ("RUNNING".equals(run.getStatus()) || "CANCELLING".equals(run.getStatus()))) {
+                taskRunService.complete(run.getId(), "CANCELLED");
+            }
+        } catch (RuntimeException e) {
+            log.warn("settle cancelled run skipped taskId={} runId={}: {}", ctx.task.getId(), ctx.lastRunId,
+                    e.getMessage());
+        }
     }
 
     /**
@@ -1537,6 +1600,11 @@ public class TaskOrchestrator {
         private final java.util.Map<UUID, AgentRunOutcome> infraFeedback = new java.util.HashMap<>();
         private UUID lastRunId;
         private UUID retryOf;
+        /**
+         * 本次续跑的起始步骤 ID（用户重试/恢复器续跑传入）；null 表示全量编排。
+         * 用于启动阶段失败时把失败 run 关联到正确的步骤，避免退化成 PLANNER 步骤。
+         */
+        private UUID startStepId;
         /**
          * 最后一次 SUCCEEDED 的 CODING run，终态时供 FinalDiffBundleService 生成待确认 Diff 批次。
          */

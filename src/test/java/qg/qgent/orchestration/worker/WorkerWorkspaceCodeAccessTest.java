@@ -85,6 +85,33 @@ class WorkerWorkspaceCodeAccessTest {
     }
 
     @Test
+    void listFilesIncludesEmptyDirectoriesAsPaths() {
+        when(sessions.require(WORKSPACE)).thenReturn(session());
+        stubToolExecution(request -> {
+            WorkerToolExecution execution = new WorkerToolExecution();
+            execution.setStatus("SUCCEEDED");
+            String dir = String.valueOf(request.getArguments().get("path"));
+            List<Map<String, Object>> items;
+            if (REPO_B.equals(request.getRepositoryId())) {
+                items = List.of();
+            } else if (".".equals(dir)) {
+                items = List.of(Map.of("name", "empty-folder", "directory", true),
+                        Map.of("name", "src", "directory", true));
+            } else if ("src".equals(dir)) {
+                items = List.of(Map.of("name", "A.java", "directory", false));
+            } else {
+                // empty-folder 递归：没有子项 → 空目录
+                items = List.of();
+            }
+            execution.setResult(Map.of("path", dir, "items", items));
+            return execution;
+        });
+
+        assertThat(access.listFiles(WORKSPACE))
+                .containsExactly("repo-a/empty-folder", "repo-a/src/A.java");
+    }
+
+    @Test
     void readFileResolvesPathAndReconstructsLines() {
         when(sessions.require(WORKSPACE)).thenReturn(session());
         stubToolExecution(request -> {

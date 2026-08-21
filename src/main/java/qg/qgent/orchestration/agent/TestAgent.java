@@ -2,6 +2,7 @@ package qg.qgent.orchestration.agent;
 
 import org.springframework.stereotype.Component;
 import lombok.extern.slf4j.Slf4j;
+import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.orchestration.Agent;
 import qg.qgent.orchestration.AgentInput;
 import qg.qgent.orchestration.AgentRunOutcome;
@@ -35,8 +36,9 @@ import java.util.UUID;
  *   <li>LLM 不参与命令选择，命令由 {@link TestCommandResolver} 白名单模板解析；</li>
  *   <li>检测不到受支持构建工具时，纯文件任务走只读文件断言；无法确定断言目标时才判 Task FAILED；</li>
  *   <li>ExecutionPort 返回 ok=false（Sandbox 未就绪等）→ FAILED_INFRASTRUCTURE 同相位重试；</li>
- *   <li>环境/超时/依赖网络失败由 {@link TestFailureClassifier} 在 LLM 分析前分流为 FAILED_INFRASTRUCTURE，
- *       走同相位重试、不占用质量修复循环，也不让 Coding 空转修复；</li>
+ *   <li>环境/超时/依赖网络失败由 {@link TestFailureClassifier} 在 LLM 分析前分流为 TEST_FAILED，
+ *       携带环境证据转交 Review 兜底审查代码逻辑（代码无误放行并标注测试未执行、有误回 Coding），
+ *       不再同相位盲重试；</li>
  *   <li>LLM 分析失败仅退回基于真实执行的结果，不影响 PASS/FAIL 真实性。</li>
  * </ul>
  * 不修改 Workspace、不 write_file、不调用其他 Agent、不执行 Git 命令、不访问宿主机。
@@ -90,6 +92,14 @@ public class TestAgent implements Agent {
             if (isManualVerification(input)) {
                 return manualVerification(input);
             }
+            // Plan/Step 冻结的按仓库验证命令优先：恢复续跑时 planResult 为 null，但 TaskStep
+            // 持久化的 verificationCommands 仍可用。全部命令非法时返回 null，回退自动探测。
+            if (input.getVerificationCommands() != null && !input.getVerificationCommands().isEmpty()) {
+                AgentRunOutcome planned = executePlannedVerification(input);
+                if (planned != null) {
+                    return planned;
+                }
+            }
             if (isPureFileTask(input)) {
                 return verifyFileTask(input, files);
             }
@@ -107,8 +117,7 @@ public class TestAgent implements Agent {
             }
             ExecutionResult safeExec = sanitizedAndLimited(exec);
             if (isCommandUnavailable(safeExec)) {
-                return infraFailure(input, "build environment unavailable (exit code " + exec.exitCode()
-                        + "): selected wrapper or build tool could not be launched; use a workspace-relative wrapper such as ./gradlew or ./mvnw");
+                return environmentBlocked(input, command, safeExec, "BUILD_ENVIRONMENT_UNAVAILABLE");
             }
             // 环境/超时/依赖网络失败在 LLM 分析之前分流：不占用质量修复循环，也不让 Coding 空转修复。
             // 只对真实失败（exit != 0）分类，避免通过执行的日志误触发环境关键字。
@@ -116,7 +125,13 @@ public class TestAgent implements Agent {
                 TestFailureClassifier.Verdict verdict = failureClassifier.classify(
                         exec.exitCode(), exec.stdout(), exec.stderr(), fileTargets(input));
                 if (verdict.classification() == TestFailureClassifier.Classification.ENVIRONMENT) {
-                    return infraFailure(input, "test environment failure: " + verdict.failureCode());
+                    // 超时是确定性失败：10 分钟时限内跑不完的测试，重试大概率再次超时（尤其是
+                    // Android SDK 缺失等确定性环境缺陷会反复超时）。直接判 FAILED 不再同相位重试，
+                    // 避免任务陷入多轮 10 分钟测试循环后仍显示「运行中」。
+                    if ("TEST_EXECUTION_TIMEOUT".equals(verdict.failureCode())) {
+                        return testExecutionTimeout(input, command, safeExec);
+                    }
+                    return environmentBlocked(input, command, safeExec, verdict.failureCode());
                 }
             }
             TestResult test = analyze(input, command, safeExec);
@@ -137,6 +152,94 @@ public class TestAgent implements Agent {
         } catch (RuntimeException e) {
             return infraFailure(input, e.getMessage());
         }
+    }
+
+    /**
+     * 按 TaskStep 冻结的按仓库验证命令逐一执行（白名单防御性再校验），聚合结果后交由 LLM 分析。
+     * 任一命令失败 → 整体失败；全部通过 → 成功。无合法命令（旧数据或全部被过滤）返回 null，
+     * 由调用方回退自动探测。
+     */
+    private AgentRunOutcome executePlannedVerification(AgentInput input) {
+        List<TaskStepEntity.VerificationCommand> allowed = input.getVerificationCommands().stream()
+                .filter(command -> command != null && command.getCommand() != null
+                        && TestCommandResolver.isAllowedVerificationCommand(command.getCommand()))
+                .toList();
+        if (allowed.isEmpty()) {
+            return null;
+        }
+        List<String> commandTexts = new ArrayList<>();
+        StringBuilder stdout = new StringBuilder();
+        StringBuilder stderr = new StringBuilder();
+        int worstExit = 0;
+        List<TestResult.Failure> failures = new ArrayList<>();
+        for (TaskStepEntity.VerificationCommand entry : allowed) {
+            List<String> command = entry.getCommand();
+            String repositoryPath = blankToNull(entry.getRepositoryPath());
+            ExecutionResult exec = repositoryPath == null
+                    ? executionPort.execute(input.getWorkspaceId(), command, TEST_TIMEOUT)
+                    : executionPort.execute(input.getWorkspaceId(), repositoryPath, command, TEST_TIMEOUT);
+            if (!exec.ok()) {
+                return infraFailure(input, exec.error() == null ? "test execution unavailable"
+                        : ExecutionContentSanitizer.sanitize(exec.error()));
+            }
+            ExecutionResult safeExec = sanitizedAndLimited(exec);
+            if (isCommandUnavailable(safeExec)) {
+                return environmentBlocked(input, command, safeExec, "BUILD_ENVIRONMENT_UNAVAILABLE");
+            }
+            if (exec.exitCode() != 0) {
+                TestFailureClassifier.Verdict verdict = failureClassifier.classify(
+                        exec.exitCode(), exec.stdout(), exec.stderr(), fileTargets(input));
+                if (verdict.classification() == TestFailureClassifier.Classification.ENVIRONMENT) {
+                    if ("TEST_EXECUTION_TIMEOUT".equals(verdict.failureCode())) {
+                        return testExecutionTimeout(input, entry.getCommand(), safeExec);
+                    }
+                    return environmentBlocked(input, command, safeExec, verdict.failureCode());
+                }
+                worstExit = exec.exitCode();
+                TestResult.Failure failure = new TestResult.Failure();
+                failure.setName(String.join(" ", command));
+                failure.setReason("exit code " + exec.exitCode() + "；命令未通过");
+                failure.setSeverity("ERROR");
+                failures.add(failure);
+            }
+            commandTexts.add(String.join(" ", command));
+            if (safeExec.stdout() != null && !safeExec.stdout().isBlank()) {
+                stdout.append("[STDOUT ").append(String.join(" ", command)).append("]\n")
+                        .append(safeExec.stdout()).append('\n');
+            }
+            if (safeExec.stderr() != null && !safeExec.stderr().isBlank()) {
+                stderr.append("[STDERR ").append(String.join(" ", command)).append("]\n")
+                        .append(safeExec.stderr()).append('\n');
+            }
+        }
+        boolean passed = worstExit == 0;
+        ExecutionResult merged = new ExecutionResult(true, worstExit, stdout.toString(), stderr.toString(), null);
+        TestResult test;
+        if (passed || !failures.isEmpty()) {
+            test = analyze(input, allowed.size() == 1 ? allowed.get(0).getCommand() : List.of("planned", "verification"),
+                    merged);
+            test.setFailures(failures.isEmpty() ? test.getFailures() : failures);
+        } else {
+            test = new TestResult();
+            test.setExitCode(worstExit);
+            test.setSummary("验证命令执行失败");
+        }
+        test.setSuccess(passed);
+        test.setVerificationMode("COMMAND");
+        test.setCommand(String.join(" && ", commandTexts));
+        test.setStdout(merged.stdout());
+        test.setStderr(merged.stderr());
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setPhase(input.getPhase());
+        outcome.setTestResult(test);
+        outcome.setOutcome(passed ? RunOutcome.SUCCEEDED
+                : (test.isNeedsCodingFix() ? RunOutcome.FAILED_QUALITY : RunOutcome.FAILED));
+        outcome.setMessage(test.getSummary());
+        return outcome;
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     /**
@@ -531,6 +634,18 @@ public class TestAgent implements Agent {
                 result.setActual(contains ? "包含" : "不包含");
                 result.setPassed(passed);
             }
+            case "ENDS_WITH_NEWLINE" -> {
+                WorkspaceFileReadResult read = codeAccess.readFile(workspaceId, file);
+                String content = read == null || !read.isOk() || read.getContent() == null ? "" : read.getContent();
+                // 优先用 Worker 返回的换行元数据（按行重组后 content 可能丢失尾部换行）；缺失时回退内容判断。
+                boolean endsWithNewline = read != null && read.isOk() && read.getEndsWithNewline() != null
+                        ? read.getEndsWithNewline()
+                        : content.endsWith("\n");
+                boolean expected = assertion.getValue() == null || !"false".equalsIgnoreCase(assertion.getValue().trim());
+                boolean passed = endsWithNewline == expected;
+                result.setActual(endsWithNewline ? "以换行结尾" : "不以换行结尾");
+                result.setPassed(passed);
+            }
             default -> {
                 result.setActual("不支持的类型");
                 result.setPassed(false);
@@ -553,6 +668,33 @@ public class TestAgent implements Agent {
         return (int) content.lines().count();
     }
 
+    /**
+     * 环境阻塞：测试命令已真实执行但非零退出，且被确定性判定为环境/依赖/网络/服务/超时或构建工具
+     * 不可用（非本次代码缺陷）。不再同相位盲重试，而是携带环境证据转交 Review 兜底审查代码逻辑：
+     * 代码无误则放行（终态如实标注「测试因环境问题未执行」），代码有误则回 Coding 修复。
+     */
+    private AgentRunOutcome environmentBlocked(AgentInput input, List<String> command,
+                                               ExecutionResult exec, String failureCode) {
+        TestResult test = new TestResult();
+        test.setSuccess(false);
+        test.setExitCode(exec.exitCode());
+        test.setCommand(String.join(" ", command));
+        test.setVerificationMode("COMMAND");
+        test.setStdout(exec.stdout());
+        test.setStderr(exec.stderr());
+        test.setEnvironmentFailureCode(failureCode);
+        test.setSummary("测试因环境问题未能完成验证：" + failureCode);
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setPhase(input.getPhase());
+        outcome.setTestResult(test);
+        outcome.setOutcome(RunOutcome.TEST_FAILED);
+        outcome.setMessage("test environment blocked: " + failureCode);
+        outcome.setFailureCode(failureCode);
+        log.warn("tester environment blocked workspaceId={} failureCode={}",
+                input.getWorkspaceId(), failureCode);
+        return outcome;
+    }
+
     private AgentRunOutcome infraFailure(AgentInput input, String message) {
         AgentRunOutcome failure = new AgentRunOutcome();
         failure.setPhase(input.getPhase());
@@ -563,6 +705,41 @@ public class TestAgent implements Agent {
         failure.setMessage("test agent failed: " + safeMessage);
         log.warn("tester infrastructure failure workspaceId={} failureCode={}", input.getWorkspaceId(), code);
         return failure;
+    }
+
+    /**
+     * 测试命令超时：确定性失败，不再走同相位基础设施重试。
+     * <p>
+     * 10 分钟测试时限内未完成，往往是因为测试目标本身跑不完（如 Android SDK 缺失、依赖反复下载）
+     * 等确定性环境缺陷，重试大概率再次超时。直接判 {@link RunOutcome#FAILED}（不可修复、不可重试），
+     * 让任务落到 FAILED 终态，避免陷入多轮 10 分钟循环后任务仍显示「运行中」。
+     * 保留真实 exitCode/stdout/stderr 供诊断展示，failureCode 用稳定码 TEST_EXECUTION_TIMEOUT。
+     */
+    private AgentRunOutcome testExecutionTimeout(AgentInput input, List<String> command, ExecutionResult exec) {
+        TestResult test = new TestResult();
+        test.setSuccess(false);
+        test.setExitCode(exec.exitCode());
+        test.setCommand(String.join(" ", command));
+        test.setStdout(exec.stdout());
+        test.setStderr(exec.stderr());
+        test.setVerificationMode("COMMAND");
+        test.setSummary("测试命令 " + String.join(" ", command) + " 执行超时（" + TEST_TIMEOUT.toMinutes()
+                + " 分钟时限），判定为确定性失败不再重试");
+        TestResult.Failure failure = new TestResult.Failure();
+        failure.setName("test execution timeout");
+        failure.setReason("测试在 " + TEST_TIMEOUT.toMinutes() + " 分钟时限内未完成，重试无法解决确定性环境缺陷");
+        failure.setSeverity("ERROR");
+        test.setFailures(List.of(failure));
+        test.setNeedsCodingFix(false);
+
+        AgentRunOutcome outcome = new AgentRunOutcome();
+        outcome.setPhase(input.getPhase());
+        outcome.setOutcome(RunOutcome.FAILED);
+        outcome.setTestResult(test);
+        outcome.setMessage(test.getSummary());
+        outcome.setFailureCode("TEST_EXECUTION_TIMEOUT");
+        log.warn("tester execution timeout workspaceId={}", input.getWorkspaceId());
+        return outcome;
     }
 
     private String infrastructureCode(String message) {

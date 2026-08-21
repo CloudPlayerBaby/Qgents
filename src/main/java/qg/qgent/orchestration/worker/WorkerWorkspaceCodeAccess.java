@@ -73,6 +73,8 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
             return WorkspaceFileReadResult.fail(path, "path does not map to a workspace repository");
         }
         String sha256 = null;
+        Boolean endsWithNewline = null;
+        String newlineStyle = null;
         List<String> allLines = new ArrayList<>();
         int startLine = 1;
         while (true) {
@@ -87,6 +89,14 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
             if (sha256 == null) {
                 Object sha = result.get("sha256");
                 sha256 = sha == null ? null : String.valueOf(sha);
+            }
+            if (endsWithNewline == null) {
+                Object nl = result.get("endsWithNewline");
+                endsWithNewline = nl instanceof Boolean b ? b : null;
+            }
+            if (newlineStyle == null) {
+                Object style = result.get("newlineStyle");
+                newlineStyle = style == null ? null : String.valueOf(style);
             }
             Object lines = result.get("lines");
             if (!(lines instanceof List<?> page)) {
@@ -103,11 +113,16 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
                 return WorkspaceFileReadResult.fail(path, "file too large to read");
             }
         }
-        String content = String.join("\n", allLines);
-        if (content.getBytes(StandardCharsets.UTF_8).length > MAX_READ_BYTES) {
+        // 按行重组会丢失末尾换行：真实文件以换行结尾时补回，让模型看到与磁盘一致的内容，
+        // 避免 replace_file/apply_patch 误删末尾换行。换行风格信息随结果传给模型保持原样改写。
+        StringBuilder content = new StringBuilder(String.join("\n", allLines));
+        if (Boolean.TRUE.equals(endsWithNewline) && !content.isEmpty()) {
+            content.append('\n');
+        }
+        if (content.toString().getBytes(StandardCharsets.UTF_8).length > MAX_READ_BYTES) {
             return WorkspaceFileReadResult.fail(path, "file exceeds 64KB read limit");
         }
-        return WorkspaceFileReadResult.ok(path, content, sha256);
+        return WorkspaceFileReadResult.ok(path, content.toString(), sha256, endsWithNewline, newlineStyle);
     }
 
     @Override
@@ -140,6 +155,11 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
 
     /**
      * 递归列出仓库内相对路径，跳过 .git/target/node_modules/.idea/build 与点文件。
+     * <p>
+     * 空目录也会被返回（目录本身作为一条路径）：Git 不跟踪空目录，Reviewer 的文件清单
+     * 和 Coding 的目标判定若只依赖「目录下有文件」就无法感知已创建的空目录，导致误判
+     * REVIEW_ASSERTION_TARGET_NOT_FOUND。把空目录自身返回后，目标判定
+     * （精确命中或作为目录前缀存在）即可识别目录已创建。
      */
     private List<String> listRecursive(UUID workspaceId, UUID repositoryId, String dir) {
         List<String> files = new ArrayList<>();
@@ -166,7 +186,13 @@ public class WorkerWorkspaceCodeAccess extends AbstractWorkerToolPort implements
                 if (isIgnoredDirectory(name)) {
                     continue;
                 }
-                files.addAll(listRecursive(workspaceId, repositoryId, child));
+                List<String> nested = listRecursive(workspaceId, repositoryId, child);
+                if (nested.isEmpty()) {
+                    // 空目录：没有可跟踪文件，目录自身作为路径返回，供目标判定/文件清单感知。
+                    files.add(child);
+                } else {
+                    files.addAll(nested);
+                }
             } else {
                 files.add(child);
             }

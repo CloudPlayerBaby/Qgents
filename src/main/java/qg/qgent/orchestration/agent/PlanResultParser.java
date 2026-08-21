@@ -42,9 +42,11 @@ public class PlanResultParser {
     private static final int MAX_FILES_PER_STEP = 20;
     private static final int MAX_CAPABILITIES_PER_STEP = 12;
     private static final int MAX_ASSERTIONS_PER_STEP = 8;
+    private static final int MAX_VERIFICATION_COMMANDS = 8;
     private static final Pattern CAPABILITY = Pattern.compile("[a-z0-9]+(?:-[a-z0-9]+)*");
     private static final Set<String> ASSERTION_TYPES = Set.of(
-            "EXISTS", "EMPTY", "LINES_EQ", "LINES_GT", "LINES_LT", "CONTAINS", "NOT_CONTAINS");
+            "EXISTS", "EMPTY", "LINES_EQ", "LINES_GT", "LINES_LT", "CONTAINS", "NOT_CONTAINS",
+            "ENDS_WITH_NEWLINE");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -70,7 +72,65 @@ public class PlanResultParser {
         plan.setRisks(optionalStringArray(node, "risks", MAX_RISKS));
         plan.setDeliveryMode(optionalDeliveryMode(node));
         plan.setScaleReason(optionalText(node, "scaleReason"));
+        plan.setVerification(parseVerification(node));
         return plan;
+    }
+
+    /**
+     * 可选的结构化验证命令解析：仅接受命中白名单模板的命令（{@link TestCommandResolver
+     * #isAllowedVerificationCommand}）与合法相对路径的仓库目录；非法条目一律忽略（不抛
+     * PlanParseException），缺失/非法不改变计划可用性（与 machineAssertions 同款"可选字段
+     * 非法不阻断"原则）。至多保留 {@link #MAX_VERIFICATION_COMMANDS} 条。
+     */
+    private PlanResult.Verification parseVerification(JsonNode node) {
+        JsonNode verificationNode = node.get("verification");
+        if (verificationNode == null || !verificationNode.isObject()) {
+            return null;
+        }
+        JsonNode commandsNode = verificationNode.get("commands");
+        if (commandsNode == null || !commandsNode.isArray()) {
+            return null;
+        }
+        PlanResult.Verification verification = new PlanResult.Verification();
+        List<PlanResult.VerificationCommand> accepted = new ArrayList<>();
+        for (JsonNode item : commandsNode) {
+            if (!item.isObject()) {
+                continue;
+            }
+            PlanResult.VerificationCommand entry = new PlanResult.VerificationCommand();
+            String repositoryPath = optionalText(item, "repositoryPath");
+            if (repositoryPath != null && !repositoryPath.isBlank()) {
+                if (!isRelativePath(repositoryPath)) {
+                    continue;
+                }
+                entry.setRepositoryPath(repositoryPath);
+            }
+            JsonNode commandNode = item.get("command");
+            if (commandNode == null || !commandNode.isArray() || commandNode.isEmpty()) {
+                continue;
+            }
+            List<String> command = new ArrayList<>();
+            for (JsonNode token : commandNode) {
+                if (!token.isTextual() || token.asText().isBlank()) {
+                    command.clear();
+                    break;
+                }
+                command.add(token.asText().trim());
+            }
+            if (command.isEmpty() || !TestCommandResolver.isAllowedVerificationCommand(command)) {
+                continue;
+            }
+            entry.setCommand(command);
+            accepted.add(entry);
+            if (accepted.size() >= MAX_VERIFICATION_COMMANDS) {
+                break;
+            }
+        }
+        if (accepted.isEmpty()) {
+            return null;
+        }
+        verification.setCommands(accepted);
+        return verification;
     }
 
     private JsonNode toJson(String text) {

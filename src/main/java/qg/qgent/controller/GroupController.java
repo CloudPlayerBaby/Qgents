@@ -10,6 +10,7 @@ import qg.qgent.api.RequestIdFilter;
 import qg.qgent.dto.GroupCreateRequest;
 import qg.qgent.dto.GroupMemberAddRequest;
 import qg.qgent.dto.GroupUpdateRequest;
+import qg.qgent.dto.PinGroupRequest;
 import qg.qgent.service.GroupService;
 
 import java.util.Map;
@@ -134,6 +135,17 @@ public class GroupController {
                                    @RequestHeader("Idempotency-Key") String idempotencyKey,
                                    HttpServletRequest request) {
         return ok(groupService.markRead(userId, projectId, groupId), request);
+    }
+
+    /**
+     * 群聊置顶（个人偏好持久化）：设置 / 取消当前用户对某群的置顶，仅影响自己。
+     * 幂等由 IdempotencyFilter 强制 Idempotency-Key 保证，重复设置相同值返回 200。
+     */
+    @PutMapping("/projects/{projectId}/groups/{groupId}/pin")
+    public ApiResponse<?> setPinned(@AuthenticationPrincipal UUID userId, @PathVariable UUID projectId,
+                                    @PathVariable UUID groupId, @Valid @RequestBody PinGroupRequest body,
+                                    HttpServletRequest request) {
+        return ok(groupService.setPinned(userId, projectId, groupId, body.getPinned()), request);
     }
 
     private ApiResponse<?> ok(Object data, HttpServletRequest request) {

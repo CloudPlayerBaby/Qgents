@@ -67,6 +67,13 @@ public class TaskStepEntity {
     /** 执行语义：MUTATE/VERIFY/TEST/REVIEW/PLAN。 */
     private String executionMode;
     /**
+     * Planner 物化时冻结的按仓库验证命令（仅 TEST 步骤非空）：每条命令含目标仓库的
+     * workspacePath（空表示 Workspace 根）与白名单验证命令。供 Test Agent 在运行/恢复
+     * 续跑时优先消费，不依赖内存中的 PlanResult（恢复时 planResult 为 null）。
+     */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private List<VerificationCommand> verificationCommands;
+    /**
      * State: PENDING/RUNNING/SUCCEEDED/FAILED/SKIPPED/CANCELLED.
      */
     private String status;
@@ -78,4 +85,16 @@ public class TaskStepEntity {
      * UTC last-update time.
      */
     private LocalDateTime updatedAt;
+
+    /**
+     * 单条结构化验证命令：目标仓库目录 + 白名单命令向量。
+     * 与 {@code PlanResult.VerificationCommand} 同形状，供物化/装配双向转换。
+     */
+    @Data
+    public static class VerificationCommand {
+        /** 目标仓库目录（Workspace 相对路径，与 worktree workspacePath 一致）；空表示 Workspace 根。 */
+        private String repositoryPath;
+        /** 白名单验证命令，如 ["node", "tests/todo.test.js"]。 */
+        private List<String> command = new java.util.ArrayList<>();
+    }
 }

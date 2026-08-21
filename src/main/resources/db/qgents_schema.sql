@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS
         team_id BINARY(16) NOT NULL COMMENT '授权所属团队ID',
         provider_installation_id BIGINT UNSIGNED NOT NULL COMMENT 'GitHub App installation数字ID',
         account_login VARCHAR(255) NOT NULL COMMENT 'GitHub授权账号登录名',
-        account_type VARCHAR(32) NOT NULL COMMENT 'GitHub账号类型枚举：USER/ORGANIZATION',
+        account_type VARCHAR(32) NOT NULL COMMENT 'GitHub账号类型枚举：USER/ORGANIZATION；USER 建仓使用 OAuth',
         status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '安装状态枚举：ACTIVE/SUSPENDED/DELETED',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '同步创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '同步更新时间（UTC）',
@@ -145,6 +145,47 @@ CREATE TABLE IF NOT EXISTS
         KEY idx_ghi_team (team_id, status),
         CONSTRAINT fk_ghi_team FOREIGN KEY (team_id) REFERENCES teams (id)
     ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '团队GitHub App安装授权元数据，不存访问令牌';
+
+CREATE TABLE IF NOT EXISTS
+    github_oauth_states (
+        id BINARY(16) PRIMARY KEY COMMENT 'OAuth state UUIDv7，同时作为签名 JWT jti',
+        state_hash BINARY(32) NOT NULL COMMENT 'state 原文 SHA-256 摘要，不保存 state 原文',
+        user_id BINARY(16) NOT NULL COMMENT '发起授权的 Qgents 用户',
+        client VARCHAR(16) NOT NULL COMMENT '回跳端：WEB/MOBILE',
+        expires_at DATETIME(6) NOT NULL COMMENT 'state 过期时间（UTC）',
+        consumed_at DATETIME(6) NULL COMMENT '一次性消费时间（UTC）',
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        UNIQUE KEY uk_ghos_state_hash (state_hash),
+        KEY idx_ghos_user (user_id, created_at),
+        KEY idx_ghos_expiry (expires_at, consumed_at),
+        CONSTRAINT fk_ghos_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT chk_ghos_client CHECK (client IN ('WEB', 'MOBILE'))
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'GitHub OAuth 一次性 state 摘要';
+
+CREATE TABLE IF NOT EXISTS
+    github_user_authorizations (
+        id BINARY(16) PRIMARY KEY COMMENT '授权记录 UUIDv7',
+        user_id BINARY(16) NOT NULL COMMENT 'Qgents 用户',
+        provider VARCHAR(32) NOT NULL COMMENT 'OAuth 提供方，当前固定 GITHUB',
+        provider_user_id BIGINT UNSIGNED NOT NULL COMMENT 'GitHub /user.id',
+        provider_login VARCHAR(255) NOT NULL COMMENT 'GitHub login 展示快照',
+        access_token_ciphertext TEXT NULL COMMENT 'AES-GCM 加密后的 OAuth Token，不保存明文',
+        scopes VARCHAR(1024) NULL COMMENT '实际授权 scope 快照，逗号分隔',
+        status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE/REVOKING/REVOKED/EXPIRED/ERROR',
+        last_error_code VARCHAR(64) NULL COMMENT '最近一次远程撤销失败的稳定错误码',
+        authorized_at DATETIME(6) NOT NULL COMMENT '首次或最近重新授权时间（UTC）',
+        last_validated_at DATETIME(6) NULL COMMENT '最近成功调用 GitHub /user 时间（UTC）',
+        revoked_at DATETIME(6) NULL COMMENT '本地撤销时间（UTC）',
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+        UNIQUE KEY uk_ghua_user_provider (user_id, provider),
+        UNIQUE KEY uk_ghua_provider_user (provider, provider_user_id),
+        KEY idx_ghua_user_status (user_id, status),
+        KEY idx_ghua_provider_status (provider_user_id, status),
+        CONSTRAINT fk_ghua_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT chk_ghua_provider CHECK (provider IN ('GITHUB')),
+        CONSTRAINT chk_ghua_status CHECK (status IN ('ACTIVE', 'REVOKING', 'REVOKED', 'EXPIRED', 'ERROR'))
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'Qgents 用户 GitHub OAuth 授权密文';
 
 CREATE TABLE IF NOT EXISTS
     github_repositories (
@@ -631,7 +672,7 @@ CREATE TABLE IF NOT EXISTS workspace_repositories (
 CREATE TABLE IF NOT EXISTS task_steps (
     id BINARY(16) PRIMARY KEY, task_id BINARY(16) NOT NULL, sequence_no INT UNSIGNED NOT NULL,
     title VARCHAR(255) NOT NULL, instruction TEXT NOT NULL, role VARCHAR(32) NOT NULL, assigned_agent_id BINARY(16) NULL,
-    acceptance_criteria TEXT NULL, required_capabilities JSON NULL COMMENT 'Planner 需要的 Agent 能力标签', allowed_paths JSON NULL COMMENT '当前步骤允许写入的 Workspace 相对路径', target_files JSON NULL COMMENT '当前步骤声明的目标文件（Workspace 相对路径），用于目标已满足判定', execution_mode VARCHAR(16) NOT NULL DEFAULT 'MUTATE' COMMENT '步骤执行语义：MUTATE/VERIFY/TEST/REVIEW/PLAN', status VARCHAR(32) NOT NULL DEFAULT 'PENDING', created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    acceptance_criteria TEXT NULL, required_capabilities JSON NULL COMMENT 'Planner 需要的 Agent 能力标签', allowed_paths JSON NULL COMMENT '当前步骤允许写入的 Workspace 相对路径', target_files JSON NULL COMMENT '当前步骤声明的目标文件（Workspace 相对路径），用于目标已满足判定', execution_mode VARCHAR(16) NOT NULL DEFAULT 'MUTATE' COMMENT '步骤执行语义：MUTATE/VERIFY/TEST/REVIEW/PLAN', verification_commands JSON NULL COMMENT 'Planner 冻结的按仓库验证命令（白名单模板），TEST 步骤专用', status VARCHAR(32) NOT NULL DEFAULT 'PENDING', created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_task_step_sequence(task_id,sequence_no),
     CONSTRAINT fk_task_step_task FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
@@ -1418,3 +1459,15 @@ SET @avatar_key_alter_sql = IF(@avatar_key_col_exists = 0,
 PREPARE avatar_key_alter_stmt FROM @avatar_key_alter_sql;
 EXECUTE avatar_key_alter_stmt;
 DEALLOCATE PREPARE avatar_key_alter_stmt;
+
+-- 用户×群置顶偏好表（个人偏好，跨设备同步；主键 user_id+group_id）。
+-- 群被删除/归档时该行可保留（前端按活跃群过滤），故不建外键，避免删群时约束失败。
+CREATE TABLE IF NOT EXISTS
+    user_group_preference (
+        user_id BINARY(16) NOT NULL COMMENT '用户ID',
+        group_id BINARY(16) NOT NULL COMMENT '需求群ID',
+        pinned TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否置顶（0/1）',
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '更新时间（UTC）',
+        PRIMARY KEY (user_id, group_id),
+        KEY idx_ugp_group (group_id)
+    ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '用户×群置顶偏好（跨设备同步）';

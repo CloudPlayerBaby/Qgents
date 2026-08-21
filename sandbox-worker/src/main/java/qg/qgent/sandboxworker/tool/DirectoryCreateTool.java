@@ -15,7 +15,10 @@ import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
 
 /**
  * 在受控 Repository 内递归、幂等创建目录。
- * 不创建 .gitkeep；目录本身不会产生 Git 文件 Diff。
+ * <p>
+ * 新建的目录若为空，会写入一个空 .gitkeep 占位文件：Git 不跟踪空目录，占位文件保证
+ * 目录能被 Git 跟踪、进入 Diff、push 后保留，Reviewer 的验证上下文（文件清单/Git Diff）
+ * 也能感知该目录。已有目录（created=false）不改动内容，避免重复写入。
  */
 @Component
 @RequiredArgsConstructor
@@ -58,11 +61,25 @@ public class DirectoryCreateTool implements SandboxTool {
             Files.createDirectories(target);
             files.verifyCreatedPath(context.getLocalRepository(), target);
             grantSandboxOwnership(target);
+            ensureGitKeepWhenEmpty(target);
             return ToolResult.value(Map.of("path", relativePath, "created", true));
         } catch (WorkerException exception) {
             throw exception;
         } catch (Exception exception) {
             throw new WorkerException(INTERNAL_SERVER_ERROR, "DIRECTORY_CREATE_FAILED", "创建目录失败");
+        }
+    }
+
+    private void ensureGitKeepWhenEmpty(Path target) {
+        try (var stream = Files.list(target)) {
+            if (stream.findAny().isPresent()) {
+                return;
+            }
+            Path gitKeep = target.resolve(".gitkeep");
+            Files.writeString(gitKeep, "");
+            grantSandboxOwnership(gitKeep);
+        } catch (java.io.IOException ignored) {
+            // 占位文件写入失败不影响目录创建结果；后续真实写入会给出明确错误。
         }
     }
 

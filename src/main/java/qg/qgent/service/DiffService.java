@@ -211,7 +211,7 @@ public class DiffService {
         Map<UUID, UserEntity> userById = authorIds.isEmpty() ? Map.of() : users
                 .selectBatchIds(authorIds).stream()
                 .collect(Collectors.toMap(UserEntity::getId, java.util.function.Function.identity()));
-        return rows.stream().map(c -> response(c, userName(userById.get(c.getAuthorUserId())))).toList();
+        return rows.stream().map(c -> response(c, userById.get(c.getAuthorUserId()))).toList();
     }
 
     @Transactional
@@ -231,7 +231,7 @@ public class DiffService {
         value.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
         comments.insert(value);
         UserEntity author = users.selectById(actor);
-        return response(value, userName(author));
+        return response(value, author);
     }
 
     public DiffResponse decide(UUID projectId, UUID diffId, UUID actor, boolean accepted, String reason) {
@@ -455,15 +455,14 @@ public class DiffService {
                 f.getChangeType(), f.getAdditions(), f.getDeletions(), f.getBinaryFlag(), f.getHunks());
     }
 
-    private DiffCommentResponse response(DiffCommentEntity c, String authorName) {
+    private DiffCommentResponse response(DiffCommentEntity c, UserEntity author) {
         return new DiffCommentResponse(id(c.getId()),
                 id(c.getDiffId()), c.getPath(), c.getSide(), c.getLine(), c.getHunkId(),
                 c.getCommitSha(), c.getBody(),
-                id(c.getAuthorUserId()), authorName, iso(c.getCreatedAt()));
-    }
-
-    private String userName(UserEntity user) {
-        return user == null ? null : user.getDisplayName();
+                id(c.getAuthorUserId()),
+                author == null ? null : author.getDisplayName(),
+                author == null ? null : author.getAvatarUrl(),
+                iso(c.getCreatedAt()));
     }
 
     private String id(UUID v) {

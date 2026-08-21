@@ -21,5 +21,9 @@ public class DiffCommentResponse {
     private String body;
     private String authorUserId;
     private String authorName;
+    /**
+     * 评论作者头像 URL（用户头像，可为 null）；供前端评论列表直接展示，无需再查成员列表。
+     */
+    private String authorAvatarUrl;
     private String createdAt;
 }

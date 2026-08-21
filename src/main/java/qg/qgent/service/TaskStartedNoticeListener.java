@@ -45,8 +45,12 @@ public class TaskStartedNoticeListener {
 
     /**
      * 任务创建提交后异步插入一次启动确认；通过固定 clientMessageId 保证重复事件幂等。
+     * <p>
+     * 使用独立的 {@code taskStartedNoticeExecutor}，与分钟级编排池
+     * （{@code taskOrchestratorExecutor}）彻底隔离：编排长任务占满编排池时，
+     * 确认消息不会被排队拖到任务结束，保证创建后立即回复。
      */
-    @Async("taskOrchestratorExecutor")
+    @Async("taskStartedNoticeExecutor")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onTaskCreated(TaskCreatedEvent event) {
         TaskEntity task = taskMapper.selectById(event.taskId());

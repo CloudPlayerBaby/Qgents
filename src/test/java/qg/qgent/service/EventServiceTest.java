@@ -8,6 +8,7 @@ import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import qg.qgent.api.ApiException;
 import qg.qgent.entity.EventEntity;
 import qg.qgent.entity.NotificationEventEntity;
 import qg.qgent.entity.TeamEventEntity;
@@ -185,5 +186,58 @@ class EventServiceTest {
                 mock(RealtimeHub.class), mock(ProjectMemberMapper.class),
                 mock(TeamMemberMapper.class), mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class),
                 mock(ProjectMapper.class), users, teamRows);
+    }
+
+    @Test
+    void sseConnectionLimitRejectsExcessStreams() throws Exception {
+        EventMapper events = mock(EventMapper.class);
+        ProjectAccessService access = mock(ProjectAccessService.class);
+        UUID projectId = UUID.randomUUID(), userId = UUID.randomUUID();
+        EventService service = new EventService(events, access, mock(NotificationEventMapper.class),
+                mock(TeamEventMapper.class), mock(RealtimeHub.class),
+                mock(ProjectMemberMapper.class), mock(TeamMemberMapper.class),
+                mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class), mock(ProjectMapper.class),
+                mock(UserMapper.class), mock(TeamMapper.class), null, null);
+
+        // 把活跃连接计数压到上限，验证新连接被拒绝（429），不会无限堆积泵线程。
+        java.lang.reflect.Field active = EventService.class.getDeclaredField("activeSseConnections");
+        active.setAccessible(true);
+        java.util.concurrent.atomic.AtomicInteger counter =
+                (java.util.concurrent.atomic.AtomicInteger) active.get(service);
+        java.lang.reflect.Field max = EventService.class.getDeclaredField("MAX_SSE_CONNECTIONS");
+        max.setAccessible(true);
+        counter.set(max.getInt(null));
+
+        when(events.maxSequence(projectId)).thenReturn(1L);
+        ApiException error = org.junit.jupiter.api.Assertions.assertThrows(ApiException.class,
+                () -> service.stream(projectId, userId, null));
+        assertEquals("SSE_CONNECTION_LIMIT_EXCEEDED", error.code());
+        // 拒绝的连接不占用计数
+        assertEquals(max.getInt(null), counter.get());
+    }
+
+    @Test
+    void sseStreamAcquiresConnectionSlot() throws Exception {
+        EventMapper events = mock(EventMapper.class);
+        ProjectAccessService access = mock(ProjectAccessService.class);
+        UUID projectId = UUID.randomUUID(), userId = UUID.randomUUID();
+        EventService service = new EventService(events, access, mock(NotificationEventMapper.class),
+                mock(TeamEventMapper.class), mock(RealtimeHub.class),
+                mock(ProjectMemberMapper.class), mock(TeamMemberMapper.class),
+                mock(RequirementGroupMapper.class), mock(GroupMemberMapper.class), mock(ProjectMapper.class),
+                mock(UserMapper.class), mock(TeamMapper.class), null, null);
+        when(events.maxSequence(projectId)).thenReturn(1L);
+
+        org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter =
+                service.stream(projectId, userId, null);
+        assertNotNull(emitter);
+
+        java.lang.reflect.Field active = EventService.class.getDeclaredField("activeSseConnections");
+        active.setAccessible(true);
+        java.util.concurrent.atomic.AtomicInteger counter =
+                (java.util.concurrent.atomic.AtomicInteger) active.get(service);
+        assertEquals(1, counter.get());
+        // 连接槽位随 emitter 关闭由容器回调释放（onCompletion/onError/onTimeout）；
+        // 单元测试不依赖容器线程，这里只验证成功建立时计数占用正确。
     }
 }

@@ -255,6 +255,63 @@ public class LocalWorkspaceCodeWriter implements WorkspaceCodeWriter {
         }
     }
 
+    @Override
+    public WorkspaceWriteResult ensureTrailingNewline(UUID workspaceId, String path, String expectedHash) {
+        if (path == null || path.isBlank()) {
+            return WorkspaceWriteResult.fail(null, "path must not be blank");
+        }
+        if (expectedHash == null || !expectedHash.matches("[0-9a-fA-F]{64}")) {
+            return WorkspaceWriteResult.fail(path, "expectedHash must be 64 hex chars");
+        }
+        Path root = workspaceRoot(workspaceId);
+        if (root == null) {
+            return WorkspaceWriteResult.infraFail(path, "workspace root is not available");
+        }
+        Path target;
+        try {
+            target = resolvePatchTarget(root, path);
+        } catch (InvalidPathException e) {
+            return WorkspaceWriteResult.fail(path, "path contains invalid characters");
+        }
+        if (target == null) {
+            return WorkspaceWriteResult.fail(path, "path escapes workspace root or is absolute");
+        }
+        try {
+            if (Files.isSymbolicLink(target) || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                return WorkspaceWriteResult.fail(path, "target must be an existing regular file");
+            }
+            if (Files.size(target) > MAX_WRITE_BYTES) {
+                return WorkspaceWriteResult.fail(path, "file exceeds 256KB limit");
+            }
+            byte[] previous = Files.readAllBytes(target);
+            if (!Sha256.hex(previous).equalsIgnoreCase(expectedHash)) {
+                return WorkspaceWriteResult.fail(path, "file has changed since read, re-read then retry");
+            }
+            if (previous.length == 0 || previous[previous.length - 1] == '\n') {
+                return WorkspaceWriteResult.ok(path, expectedHash, false);
+            }
+            // 换行风格按文件既有内容检测（含 CRLF 序列视为 CRLF 文件），追加与之一致的换行。
+            String separator = containsCrLf(previous) ? "\r\n" : "\n";
+            byte[] next = java.util.Arrays.copyOf(previous, previous.length + separator.length());
+            System.arraycopy(separator.getBytes(StandardCharsets.UTF_8), 0, next, previous.length,
+                    separator.length());
+            atomicReplace(target, next);
+            return WorkspaceWriteResult.ok(path, Sha256.hex(next), true);
+        } catch (IOException e) {
+            return WorkspaceWriteResult.infraFail(path, "ensure trailing newline failed: " + exceptionDetail(e));
+        }
+    }
+
+    /** 内容是否含 CRLF 换行序列：含任一 CRLF 即视为 CRLF 风格文件，追加换行时保持一致。 */
+    private static boolean containsCrLf(byte[] bytes) {
+        for (int i = 0; i + 1 < bytes.length; i++) {
+            if (bytes[i] == '\r' && bytes[i + 1] == '\n') {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * 通过临时文件 + 原子替换写回，任一步骤失败都保证目标文件保持原样，不会出现部分写入。
      */

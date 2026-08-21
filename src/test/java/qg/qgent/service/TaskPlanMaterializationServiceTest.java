@@ -419,6 +419,84 @@ class TaskPlanMaterializationServiceTest {
                 .contains("追加一行后配置文件共 4 行且可解析");
     }
 
+    @Test
+    void materializesPlannedVerificationCommandsOnTesterStep() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        TaskStepDependencyMapper dependencies = mock(TaskStepDependencyMapper.class);
+        TaskStepRepositoryMapper scopes = mock(TaskStepRepositoryMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
+        EventService events = mock(EventService.class);
+        AgentDispatcher dispatcher = mock(AgentDispatcher.class);
+        TaskPlanMaterializationService service = service(tasks, steps, dependencies, scopes, worktrees, artifacts,
+                events, dispatcher);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        WorkspaceRepositoryEntity repository = new WorkspaceRepositoryEntity();
+        repository.setProjectRepositoryId(UUID.randomUUID());
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository));
+        when(dispatcher.dispatch(any(), any(), any(), any())).thenReturn(Optional.empty());
+        TransactionSynchronizationManager.initSynchronization();
+
+        PlanResult plan = plan();
+        PlanResult.Verification verification = new PlanResult.Verification();
+        PlanResult.VerificationCommand backend = new PlanResult.VerificationCommand();
+        backend.setRepositoryPath("backend");
+        backend.setCommand(List.of("sh", "./mvnw", "test"));
+        PlanResult.VerificationCommand frontend = new PlanResult.VerificationCommand();
+        frontend.setCommand(List.of("node", "tests/todo.test.js"));
+        verification.setCommands(List.of(backend, frontend));
+        plan.setVerification(verification);
+
+        service.materialize(task, plan);
+
+        ArgumentCaptor<TaskStepEntity> inserted = ArgumentCaptor.forClass(TaskStepEntity.class);
+        verify(steps, times(4)).insert(inserted.capture());
+        TaskStepEntity tester = inserted.getAllValues().get(2);
+        assertThat(tester.getRole()).isEqualTo("TESTER");
+        assertThat(tester.getVerificationCommands()).hasSize(2);
+        assertThat(tester.getVerificationCommands().get(0).getRepositoryPath()).isEqualTo("backend");
+        assertThat(tester.getVerificationCommands().get(0).getCommand()).containsExactly("sh", "./mvnw", "test");
+        assertThat(tester.getVerificationCommands().get(1).getRepositoryPath()).isNull();
+        assertThat(tester.getVerificationCommands().get(1).getCommand()).containsExactly("node", "tests/todo.test.js");
+        // 开发步骤不冻结验证命令（null 关闭该语义）。
+        assertThat(inserted.getAllValues().get(0).getVerificationCommands()).isNull();
+        assertThat(inserted.getAllValues().get(1).getVerificationCommands()).isNull();
+        assertThat(inserted.getAllValues().get(3).getVerificationCommands()).isNull();
+    }
+
+    @Test
+    void planWithoutVerificationLeavesTesterCommandsNull() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        TaskStepDependencyMapper dependencies = mock(TaskStepDependencyMapper.class);
+        TaskStepRepositoryMapper scopes = mock(TaskStepRepositoryMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskExecutionArtifactService artifacts = mock(TaskExecutionArtifactService.class);
+        EventService events = mock(EventService.class);
+        AgentDispatcher dispatcher = mock(AgentDispatcher.class);
+        TaskPlanMaterializationService service = service(tasks, steps, dependencies, scopes, worktrees, artifacts,
+                events, dispatcher);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        WorkspaceRepositoryEntity repository = new WorkspaceRepositoryEntity();
+        repository.setProjectRepositoryId(UUID.randomUUID());
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository));
+        when(dispatcher.dispatch(any(), any(), any(), any())).thenReturn(Optional.empty());
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.materialize(task, plan());
+
+        ArgumentCaptor<TaskStepEntity> inserted = ArgumentCaptor.forClass(TaskStepEntity.class);
+        verify(steps, times(4)).insert(inserted.capture());
+        assertThat(inserted.getAllValues().get(2).getVerificationCommands()).isNull();
+    }
+
     private WorkspaceRepositoryEntity repository() {
         WorkspaceRepositoryEntity repository = new WorkspaceRepositoryEntity();
         repository.setProjectRepositoryId(UUID.randomUUID());

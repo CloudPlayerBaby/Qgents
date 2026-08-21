@@ -5,6 +5,7 @@ import qg.qgent.dto.ContextMemory;
 import qg.qgent.dto.ContextMessage;
 import qg.qgent.dto.ContextRepository;
 import qg.qgent.dto.ContextSkill;
+import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.TestResult;
@@ -14,7 +15,8 @@ import java.util.UUID;
 
 /**
  * Agent 的结构化输入：任务上下文 + 本 step 步骤 + 循环反馈 + 群聊/Skill/Memory 上下文。
- * PLAN bootstrap 不创建 TaskRun；正式执行图中的 CODING/TESTING/REVIEWING 输入均关联 TaskRun 与 TaskStep。
+ * PLAN bootstrap 也创建 PLANNER TaskRun（供失败诊断与重试审计）；正式执行图中的
+ * CODING/TESTING/REVIEWING 输入均关联 TaskRun 与 TaskStep。
  * <p>
  * 群聊/Skill/Memory 上下文来自 {@code ContextService.buildForGroup}（后端4 已按用户+项目过滤），
  * 由 {@link AgentContextAssembler} 在每次 orchestrate 时快照一次注入；缺失时为空列表，属补充信息，
@@ -83,6 +85,11 @@ public class AgentInput {
      * Plan Agent 产出的结构化计划；仅 Coding 相位非空，供 CodingAgent 消费。
      */
     private PlanResult planResult;
+    /**
+     * 当前 TEST 步骤冻结的按仓库验证命令（来自 TaskStep 持久化）；恢复续跑时
+     * planResult 为 null，Test Agent 优先消费本字段的白名单命令，再回退自动探测。
+     */
+    private List<TaskStepEntity.VerificationCommand> verificationCommands;
     /**
      * Coding Agent 产出的结构化结果；仅 TESTING/REVIEWING 相位非空，供 Test/Review Agent 理解本次修改。
      */

@@ -59,12 +59,14 @@ public class PlanPromptBuilder {
                   "steps": [{"title": "步骤标题", "files": ["相对路径1", "相对路径2"], "description": "该步骤做什么", "executionMode": "MUTATE", "requiredCapabilities": ["java", "spring-boot"], "suggestedAgentId": "可选，团队可用 Agent 的 id", "acceptanceNotes": "该步骤完成后的验收标准，一句话", "machineAssertions": [{"type": "LINES_EQ", "file": "相对路径", "value": "4"}]}],
                   "testPlan": "如何验证实现符合需求",
                   "verificationMode": "AUTOMATED",
+                  "verification": {"commands": [{"repositoryPath": "可选，仓库的 workspacePath；单仓库省略", "command": ["mvn", "test"]}]},
                   "risks": ["风险1"],
                   "deliveryMode": "DIFF_FIRST",
                   "scaleReason": "选择该交付模式的理由"
                 }
                 - taskUnderstanding、implementationGoals、testPlan 不得为空；steps 至少一项、至多 12 项，每项必须有 title 和至少一个 files；risks 可为空数组。
                 - verificationMode 必须是 AUTOMATED 或 MANUAL：需要执行构建/测试/检查脚本时使用 AUTOMATED；纯审查、报告核验、文件存在性/内容核验且不需要自动化命令时使用 MANUAL。
+                - verification 是可选字段：仅当 verificationMode=AUTOMATED 且你能从文件树确认明确的测试入口时输出；command 只能使用下列白名单模板之一（不输出其他任何命令）：["mvn", "test"]、["sh", "./mvnw", "test"]、["gradle", "test"]、["sh", "./gradlew", "test"]、["npm", "test"]、["node", "tests/某个.test.js"]（node 目标必须是 tests/ 或 test/ 目录下的 *.test.js / *.spec.js / *.test.mjs / *.spec.mjs / *.test.jsx / *.spec.jsx 文件，且该文件必须存在于文件树）。多仓库 Workspace 下每个仓库一条命令，repositoryPath 填该仓库的 workspacePath（必须与文件树中该仓库的目录前缀一致）；无法确认测试入口时省略整个 verification 字段，由测试阶段自动探测。
                 - 每一项 steps 必须是一次 Coding Agent 调用可以独立完成的原子实现单元，不能重复整项需求。
                 - executionMode 必须是 MUTATE 或 VERIFY：需要创建/修改文件时使用 MUTATE；只检查文件、验证现状或运行只读检查时使用 VERIFY。VERIFY 步骤不得要求 Agent 修改文件。
                 - requiredCapabilities 是可选的小写 kebab-case 能力标签数组；只填写该步骤实际需要的专项能力。

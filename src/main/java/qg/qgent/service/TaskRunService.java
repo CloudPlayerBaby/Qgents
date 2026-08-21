@@ -539,10 +539,12 @@ public class TaskRunService {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RUN_TERMINAL_STATUS", "非法运行终态");
         }
         TaskRunEntity run = taskRunMapper.selectById(taskRunId);
-        if (run == null || !"RUNNING".equals(run.getStatus())) {
-            throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_COMPLETABLE", "仅 RUNNING 运行可完成");
+        if (run == null || (!"RUNNING".equals(run.getStatus()) && !"CANCELLING".equals(run.getStatus()))) {
+            throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NOT_COMPLETABLE", "仅 RUNNING/CANCELLING 运行可完成");
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        // CANCELLING → CANCELLED 收敛：取消受理后编排器在安全点把运行终态化为 CANCELLED，
+        // 不再要求必须是 RUNNING（否则取消请求发出后 run 永远无法落终态）。
         run.setStatus(terminalStatus);
         run.setFinishedAt(now);
         run.setUpdatedAt(now);

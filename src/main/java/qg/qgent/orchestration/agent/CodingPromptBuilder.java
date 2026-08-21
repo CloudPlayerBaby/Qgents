@@ -143,6 +143,12 @@ public class CodingPromptBuilder {
                         .append(input.getRetryContext().getReviewActivatedSkillIds())
                         .append("（正文将在本次运行重新校验后自动注入）");
             }
+            if (input.getRetryContext().getRepairAction() != null
+                    && input.getRetryContext().getRepairFile() != null) {
+                sb.append("\n- 结构化修复动作：").append(input.getRetryContext().getRepairAction())
+                        .append(" 目标文件：").append(input.getRetryContext().getRepairFile())
+                        .append("（优先调用对应受控工具执行该确定性修复，再处理其余 finding）");
+            }
         }
         appendPreviousCodingResult(sb, input.getCodingResult());
         PlanResult plan = input.getPlanResult();

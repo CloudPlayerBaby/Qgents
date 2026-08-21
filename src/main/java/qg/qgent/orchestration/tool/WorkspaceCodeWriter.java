@@ -56,4 +56,17 @@ public interface WorkspaceCodeWriter {
      * @return 结构化结果：成功给出写入路径，失败给出可回灌给 LLM 的错误说明。
      */
     WorkspaceWriteResult patchFile(UUID workspaceId, String path, String expectedHash, String patch);
+
+    /**
+     * 受控的「确保文件以换行结尾」修复动作：按 expectedHash 校验当前内容后，若文件不以换行
+     * 结尾则追加一个换行（与文件既有换行风格一致）；已以换行结尾时幂等返回 changed=false。
+     * 这是质量修复链路的确定性动作，供编排器执行 ENSURE_TRAILING_NEWLINE 修复，避免 AI 手工
+     * 重拼完整文件或反复生成错误的 unified patch。
+     *
+     * @param workspaceId  目标 Workspace。
+     * @param path         相对路径。
+     * @param expectedHash 目标文件当前内容原始字节的 64 位十六进制 SHA-256。
+     * @return 结构化结果：成功给出写入路径与 changed；哈希不匹配时返回工具级失败。
+     */
+    WorkspaceWriteResult ensureTrailingNewline(UUID workspaceId, String path, String expectedHash);
 }

@@ -34,6 +34,30 @@ class DirectoryCreateToolTest {
     }
 
     @Test
+    void emptyCreatedDirectoryGetsGitKeep() throws Exception {
+        ToolResult result = tool().execute(context(), Map.of("path", "empty-folder"));
+
+        assertEquals(true, result.getResult().get("created"));
+        assertTrue(Files.isDirectory(repository.resolve("empty-folder")));
+        assertTrue(Files.exists(repository.resolve("empty-folder/.gitkeep")));
+    }
+
+    @Test
+    void gitKeepWrittenOnlyForActuallyEmptyCreatedDirectory() throws Exception {
+        // 预建 outer 并放一个文件；工具只创建 outer/nested（新目录，空 → 写 .gitkeep），
+        // outer 已有内容不写 .gitkeep。
+        Files.createDirectories(repository.resolve("outer"));
+        Files.writeString(repository.resolve("outer/a.txt"), "a");
+
+        ToolResult result = tool().execute(context(), Map.of("path", "outer/nested"));
+
+        assertEquals(true, result.getResult().get("created"));
+        assertTrue(Files.isDirectory(repository.resolve("outer/nested")));
+        assertTrue(Files.exists(repository.resolve("outer/nested/.gitkeep")));
+        assertTrue(Files.notExists(repository.resolve("outer/.gitkeep")));
+    }
+
+    @Test
     void existingDirectoryIsIdempotent() throws Exception {
         Files.createDirectories(repository.resolve("src/main"));
 

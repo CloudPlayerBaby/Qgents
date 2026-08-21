@@ -533,6 +533,21 @@ class TaskRunServiceTest {
     }
 
     @Test
+    void completeConvergesCancellingRunToCancelled() {
+        UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
+        TaskRunEntity run = run(projectId, runId);
+        run.setStatus("CANCELLING");
+        when(runs.selectById(runId)).thenReturn(run);
+        when(logs.nextSequence(runId)).thenReturn(0L);
+        when(tasks.selectById(run.getTaskId())).thenReturn(task(run));
+
+        service.complete(runId, "CANCELLED");
+
+        assertEquals("CANCELLED", run.getStatus());
+        assertNotNull(run.getFinishedAt());
+    }
+
+    @Test
     void executionContextKeepsStableFieldsWhenTaskHasNoRepository() {
         UUID projectId = UUID.randomUUID(), runId = UUID.randomUUID();
         TaskRunEntity run = run(projectId, runId);
