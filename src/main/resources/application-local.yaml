@@ -1,0 +1,4 @@
+app:
+  auth:
+    # 仅供 localhost HTTP 开发使用，生产环境不得激活 local profile。
+    cookie-secure: false

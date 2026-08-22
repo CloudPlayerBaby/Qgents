@@ -27,8 +27,8 @@ public class MergeRequestController {
     private final MrPreflightService preflightService;
 
     public MergeRequestController(MergeRequestService mergeRequestService,
-                                  MergeRequestCommentService commentService,
-                                  MrPreflightService preflightService) {
+            MergeRequestCommentService commentService,
+            MrPreflightService preflightService) {
         this.mergeRequestService = mergeRequestService;
         this.commentService = commentService;
         this.preflightService = preflightService;
@@ -39,10 +39,10 @@ public class MergeRequestController {
      */
     @GetMapping
     public ApiPageResponse<MergeRequestSummaryResponse> list(@PathVariable UUID projectId,
-                                                             @AuthenticationPrincipal UUID userId, @RequestParam(required = false) UUID repositoryId,
-                                                             @RequestParam(required = false) UUID groupId, @RequestParam(required = false) String status,
-                                                             @RequestParam(required = false) String cursor, @RequestParam(defaultValue = "20") int limit,
-                                                             HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, @RequestParam(required = false) UUID repositoryId,
+            @RequestParam(required = false) UUID groupId, @RequestParam(required = false) String status,
+            @RequestParam(required = false) String cursor, @RequestParam(defaultValue = "20") int limit,
+            HttpServletRequest request) {
         return mergeRequestService.list(projectId, userId, repositoryId, groupId, status, cursor, limit,
                 requestId(request));
     }
@@ -54,9 +54,9 @@ public class MergeRequestController {
     @PostMapping("/preflight")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> requestPreflight(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
-                                           @Valid @RequestBody MergeRequestPreflightRequest body,
-                                           @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-                                           HttpServletRequest request) {
+            @Valid @RequestBody MergeRequestPreflightRequest body,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            HttpServletRequest request) {
         MergeRequestPreflightResponse data = preflightService.requestPreflight(projectId, userId,
                 body.getTaskId(), body.getRepositoryId(), idempotencyKey);
         return ok(data, request);
@@ -68,7 +68,7 @@ public class MergeRequestController {
     @PostMapping("/preflight/{preflightId}/retries")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> retryPreflight(@PathVariable UUID projectId, @PathVariable UUID preflightId,
-                                         @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         MergeRequestPreflightResponse data = preflightService.retryPreflight(projectId, preflightId, userId);
         return ok(data, request);
     }
@@ -78,7 +78,7 @@ public class MergeRequestController {
      */
     @GetMapping("/preflight/{preflightId}")
     public ApiResponse<?> preflight(@PathVariable UUID projectId, @PathVariable UUID preflightId,
-                                    @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         MergeRequestPreflightResponse data = preflightService.getPreflight(projectId, preflightId, userId);
         return ok(data, request);
     }
@@ -90,9 +90,9 @@ public class MergeRequestController {
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> create(@PathVariable UUID projectId, @AuthenticationPrincipal UUID userId,
-                                 @Valid @RequestBody MergeRequestCreateRequest body,
-                                 @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-                                 HttpServletRequest request) {
+            @Valid @RequestBody MergeRequestCreateRequest body,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            HttpServletRequest request) {
         MergeRequestPreflightResponse data = preflightService.requestPreflight(projectId, userId,
                 body.getTaskId(), body.getRepositoryId(), idempotencyKey);
         return ok(data, request);
@@ -103,7 +103,7 @@ public class MergeRequestController {
      */
     @GetMapping("/{mergeRequestId}")
     public ApiResponse<?> detail(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                                 @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         MergeRequestDetailResponse data = mergeRequestService.detail(projectId, mergeRequestId, userId);
         return ok(data, request);
     }
@@ -113,7 +113,7 @@ public class MergeRequestController {
      */
     @GetMapping("/{mergeRequestId}/checks")
     public ApiResponse<?> checks(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                                 @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         MergeRequestChecksResponse data = mergeRequestService.checks(projectId, mergeRequestId, userId);
         return ok(data, request);
     }
@@ -123,7 +123,7 @@ public class MergeRequestController {
      */
     @GetMapping("/{mergeRequestId}/reviews")
     public ApiResponse<?> reviews(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                                  @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         List<MergeRequestReviewResponse> data = mergeRequestService.reviews(projectId, mergeRequestId, userId);
         return ok(data, request);
     }
@@ -133,10 +133,10 @@ public class MergeRequestController {
      */
     @GetMapping("/{mergeRequestId}/commits")
     public ApiResponse<MergeRequestCommitListResponse> commits(@PathVariable UUID projectId,
-                                                                @PathVariable UUID mergeRequestId,
-                                                                @AuthenticationPrincipal UUID userId,
-                                                                @RequestParam(defaultValue = "3") int limit,
-                                                                HttpServletRequest request) {
+            @PathVariable UUID mergeRequestId,
+            @AuthenticationPrincipal UUID userId,
+            @RequestParam(defaultValue = "3") int limit,
+            HttpServletRequest request) {
         return ApiResponse.ok(mergeRequestService.commits(projectId, mergeRequestId, userId, limit),
                 requestId(request));
     }
@@ -144,16 +144,16 @@ public class MergeRequestController {
     /** 查询 Qgents 创建的 MR 普通评论。行级评论仍通过 Diff 评论接口查询。 */
     @GetMapping("/{mergeRequestId}/comments")
     public ApiResponse<?> comments(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                                   @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         return ok(commentService.list(projectId, mergeRequestId, userId), request);
     }
 
     /** 在真实 GitHub MR 对应的 Issue 讨论中创建普通评论。 */
     @PostMapping("/{mergeRequestId}/comments")
     public ApiResponse<?> comment(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                                  @AuthenticationPrincipal UUID userId,
-                                  @Valid @RequestBody MergeRequestCommentRequest body,
-                                  HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId,
+            @Valid @RequestBody MergeRequestCommentRequest body,
+            HttpServletRequest request) {
         return ok(commentService.add(projectId, mergeRequestId, userId, body), request);
     }
 
@@ -163,7 +163,7 @@ public class MergeRequestController {
     @PostMapping("/{mergeRequestId}/sync")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> sync(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                               @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
         MergeRequestSummaryResponse data = mergeRequestService.sync(projectId, mergeRequestId, userId);
         return ok(data, request);
     }
@@ -173,8 +173,8 @@ public class MergeRequestController {
      */
     @PostMapping("/{mergeRequestId}/cq-approvals")
     public ApiResponse<?> cqApproval(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                                     @AuthenticationPrincipal UUID userId, @RequestBody(required = false) CqDecisionRequest body,
-                                     HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, @RequestBody(required = false) CqDecisionRequest body,
+            HttpServletRequest request) {
         MergeRequestSummaryResponse data = mergeRequestService.cqApproval(projectId, mergeRequestId, userId,
                 body == null ? null : body.getReason());
         return ok(data, request);
@@ -185,8 +185,8 @@ public class MergeRequestController {
      */
     @PostMapping("/{mergeRequestId}/cq-rejections")
     public ApiResponse<?> cqRejection(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                                      @AuthenticationPrincipal UUID userId, @Valid @RequestBody CqDecisionRequest body,
-                                      HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId, @Valid @RequestBody CqDecisionRequest body,
+            HttpServletRequest request) {
         MergeRequestSummaryResponse data = mergeRequestService.cqRejection(projectId, mergeRequestId, userId,
                 body.getReason());
         return ok(data, request);
@@ -198,9 +198,9 @@ public class MergeRequestController {
     @PostMapping("/{mergeRequestId}/merge")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> merge(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                                @AuthenticationPrincipal UUID userId,
-                                @RequestBody(required = false) MergeRequestMergeRequest body,
-                                HttpServletRequest request) {
+            @AuthenticationPrincipal UUID userId,
+            @RequestBody(required = false) MergeRequestMergeRequest body,
+            HttpServletRequest request) {
         MergeRequestSummaryResponse data = mergeRequestService.merge(projectId, mergeRequestId, userId,
                 body == null ? null : body.getCommitMessage());
         return ok(data, request);

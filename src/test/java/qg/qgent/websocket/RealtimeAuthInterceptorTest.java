@@ -2,6 +2,7 @@ package qg.qgent.websocket;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.web.socket.WebSocketHandler;
@@ -20,18 +21,21 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** WebSocket 握手鉴权：query token 校验与 userId 会话属性注入测试。 */
+/** WebSocket 握手鉴权：HttpOnly Cookie 校验与 userId 会话属性注入测试。 */
 class RealtimeAuthInterceptorTest {
 
     private final WebSocketHandler handler = mock(WebSocketHandler.class);
 
-    private ServerHttpRequest request(String uri) {
+    private ServerHttpRequest request(String cookie) {
         ServerHttpRequest req = mock(ServerHttpRequest.class);
-        when(req.getURI()).thenReturn(URI.create(uri));
+        when(req.getURI()).thenReturn(URI.create("wss://api.qgents.dpdns.org/api/v1/ws/realtime"));
+        HttpHeaders headers = new HttpHeaders();
+        if (cookie != null) headers.add(HttpHeaders.COOKIE, cookie);
+        when(req.getHeaders()).thenReturn(headers);
         return req;
     }
 
-    /** 合法 token → 握手通过，并把 userId 注入会话属性。 */
+    /** 合法 Cookie → 握手通过，并把 userId 注入会话属性。 */
     @Test
     void validTokenPassesAndInjectsUserId() {
         TokenService tokens = mock(TokenService.class);
@@ -40,7 +44,7 @@ class RealtimeAuthInterceptorTest {
         RealtimeAuthInterceptor interceptor = new RealtimeAuthInterceptor(tokens);
 
         Map<String, Object> attributes = new HashMap<>();
-        boolean ok = interceptor.beforeHandshake(request("ws://h/api/v1/ws/realtime?token=abc"),
+        boolean ok = interceptor.beforeHandshake(request("qgents_access_token=abc"),
                 mock(ServerHttpResponse.class), handler, attributes);
 
         assertTrue(ok);
@@ -56,7 +60,7 @@ class RealtimeAuthInterceptorTest {
 
         ServerHttpResponse response = mock(ServerHttpResponse.class);
         Map<String, Object> attributes = new HashMap<>();
-        boolean ok = interceptor.beforeHandshake(request("ws://h/api/v1/ws/realtime?token=bad"),
+        boolean ok = interceptor.beforeHandshake(request("qgents_access_token=bad"),
                 response, handler, attributes);
 
         assertFalse(ok);
@@ -64,14 +68,14 @@ class RealtimeAuthInterceptorTest {
         assertNull(attributes.get(RealtimeAuthInterceptor.USER_ID_ATTR));
     }
 
-    /** 缺失 token → 握手拒绝，不调用 token 校验。 */
+    /** 缺失 Cookie → 握手拒绝，不调用 token 校验。 */
     @Test
     void missingTokenRejectsHandshake() {
         TokenService tokens = mock(TokenService.class);
         RealtimeAuthInterceptor interceptor = new RealtimeAuthInterceptor(tokens);
 
         ServerHttpResponse response = mock(ServerHttpResponse.class);
-        boolean ok = interceptor.beforeHandshake(request("ws://h/api/v1/ws/realtime"),
+        boolean ok = interceptor.beforeHandshake(request(null),
                 response, handler, new HashMap<>());
 
         assertFalse(ok);

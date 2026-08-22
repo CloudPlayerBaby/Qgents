@@ -190,7 +190,7 @@ public class AuthService {
     }
 
     @Transactional
-    public void logout(UUID userId, String raw) {
+    public void logout(String raw) {
         // 找到对应的refresh token
         RefreshTokenEntity token = refreshTokenMapper.selectOne(Wrappers.<RefreshTokenEntity>lambdaQuery()
                 .eq(RefreshTokenEntity::getTokenHash, tokens.hash(raw))
@@ -198,7 +198,7 @@ public class AuthService {
                 .gt(RefreshTokenEntity::getExpiresAt, LocalDateTime.now(ZoneOffset.UTC))
                 .last("FOR UPDATE"));
         // 对的上了
-        if (token != null && userId.equals(token.getUserId())) {
+        if (token != null) {
             // 就标记为已撤销
             token.setRevokedAt(LocalDateTime.now(ZoneOffset.UTC));
             refreshTokenMapper.updateById(token);

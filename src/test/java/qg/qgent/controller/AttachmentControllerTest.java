@@ -11,7 +11,6 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import qg.qgent.api.ApiException;
 import qg.qgent.api.ApiResponse;
 import qg.qgent.api.RequestIdFilter;
-import qg.qgent.auth.TokenService;
 import qg.qgent.dto.AttachmentPreviewUrlResponse;
 import qg.qgent.service.AttachmentService;
 import qg.qgent.service.AttachmentService.AttachmentPreviewContent;
@@ -31,16 +30,15 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 附件内联预览控制器单测：query token / Authorization 双通道、Range 206/416、raw 语义、preview-url 包装。
+ * 附件内联预览控制器单测：安全链建立认证主体后的 Range 206/416、raw 语义、preview-url 包装。
  * <p>
- * 直接调用控制器方法（与项目既有控制器测试一致），用真实 TokenService 签发短期 access token。
+ * 直接调用控制器方法（与项目既有控制器测试一致），不接受 query token。
  */
 class AttachmentControllerTest {
 
     private final AttachmentService service = mock(AttachmentService.class);
-    private final TokenService tokens = new TokenService("01234567890123456789012345678901", 15, 30, 30);
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final AttachmentController controller = new AttachmentController(service, tokens, objectMapper);
+    private final AttachmentController controller = new AttachmentController(service, objectMapper);
     private HttpServletRequest request;
 
     @BeforeEach
@@ -50,7 +48,7 @@ class AttachmentControllerTest {
     }
 
     @Test
-    void previewServesRangeWithQueryToken() {
+    void previewServesRangeForAuthenticatedPrincipal() {
         UUID projectId = UUID.randomUUID();
         UUID attachmentId = UUID.randomUUID();
         UUID actor = UUID.randomUUID();
@@ -58,8 +56,7 @@ class AttachmentControllerTest {
         when(service.previewContent(actor, projectId, attachmentId)).thenReturn(
                 new AttachmentPreviewContent(data, "TEXT", "notes.txt", "text/plain", (long) data.length));
 
-        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, tokens.access(actor),
-                null, "bytes=0-4", null, request);
+        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, null, "bytes=0-4", actor, request);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.PARTIAL_CONTENT);
         assertThat(resp.getHeaders().getFirst(HttpHeaders.CONTENT_RANGE)).isEqualTo("bytes 0-4/" + data.length);
@@ -77,8 +74,7 @@ class AttachmentControllerTest {
         when(service.previewContent(actor, projectId, attachmentId)).thenReturn(
                 new AttachmentPreviewContent(data, "TEXT", "notes.txt", "text/plain", (long) data.length));
 
-        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, tokens.access(actor),
-                null, "bytes=-3", null, request);
+        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, null, "bytes=-3", actor, request);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.PARTIAL_CONTENT);
         assertThat(resp.getHeaders().getFirst(HttpHeaders.CONTENT_RANGE)).isEqualTo("bytes 2-4/" + data.length);
@@ -94,8 +90,7 @@ class AttachmentControllerTest {
         when(service.previewContent(actor, projectId, attachmentId)).thenReturn(
                 new AttachmentPreviewContent(data, "TEXT", "notes.txt", "text/plain", (long) data.length));
 
-        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, tokens.access(actor),
-                null, "bytes=99-100", null, request);
+        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, null, "bytes=99-100", actor, request);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE);
         assertThat(resp.getHeaders().getFirst(HttpHeaders.CONTENT_RANGE)).isEqualTo("bytes */" + data.length);
@@ -105,8 +100,7 @@ class AttachmentControllerTest {
 
     @Test
     void previewRejectsMissingAuth() {
-        assertThatThrownBy(() -> controller.preview(UUID.randomUUID(), UUID.randomUUID(),
-                null, null, null, null, request))
+        assertThatThrownBy(() -> controller.preview(UUID.randomUUID(), UUID.randomUUID(), null, null, null, request))
                 .isInstanceOf(ApiException.class)
                 .satisfies(e -> {
                     assertThat(((ApiException) e).status().value()).isEqualTo(401);
@@ -115,17 +109,7 @@ class AttachmentControllerTest {
     }
 
     @Test
-    void previewRejectsExpiredOrForgedToken() {
-        UUID projectId = UUID.randomUUID();
-        UUID attachmentId = UUID.randomUUID();
-        assertThatThrownBy(() -> controller.preview(projectId, attachmentId,
-                tokens.access(UUID.randomUUID()) + "forged", null, null, null, request))
-                .isInstanceOf(ApiException.class)
-                .satisfies(e -> assertThat(((ApiException) e).status().value()).isEqualTo(401));
-    }
-
-    @Test
-    void previewServesFullContentViaHeaderChannel() {
+    void previewServesFullContentForAuthenticatedPrincipal() {
         UUID projectId = UUID.randomUUID();
         UUID attachmentId = UUID.randomUUID();
         UUID actor = UUID.randomUUID();
@@ -133,8 +117,7 @@ class AttachmentControllerTest {
         when(service.previewContent(actor, projectId, attachmentId)).thenReturn(
                 new AttachmentPreviewContent(data, "CODE", "Main.java", "application/octet-stream", (long) data.length));
 
-        // Authorization 头通道：@AuthenticationPrincipal 直接解析出 userId，无需 query token
-        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, null, null, null, actor, request);
+        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, null, null, actor, request);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getHeaders().getFirst(HttpHeaders.ACCEPT_RANGES)).isEqualTo("bytes");
@@ -151,8 +134,7 @@ class AttachmentControllerTest {
         when(service.previewContent(actor, projectId, attachmentId)).thenReturn(
                 new AttachmentPreviewContent(data, "CODE", "Main.java", "application/octet-stream", (long) data.length));
 
-        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, tokens.access(actor),
-                1, null, null, request);
+        ResponseEntity<byte[]> resp = controller.preview(projectId, attachmentId, 1, null, actor, request);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getHeaders().getContentType().toString()).startsWith("application/octet-stream");
