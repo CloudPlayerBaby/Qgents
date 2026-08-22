@@ -1,6 +1,7 @@
 package qg.qgent.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -68,4 +69,23 @@ public interface TaskRunMapper extends BaseMapper<TaskRunEntity> {
             + "finished_at=UTC_TIMESTAMP(6), updated_at=UTC_TIMESTAMP(6) "
             + "where id=#{runId} and status in ('QUEUED','RUNNING') and updated_at < #{staleBefore}")
     int reclaimStaleRun(@Param("runId") UUID runId, @Param("staleBefore") java.time.LocalDateTime staleBefore);
+
+    /**
+     * 解散团队时按项目逐层删除不再被任何运行引用的叶子运行。
+     * <p>
+     * task_runs 存在自引用外键 {@code fk_task_run_retry}（retry_of_task_run_id -&gt; id）且无级联，
+     * 重试链可多级；单条批量 DELETE 无法在同一语句内删除互相引用的父子行，须循环调用
+     * 本方法直至返回 0。重试引用限定在相同项目内，保证逐层收敛。
+     * <p>
+     * MySQL 不允许在 DELETE 的 FROM/子查询中再次读取目标表（error 1093），因此把
+     * 「被引用的父行 id」子查询用派生表 {@code AS tmp} 包一层，让 MySQL 先物化；
+     * 同时用 {@code IS NOT NULL} 排除空值，避免 {@code NOT IN} 遇到 NULL 时整体失效。
+     *
+     * @param projectId 项目 ID
+     * @return 本次实际删除的行数；为 0 表示已无满足条件的运行
+     */
+    @Delete("delete from task_runs where project_id = #{projectId} "
+            + "and id not in (select rid from (select retry_of_task_run_id as rid from task_runs "
+            + "where project_id = #{projectId} and retry_of_task_run_id is not null) as tmp)")
+    int deleteUnreferencedRuns(@Param("projectId") UUID projectId);
 }

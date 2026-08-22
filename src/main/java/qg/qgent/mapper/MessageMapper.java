@@ -262,4 +262,29 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
     List<GroupUnreadRow> countMentionUnreadByProject(@Param("projectId") UUID projectId,
                                                      @Param("userId") UUID userId,
                                                      @Param("userIdText") String userIdText);
+
+    /**
+     * 解散团队时按群范围逐层删除不再被任何消息引用的叶子消息。
+     * <p>
+     * messages 存在自引用外键 {@code fk_msg_reply}（reply_to_message_id -&gt; id）且无级联，
+     * 回复链可多级；单条批量 DELETE 无法在同一语句内删除互相引用的父子行，须循环调用
+     * 本方法直至返回 0。回复引用限定在相同群集合内，保证逐层收敛。
+     * <p>
+     * MySQL 不允许在 DELETE 的 FROM/子查询中再次读取目标表（error 1093），因此把
+     * 「被引用的父行 id」子查询用派生表 {@code AS tmp} 包一层，让 MySQL 先物化；
+     * 同时用 {@code IS NOT NULL} 排除空值，避免 {@code NOT IN} 遇到 NULL 时整体失效。
+     *
+     * @param groupIds 待删除消息所属的需求群 ID 集合（非空）
+     * @return 本次实际删除的行数；为 0 表示已无满足条件的消息
+     */
+    @Delete({"<script>",
+            "delete from messages ",
+            "where requirement_group_id in ",
+            "<foreach collection='groupIds' item='gid' open='(' separator=',' close=')'>#{gid}</foreach> ",
+            "and id not in (select rid from (select reply_to_message_id as rid from messages ",
+            "where requirement_group_id in ",
+            "<foreach collection='groupIds' item='rid' open='(' separator=',' close=')'>#{rid}</foreach> ",
+            "and reply_to_message_id is not null) as tmp)",
+            "</script>"})
+    int deleteUnreferencedMessages(@Param("groupIds") List<UUID> groupIds);
 }
