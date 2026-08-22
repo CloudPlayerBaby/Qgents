@@ -268,7 +268,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void qualityFailureInReadOnlyTaskDoesNotLoopBackToAnotherReadOnlyStep() {
+    void qualityFailureInReadOnlyTaskIsReleasedWithoutLoopingBack() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -286,12 +286,16 @@ class TaskOrchestratorTest {
         verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(verification.getId()), anyString(), any(), any(), any());
         // TESTING 失败统一进 REVIEWING，Review 判质量失败后 requeue；但任务没有可写 MUTATE 步骤，
-        // requeue 被守卫拦截（reviewer 已运行一次）。
+        // requeue 被守卫拦截并放行（reviewer 已运行一次），不放行则重复验证同一事实直到耗尽循环。
         verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(reviewer.getId()), anyString(), any(), any(), any());
-        assertThat(fixture.updatedStatuses()).contains("FAILED");
-        assertThat(task.getFailureCode()).isEqualTo("QUALITY_REPAIR_STEP_UNAVAILABLE");
-        assertThat(task.getFailureReason()).contains("没有可写");
+        // 无 MUTATE 步骤 ⇒ 无代码交付，任务以 SUCCEEDED（无代码变更）收敛，不再判 FAILED；
+        // 放行原因如实写入 Run 产物，不隐藏 Review 发现的问题。
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        assertThat(task.getFailureCode()).isNull();
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                "审查发现问题但无代码修改步骤可修复，已作为审查结论记录"
+                        .equals(summary.get("bypassReason")));
     }
 
     @Test
@@ -662,7 +666,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void environmentBlockedReviewQualityFailureFailsTaskWithoutRequeueingCoding() {
+    void environmentBlockedReviewQualityFailureIsReleasedWithoutRequeueingCoding() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -691,14 +695,325 @@ class TaskOrchestratorTest {
         fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
                 environmentBlockedTest, failedReview)).orchestrate(task.getProjectId(), task.getId());
 
-        // 环境失败转 Review 兜底：Review 判代码有疑点直接落 FAILED，不再回 Coding（环境问题
-        // 不是本次代码可修复，回修只会空转）。Task 失败码复用测试环境失败码，失败文案由
-        // userFailureDescription(环境码) 生成（含「环境」），Review 发现的代码疑点在 Run 诊断。
-        assertThat(fixture.updatedStatuses()).contains("FAILED");
-        assertThat(task.getFailureCode()).isEqualTo("TEST_DEPENDENCY_UNAVAILABLE");
-        assertThat(task.getFailureReason()).contains("环境");
+        // 环境失败转 Review 兜底：Review 判代码有疑点时不回 Coding（环境问题不是本次代码可修复，
+        // 回修只会空转），按"能放行就放行"放行——Review 发现的 BLOCKER 仍完整落库，终态卡片如实
+        // 标注测试未执行与放行原因；DIFF_FIRST 走待确认 Diff 由用户把关。
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        assertThat(task.getFailureCode()).isNull();
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                "测试因环境问题未执行（TEST_DEPENDENCY_UNAVAILABLE），审查发现的问题已记录，已放行"
+                        .equals(summary.get("bypassReason")));
         verify(fixture.taskRuns, times(1)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(developer.getId()), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void reviewInfraFailureExhaustedIsReleasedWithPendingDiff() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome infraReview = fixture.outcome(OrchestrationPhase.REVIEWING,
+                RunOutcome.FAILED_INFRASTRUCTURE);
+        infraReview.setMessage("review agent failed: git diff unavailable");
+        // maxInfraRetries=3：4 次 FAILED_INFRASTRUCTURE（1 次初始 + 3 次重试）后重试耗尽判失败，
+        // 编排器按"能放行就放行"诚实放行——审查未完成如实标注，绝不伪装成审查通过。
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), infraReview, infraReview, infraReview, infraReview);
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        // DIFF_FIRST：放行后照常生成待确认 Diff 由用户把关，任务不失败。
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        assertThat(task.getFailureCode()).isNull();
+        verify(fixture.diffs, times(1)).createPendingBatch(eq(task.getProjectId()), eq(task.getId()), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                String.valueOf(summary.get("bypassReason")).contains("审查未完成"));
+    }
+
+    @Test
+    void reviewInfraFailureExhaustedOnMrFirstReleasesWithoutAutoDelivery() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        task.setDeliveryMode(DeliveryMode.MR_FIRST);
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome infraReview = fixture.outcome(OrchestrationPhase.REVIEWING,
+                RunOutcome.FAILED_INFRASTRUCTURE);
+        infraReview.setMessage("review agent failed: git diff unavailable");
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), infraReview, infraReview, infraReview, infraReview);
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        // MR_FIRST + 审查未完成（重试耗尽）：任务 SUCCEEDED 但不得自动 commit/push/建 PR——
+        // 自动交付必须有真实审查闸门，代码留工作区、卡片标注人工处理。
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        assertThat(fixture.updatedStatuses()).doesNotContain("DELIVERING");
+        verify(fixture.diffs, never()).createSystemAcceptedBatch(any(), any(), any());
+        verify(fixture.diffs, never()).createPendingBatch(any(), any(), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                String.valueOf(summary.get("bypassReason")).contains("审查未完成"));
+    }
+
+    @Test
+    void testingInfraFailureExhaustedIsReleasedWithPendingDiff() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        // TESTING 是最后一个步骤：测试基础设施失败放行后无后续 REVIEW 步骤，直接进入交付终态。
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester));
+
+        AgentRunOutcome infraTest = fixture.outcome(OrchestrationPhase.TESTING,
+                RunOutcome.FAILED_INFRASTRUCTURE);
+        infraTest.setMessage("test agent failed: environment unavailable");
+        // maxInfraRetries=3：4 次 FAILED_INFRASTRUCTURE（1 次初始 + 3 次重试）后重试耗尽判失败，
+        // 编排器按"能放行就放行"诚实放行——测试未执行如实标注，绝不伪装成测试通过。
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                infraTest, infraTest, infraTest, infraTest);
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        // DIFF_FIRST：放行后照常生成待确认 Diff 由用户把关，任务不失败。
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        assertThat(task.getFailureCode()).isNull();
+        verify(fixture.diffs, times(1)).createPendingBatch(eq(task.getProjectId()), eq(task.getId()), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                String.valueOf(summary.get("bypassReason")).contains("测试未执行"));
+    }
+
+    @Test
+    void testingInfraFailureExhaustedOnMrFirstReleasesWithoutAutoDelivery() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        task.setDeliveryMode(DeliveryMode.MR_FIRST);
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester));
+
+        AgentRunOutcome infraTest = fixture.outcome(OrchestrationPhase.TESTING,
+                RunOutcome.FAILED_INFRASTRUCTURE);
+        infraTest.setMessage("test agent failed: environment unavailable");
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                infraTest, infraTest, infraTest, infraTest);
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        // MR_FIRST + 测试未执行（重试耗尽）：任务 SUCCEEDED 但不得自动 commit/push/建 PR——
+        // 自动交付必须有真实测试证据，代码留工作区、卡片标注人工处理。
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        assertThat(fixture.updatedStatuses()).doesNotContain("DELIVERING");
+        verify(fixture.diffs, never()).createSystemAcceptedBatch(any(), any(), any());
+        verify(fixture.diffs, never()).createPendingBatch(any(), any(), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                String.valueOf(summary.get("bypassReason")).contains("测试未执行"));
+    }
+
+    @Test
+    void testingInfraFailureExhaustedThenReviewPassesWithPendingDiff() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome infraTest = fixture.outcome(OrchestrationPhase.TESTING,
+                RunOutcome.FAILED_INFRASTRUCTURE);
+        infraTest.setMessage("test agent failed: environment unavailable");
+        // TESTING 基础设施耗尽放行后，计划后续仍有 REVIEW 步骤：success 被 hasFollowingStep 降级为
+        // advance，并按「Test 不判任务失败、Review 是最终裁决」路由到 review 节点兜底审查。
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                infraTest, infraTest, infraTest, infraTest, fixture.success(OrchestrationPhase.REVIEWING));
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        // Review 兜底审查通过 → DIFF_FIRST 照常交付；「测试未执行」放行原因仍在终态如实标注。
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        assertThat(task.getFailureCode()).isNull();
+        verify(fixture.diffs, times(1)).createPendingBatch(eq(task.getProjectId()), eq(task.getId()), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                String.valueOf(summary.get("bypassReason")).contains("测试未执行"));
+    }
+
+    @Test
+    void testingInfraRecoveredAfterReworkReenablesMrFirstAutoDelivery() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        task.setDeliveryMode(DeliveryMode.MR_FIRST);
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome infraTest = fixture.outcome(OrchestrationPhase.TESTING,
+                RunOutcome.FAILED_INFRASTRUCTURE);
+        infraTest.setMessage("test agent failed: environment unavailable");
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("MAJOR");
+        finding.setIssue("missing error handling");
+        reviewResult.setFindings(List.of(finding));
+        failedReview.setReviewResult(reviewResult);
+        // 基础设施恢复：Review 判可修 → Coding 修复 → 再测真实成功 → Review 通过。
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                infraTest, infraTest, infraTest, infraTest, failedReview,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING));
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        // 最后的 TESTING 真实执行成功已清除「测试未执行」放行标记，MR_FIRST 恢复自动交付：
+        // 若标记未被清除，completeSuccess 会误判放行而返回 SUCCEEDED 不交付。
+        assertThat(fixture.updatedStatuses()).contains("DELIVERING");
+        verify(fixture.diffs, times(1)).createSystemAcceptedBatch(eq(task.getProjectId()), eq(task.getId()), any());
+        verify(fixture.diffs, never()).createPendingBatch(any(), any(), any());
+    }
+
+    @Test
+    void codingInfraFailureExhaustedReleasesWithSucceededStatus() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome infraCoding = fixture.outcome(OrchestrationPhase.CODING, RunOutcome.FAILED_INFRASTRUCTURE);
+        infraCoding.setMessage("developer agent failed: worker unavailable");
+        // maxInfraRetries=3：4 次 FAILED_INFRASTRUCTURE 后重试耗尽，编排器按"能放行就放行"
+        // 直接以 SUCCEEDED 结束——开发未完成如实标注，绝不伪装成开发完成。
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), infraCoding, infraCoding, infraCoding, infraCoding);
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        // 开发未完成没有代码可验证：不得 advance 到后续 Test/Review（tester/reviewer 不建 Run），
+        // completeSuccess 直接以 SUCCEEDED 结束，不生成待确认 Diff 批次（没有代码可确认）。
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        assertThat(fixture.updatedStatuses()).doesNotContain("WAITING_DIFF_CONFIRMATION", "DELIVERING");
+        assertThat(task.getFailureCode()).isNull();
+        verify(fixture.taskRuns, never()).createForStep(any(), any(), eq(tester.getId()), any(), any(), any(), any());
+        verify(fixture.taskRuns, never()).createForStep(any(), any(), eq(reviewer.getId()), any(), any(), any(), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                String.valueOf(summary.get("bypassReason")).contains("开发未完成"));
+    }
+
+    @Test
+    void codingInfraFailureExhaustedOnMrFirstReleasesWithoutAutoDelivery() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        task.setDeliveryMode(DeliveryMode.MR_FIRST);
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome infraCoding = fixture.outcome(OrchestrationPhase.CODING, RunOutcome.FAILED_INFRASTRUCTURE);
+        infraCoding.setMessage("developer agent failed: worker unavailable");
+        Agent agent = fixture.sequenceAgent(fixture.planSuccess(), infraCoding, infraCoding, infraCoding, infraCoding);
+        fixture.orchestrator(agent).orchestrate(task.getProjectId(), task.getId());
+
+        // MR_FIRST + 开发未完成（重试耗尽）：任务 SUCCEEDED 但不得自动 commit/push/建 PR——
+        // 自动交付必须有真实开发产出，代码留工作区、卡片标注人工处理。
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        assertThat(fixture.updatedStatuses()).doesNotContain("DELIVERING");
+        verify(fixture.diffs, never()).createSystemAcceptedBatch(any(), any(), any());
+        verify(fixture.diffs, never()).createPendingBatch(any(), any(), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                String.valueOf(summary.get("bypassReason")).contains("开发未完成"));
+    }
+
+    @Test
+    void environmentBlockedReviewBlockerOnMrFirstReleasesWithoutAutoDelivery() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        task.setDeliveryMode(DeliveryMode.MR_FIRST);
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome environmentBlockedTest = fixture.outcome(OrchestrationPhase.TESTING,
+                RunOutcome.TEST_FAILED);
+        TestResult blockedTest = new TestResult();
+        blockedTest.setSuccess(false);
+        blockedTest.setEnvironmentFailureCode("TEST_SERVICE_UNAVAILABLE");
+        blockedTest.setSummary("测试因环境问题未能完成验证");
+        environmentBlockedTest.setTestResult(blockedTest);
+
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("BLOCKER");
+        finding.setIssue("missing ownership check");
+        reviewResult.setFindings(List.of(finding));
+        failedReview.setReviewResult(reviewResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                environmentBlockedTest, failedReview)).orchestrate(task.getProjectId(), task.getId());
+
+        // MR_FIRST + 环境阻塞 + BLOCKER：用户已确认"也放行"，但 BLOCKER 不自动 push——
+        // 安全由"不自动交付"兜底（SUCCEEDED 终态 + 卡片标注人工处理），findings 仍完整落库。
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        assertThat(fixture.updatedStatuses()).doesNotContain("DELIVERING");
+        verify(fixture.diffs, never()).createSystemAcceptedBatch(any(), any(), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                "测试因环境问题未执行（TEST_SERVICE_UNAVAILABLE），审查发现的问题已记录，已放行"
+                        .equals(summary.get("bypassReason")));
+    }
+
+    @Test
+    void environmentBlockedReviewMajorOnMrFirstReleasesWithoutAutoDelivery() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        task.setDeliveryMode(DeliveryMode.MR_FIRST);
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        fixture.stubPlan(task, planner, List.of(planner, developer, tester, reviewer));
+
+        AgentRunOutcome environmentBlockedTest = fixture.outcome(OrchestrationPhase.TESTING,
+                RunOutcome.TEST_FAILED);
+        TestResult blockedTest = new TestResult();
+        blockedTest.setSuccess(false);
+        blockedTest.setEnvironmentFailureCode("TEST_SERVICE_UNAVAILABLE");
+        environmentBlockedTest.setTestResult(blockedTest);
+
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("MAJOR");
+        finding.setIssue("missing error handling");
+        reviewResult.setFindings(List.of(finding));
+        failedReview.setReviewResult(reviewResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(), fixture.success(OrchestrationPhase.CODING),
+                environmentBlockedTest, failedReview)).orchestrate(task.getProjectId(), task.getId());
+
+        // MR_FIRST + 环境阻塞 + 仅 MAJOR（无 BLOCKER）：同样放行但不自动交付。
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        assertThat(fixture.updatedStatuses()).doesNotContain("DELIVERING");
+        verify(fixture.diffs, never()).createSystemAcceptedBatch(any(), any(), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                "测试因环境问题未执行（TEST_SERVICE_UNAVAILABLE），审查发现的问题已记录，已放行"
+                        .equals(summary.get("bypassReason")));
     }
 
     @Test
@@ -1012,7 +1327,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void agentRunHittingPhaseTimeoutFailsInfrastructureWithTimeoutCode() throws Exception {
+    void agentRunHittingPhaseTimeoutIsBoundedAndReleased() throws Exception {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -1021,7 +1336,7 @@ class TaskOrchestratorTest {
         TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
         List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
         fixture.stubPlan(task, planner, all);
-        // CODING 相位 agent.run() 永久阻塞（模拟 Worker HTTP 挂起），必须被总时限兜住。
+        // CODING 相位 agent.run() 永久阻塞（模拟 Worker HTTP 挂起），必须被总时限兜住（有界终止）。
         java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.atomic.AtomicInteger call = new java.util.concurrent.atomic.AtomicInteger();
         Agent agent = input -> {
@@ -1058,9 +1373,14 @@ class TaskOrchestratorTest {
                 eq(OrchestrationPhase.CODING), any());
         persistedBeforeTerminal.verify(fixture.artifacts, atLeastOnce()).createRunArtifact(eq(task), any(),
                 eq(developer), eq("CODING"), any());
+        // run 仍如实落 FAILED + AGENT_RUN_TIMEOUT（超时事实不隐藏）；重试耗尽后 task 按基础设施
+        // 放行以 SUCCEEDED 结束并如实标注"开发未完成"（见 runStepNode 的 CODING 放行守卫）。
         persistedBeforeTerminal.verify(fixture.taskRuns, atLeastOnce()).complete(any(), eq("FAILED"),
                 eq("AGENT_RUN_TIMEOUT"), any());
-        assertThat(fixture.updatedStatuses()).contains("FAILED");
+        assertThat(fixture.updatedStatuses()).contains("SUCCEEDED");
+        assertThat(fixture.updatedStatuses()).doesNotContain("FAILED");
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(captured ->
+                String.valueOf(captured.get("bypassReason")).contains("开发未完成"));
         driver.shutdownNow();
     }
 
@@ -1289,6 +1609,14 @@ class TaskOrchestratorTest {
                     .filter(invocation -> invocation.getMethod().getName().equals("assemble"))
                     .filter(invocation -> stepId.equals(((TaskStepEntity) invocation.getArgument(1)).getId()))
                     .map(invocation -> (AgentRunOutcome) invocation.getArgument(3))
+                    .toList();
+        }
+
+        /** createRunArtifact 收到的全部产物摘要 Map，供断言放行原因等 Run 级记录。 */
+        List<Map<String, Object>> capturedArtifactSummaries() {
+            return mockingDetails(artifacts).getInvocations().stream()
+                    .filter(invocation -> invocation.getMethod().getName().equals("createRunArtifact"))
+                    .map(invocation -> (Map<String, Object>) invocation.getArgument(4))
                     .toList();
         }
     }

@@ -695,6 +695,35 @@ public class TaskOrchestrator {
         // 误解为 Task 已经终止。
         StateMachineDecision decision = stateMachine.decide(phase, outcome.getOutcome(), outcome.getFailureCode(),
                 ctx.counters);
+        // TESTING 本次真实执行成功 → 测试证据已具备，清除此前「测试未执行」的放行标记：基础设施恢复后
+        // 终态不能再引用已失效的旧测试失败事实（典型路径：TESTING 基础设施耗尽放行 → Review 判可修
+        // → Coding 修复 → 再测成功）。Review 放行标记只在 TESTING 之后才产生并收敛任务，不会被此误伤。
+        if (phase == OrchestrationPhase.TESTING && outcome.getOutcome() == RunOutcome.SUCCEEDED) {
+            ctx.bypassReason = null;
+        }
+        // 开发/测试/审查基础设施失败（同相位重试耗尽，或不可重试失败码直接判失败）→ 诚实放行：未真正
+        // 执行完成，如实标注。这属于「非代码缺陷」失败路径（用户策略：能放行就放行）；确认的
+        // BLOCKER/MAJOR 缺陷失败仍由下方 QUALITY_REPAIR_NOT_REQUESTED 等守卫判定保持失败，不受此覆盖影响。
+        // TESTING/REVIEWING 放行后若计划后续还有 REVIEW 步骤，success 会被下方 hasFollowingStep 降级为
+        // advance，并按「Test 不判任务失败、Review 是最终裁决」路由到 review 节点兜底审查（见 route 分支）。
+        // CODING 放行则相反：开发未完成没有可用代码可验证，必须直接以 SUCCEEDED 结束、不得 advance
+        // （见 ctx.codingInfraReleased 跳过 advance），避免推进 Test/Review 连环失败或空转。
+        if ((phase == OrchestrationPhase.CODING || phase == OrchestrationPhase.TESTING
+                || phase == OrchestrationPhase.REVIEWING)
+                && decision.getAction() == StateMachineDecision.Action.COMPLETE_FAILED
+                && outcome.getOutcome() == RunOutcome.FAILED_INFRASTRUCTURE) {
+            String gate;
+            switch (phase) {
+                case CODING -> {
+                    ctx.codingInfraReleased = true;
+                    gate = "开发未完成";
+                }
+                case TESTING -> gate = "测试未执行";
+                default -> gate = "审查未完成";
+            }
+            ctx.bypassReason = gate + "（基础设施问题：" + safeFailureCode(outcome.getFailureCode()) + "），已放行";
+            decision = StateMachineDecision.success();
+        }
         // 质量修复循环现在只由 REVIEWING 的 FAILED_QUALITY 触发（Test 不再自行判定失败，测试失败
         // 统一 TEST_FAILED 交 Review 裁决）。仍需 Review 明确声明失败是否可由 Coding 修复；旧 Agent/
         // 测试构造若没有结构化结果时保留历史兼容行为；一旦有结果且 needsCodingFix=false，直接终止，
@@ -707,24 +736,24 @@ public class TaskOrchestrator {
         }
         // 只读任务可能没有任何可修复的 MUTATE 步骤。此时质量失败不能沿用
         // requeue 路由回到一个 VERIFY/TEST 节点，否则会重复验证同一事实直到耗尽循环。
+        // 按「能放行就放行」策略：无修复入口时放行而非判失败——findings 作为审查结论如实保留并标注；
+        // 无 MUTATE 步骤 ⇒ 无代码交付，终态自然降级为无代码变更成功，没有自动交付风险。
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
                 && !hasMutableStep(ctx.steps)) {
-            ctx.recordQualityRepairUnavailable("QUALITY_REPAIR_STEP_UNAVAILABLE",
-                    "质量检查未通过，但当前计划没有可写的 MUTATE 开发步骤可用于修复");
-            decision = StateMachineDecision.failed();
+            ctx.bypassReason = "审查发现问题但无代码修改步骤可修复，已作为审查结论记录";
+            decision = StateMachineDecision.success();
         }
         // Review 判 BLOCKER/MAJOR 且测试因环境问题未执行时，不回 Coding：环境问题是执行环境缺陷
-        // 而非本次代码可修复，若打回 Coding 会让任务反复「改代码→再测→又环境失败」空转。放行路径
-        // （Review 判代码无误）仍走 COMPLETE_SUCCESS，终态卡片已如实标注「测试未通过/未执行原因」
-        // （见 finishTask 的 testNotPassedNote）。
+        // 而非本次代码可修复，若打回 Coding 会让任务反复「改代码→再测→又环境失败」空转。
+        // 按「能放行就放行」策略（含 MR_FIRST + BLOCKER，用户已确认）放行并如实标注测试未执行；
+        // 自动推送风险由 completeSuccess 的「MR_FIRST 放行不自动交付」兜底，无需在此区分 severity。
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
                 && phase == OrchestrationPhase.REVIEWING
                 && ctx.testResult != null && ctx.testResult.getEnvironmentFailureCode() != null
                 && !ctx.testResult.getEnvironmentFailureCode().isBlank()) {
-            ctx.recordQualityRepairUnavailable(ctx.testResult.getEnvironmentFailureCode(),
-                    "测试因环境问题未执行（" + ctx.testResult.getEnvironmentFailureCode()
-                            + "）；Review 兜底审查发现代码疑点，任务失败（环境问题不回 Coding）");
-            decision = StateMachineDecision.failed();
+            ctx.bypassReason = "测试因环境问题未执行（" + ctx.testResult.getEnvironmentFailureCode()
+                    + "），审查发现的问题已记录，已放行";
+            decision = StateMachineDecision.success();
         }
         // 质量循环不收敛：本轮与上一轮可修复项完全一致（无任何消减或变化）→ 提前终止，省下
         // 注定空转的循环预算（模型修不动或该 MAJOR 本身是误报时，再多打回也只会重复耗 LLM 调用）。
@@ -757,7 +786,13 @@ public class TaskOrchestrator {
         recordFailureDiagnostic(task, run, step, outcome);
         // AGENTS.md：Run 产物必须先成功落库，再发布 Run 终态事件；产物类型使用稳定相位名，
         // 不泄漏可扩展的 step role，保证前端时间线可识别 CODING/TESTING/REVIEWING。
-        artifactService.createRunArtifact(task, run, step, artifactType(phase), runArtifactSummary(step, outcome));
+        Map<String, Object> runSummary = runArtifactSummary(step, outcome);
+        // 放行时把如实原因一并落库（非敏感字段，可过 sanitizeSummary），与 findings 同处可查，
+        // 保证"测试未执行/审查未完成/发现问题但放行"这一事实可追踪，不伪装成审查通过。
+        if (ctx.bypassReason != null && !ctx.bypassReason.isBlank()) {
+            runSummary.put("bypassReason", ctx.bypassReason);
+        }
+        artifactService.createRunArtifact(task, run, step, artifactType(phase), runSummary);
         // 取消收敛：run 可能已在执行中被取消（RUNNING→CANCELLING）。此时结果由用户取消决定，
         // 不能把 outcome 决定的终态（FAILED/SUCCEEDED）覆盖上去，统一落 CANCELLED。
         TaskRunEntity latestRun = taskRunService.findById(run.getId());
@@ -775,6 +810,7 @@ public class TaskOrchestrator {
         markStepSettled(task, step, settledRun != null && "CANCELLED".equals(settledRun.getStatus())
                 ? RunOutcome.CANCELLED : outcome.getOutcome());
         if (decision.getAction() == StateMachineDecision.Action.COMPLETE_SUCCESS
+                && !ctx.codingInfraReleased
                 && hasFollowingStep(step, ctx.steps)) {
             decision = StateMachineDecision.advance(phase);
         }
@@ -1138,6 +1174,14 @@ public class TaskOrchestrator {
         return truncate(ExecutionContentSanitizer.sanitizeDiagnosticDetail(value == null ? "" : value).strip(), max);
     }
 
+    /** 公开放行文案中的失败码只保留限长、脱敏后的稳定标识，缺失时用占位符。 */
+    private String safeFailureCode(String code) {
+        if (code == null || code.isBlank()) {
+            return "未知";
+        }
+        return truncate(ExecutionContentSanitizer.sanitizeDiagnosticDetail(code).strip(), 48);
+    }
+
     private String lastDeveloperNodeId(List<TaskStepEntity> steps) {
         for (int index = steps.size() - 1; index >= 0; index--) {
             TaskStepEntity step = steps.get(index);
@@ -1323,12 +1367,23 @@ public class TaskOrchestrator {
         // Review 放行但测试未真实通过时，终态如实标注原因，不得描述为测试通过。
         // 环境阻塞/未检测到测试命令/执行超时属「测试未完成验证」（TestResult.isInconclusive()），
         // 其余是测试真实执行并给出失败结论（如代码缺陷失败但 Review 判定无 BLOCKER/MAJOR）。
+        // Review 被放行（审查未完成 / 发现问题但按策略放行）时改由下方放行原因标注，不再说"代码审查通过"。
         if (action == StateMachineDecision.Action.COMPLETE_SUCCESS && !"FAILED".equals(finishing.status())
+                && ctx.bypassReason == null
                 && ctx.testResult != null && !ctx.testResult.isSuccess()) {
             String note = testNotPassedNote(ctx.testResult);
             if (note != null) {
                 cardMessage = cardMessage + "；代码审查通过，但" + note;
             }
+        }
+        // Review 放行（审查未完成 / 发现问题但按策略放行）：如实标注放行原因，findings 不隐藏。
+        // MR_FIRST 下任务 SUCCEEDED 但代码未自动交付（见 completeSuccess），必须提示人工处理。
+        if (ctx.bypassReason != null && !"FAILED".equals(finishing.status())) {
+            String reason = ctx.bypassReason;
+            if ("SUCCEEDED".equals(finishing.status()) && DeliveryMode.MR_FIRST.equals(task.getDeliveryMode())) {
+                reason = reason + "；代码未自动交付，请人工处理";
+            }
+            cardMessage = cardMessage + "；" + reason;
         }
         sendAgentCard(task, "task-" + task.getId(), finishing.status(), null, cardMessage);
     }
@@ -1384,8 +1439,19 @@ public class TaskOrchestrator {
 
     /**
      * 成功终态按交付模式路由：MR_FIRST 直达系统交付（仅 commit/push），DIFF_FIRST 走待确认 Diff 批次。
+     * 质量门禁被放行（测试未执行 / 审查未完成 / 发现问题但按策略放行）时，MR_FIRST 不得自动
+     * commit/push/建 PR：直接以 SUCCEEDED 结束并如实标注，代码留在工作区由人工处理——自动交付必须有
+     * 真实的测试与审查闸门，即使审查发现 BLOCKER 也不自动推送（用户已确认"也放行"，安全由不自动交付兜底）。
+     * CODING 基础设施失败被放行（开发未完成）时同理：没有任何可交付代码，DIFF_FIRST 也不生成
+     * 待确认 Diff 批次——没有代码可确认（createPendingBatch 用空 run 只会落空），一律直接 SUCCEEDED。
      */
     private FinishingStatus completeSuccess(TaskEntity task, TaskExecutionContext ctx) {
+        if (DeliveryMode.MR_FIRST.equals(task.getDeliveryMode()) && ctx.bypassReason != null) {
+            return new FinishingStatus("SUCCEEDED", null, null);
+        }
+        if (ctx.codingInfraReleased) {
+            return new FinishingStatus("SUCCEEDED", null, null);
+        }
         if (DeliveryMode.MR_FIRST.equals(task.getDeliveryMode())) {
             return completeWithMrFirst(task, ctx);
         }
@@ -1856,6 +1922,21 @@ public class TaskOrchestrator {
          * 避免把“根本没有修复入口”误报成“多次修复后仍失败”。
          */
         private QualityRepairUnavailable qualityRepairUnavailable;
+        /**
+         * 质量门禁阶段（测试/审查）被「放行」（绕过失败：测试未执行 / 审查未完成 / 发现问题但按
+         * 策略放行）时的如实原因。
+         * 非空时终态卡片如实标注该原因，并禁止 MR_FIRST 自动 commit/push/建 PR（代码留工作区
+         * 人工处理）；Review 发现的 findings 仍完整落库，绝不隐藏或伪装成审查通过。
+         * 注意：若后续某次 TESTING 真实执行成功（环境恢复），必须清除本标记——否则终态会引用
+         * 已失效的「测试未执行」旧事实，见 runStepNode 中 TESTING SUCCEEDED 的清除逻辑。
+         */
+        private String bypassReason;
+        /**
+         * CODING 基础设施失败被放行（开发未完成）时为 true：任务必须直接以 SUCCEEDED 结束，
+         * 不得推进到后续 Test/Review——没有可用代码可验证，推进只会连环失败或空转。
+         * 仅本次 CODING 放行时设置；放行后任务立即收敛，不会泄漏到后续步骤。
+         */
+        private boolean codingInfraReleased;
         /**
          * 本次 orchestrate 快照的群聊/Skill/Memory 上下文，跨节点复用；组装失败时为 null（不阻断）。
          */
