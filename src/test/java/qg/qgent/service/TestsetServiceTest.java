@@ -129,6 +129,19 @@ class TestsetServiceTest {
         assertEquals("./gradlew test", captor.getValue().getDefinition().get("command"));
     }
 
+    @Test
+    void frontendLintCommandIsAcceptedWhileOtherNpmScriptsRemainRejected() {
+        TestsetCreateRequest lint = request();
+        lint.setCommand("npm run lint");
+
+        service.create(projectId, actor, lint);
+
+        ArgumentCaptor<TestsetEntity> captor = ArgumentCaptor.forClass(TestsetEntity.class);
+        verify(testsets).insert(captor.capture());
+        assertEquals("npm run lint", captor.getValue().getDefinition().get("command"));
+        assertFalse(TestsetService.isSupportedExecutionCommand("npm run build"));
+    }
+
     private TestsetCreateRequest request() {
         TestsetPassRule rule = new TestsetPassRule();
         rule.setType("EXIT_CODE");

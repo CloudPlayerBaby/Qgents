@@ -27,7 +27,7 @@ public class TestsetUpdateRequest {
     private List<@jakarta.validation.constraints.NotBlank @Size(max = 64) String> scopeTags;
 
     @Size(max = 4096)
-    @Schema(description = "在受控 Sandbox 中执行的命令")
+    @Schema(description = "在受控 Sandbox 中执行的命令，仅支持 mvn test、gradle test、npm test、npm run lint、./mvnw test 或 ./gradlew test")
     private String command;
 
     @Min(1)

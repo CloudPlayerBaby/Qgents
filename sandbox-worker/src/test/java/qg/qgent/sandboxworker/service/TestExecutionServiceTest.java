@@ -129,6 +129,42 @@ class TestExecutionServiceTest {
     }
 
     @Test
+    void executesWhitelistedFrontendLintCommand() throws Exception {
+        WorkspaceManagerService workspaces = mock(WorkspaceManagerService.class);
+        SandboxService sandboxes = mock(SandboxService.class);
+        CommandExecutor commands = mock(CommandExecutor.class);
+        WorkspacePathResolver paths = mock(WorkspacePathResolver.class);
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+        properties.setRuntime("docker");
+        properties.setImageProfiles(Set.of("dev-tools"));
+        properties.setMaxExecutionTimeout(Duration.ofSeconds(60));
+        TestExecutionService service = new TestExecutionService(workspaces, sandboxes, commands, paths, properties);
+        UUID projectId = UUID.randomUUID(), repositoryId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        WorkspaceRepositoryResponse repository = new WorkspaceRepositoryResponse(repositoryId, "frontend", "feat/x",
+                "main", "base", "head");
+        when(workspaces.get(workspaceId)).thenReturn(new WorkspaceResponse(workspaceId, projectId,
+                "workspaces/" + workspaceId, "READY", List.of(repository), "now", "now"));
+        SandboxAllocation allocation = mock(SandboxAllocation.class);
+        when(sandboxes.findAllocation(any())).thenReturn(allocation);
+        when(paths.resolveRepositoryContainer(allocation, repositoryId)).thenReturn("/workspace/frontend");
+        when(commands.execute(eq(allocation), eq("/workspace/frontend"), eq(List.of("npm", "run", "lint")),
+                eq(Duration.ofSeconds(60))))
+                .thenReturn(new CommandExecutionResult(0, List.of(), List.of()));
+        TestExecutionItemRequest item = new TestExecutionItemRequest();
+        item.setTestsetId(UUID.randomUUID()); item.setCommand("npm run lint"); item.setTimeoutSeconds(60);
+        item.setPassRuleType("EXIT_CODE"); item.setExpectedExitCode(0);
+        TestExecutionRequest request = new TestExecutionRequest(); request.setExecutionId(UUID.randomUUID());
+        request.setProjectId(projectId); request.setRepositoryId(repositoryId); request.setWorkspaceId(workspaceId);
+        request.setTestsets(List.of(item));
+
+        var response = service.execute(request);
+
+        assertEquals("PASSED", response.getStatus());
+        verify(commands).execute(eq(allocation), eq("/workspace/frontend"), eq(List.of("npm", "run", "lint")),
+                eq(Duration.ofSeconds(60)));
+    }
+
+    @Test
     void normalizesHistoricalBareWrapperCommands() {
         assertEquals(List.of("sh", "./gradlew", "test"),
                 TestExecutionService.normalizeWrapperCommand(List.of("gradlew", "test")));

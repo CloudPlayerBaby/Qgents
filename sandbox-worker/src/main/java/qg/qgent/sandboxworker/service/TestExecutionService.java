@@ -52,6 +52,7 @@ public class TestExecutionService {
             List.of("mvn", "test"),
             List.of("gradle", "test"),
             List.of("npm", "test"),
+            List.of("npm", "run", "lint"),
             List.of("sh", "./mvnw", "test"),
             List.of("sh", "./gradlew", "test"));
     private final WorkspaceManagerService workspaces;

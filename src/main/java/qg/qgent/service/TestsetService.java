@@ -30,7 +30,7 @@ import java.util.UUID;
 @Service
 public class TestsetService {
     private static final Set<String> SUPPORTED_EXECUTION_COMMANDS = Set.of(
-            "mvn test", "gradle test", "npm test", "./mvnw test", "./gradlew test");
+            "mvn test", "gradle test", "npm test", "npm run lint", "./mvnw test", "./gradlew test");
     private final TestsetMapper testsets;
     private final ProjectRepositoryMapper repositories;
     private final RepositoryBranchConfigTestsetMapper gateReferences;
@@ -173,7 +173,7 @@ public class TestsetService {
         }
         if (!isSupportedExecutionCommand(normalizedCommand)) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET_COMMAND",
-                    "Testset 命令不受支持，只能使用 mvn test、gradle test、npm test、./mvnw test 或 ./gradlew test");
+                    "Testset 命令不受支持，只能使用 mvn test、gradle test、npm test、npm run lint、./mvnw test 或 ./gradlew test");
         }
         if (timeout == null || timeout < 1 || timeout > 3600) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TESTSET_TIMEOUT", "Testset 超时必须为 1 到 3600 秒");

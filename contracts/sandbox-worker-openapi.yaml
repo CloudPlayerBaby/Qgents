@@ -161,7 +161,7 @@ components:
       required: [testsetId, command, timeoutSeconds, passRuleType, expectedExitCode]
       properties:
         testsetId: {type: string, format: uuid}
-        command: {type: string, minLength: 1, maxLength: 4096}
+        command: {type: string, minLength: 1, maxLength: 4096, description: Testset 受控命令。规范化命令仅允许 mvn test、gradle test、npm test、npm run lint、./mvnw test 或 ./gradlew test；为已保存的历史快照兼容 mvnw test、gradlew test、sh ./mvnw test 和 sh ./gradlew test，不接受其他参数或脚本}
         timeoutSeconds: {type: integer, minimum: 1, maximum: 3600}
         passRuleType: {type: string, enum: [EXIT_CODE]}
         expectedExitCode: {type: integer}
