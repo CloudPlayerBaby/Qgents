@@ -675,7 +675,8 @@ public class TestRunService {
 
     private TestRunResponse toTestRun(TestRunEntity run) {
         return new TestRunResponse(id(run.getId()), id(run.getProjectId()), id(run.getProjectRepositoryId()),
-                run.getRef(), run.getTestsetIds(), run.getStatus(), run.getSummary(),
+                id(run.getTaskId()), run.getRef() == null ? run.getExecutionSourceRef() : run.getRef(),
+                run.getTestsetIds(), run.getStatus(), run.getSummary(),
                 id(run.getCreatedBy()), iso(run.getCreatedAt()),
                 iso(run.getStartedAt()), iso(run.getFinishedAt()), iso(run.getUpdatedAt()), durationMs(run));
     }
