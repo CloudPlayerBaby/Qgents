@@ -71,6 +71,22 @@ class CodingPromptBuilderTest {
     }
 
     @Test
+    void correctiveSelfReportInstructionIncludesServerToolGuidance() {
+        CodingResult previous = new CodingResult();
+        previous.setSuccess(false);
+        previous.setErrors(List.of("无法继续"));
+
+        String instruction = CodingPromptBuilder.correctiveSelfReportInstruction(previous, 1, 2,
+                "服务端工具记录：write_file(repo-1/src/services/apiClient.js) 失败：文件已存在。"
+                        + "下一步必须：先 read_file，再调用 apply_patch");
+
+        assertThat(instruction).contains("服务端工具记录")
+                .contains("apiClient.js")
+                .contains("read_file")
+                .contains("apply_patch");
+    }
+
+    @Test
     void omitsPreviousFailureFeedbackWhenEmpty() {
         AgentInput input = new AgentInput();
         input.setTaskTitle("修复导出逻辑");

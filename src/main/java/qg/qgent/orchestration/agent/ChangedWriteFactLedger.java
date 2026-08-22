@@ -78,6 +78,64 @@ final class ChangedWriteFactLedger {
         return "；建议：根据工具 errorCode 和 nextAction 修正参数后再试";
     }
 
+    /**
+     * 返回尚未被同一路径成功写入消解的、可通过后续工具继续处理的最近失败。
+     *
+     * <p>模型在工具错误后直接给出 {@code success=false} 时，不能只依赖模型自行复述错误；
+     * 必须把服务端记录的失败事实与下一步动作带入纠正回合。这里只覆盖已有明确替代路径的
+     * 文件存在、版本冲突、补丁格式和参数错误，不把路径越界、权限或基础设施错误误判为可继续。</p>
+     */
+    String correctiveToolGuidance() {
+        Set<String> resolvedPaths = new LinkedHashSet<>();
+        for (int index = toolOutcomes.size() - 1; index >= 0; index--) {
+            ToolOutcome outcome = toolOutcomes.get(index);
+            if (outcome == null) {
+                continue;
+            }
+            if (outcome.ok() && outcome.path() != null) {
+                resolvedPaths.add(outcome.path());
+                continue;
+            }
+            if (outcome.ok() || !isCorrectable(outcome)
+                    || (outcome.path() != null && resolvedPaths.contains(outcome.path()))) {
+                continue;
+            }
+            return "服务端工具记录：" + outcome.toolName() + "(" + outcome.path() + ") 失败："
+                    + shortError(outcome) + "。下一步必须：" + nextAction(outcome);
+        }
+        return "";
+    }
+
+    boolean hasCorrectableToolFailure() {
+        return !correctiveToolGuidance().isBlank();
+    }
+
+    private static boolean isCorrectable(ToolOutcome outcome) {
+        if ("TOOL_CONFLICT".equals(outcome.errorCode())
+                || "TOOL_PATCH_FORMAT_INVALID".equals(outcome.errorCode())
+                || "TOOL_ARGUMENT_INVALID".equals(outcome.errorCode())) {
+            return true;
+        }
+        String error = outcome.error();
+        return "write_file".equals(outcome.toolName()) && error != null
+                && (error.contains("only creates new files") || error.contains("already exists"));
+    }
+
+    private static String nextAction(ToolOutcome outcome) {
+        String error = outcome.error() == null ? "" : outcome.error();
+        if ("write_file".equals(outcome.toolName())
+                && (error.contains("only creates new files") || error.contains("already exists"))) {
+            return "先 read_file 获取现有内容和 sha256，再调用 apply_patch 修改该文件；不要再次调用 write_file";
+        }
+        if ("TOOL_CONFLICT".equals(outcome.errorCode())) {
+            return "先重新 read_file 获取当前 sha256，再调用 apply_patch";
+        }
+        if ("TOOL_PATCH_FORMAT_INVALID".equals(outcome.errorCode())) {
+            return "先重新 read_file 获取最新内容和 sha256，再按实际内容重新生成 unified diff";
+        }
+        return "依据工具 schema 修正参数后重新调用相应工具，不要直接结束";
+    }
+
     void recordToolOutcomes(List<ToolOutcome> outcomes) {
         if (outcomes == null) {
             return;
