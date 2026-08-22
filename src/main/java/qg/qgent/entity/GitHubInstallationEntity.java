@@ -26,6 +26,8 @@ public class GitHubInstallationEntity {
     private Long providerInstallationId;
     private String accountLogin;
     private String accountType;
+    /** GitHub App 仓库访问范围：ALL/SELECTED；NULL 表示历史记录尚未同步该字段。 */
+    private String repositorySelection;
     private String status;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

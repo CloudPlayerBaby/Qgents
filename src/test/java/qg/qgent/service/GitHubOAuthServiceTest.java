@@ -173,15 +173,36 @@ class GitHubOAuthServiceTest {
     @Test
     void setupReportsReadyWhenLoginMatches() {
         UUID userId = UUID.randomUUID();
+        UUID installationId = UUID.randomUUID();
         when(teamMemberMapper.selectByUserId(userId)).thenReturn(List.of(ownerMember(userId)));
         when(installationMapper.selectList(any(Wrapper.class)))
-                .thenReturn(List.of(userInstallation(UUID.randomUUID(), "octocat")));
+                .thenReturn(List.of(userInstallation(installationId, "octocat")));
         when(authorizationMapper.selectOne(any(Wrapper.class)))
                 .thenReturn(entity(userId, 77L, "octocat", "ACTIVE", "repo"));
 
         GitHubOAuthStatusResponse response = service.status(userId);
 
         assertEquals("READY", response.getPersonalRepositorySetup());
+        assertEquals(installationId, response.getUserInstallationId());
+        assertEquals("ALL", response.getRepositoryAccessScope());
+    }
+
+    @Test
+    void setupBlocksSelectedRepositoryInstallation() {
+        UUID userId = UUID.randomUUID();
+        UUID installationId = UUID.randomUUID();
+        GitHubInstallationEntity installation = userInstallation(installationId, "octocat");
+        installation.setRepositorySelection("SELECTED");
+        when(teamMemberMapper.selectByUserId(userId)).thenReturn(List.of(ownerMember(userId)));
+        when(installationMapper.selectList(any(Wrapper.class))).thenReturn(List.of(installation));
+        when(authorizationMapper.selectOne(any(Wrapper.class)))
+                .thenReturn(entity(userId, 77L, "octocat", "ACTIVE", "repo"));
+
+        GitHubOAuthStatusResponse response = service.status(userId);
+
+        assertEquals("NEED_ALL_REPOSITORIES_ACCESS", response.getPersonalRepositorySetup());
+        assertEquals(installationId, response.getUserInstallationId());
+        assertEquals("SELECTED", response.getRepositoryAccessScope());
     }
 
     @Test
@@ -315,12 +336,13 @@ class GitHubOAuthServiceTest {
         return member;
     }
 
-    private GitHubInstallationEntity userInstallation(UUID teamId, String login) {
+    private GitHubInstallationEntity userInstallation(UUID installationId, String login) {
         GitHubInstallationEntity installation = new GitHubInstallationEntity();
-        installation.setId(UUID.randomUUID());
-        installation.setTeamId(teamId);
+        installation.setId(installationId);
+        installation.setTeamId(UUID.randomUUID());
         installation.setAccountLogin(login);
         installation.setAccountType("USER");
+        installation.setRepositorySelection("ALL");
         installation.setStatus("ACTIVE");
         return installation;
     }

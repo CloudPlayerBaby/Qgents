@@ -3,14 +3,14 @@ spring:
     import: optional:file:.env[.properties]
   ai:
     openai:
-      # Qwen3.8-Max（DashScope OpenAI 兼容）：统一多模态旗舰，支持图片/文档/PDF 输入，
-      # 并提供内置代码执行工具，兼顾多模态理解与编程能力。
+      # Qwen3.7-Flash（DashScope OpenAI 兼容）：统一多模态模型，支持图片/文档/PDF 输入，
+      # 思考更快、生成时长短，降低非流式超长输出撞服务端响应时限的概率。
       # 回退 DeepSeek：api-key=${DEEPSEEK_API_KEY} / base-url=https://api.deepseek.com/ / model=deepseek-v4-flash
       api-key: ${DASHSCOPE_API_KEY}
       base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
       chat:
         options:
-          model: qwen3.8-max
+          model: qwen3.7-flash
           temperature: 0.2
           # 限制单次输出上限：非流式请求必须等服务端生成完整个响应才返回，
           # 过大的 max-tokens 会让超长输出（如 PLANNER 详细计划）超过服务端响应时限，
