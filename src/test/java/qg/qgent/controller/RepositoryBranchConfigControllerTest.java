@@ -67,4 +67,40 @@ class RepositoryBranchConfigControllerTest {
         verify(service).updateQualityGate(eq(actorId), eq(projectId), eq(projectRepositoryId), eq("main"),
                 org.mockito.ArgumentMatchers.any());
     }
+
+    @Test
+    void routesQualityGateBranchWithSlashAsQueryParameter() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        UUID projectRepositoryId = UUID.randomUUID();
+        QualityGateDto response = new QualityGateDto();
+        response.setRequiredChecks(List.of("DRY_RUN"));
+        when(service.getQualityGate(actorId, projectId, projectRepositoryId, "feat/testset-e2e")).thenReturn(response);
+
+        mockMvc.perform(get("/api/v1/projects/{projectId}/repositories/{projectRepositoryId}/quality-gates",
+                        projectId, projectRepositoryId)
+                        .param("branch", "feat/testset-e2e"))
+                .andExpect(status().isOk());
+
+        verify(service).getQualityGate(actorId, projectId, projectRepositoryId, "feat/testset-e2e");
+    }
+
+    @Test
+    void updatesQualityGateBranchWithSlashAsQueryParameter() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        UUID projectRepositoryId = UUID.randomUUID();
+        QualityGateDto response = new QualityGateDto();
+        response.setRequiredChecks(List.of("CQ_PLUS_ONE"));
+        when(service.updateQualityGate(eq(actorId), eq(projectId), eq(projectRepositoryId), eq("feat/testset-e2e"),
+                org.mockito.ArgumentMatchers.any())).thenReturn(response);
+
+        mockMvc.perform(put("/api/v1/projects/{projectId}/repositories/{projectRepositoryId}/quality-gates",
+                        projectId, projectRepositoryId)
+                        .param("branch", "feat/testset-e2e")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"requiredChecks\":[\"CQ_PLUS_ONE\"],\"requiredTestsetIds\":[]}"))
+                .andExpect(status().isOk());
+
+        verify(service).updateQualityGate(eq(actorId), eq(projectId), eq(projectRepositoryId), eq("feat/testset-e2e"),
+                org.mockito.ArgumentMatchers.any());
+    }
 }

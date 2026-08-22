@@ -1,0 +1,20 @@
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /build
+COPY pom.xml mvnw ./
+COPY .mvn .mvn
+COPY sandbox-worker/pom.xml sandbox-worker/pom.xml
+COPY sandbox-worker/src sandbox-worker/src
+RUN chmod +x mvnw && ./mvnw -f sandbox-worker/pom.xml -DskipTests package
+
+FROM eclipse-temurin:21-jre
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home worker
+WORKDIR /app
+COPY --from=build /build/sandbox-worker/target/qgents-sandbox-worker-0.1.0-SNAPSHOT.jar app.jar
+RUN mkdir -p /var/lib/qgents/git-store /var/lib/qgents/workspaces /var/lib/qgents/workspace-metadata /app/logs \
+    && chown -R worker:worker /var/lib/qgents /app
+USER 10001
+EXPOSE 8091
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

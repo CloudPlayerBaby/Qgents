@@ -11,10 +11,12 @@ import qg.qgent.dto.TaskResponse;
 import qg.qgent.dto.TaskTriggerRequest;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.MessageEntity;
+import qg.qgent.entity.ProjectRepositoryEntity;
 import qg.qgent.entity.RequirementGroupEntity;
 import qg.qgent.entity.TaskEntity;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.MessageMapper;
+import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.RequirementGroupMapper;
 import qg.qgent.mapper.RequirementGroupRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
@@ -32,6 +34,7 @@ class TaskTriggerServiceTest {
     private final MessageMapper messages = mock(MessageMapper.class);
     private final RequirementGroupMapper groups = mock(RequirementGroupMapper.class);
     private final RequirementGroupRepositoryMapper groupRepos = mock(RequirementGroupRepositoryMapper.class);
+    private final ProjectRepositoryMapper projectRepos = mock(ProjectRepositoryMapper.class);
     private final TaskMapper tasks = mock(TaskMapper.class);
     private final DiffMapper diffs = mock(DiffMapper.class);
     private final TaskService taskService = mock(TaskService.class);
@@ -39,7 +42,7 @@ class TaskTriggerServiceTest {
     private final GroupService groupService = mock(GroupService.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
     private final ObjectMapper mapper = new ObjectMapper();
-    private final TaskTriggerService service = new TaskTriggerService(messages, groups, groupRepos, tasks, diffs,
+    private final TaskTriggerService service = new TaskTriggerService(messages, groups, groupRepos, tasks, projectRepos, diffs,
             taskService, messageService, groupService, access, mapper);
 
     @Test
@@ -50,7 +53,7 @@ class TaskTriggerServiceTest {
         RequirementGroupEntity group = group(groupId, projectId, "REQUIREMENT", "ACTIVE");
         when(messages.selectById(messageId)).thenReturn(message);
         when(groups.selectById(groupId)).thenReturn(group);
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(projectRepos.selectList(any())).thenReturn(List.of(activeRepository(projectId, repoId)));
 
         TaskTriggerRequest body = new TaskTriggerRequest();
         body.setTitle("实现邮箱登录");
@@ -88,7 +91,7 @@ class TaskTriggerServiceTest {
         RequirementGroupEntity group = group(groupId, projectId, "REQUIREMENT", "ACTIVE");
         when(messages.selectById(messageId)).thenReturn(message);
         when(groups.selectById(groupId)).thenReturn(group);
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of());
+        when(projectRepos.selectList(any())).thenReturn(List.of());
 
         // 请求未传 repositoryIds，需求群也未绑仓库：必须给前端独立错误码指引绑定仓库，
         // 不得静默回退到项目全部仓库或落到模糊的 TASK_REPOSITORY_REQUIRED。
@@ -97,18 +100,19 @@ class TaskTriggerServiceTest {
         ApiException error = assertThrows(ApiException.class,
                 () -> service.trigger(actor, projectId, groupId, messageId, body));
 
-        assertEquals("REQUIREMENT_GROUP_NO_REPOSITORIES", error.code());
+        assertEquals("PROJECT_NO_ACTIVE_REPOSITORIES", error.code());
         verify(taskService, never()).create(any(), any(), any());
     }
 
     @Test
-    void triggerFallsBackToGroupRepositoriesWhenRepositoryIdsOmitted() {
+    void triggerUsesProjectRepositoriesWhenRepositoryIdsOmitted() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
         UUID messageId = UUID.randomUUID(), repoA = UUID.randomUUID(), repoB = UUID.randomUUID();
         MessageEntity message = message(groupId, messageId, "{\"text\":\"实现邮箱登录\"}");
         when(messages.selectById(messageId)).thenReturn(message);
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoA, repoB));
+        when(projectRepos.selectList(any())).thenReturn(List.of(
+                activeRepository(projectId, repoA), activeRepository(projectId, repoB)));
 
         TaskTriggerRequest body = new TaskTriggerRequest();
         body.setTitle("实现邮箱登录");
@@ -118,6 +122,7 @@ class TaskTriggerServiceTest {
         TaskCreateRequest request = capturedCreateRequest(projectId, actor);
         assertEquals(List.of(repoA, repoB), request.getRepositoryIds());
         assertEquals("main", request.getBaseRef());
+        verifyNoInteractions(groupRepos);
     }
 
     @Test
@@ -145,17 +150,27 @@ class TaskTriggerServiceTest {
     }
 
     @Test
-    void triggerFromMentionSkipsWhenGroupHasNoRepositories() {
+    void triggerFromMentionFallsBackToProjectRepositoriesWhenGroupHasNoRepositories() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID(), groupId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
         MessageEntity message = message(groupId, UUID.randomUUID(), "{\"text\":\"@agent 帮我做登录\"}");
         List<Mention> mentions = List.of(mention("AGENT"));
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of());
+        when(projectRepos.selectList(any())).thenReturn(List.of());
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setStatus("ACTIVE");
+        when(projectRepos.selectList(any())).thenReturn(List.of(repository));
+        when(taskService.create(eq(projectId), eq(actor), any()))
+                .thenReturn(taskResponse(UUID.randomUUID(), "帮我做登录"));
 
         TaskResponse result = service.triggerFromMention(actor, projectId, groupId, message, mentions);
 
-        assertNull(result);
-        verify(taskService, never()).create(any(), any(), any());
+        assertNotNull(result);
+        ArgumentCaptor<TaskCreateRequest> request = ArgumentCaptor.forClass(TaskCreateRequest.class);
+        verify(taskService).create(eq(projectId), eq(actor), request.capture());
+        assertEquals(List.of(repositoryId), request.getValue().getRepositoryIds());
     }
 
     @Test
@@ -179,7 +194,7 @@ class TaskTriggerServiceTest {
         MessageEntity message = message(groupId, messageId, "{\"text\":\"@agent 实现登录功能\"}");
         List<Mention> mentions = List.of(mention("AGENT"));
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(projectRepos.selectList(any())).thenReturn(List.of(activeRepository(projectId, repoId)));
 
         service.triggerFromMention(actor, projectId, groupId, message, mentions);
 
@@ -261,7 +276,7 @@ class TaskTriggerServiceTest {
 
         TaskTriggerRequest body = new TaskTriggerRequest();
         body.setTitle("继续讨论");
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(projectRepos.selectList(any())).thenReturn(List.of(activeRepository(projectId, repoId)));
         service.trigger(actor, projectId, groupId, currentMessageId, body);
 
         TaskCreateRequest request = capturedCreateRequest(projectId, actor);
@@ -392,7 +407,7 @@ class TaskTriggerServiceTest {
         MessageEntity message = message(groupId, messageId, "{\"text\":\"实现邮箱登录\"}");
         when(messages.selectById(messageId)).thenReturn(message);
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(projectRepos.selectList(any())).thenReturn(List.of(activeRepository(projectId, repoId)));
         when(taskService.create(eq(projectId), eq(actor), any()))
                 .thenThrow(new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "TASK_REJECTED", "任务创建失败"));
 
@@ -411,7 +426,7 @@ class TaskTriggerServiceTest {
         TaskResponse task = taskResponse(UUID.randomUUID(), "补齐邮箱登录功能");
         when(messages.selectById(messageId)).thenReturn(message);
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(projectRepos.selectList(any())).thenReturn(List.of(activeRepository(projectId, repoId)));
         when(taskService.create(eq(projectId), eq(actor), any())).thenReturn(task);
         TaskTriggerRequest body = new TaskTriggerRequest();
         body.setTitle("实现邮箱登录");
@@ -428,7 +443,7 @@ class TaskTriggerServiceTest {
         MessageEntity message = message(groupId, messageId, "{\"text\":\"@agent 做登录\"}");
         when(messages.selectById(messageId)).thenReturn(message);
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(projectRepos.selectList(any())).thenReturn(List.of(activeRepository(projectId, repoId)));
         // 并发另一请求先插入成功：本请求 create 抛唯一键冲突，findByTriggerMessage 返回已有任务
         when(taskService.create(eq(projectId), eq(actor), any()))
                 .thenThrow(new org.springframework.dao.DuplicateKeyException("uk_task_trigger_message"));
@@ -452,7 +467,7 @@ class TaskTriggerServiceTest {
         MessageEntity message = message(groupId, messageId, "{\"text\":\"@agent 做登录\"}");
         when(messages.selectById(messageId)).thenReturn(message);
         when(groups.selectById(groupId)).thenReturn(group(groupId, projectId, "REQUIREMENT", "ACTIVE"));
-        when(groupRepos.selectRepositoryIds(groupId)).thenReturn(List.of(repoId));
+        when(projectRepos.selectList(any())).thenReturn(List.of(activeRepository(projectId, repoId)));
         when(taskService.create(eq(projectId), eq(actor), any()))
                 .thenThrow(new org.springframework.dao.DuplicateKeyException("uk_task_trigger_message"));
         when(taskService.findByTriggerMessage(projectId, messageId, actor)).thenReturn(null);
@@ -528,5 +543,13 @@ class TaskTriggerServiceTest {
         m.setType(type);
         m.setId(UUID.randomUUID());
         return m;
+    }
+
+    private ProjectRepositoryEntity activeRepository(UUID projectId, UUID id) {
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(id);
+        repository.setProjectId(projectId);
+        repository.setStatus("ACTIVE");
+        return repository;
     }
 }

@@ -84,6 +84,51 @@ class TestExecutionServiceTest {
     }
 
     @Test
+    void preservesDockerStartupFailureCodeForValidTestCommand() throws Exception {
+        WorkspaceManagerService workspaces = mock(WorkspaceManagerService.class);
+        SandboxService sandboxes = mock(SandboxService.class);
+        CommandExecutor commands = mock(CommandExecutor.class);
+        WorkspacePathResolver paths = mock(WorkspacePathResolver.class);
+        SandboxWorkerProperties properties = new SandboxWorkerProperties();
+        properties.setRuntime("docker");
+        properties.setImageProfiles(Set.of("dev-tools"));
+        properties.setMaxExecutionTimeout(Duration.ofSeconds(60));
+        TestExecutionService service = new TestExecutionService(workspaces, sandboxes, commands, paths, properties);
+        UUID projectId = UUID.randomUUID(), repositoryId = UUID.randomUUID(), workspaceId = UUID.randomUUID();
+        WorkspaceRepositoryResponse repository = new WorkspaceRepositoryResponse(repositoryId, "repository", "main",
+                "main", "base", "head");
+        when(workspaces.get(workspaceId)).thenReturn(new WorkspaceResponse(workspaceId, projectId,
+                "workspaces/" + workspaceId, "READY", List.of(repository), "now", "now"));
+        SandboxAllocation allocation = mock(SandboxAllocation.class);
+        when(sandboxes.findAllocation(any())).thenReturn(allocation);
+        when(paths.resolveRepositoryContainer(allocation, repositoryId)).thenReturn("/workspace/repository");
+        when(commands.execute(eq(allocation), eq("/workspace/repository"), eq(List.of("sh", "./gradlew", "test")),
+                eq(Duration.ofSeconds(60))))
+                .thenThrow(new WorkerException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                        "DOCKER_EXEC_FAILED", "Docker Exec 执行失败"));
+
+        TestExecutionItemRequest item = new TestExecutionItemRequest();
+        item.setTestsetId(UUID.randomUUID());
+        item.setCommand("./gradlew test");
+        item.setTimeoutSeconds(60);
+        item.setPassRuleType("EXIT_CODE");
+        item.setExpectedExitCode(0);
+        TestExecutionRequest request = new TestExecutionRequest();
+        request.setExecutionId(UUID.randomUUID());
+        request.setProjectId(projectId);
+        request.setRepositoryId(repositoryId);
+        request.setWorkspaceId(workspaceId);
+        request.setTestsets(List.of(item));
+
+        var response = service.execute(request);
+
+        assertEquals("FAILED", response.getStatus());
+        assertEquals("DOCKER_EXEC_FAILED", response.getResults().getFirst().getFailureCode());
+        assertNull(response.getResults().getFirst().getExitCode());
+        verify(sandboxes).destroy(any());
+    }
+
+    @Test
     void normalizesHistoricalBareWrapperCommands() {
         assertEquals(List.of("sh", "./gradlew", "test"),
                 TestExecutionService.normalizeWrapperCommand(List.of("gradlew", "test")));
@@ -101,6 +146,18 @@ class TestExecutionServiceTest {
         assertTrue(message.contains("[redacted]"));
         assertTrue(message.contains("[host path omitted]"));
         assertFalse(message.contains("top-secret"));
+        assertTrue(message.length() <= 500);
+    }
+
+    @Test
+    void failureMessagePrioritizesJavaCompilationErrorsBeforeGradleFooter() {
+        String message = TestExecutionService.failureMessage(new CommandExecutionResult(1,
+                List.of("/workspace/app/src/Main.java:12: error: incompatible types: String cannot be converted to int",
+                        "2 errors", "BUILD FAILED in 3m 14s", "> Task :app:compileDebugJavaWithJavac FAILED"),
+                List.of()));
+
+        assertTrue(message.contains("error: incompatible types"));
+        assertTrue(message.indexOf("error: incompatible types") < message.indexOf("BUILD FAILED"));
         assertTrue(message.length() <= 500);
     }
 }

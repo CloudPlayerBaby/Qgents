@@ -106,7 +106,7 @@ public class ToolExecutionService {
             throw exception;
         }
         append(entity.getId(), "SYSTEM", "工具执行已进入队列：" + request.getTool());
-        log.debug("tool queued executionId={} sandboxId={} taskId={} tool={} repositoryId={}",
+        log.info("tool queued executionId={} sandboxId={} taskId={} tool={} repositoryId={}",
                 entity.getId(), sandboxId, sandbox.getTaskId(), request.getTool(), request.getRepositoryId());
         // 投给后台开始跑
         try {
@@ -195,7 +195,7 @@ public class ToolExecutionService {
             return;
         }
         append(executionId, "SYSTEM", "开始执行工具：" + request.getTool());
-        log.debug("tool start executionId={} sandboxId={} taskId={} tool={} repositoryId={}",
+        log.info("tool start executionId={} sandboxId={} taskId={} tool={} repositoryId={}",
                 executionId, sandbox.getId(), sandbox.getTaskId(), request.getTool(), request.getRepositoryId());
 
         String status;
@@ -240,7 +240,7 @@ public class ToolExecutionService {
             append(executionId, "SYSTEM", "工具执行结束，状态：" + completed.getStatus());
         }
         logLocks.remove(executionId);
-        log.debug("tool done executionId={} sandboxId={} taskId={} tool={} status={} exitCode={} durationMs={} failureCode={} failureReason={}",
+        log.info("tool done executionId={} sandboxId={} taskId={} tool={} status={} exitCode={} durationMs={} failureCode={} failureReason={}",
                 executionId, sandbox.getId(), sandbox.getTaskId(), request.getTool(), status, exitCode,
                 Duration.between(started, clock.instant()).toMillis(), failureCode, failureReason);
     }

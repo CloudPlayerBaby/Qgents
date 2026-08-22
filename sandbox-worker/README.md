@@ -78,9 +78,9 @@ Worker 本地容器模板（数据库、主后端地址和内部服务凭证由�
 docker run --rm --name qgents-sandbox-worker `
   -p 8091:8091 `
   -v //var/run/docker.sock:/var/run/docker.sock `
-  -v qgents_worker_workspaces:/var/lib/qgents/workspaces `
-  -v qgents_worker_metadata:/var/lib/qgents/workspace-metadata `
-  -v qgents_worker_git_store:/var/lib/qgents/git-store `
+  -v /srv/qgents/workspaces:/var/lib/qgents/workspaces `
+  -v /srv/qgents/workspace-metadata:/var/lib/qgents/workspace-metadata `
+  -v /srv/qgents/git-store:/var/lib/qgents/git-store `
   -e SANDBOX_RUNTIME=docker `
   -e SANDBOX_DB_URL='jdbc:mysql://<mysql-host>:3306/qgents_sandbox_worker?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC' `
   -e SANDBOX_DB_USERNAME='<worker-db-user>' `
@@ -89,7 +89,7 @@ docker run --rm --name qgents-sandbox-worker `
   -e SANDBOX_IMAGE_PROFILES=dev-tools `
   -e SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock `
   -e SANDBOX_WORKSPACE_LOCAL_ROOT=/var/lib/qgents/workspaces `
-  -e SANDBOX_WORKSPACE_DOCKER_HOST_ROOT=/var/lib/qgents/workspaces `
+  -e SANDBOX_WORKSPACE_DOCKER_HOST_ROOT=/srv/qgents/workspaces `
   -e SANDBOX_WORKSPACE_METADATA_ROOT=/var/lib/qgents/workspace-metadata `
   -e SANDBOX_GIT_STORE_ROOT=/var/lib/qgents/git-store `
   qgents/sandbox-worker:0.1.0

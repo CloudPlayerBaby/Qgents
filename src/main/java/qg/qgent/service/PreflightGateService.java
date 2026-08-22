@@ -17,6 +17,7 @@ import qg.qgent.mapper.DryRunMapper;
 import qg.qgent.mapper.PreflightCqReviewMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
+import qg.qgent.mapper.UserMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 
@@ -40,6 +41,7 @@ public class PreflightGateService {
     private final WorkspaceRepositoryMapper worktrees;
     private final ProjectRepositoryMapper repositories;
     private final ProjectAccessService access;
+    private final UserMapper users;
     private final GitStoreSyncService gitStores;
     private final EventService events;
     /** CQ 自动建 MR 的领域事件；与用于浏览器刷新的 SSE 保持独立。 */
@@ -49,7 +51,7 @@ public class PreflightGateService {
 
     public PreflightGateService(DryRunMapper dryRuns, PreflightCqReviewMapper cqReviews, TaskMapper tasks,
                                 WorkspaceRepositoryMapper worktrees, ProjectRepositoryMapper repositories,
-                                ProjectAccessService access, GitStoreSyncService gitStores, EventService events,
+                                ProjectAccessService access, UserMapper users, GitStoreSyncService gitStores, EventService events,
                                 ApplicationEventPublisher domainEvents, TransactionTemplate transactions) {
         this.dryRuns = dryRuns;
         this.cqReviews = cqReviews;
@@ -57,6 +59,7 @@ public class PreflightGateService {
         this.worktrees = worktrees;
         this.repositories = repositories;
         this.access = access;
+        this.users = users;
         this.gitStores = gitStores;
         this.events = events;
         this.domainEvents = domainEvents;
@@ -163,6 +166,9 @@ public class PreflightGateService {
         if (!dryRun.getHeadCommit().equals(worktree.getHeadCommit())
                 || !dryRun.getResolvedTargetCommit().equals(currentTarget)) {
             throw new ApiException(HttpStatus.CONFLICT, "PREFLIGHT_CONTEXT_STALE", "Dry Run 对应的源提交或目标基准已变化，请重新执行");
+        }
+        if (latestCq(dryRun.getId(), dryRun.getHeadCommit(), dryRun.getResolvedTargetCommit(), task.getCreatedBy()) != null) {
+            throw new ApiException(HttpStatus.CONFLICT, "PREFLIGHT_CQ_ALREADY_DECIDED", "当前 Dry Run 已完成 CQ+1 审查");
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         PreflightCqReviewEntity review = new PreflightCqReviewEntity();
@@ -291,8 +297,16 @@ public class PreflightGateService {
     }
 
     private PreflightGateResponse.CqSummary cqSummary(PreflightCqReviewEntity value) {
-        return value == null ? new PreflightGateResponse.CqSummary("PENDING", null, null, null)
-                : new PreflightGateResponse.CqSummary(value.getDecision(), id(value.getReviewerUserId()),
+        if (value == null) {
+            return new PreflightGateResponse.CqSummary("PENDING", null, null, null, null);
+        }
+        String reviewerId = id(value.getReviewerUserId());
+        String reviewerName = null;
+        if (value.getReviewerUserId() != null && users != null) {
+            var reviewer = users.selectById(value.getReviewerUserId());
+            reviewerName = reviewer == null ? null : reviewer.getDisplayName();
+        }
+        return new PreflightGateResponse.CqSummary(value.getDecision(), reviewerId, reviewerName,
                 value.getReason(), iso(value.getReviewedAt()));
     }
 

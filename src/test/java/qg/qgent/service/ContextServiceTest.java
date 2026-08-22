@@ -101,6 +101,7 @@ class ContextServiceTest {
         binding.setRepositoryId(githubId);
         binding.setDisplayName("前端仓库");
         binding.setDefaultBranch("develop");
+        binding.setStatus("ACTIVE");
         GitHubRepositoryEntity remote = new GitHubRepositoryEntity();
         remote.setId(githubId);
         remote.setOwnerLogin("example");
@@ -110,7 +111,7 @@ class ContextServiceTest {
         when(messages.selectList(any())).thenReturn(List.of());
         when(skills.listPublishedCatalog(projectId, actor)).thenReturn(List.of());
         when(memories.listMemories(any(), any(), anyBoolean(), any(), any())).thenReturn(List.of());
-        when(groupRepositories.selectRepositoryIds(groupId)).thenReturn(List.of(bindingId));
+        when(projectRepositories.selectList(any())).thenReturn(List.of(binding));
         when(projectRepositories.selectBatchIds(List.of(bindingId))).thenReturn(List.of(binding));
         when(githubRepositories.selectBatchIds(List.of(githubId))).thenReturn(List.of(remote));
 
@@ -121,6 +122,7 @@ class ContextServiceTest {
         assertThat(repositories.get(0).getName()).isEqualTo("前端仓库");
         assertThat(repositories.get(0).getFullName()).isEqualTo("example/frontend");
         assertThat(repositories.get(0).getDefaultBranch()).isEqualTo("develop");
+        verify(groupRepositories, never()).selectRepositoryIds(groupId);
     }
 
     @Test
@@ -222,14 +224,15 @@ class ContextServiceTest {
     }
 
     @Test
-    void taskSnapshotWithoutExplicitRepositoryIdsKeepsGroupBindings() {
-        // 缺省（null）回退到需求群绑定仓库：兼容入口不改变历史行为。
+    void taskSnapshotWithoutExplicitRepositoryIdsUsesProjectRepositories() {
         UUID groupBound = UUID.randomUUID();
         UUID githubGroup = UUID.randomUUID();
         stubBaseContext();
-        when(groupRepositories.selectRepositoryIds(groupId)).thenReturn(List.of(groupBound));
+        ProjectRepositoryEntity binding = binding(groupBound, projectId, githubGroup, "项目仓库", "develop");
+        binding.setStatus("ACTIVE");
+        when(projectRepositories.selectList(any())).thenReturn(List.of(binding));
         when(projectRepositories.selectBatchIds(List.of(groupBound)))
-                .thenReturn(List.of(binding(groupBound, projectId, githubGroup, "群绑定仓库", "develop")));
+                .thenReturn(List.of(binding));
         when(githubRepositories.selectBatchIds(List.of(githubGroup)))
                 .thenReturn(List.of(remote(githubGroup, "example", "group")));
 
@@ -237,7 +240,7 @@ class ContextServiceTest {
 
         assertThat(snapshot.getRepositoryIds()).containsExactly(groupBound.toString());
         assertThat(snapshot.getRepositories()).extracting(ContextRepository::getName)
-                .containsExactly("群绑定仓库");
+                .containsExactly("项目仓库");
     }
 
     private void stubBaseContext() {

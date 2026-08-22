@@ -111,18 +111,18 @@ public class GitHubRepositoryService {
 
     /**
      * 列出指定团队已安装的 GitHub App 授权记录。
-     * 只有 Team Owner 才能执行此操作。
+     * Team Owner 或项目管理员可读取；安装/解除等变更操作仍要求 Team Owner。
      *
      * @param actorId 操作人的用户 ID
      * @param teamId  团队 ID
      * @return 包含该团队所有有效安装记录的响应列表
      */
     public List<GitHubInstallationResponse> listInstallations(UUID actorId, UUID teamId) {
-        // 权限校验：必须是团队所有者
-        requireTeamOwner(actorId, teamId);
-        // 查询数据库中属于该团队的安装记录，按更新时间倒序排列
-        requireTeamOwner(actorId, teamId);
-        // 返回团队的所有安装
+        // 只读查询与团队授权仓库列表保持一致：Team Owner 或该团队项目管理员可查看。
+        if (!hasTeamRepositoryAccess(teamId, actorId)) {
+            throw forbidden("Team owner or project admin access is required");
+        }
+        // 查询数据库中属于该团队的安装记录，按更新时间倒序排列。
         return installationMapper.selectList(new LambdaQueryWrapper<GitHubInstallationEntity>()
                         .eq(GitHubInstallationEntity::getTeamId, teamId)
                         .orderByDesc(GitHubInstallationEntity::getUpdatedAt))
@@ -834,6 +834,13 @@ public class GitHubRepositoryService {
         installationEntity.setAccountLogin(installation.getAccountLogin());
         installationEntity.setAccountType(normalizeEnum(installation.getAccountType()));
         installationEntity.setStatus("ACTIVE");
+        // created_at/updated_at 显式写 UTC（注入的 clock 为 systemUTC）：DB 默认 CURRENT_TIMESTAMP
+        // 在 +08 服务器上会落本地时间，前端按契约把 installedAt 当 UTC 解析时就会偏 8 小时。
+        LocalDateTime now = LocalDateTime.now(clock);
+        if (newInstallation) {
+            installationEntity.setCreatedAt(now);
+        }
+        installationEntity.setUpdatedAt(now);
 
         if (newInstallation) {
             installationMapper.insert(installationEntity);
@@ -841,7 +848,6 @@ public class GitHubRepositoryService {
             installationMapper.updateById(installationEntity);
         }
 
-        LocalDateTime now = LocalDateTime.now(clock);
         List<Long> returnedProviderRepoIds = providerRepositories.stream()
                 .map(GitHubRepositoryDetails::getRepositoryId).toList();
 

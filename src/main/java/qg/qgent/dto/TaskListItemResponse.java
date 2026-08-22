@@ -86,9 +86,10 @@ public class TaskListItemResponse {
     private UserSummary createdByUser;
 
     /**
-     * 影响仓库摘要列表。
+     * Planner 已确定会写入的仓库摘要列表。规划尚未物化或任务不产生代码时为空；
+     * 不包含仅供 TESTER/REVIEWER 读取的候选仓库。
      */
-    @Schema(description = "影响仓库摘要")
+    @Schema(description = "Planner 确定的实际写入仓库摘要；规划中为空")
     private List<RepositorySummary> repositories;
 
     /**
