@@ -109,6 +109,40 @@ class TaskPlanMaterializationServiceTest {
     }
 
     @Test
+    void materializesPureManualReviewWithoutDeveloperStep() {
+        TaskMapper tasks = mock(TaskMapper.class);
+        TaskStepMapper steps = mock(TaskStepMapper.class);
+        TaskStepDependencyMapper dependencies = mock(TaskStepDependencyMapper.class);
+        TaskStepRepositoryMapper scopes = mock(TaskStepRepositoryMapper.class);
+        WorkspaceRepositoryMapper worktrees = mock(WorkspaceRepositoryMapper.class);
+        TaskEntity task = task();
+        TaskStepEntity planner = planner(task);
+        WorkspaceRepositoryEntity repository = repository();
+        when(tasks.selectByIdForUpdate(task.getId())).thenReturn(task);
+        when(steps.selectByTaskForUpdate(task.getId())).thenReturn(List.of(planner));
+        when(worktrees.selectByWorkspace(task.getWorkspaceId())).thenReturn(List.of(repository));
+        TransactionSynchronizationManager.initSynchronization();
+
+        PlanResult plan = plan();
+        plan.setImplementationSteps(List.of());
+        plan.setVerificationMode("MANUAL");
+        service(tasks, steps, dependencies, scopes, worktrees,
+                mock(TaskExecutionArtifactService.class), mock(EventService.class), mock(AgentDispatcher.class))
+                .materialize(task, plan);
+
+        ArgumentCaptor<TaskStepEntity> inserted = ArgumentCaptor.forClass(TaskStepEntity.class);
+        verify(steps, times(2)).insert(inserted.capture());
+        List<TaskStepEntity> generated = inserted.getAllValues();
+        assertThat(generated).extracting(TaskStepEntity::getRole).containsExactly("TESTER", "REVIEWER");
+        assertThat(generated).extracting(TaskStepEntity::getExecutionMode).containsExactly("TEST", "REVIEW");
+        assertThat(generated).noneMatch(step -> "DEVELOPER".equals(step.getRole()));
+        verify(dependencies).insertLink(generated.get(0).getId(), planner.getId());
+        verify(dependencies).insertLink(generated.get(1).getId(), generated.get(0).getId());
+        verify(scopes).insertLink(generated.get(0).getId(), repository.getProjectRepositoryId(), "READ");
+        verify(scopes).insertLink(generated.get(1).getId(), repository.getProjectRepositoryId(), "READ");
+    }
+
+    @Test
     void unionizesDeveloperWriteScopeAcrossMutuallyExclusiveFiles() {
         TaskMapper tasks = mock(TaskMapper.class);
         TaskStepMapper steps = mock(TaskStepMapper.class);

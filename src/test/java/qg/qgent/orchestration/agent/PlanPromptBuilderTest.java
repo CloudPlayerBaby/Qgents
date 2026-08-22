@@ -47,16 +47,16 @@ class PlanPromptBuilderTest {
                 .contains("系统会自动追加 TEST 和 REVIEW 步骤")
                 .contains("绝不能单独输出到 steps")
                 .contains("统一写入 testPlan")
-                .contains("不得用于编译、测试、启动、lint 或任何构建检查")
                 .contains("只保留修改代码的 MUTATE 步骤");
     }
 
     @Test
-    void delegatesPureReviewManualAcceptanceToIndependentReviewer() {
+    void allowsEmptyStepsOnlyForManualPureReviewWithoutExposingVerifyMode() {
         assertThat(new PlanPromptBuilder().buildPlanSystem())
-                .contains("全部 VERIFY 的任务")
+                .contains("只有 MANUAL 可以搭配空数组 steps: []")
                 .contains("独立 REVIEW 步骤完成")
-                .contains("绝不要求 Developer 产出检查报告");
+                .contains("绝不要求 Developer 产出检查报告")
+                .doesNotContain("VERIFY");
     }
 
     @Test

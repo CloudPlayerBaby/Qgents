@@ -107,7 +107,7 @@ public class PlanAgent implements Agent {
                 String repaired = JsonRepairSupport.repairOnce(llm, planSystem, planJson, malformed.getMessage(),
                         "{\"taskUnderstanding\":\"...\",\"implementationGoals\":[\"...\"],"
                                 + "\"steps\":[{\"title\":\"...\",\"files\":[\"relative/path\"],"
-                                + "\"description\":\"...\"}],\"testPlan\":\"...\","
+                                + "\"description\":\"...\",\"executionMode\":\"MUTATE\"}],\"testPlan\":\"...\","
                                 + "\"verificationMode\":\"AUTOMATED|MANUAL\",\"risks\":[\"...\"],"
                                 + "\"deliveryMode\":\"DIFF_FIRST|MR_FIRST\",\"scaleReason\":\"...\"}");
                 if (repaired == null) {

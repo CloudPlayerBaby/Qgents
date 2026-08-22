@@ -20,15 +20,16 @@ import java.util.regex.Pattern;
  * {
  *   "taskUnderstanding": "...",
  *   "implementationGoals": ["..."],
- *   "steps": [{"title":"...", "files":["..."], "description":"...", "executionMode":"MUTATE|VERIFY", "requiredCapabilities":["java"], "suggestedAgentId":"..."}],
+ *   "steps": [{"title":"...", "files":["..."], "description":"...", "executionMode":"MUTATE", "requiredCapabilities":["java"], "suggestedAgentId":"..."}],
  *   "testPlan": "...",
  *   "risks": ["..."],
  *   "deliveryMode": "DIFF_FIRST",
  *   "scaleReason": "..."
  * }
  * </pre>
- * 必填校验：taskUnderstanding/testPlan 非空，implementationGoals 与 steps 非空，
- * 且每个 step 必须有 title 和至少一个文件。校验失败抛 {@link PlanParseException}，
+ * 必填校验：taskUnderstanding/testPlan 与 implementationGoals 非空。非空 steps 中每个 step
+ * 必须有 title 和至少一个文件；仅 verificationMode=MANUAL 可以使用空 steps 表达纯审查。
+ * 校验失败抛 {@link PlanParseException}，
  * 由 PlanAgent 转为 FAILED_INFRASTRUCTURE。deliveryMode 为可选字段：仅接受
  * DIFF_FIRST/MR_FIRST，缺失或非法视为未判定（返回 null），由硬规则兜底，不阻断计划。
  * suggestedAgentId 为可选字段：仅接受合法 UUID，缺失/非法一律忽略（返回 null），
@@ -68,7 +69,7 @@ public class PlanResultParser {
         plan.setObjectives(requireStringArray(node, "implementationGoals", MAX_GOALS, "implementationGoals"));
         plan.setTestPlan(requireText(node, "testPlan"));
         plan.setVerificationMode(optionalVerificationMode(node, plan.getTestPlan()));
-        plan.setImplementationSteps(parseSteps(node));
+        plan.setImplementationSteps(parseSteps(node, plan.getVerificationMode()));
         plan.setRisks(optionalStringArray(node, "risks", MAX_RISKS));
         plan.setDeliveryMode(optionalDeliveryMode(node));
         plan.setScaleReason(optionalText(node, "scaleReason"));
@@ -141,10 +142,16 @@ public class PlanResultParser {
         }
     }
 
-    private List<PlanResult.ImplementationStep> parseSteps(JsonNode node) {
+    private List<PlanResult.ImplementationStep> parseSteps(JsonNode node, String verificationMode) {
         JsonNode stepsNode = node.get("steps");
-        if (stepsNode == null || !stepsNode.isArray() || stepsNode.isEmpty()) {
+        if (stepsNode == null || !stepsNode.isArray()) {
             throw new PlanParseException("plan response missing required field 'steps'");
+        }
+        if (stepsNode.isEmpty()) {
+            if ("MANUAL".equalsIgnoreCase(verificationMode)) {
+                return List.of();
+            }
+            throw new PlanParseException("plan response requires at least one MUTATE step unless verificationMode is MANUAL");
         }
         if (stepsNode.size() > MAX_STEPS) {
             throw new PlanParseException("plan response 'steps' exceeds " + MAX_STEPS);
@@ -155,7 +162,7 @@ public class PlanResultParser {
             step.setTitle(requireStepText(stepNode, "title"));
             step.setFiles(requireStepFiles(stepNode));
             step.setDescription(optionalText(stepNode, "description"));
-            step.setExecutionMode(optionalExecutionMode(stepNode, step.getTitle(), step.getDescription()));
+            step.setExecutionMode(optionalExecutionMode(stepNode));
             step.setRequiredCapabilities(optionalCapabilities(stepNode));
             step.setSuggestedAgentId(optionalStepAgentId(stepNode));
             step.setAcceptanceNotes(optionalText(stepNode, "acceptanceNotes"));
@@ -165,30 +172,16 @@ public class PlanResultParser {
         return steps;
     }
 
-    private String optionalExecutionMode(JsonNode stepNode, String title, String description) {
+    private String optionalExecutionMode(JsonNode stepNode) {
         String value = optionalText(stepNode, "executionMode");
         if (value != null && !value.isBlank()) {
             String normalized = value.toUpperCase(Locale.ROOT);
-            if (!normalized.equals("MUTATE") && !normalized.equals("VERIFY")) {
-                throw new PlanParseException("plan step executionMode must be MUTATE or VERIFY");
+            if (!normalized.equals("MUTATE")) {
+                throw new PlanParseException("plan step executionMode must be MUTATE");
             }
             return normalized;
         }
-        String text = ((title == null ? "" : title) + " " + (description == null ? "" : description))
-                .replaceAll("\\s+", " ")
-                .trim()
-                .toLowerCase(Locale.ROOT);
-        boolean verificationWord = text.matches(".*(verify|verification|check|validate|test|inspect|review|验证|检查|核验|测试|审查).*");
-        boolean mutationWord = text.matches(".*(create|add|modify|change|implement|write|update|fix|新建|创建|新增|修改|实现|编写|更新|修复).*");
-        boolean explicitlyReadOnly = text.matches(".*(不|无需|不要|不得).{0,5}(修改|创建|写入|变更|落地).*");
-        // “验证新增文件”中的“新增”是被核验对象，不是当前步骤的写动作；只有
-        // 明确出现“验证并修复/检查后创建”等串联动作时，才把验证词推断为 MUTATE。
-        boolean verificationFirst = text.matches("^(verify|verification|check|validate|test|inspect|review|验证|检查|核验|测试|审查).*");
-        boolean mutationAfterVerification = text.matches(".*(verify|verification|check|validate|test|inspect|review|验证|检查|核验|测试|审查).*(and|then|并|然后|同时|后).*(create|add|modify|change|implement|write|update|fix|新建|创建|新增|修改|实现|编写|更新|修复).*");
-        if (explicitlyReadOnly || (verificationFirst && !mutationAfterVerification)) {
-            return "VERIFY";
-        }
-        return mutationWord ? "MUTATE" : (verificationWord ? "VERIFY" : "MUTATE");
+        return "MUTATE";
     }
 
     private String requireText(JsonNode node, String field) {

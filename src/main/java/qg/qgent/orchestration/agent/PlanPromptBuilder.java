@@ -73,12 +73,12 @@ public class PlanPromptBuilder {
                   "deliveryMode": "DIFF_FIRST",
                   "scaleReason": "选择该交付模式的理由"
                 }
-                - taskUnderstanding、implementationGoals、testPlan 不得为空；steps 至少一项、至多 12 项，每项必须有 title 和至少一个 files；risks 可为空数组。
-                - verificationMode 必须是 AUTOMATED 或 MANUAL：需要执行构建/测试/检查脚本时使用 AUTOMATED；纯审查、报告核验、文件存在性/内容核验且不需要自动化命令时使用 MANUAL。纯审查或全部 VERIFY 的任务，MANUAL 的人工验收由系统追加的独立 REVIEW 步骤完成，绝不要求 Developer 产出检查报告、修改摘要或 Git Diff 作为前置条件。
+                - taskUnderstanding、implementationGoals、testPlan 不得为空；steps 至多 12 项。需要修改代码时，steps 至少一项，且每项必须有 title 和至少一个 files；纯审查或只读任务必须输出空数组 steps: []，不得虚构开发步骤；risks 可为空数组。
+                - verificationMode 必须是 AUTOMATED 或 MANUAL：需要执行构建/测试/检查脚本时使用 AUTOMATED；纯审查、报告核验、文件存在性/内容核验且不需要自动化命令时使用 MANUAL。只有 MANUAL 可以搭配空数组 steps: []；该场景的人工验收由系统追加的独立 REVIEW 步骤完成，绝不要求 Developer 产出检查报告、修改摘要或 Git Diff 作为前置条件。
                 - verification 是可选字段：仅当 verificationMode=AUTOMATED 且你能从文件树确认明确的测试入口时输出；command 只能使用下列白名单模板之一（不输出其他任何命令）：["mvn", "test"]、["sh", "./mvnw", "test"]、["gradle", "test"]、["sh", "./gradlew", "test"]、["npm", "test"]、["node", "tests/某个.test.js"]（node 目标必须是 tests/ 或 test/ 目录下的 *.test.js / *.spec.js / *.test.mjs / *.spec.mjs / *.test.jsx / *.spec.jsx 文件，且该文件必须存在于文件树）。多仓库 Workspace 下每个仓库一条命令，repositoryPath 填该仓库的 workspacePath（必须与文件树中该仓库的目录前缀一致）；无法确认测试入口时省略整个 verification 字段，由测试阶段自动探测。
-                - 每一项 steps 必须是一次 Coding Agent 调用可以独立完成的原子实现单元，不能重复整项需求。steps 只表达实现工作或需求本身要求的独立状态核验；系统会自动追加 TEST 和 REVIEW 步骤。
-                - 编译、构建、单元测试、集成测试、启动检查、lint、静态检查、打包、迁移演练等“为了验证实现”的动作，绝不能单独输出到 steps，也不能标为 DEVELOPER/MUTATE/VERIFY 步骤；统一写入 testPlan，能确认白名单测试入口时再写入 verification.commands，由系统追加的 TEST 步骤执行。
-                - executionMode 必须是 MUTATE 或 VERIFY：需要创建/修改文件时使用 MUTATE。VERIFY 仅用于用户需求本身要求的只读状态核验（例如确认既有配置、文件内容或接口契约），不得用于编译、测试、启动、lint 或任何构建检查，也不得要求 Agent 修改文件。
+                - 每一项 steps 必须是一次 Coding Agent 调用可以独立完成的原子实现单元，不能重复整项需求。steps 只表达实际修改工作；系统会自动追加 TEST 和 REVIEW 步骤。
+                - 编译、构建、单元测试、集成测试、启动检查、lint、静态检查、打包、迁移演练，以及文件、配置或接口契约的只读核验，绝不能单独输出到 steps；统一写入 testPlan，能确认白名单测试入口时再写入 verification.commands，由系统追加的 TEST 和 REVIEW 步骤处理。
+                - 每一项 steps 的 executionMode 必须是 MUTATE，表示需要创建或修改文件；没有修改工作时输出空数组 steps: []，不要输出占位或只读步骤。
                 - 不要把“修改代码并编译/测试验证”拆成两个 implementation steps：只保留修改代码的 MUTATE 步骤，把验证方法写入 testPlan/verification。
                 - requiredCapabilities 是可选的小写 kebab-case 能力标签数组；只填写该步骤实际需要的专项能力。
                 - suggestedAgentId 是可选的建议执行 Agent id：必须来自用户消息中「可用 Agent 清单」列出的 id；每个步骤尽量指派职责匹配的候选 Agent，让不同专长的 Agent 各司其职；无法确定或无需指定时省略该字段。
