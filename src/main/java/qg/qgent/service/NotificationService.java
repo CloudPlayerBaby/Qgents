@@ -3,6 +3,7 @@ package qg.qgent.service;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
@@ -96,9 +97,25 @@ public class NotificationService {
     @Transactional
     public void notify(UUID recipientUserId, UUID projectId, UUID groupId, String kind, String title,
                        String description, String resourceId) {
+        notifyInternal(recipientUserId, projectId, groupId, kind, title, description, resourceId, null);
+    }
+
+    /**
+     * 写入 MR 状态通知。同一接收人、MR 和状态仅保留一条，避免状态同步重放反复提醒。
+     */
+    @Transactional
+    public void notifyMrStatus(UUID recipientUserId, UUID projectId, UUID groupId, String title,
+                               String description, String mergeRequestId, String status) {
+        notifyInternal(recipientUserId, projectId, groupId, "MR_PENDING", title, description,
+                mergeRequestId, status);
+    }
+
+    private void notifyInternal(UUID recipientUserId, UUID projectId, UUID groupId, String kind, String title,
+                                String description, String resourceId, String mrStatus) {
         if (recipientUserId == null) {
             return;
         }
+        // MR 状态同步可能由 webhook、轮询和手动刷新同时触发；相同资源的相同状态只保留一条。
         NotificationEntity entity = new NotificationEntity();
         entity.setId(UuidV7.next());
         entity.setRecipientUserId(recipientUserId);
@@ -108,9 +125,19 @@ public class NotificationService {
         entity.setTitle(title);
         entity.setDescription(description);
         entity.setResourceId(resourceId);
+        if ("MR_PENDING".equals(kind) && resourceId != null && mrStatus != null) {
+            entity.setDedupeKey(resourceId + ":" + mrStatus);
+        }
         entity.setIsRead(false);
         entity.setCreatedAt(LocalDateTime.now(ZoneOffset.UTC));
-        notificationMapper.insert(entity);
+        try {
+            notificationMapper.insert(entity);
+        } catch (DuplicateKeyException duplicate) {
+            if (entity.getDedupeKey() != null) {
+                return;
+            }
+            throw duplicate;
+        }
         // 通知级 SSE：新通知信号（前端 SSE 需求清单 ③），事件名 notification.created
         eventService.publishNotification(recipientUserId, entity.getId(), kind,
                 Map.of("notificationId", id(entity.getId()), "kind", kind));

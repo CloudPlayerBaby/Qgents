@@ -1773,9 +1773,9 @@ public class MergeRequestService {
         if (task == null) {
             return;
         }
-        notificationService.notify(task.getCreatedBy(), projectId, task.getRequirementGroupId(), "MR_PENDING",
+        notificationService.notifyMrStatus(task.getCreatedBy(), projectId, task.getRequirementGroupId(),
                 "MR 状态更新：" + (mr.getTitle() == null || mr.getTitle().isBlank() ? mr.getProviderNumber() : mr.getTitle()),
-                mr.getStatus(), mr.getId().toString());
+                mr.getStatus(), mr.getId().toString(), mr.getStatus());
     }
 
     /**
