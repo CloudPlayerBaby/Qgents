@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS
         provider_installation_id BIGINT UNSIGNED NOT NULL COMMENT 'GitHub App installation数字ID',
         account_login VARCHAR(255) NOT NULL COMMENT 'GitHub授权账号登录名',
         account_type VARCHAR(32) NOT NULL COMMENT 'GitHub账号类型枚举：USER/ORGANIZATION；USER 建仓使用 OAuth',
+        repository_selection VARCHAR(16) NULL COMMENT 'GitHub App 仓库访问范围：ALL/SELECTED；历史记录可为空',
         status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '安装状态枚举：ACTIVE/SUSPENDED/DELETED',
         created_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '同步创建时间（UTC）',
         updated_at DATETIME (6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6) COMMENT '同步更新时间（UTC）',

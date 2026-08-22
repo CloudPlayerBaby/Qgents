@@ -1047,6 +1047,7 @@ class GitHubRepositoryServiceTest {
         installation.setTeamId(teamId);
         installation.setProviderInstallationId(12345L);
         installation.setAccountType("USER");
+        installation.setRepositorySelection("ALL");
         installation.setAccountLogin("personal-user");
         installation.setStatus("ACTIVE");
         when(installationMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(installation));
@@ -1074,6 +1075,7 @@ class GitHubRepositoryServiceTest {
         installation.setTeamId(teamId);
         installation.setProviderInstallationId(12345L);
         installation.setAccountType("USER");
+        installation.setRepositorySelection("ALL");
         installation.setAccountLogin("personal-user");
         installation.setStatus("ACTIVE");
         when(installationMapper.selectById(installationId)).thenReturn(installation);
@@ -1094,6 +1096,33 @@ class GitHubRepositoryServiceTest {
     }
 
     @Test
+    void personalRepositoryCreationRejectsSelectedInstallationBeforeCreatingRepository() {
+        service = serviceWithOAuth();
+        UUID teamId = UUID.randomUUID();
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(installationId);
+        installation.setTeamId(teamId);
+        installation.setProviderInstallationId(12345L);
+        installation.setAccountType("USER");
+        installation.setAccountLogin("personal-user");
+        installation.setRepositorySelection("SELECTED");
+        installation.setStatus("ACTIVE");
+        when(installationMapper.selectById(installationId)).thenReturn(installation);
+        when(githubOAuthService.requirePersonalCredential(actorId)).thenReturn(
+                new GitHubOAuthService.PersonalCredential("oauth-token", 77L, "personal-user", List.of("repo")));
+
+        ApiException exception = assertThrows(ApiException.class, () -> service.createRemoteRepository(actorId, teamId,
+                newRepositoryRequest("personal-repo", installationId)));
+
+        assertEquals(HttpStatus.FORBIDDEN, exception.status());
+        assertEquals("GITHUB_INSTALLATION_REPOSITORY_SCOPE_INSUFFICIENT", exception.code());
+        verify(githubOAuthClient, never()).createPersonalRepository(anyString(), any());
+        verify(gitHubClient, never()).listRepositories(anyLong());
+    }
+
+    @Test
     void personalRepositoryCreationRejectsWhenAppCannotSeeRepositoryAndCompensates() {
         service = serviceWithOAuth();
         UUID teamId = UUID.randomUUID();
@@ -1104,6 +1133,7 @@ class GitHubRepositoryServiceTest {
         installation.setTeamId(teamId);
         installation.setProviderInstallationId(12345L);
         installation.setAccountType("USER");
+        installation.setRepositorySelection("ALL");
         installation.setAccountLogin("personal-user");
         installation.setStatus("ACTIVE");
         when(installationMapper.selectById(installationId)).thenReturn(installation);
@@ -1134,6 +1164,7 @@ class GitHubRepositoryServiceTest {
         installation.setTeamId(teamId);
         installation.setProviderInstallationId(12345L);
         installation.setAccountType("USER");
+        installation.setRepositorySelection("ALL");
         installation.setAccountLogin("personal-user");
         installation.setStatus("ACTIVE");
         when(installationMapper.selectById(installationId)).thenReturn(installation);
@@ -1163,6 +1194,7 @@ class GitHubRepositoryServiceTest {
         installation.setTeamId(teamId);
         installation.setProviderInstallationId(12345L);
         installation.setAccountType("USER");
+        installation.setRepositorySelection("ALL");
         installation.setAccountLogin("personal-user");
         installation.setStatus("ACTIVE");
         when(installationMapper.selectById(installationId)).thenReturn(installation);
@@ -1187,6 +1219,7 @@ class GitHubRepositoryServiceTest {
         GitHubInstallationEntity installation = new GitHubInstallationEntity();
         installation.setId(installationId);
         installation.setAccountType("USER");
+        installation.setRepositorySelection("ALL");
         installation.setAccountLogin("personal-user");
         GitHubRepositoryDetails created = new GitHubRepositoryDetails(
                 7004L, "personal-user", "personal-repo", "main", "PRIVATE", false);
@@ -1205,6 +1238,7 @@ class GitHubRepositoryServiceTest {
         GitHubInstallationEntity installation = new GitHubInstallationEntity();
         installation.setId(installationId);
         installation.setAccountType("USER");
+        installation.setRepositorySelection("ALL");
         installation.setAccountLogin("personal-user");
         GitHubRepositoryDetails created = new GitHubRepositoryDetails(
                 7005L, "personal-user", "personal-repo", "main", "PRIVATE", false);

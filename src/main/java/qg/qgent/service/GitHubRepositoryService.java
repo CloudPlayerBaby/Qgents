@@ -327,6 +327,13 @@ public class GitHubRepositoryService {
                 throw new ApiException(HttpStatus.CONFLICT, "GITHUB_OAUTH_ACCOUNT_MISMATCH",
                         "当前 OAuth 账号与 GitHub App 安装账号不一致");
             }
+            // 只有明确同步到 ALL 的 Installation 才允许自动建仓；NULL 也必须先同步，
+            // 避免在授权范围未知时先创建远程仓库再失败。
+            if (!"ALL".equalsIgnoreCase(installation.getRepositorySelection())) {
+                throw new ApiException(HttpStatus.FORBIDDEN,
+                        "GITHUB_INSTALLATION_REPOSITORY_SCOPE_INSUFFICIENT",
+                        "个人 GitHub App 安装当前仅授权了部分仓库，请在 GitHub App 设置中改为授权全部仓库后重试");
+            }
             if (privateRepository && !credential.hasScope("repo")) {
                 throw new ApiException(HttpStatus.FORBIDDEN, "GITHUB_OAUTH_SCOPE_INSUFFICIENT",
                         "创建私有个人仓库需要 GitHub repo 授权范围");
@@ -939,6 +946,7 @@ public class GitHubRepositoryService {
         installationEntity.setProviderInstallationId(installation.getInstallationId());
         installationEntity.setAccountLogin(installation.getAccountLogin());
         installationEntity.setAccountType(normalizeEnum(installation.getAccountType()));
+        installationEntity.setRepositorySelection(normalizeRepositorySelection(installation.getRepositorySelection()));
         installationEntity.setStatus("ACTIVE");
         // created_at/updated_at 显式写 UTC（注入的 clock 为 systemUTC）：DB 默认 CURRENT_TIMESTAMP
         // 在 +08 服务器上会落本地时间，前端按契约把 installedAt 当 UTC 解析时就会偏 8 小时。
@@ -1168,7 +1176,13 @@ public class GitHubRepositoryService {
     private GitHubInstallationResponse toInstallationResponse(GitHubInstallationEntity installation) {
         return new GitHubInstallationResponse(installation.getId(), installation.getProviderInstallationId(),
                 installation.getAccountLogin(), installation.getAccountType(), installation.getStatus(),
-                installation.getCreatedAt(), installation.getUpdatedAt());
+                installation.getRepositorySelection(), installation.getCreatedAt(), installation.getUpdatedAt());
+    }
+
+    private String normalizeRepositorySelection(String value) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        return "ALL".equals(normalized) || "SELECTED".equals(normalized) ? normalized : null;
     }
 
     private GitHubRepositoryResponse toRepositoryResponse(GitHubRepositoryEntity repository) {

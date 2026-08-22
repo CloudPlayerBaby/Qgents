@@ -126,7 +126,8 @@ public class RestGitHubAppClient implements GitHubAppClient {
             if (response == null || response.account() == null) {
                 throw upstreamFailure();
             }
-            return new GitHubInstallationDetails(response.id(), response.account().login(), response.account().type());
+            return new GitHubInstallationDetails(response.id(), response.account().login(), response.account().type(),
+                    response.repositorySelection());
         } catch (RestClientResponseException exception) {
             log.warn("GitHub installation lookup rejected: installationId={} status={} body={}",
                     installationId, exception.getStatusCode().value(), exception.getResponseBodyAsString());
@@ -351,7 +352,8 @@ public class RestGitHubAppClient implements GitHubAppClient {
         return matcher.group(1).replace("\\n", " ").replace("\\\"", "\\\"").trim();
     }
 
-    private record InstallationResponse(long id, AccountResponse account) {
+    private record InstallationResponse(long id, AccountResponse account,
+                                        @JsonProperty("repository_selection") String repositorySelection) {
     }
 
     private record AccountResponse(String login, String type) {

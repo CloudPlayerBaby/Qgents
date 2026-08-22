@@ -20,8 +20,12 @@ public class GitHubOAuthStatusResponse {
     private boolean canCreatePublicPersonalRepository;
     @Schema(description = "scope 是否允许创建私有个人仓库（需要 repo）")
     private boolean canCreatePrivatePersonalRepository;
-    @Schema(description = "个人仓库开通前置状态：NOT_OWNER / NEED_INSTALLATION / NEED_OAUTH / ACCOUNT_MISMATCH / READY")
+    @Schema(description = "个人仓库开通前置状态：NOT_OWNER / NEED_INSTALLATION / NEED_OAUTH / ACCOUNT_MISMATCH / NEED_ALL_REPOSITORIES_ACCESS / READY")
     private String personalRepositorySetup;
+    @Schema(description = "与当前 OAuth 账号匹配的 USER Installation 本地 UUID")
+    private java.util.UUID userInstallationId;
+    @Schema(description = "匹配 Installation 的仓库访问范围：ALL / SELECTED")
+    private String repositoryAccessScope;
     @Schema(description = "账号不一致时提示应使用的 GitHub App 安装账号 login（仅 ACCOUNT_MISMATCH 时有值）")
     private String expectedInstallationLogin;
 }
