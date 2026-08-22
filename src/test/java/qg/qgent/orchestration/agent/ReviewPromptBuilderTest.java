@@ -104,6 +104,21 @@ class ReviewPromptBuilderTest {
     }
 
     @Test
+    void failureCodeExampleIsNeutralUnlessAcceptanceTargetIsMissing() {
+        String nativeSystem = promptBuilder.buildSystem(true);
+        String legacySystem = promptBuilder.buildSystem(false);
+
+        assertThat(nativeSystem)
+                .contains("\"findings\": [], \"suggestions\": [], \"needsCodingFix\": false, \"failureCode\": null}")
+                .contains("除上述验收目标缺失场景外，failureCode 必须省略或设为 null")
+                .doesNotContain("\"failureCode\": \"REVIEW_ASSERTION_TARGET_NOT_FOUND\"}");
+        assertThat(legacySystem)
+                .contains("\"findings\": [], \"suggestions\": [], \"needsCodingFix\": false, \"failureCode\": null}")
+                .contains("除上述验收目标缺失场景外，failureCode 必须省略或设为 null")
+                .doesNotContain("\"failureCode\": \"REVIEW_ASSERTION_TARGET_NOT_FOUND\"}");
+    }
+
+    @Test
     void appendsCustomAgentOverlayWhenPresentAndKeepsDeterministicGates() {
         String base = promptBuilder.buildSystem(true);
         String overlaid = promptBuilder.buildSystem(true, "重点关注权限隔离与资源释放");

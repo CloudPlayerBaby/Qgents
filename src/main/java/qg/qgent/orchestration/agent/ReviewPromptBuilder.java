@@ -70,7 +70,7 @@ public class ReviewPromptBuilder {
                 - 需要查看文件时只使用原生函数调用，参数必须完整、类型正确；不要把 toolCall JSON 写成普通文本。
                 - 工具返回 ok=false 时先读取 errorCode、retryable、nextAction，修正参数后最多重试一次；路径越界、权限拒绝或未知工具不要重复调用。
                 - 你没有写工具；不要尝试调用 apply_patch、write_file、create_directory 或其他未在 schema 中提供的工具。
-                - 审查完成后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "审查摘要", "findings": [{"file": "相对路径", "line": 12, "severity": "MAJOR", "issue": "问题描述", "suggestion": "修改建议"}], "suggestions": ["整体改进建议"], "needsCodingFix": true, "failureCode": "REVIEW_ASSERTION_TARGET_NOT_FOUND"}}
+                - 审查完成后输出 JSON（不要输出代码围栏）：{"finalResult": {"success": true, "summary": "审查摘要", "findings": [], "suggestions": [], "needsCodingFix": false, "failureCode": null}}
 
                 severity 取值与判定规则：
                 - BLOCKER：阻断性问题，如严重安全漏洞、权限隔离被破坏、核心功能完全未实现。
@@ -93,6 +93,7 @@ public class ReviewPromptBuilder {
                   severity=MAJOR 或 BLOCKER 的 finding，并在 finalResult 顶层设置
                   "failureCode": "REVIEW_ASSERTION_TARGET_NOT_FOUND"；needsCodingFix 必须为 true，
                   由 Coding Agent 补齐验收目标后重新审查。
+                - 除上述验收目标缺失场景外，failureCode 必须省略或设为 null；不得因为普通代码缺陷、测试失败或审查不通过而填写该码。
                 - 当发现「文件缺少末尾换行」这类可确定性修复的格式问题时，可在 finalResult 顶层设置
                   "repairAction": {"type":"ENSURE_TRAILING_NEWLINE","file":"相对路径","reason":"说明"}，
                   编排器将执行受控修复动作（追加换行）后重新验证；不要用 repairAction 表达需要 Coding
@@ -128,7 +129,7 @@ public class ReviewPromptBuilder {
                 - 每次只输出一个 JSON，不要输出任何多余文本或代码围栏。
                 - 需要查看文件时输出：{"toolCall": {"name": "工具名", "arguments": {...}}}
                 - 工具返回 ok=false 时读取 errorCode、retryable、nextAction；最多修正参数重试一次，禁止原样重复失败调用。
-                - 审查完成后输出：{"finalResult": {"success": true, "summary": "审查摘要", "findings": [{"file": "相对路径", "line": 12, "severity": "MAJOR", "issue": "问题描述", "suggestion": "修改建议"}], "suggestions": ["整体改进建议"], "needsCodingFix": true, "failureCode": "REVIEW_ASSERTION_TARGET_NOT_FOUND"}}
+                - 审查完成后输出：{"finalResult": {"success": true, "summary": "审查摘要", "findings": [], "suggestions": [], "needsCodingFix": false, "failureCode": null}}
 
                 severity 取值与判定规则：
                 - BLOCKER：阻断性问题，如严重安全漏洞、权限隔离被破坏、核心功能完全未实现。
@@ -151,6 +152,7 @@ public class ReviewPromptBuilder {
                   severity=MAJOR 或 BLOCKER 的 finding，并在 finalResult 顶层设置
                   "failureCode": "REVIEW_ASSERTION_TARGET_NOT_FOUND"；needsCodingFix 必须为 true，
                   由 Coding Agent 补齐验收目标后重新审查。
+                - 除上述验收目标缺失场景外，failureCode 必须省略或设为 null；不得因为普通代码缺陷、测试失败或审查不通过而填写该码。
                 - 当发现「文件缺少末尾换行」这类可确定性修复的格式问题时，可在 finalResult 顶层设置
                   "repairAction": {"type":"ENSURE_TRAILING_NEWLINE","file":"相对路径","reason":"说明"}，
                   编排器将执行受控修复动作（追加换行）后重新验证；不要用 repairAction 表达需要 Coding

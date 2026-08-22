@@ -215,7 +215,7 @@ public class ReviewAgent implements Agent {
                                 + "\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\",\"issue\":\"问题\","
                                 + "\"suggestion\":\"建议\"}],\"suggestions\":[\"建议\"],"
                                 + "\"needsCodingFix\":true|false,"
-                                + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND（可选，仅验收目标缺失时输出）\"}"));
+                                + "\"failureCode\":null}"));
         observations.add(LlmObservation.of(phase, round + 1, finalization,
                 finalizationStartedAt, Instant.now()));
         if (!finalization.isFinalText() || "length".equalsIgnoreCase(finalization.finishReason())) {
@@ -236,13 +236,13 @@ public class ReviewAgent implements Agent {
                         + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
                         + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
                         + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false,"
-                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND（可选）\"}" );
+                        + "\"failureCode\":null}" );
         String repaired = JsonRepairSupport.repairOnce(llm, system, raw, errorMessage,
                 "{\"success\":true|false,\"summary\":\"审查摘要\","
                         + "\"findings\":[{\"file\":\"相对路径\",\"line\":1,\"severity\":\"BLOCKER|MAJOR|MINOR|INFO\","
                         + "\"issue\":\"问题\",\"suggestion\":\"建议\"}],"
                         + "\"suggestions\":[\"建议\"],\"needsCodingFix\":true|false,"
-                        + "\"failureCode\":\"REVIEW_ASSERTION_TARGET_NOT_FOUND（可选）\"}");
+                        + "\"failureCode\":null}");
         String repairedSha = repaired == null ? null
                 : Sha256.hex(repaired.getBytes(StandardCharsets.UTF_8));
         observations.add(new LlmObservation(input.getPhase().name(), round + 1,
