@@ -40,7 +40,7 @@ class NotificationServiceTest {
         service.notifyMrStatus(recipient, UUID.randomUUID(), null, "MR 状态更新：1", "MERGED", mrId, "MERGED");
 
         verify(mapper).insert(any(NotificationEntity.class));
-        verify(events).publishNotification(eq(recipient), any(), eq("MR_PENDING"), any());
+        verify(events).publishNotification(eq(recipient), any(), eq("notification.created"), any());
         ArgumentCaptor<NotificationEntity> notification = ArgumentCaptor.forClass(NotificationEntity.class);
         verify(mapper).insert(notification.capture());
         assertEquals(mrId + ":MERGED", notification.getValue().getDedupeKey());

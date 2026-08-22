@@ -117,13 +117,24 @@ class EventServiceTest {
         EventService service = fullService(mock(EventMapper.class), notifications, mock(TeamEventMapper.class),
                 users, mock(TeamMapper.class));
 
-        service.publishNotification(userId, UUID.randomUUID(), "TASK_COMPLETED", Map.of("ok", true));
+        service.publishNotification(userId, UUID.randomUUID(), "notification.created", Map.of("ok", true));
 
         verify(users).selectByIdForUpdate(userId);
         org.mockito.ArgumentCaptor<NotificationEventEntity> captured =
                 org.mockito.ArgumentCaptor.forClass(NotificationEventEntity.class);
         verify(notifications).insert(captured.capture());
         assertEquals(5L, captured.getValue().getSequenceNo());
+        assertEquals("notification.created", captured.getValue().getKind());
+    }
+
+    @Test
+    void notificationEventTypePreservesProtocolEventsAndNormalizesLegacyBusinessKinds() {
+        EventService service = fullService(mock(EventMapper.class), mock(NotificationEventMapper.class),
+                mock(TeamEventMapper.class), mock(UserMapper.class), mock(TeamMapper.class));
+
+        assertEquals("notification.created", service.notificationEventType("MR_PENDING"));
+        assertEquals("notification.created", service.notificationEventType(null));
+        assertEquals("notification.removed", service.notificationEventType("notification.removed"));
     }
 
     @Test

@@ -139,7 +139,7 @@ public class NotificationService {
             throw duplicate;
         }
         // 通知级 SSE：新通知信号（前端 SSE 需求清单 ③），事件名 notification.created
-        eventService.publishNotification(recipientUserId, entity.getId(), kind,
+        eventService.publishNotification(recipientUserId, entity.getId(), "notification.created",
                 Map.of("notificationId", id(entity.getId()), "kind", kind));
         if (pushNotificationService != null) {
             pushNotificationService.enqueue(entity);

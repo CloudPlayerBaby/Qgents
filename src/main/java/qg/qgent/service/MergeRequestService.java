@@ -55,6 +55,7 @@ public class MergeRequestService {
     private final ConcurrentHashMap<String, CachedMrPage> listCache = new ConcurrentHashMap<>();
     private static final Logger log = LoggerFactory.getLogger(MergeRequestService.class);
     private static final int DEFAULT_LIMIT = 20;
+    private static final int DEFAULT_COMMIT_LIMIT = 3;
     private static final int MAX_LIMIT = 100;
     private static final Duration MERGE_OPERATION_LEASE = Duration.ofMinutes(20);
     /**
@@ -1097,6 +1098,9 @@ public class MergeRequestService {
                               boolean alreadyInProgress) {
     }
 
+    private record RemoteStateUpdate(MergeRequestEntity mergeRequest, boolean changed) {
+    }
+
     /**
      * 查询门禁检查汇总（契约 §21：包装为 {status, requiredChecks, items[]}）。
      */
@@ -1122,6 +1126,24 @@ public class MergeRequestService {
     }
 
     /**
+     * 查询 GitHub Pull Request 的真实提交记录。
+     */
+    public MergeRequestCommitListResponse commits(UUID projectId, UUID mergeRequestId, UUID userId, int limit) {
+        projectAccess.requireProjectMember(projectId, userId);
+        MergeRequestEntity mr = requireMr(projectId, mergeRequestId);
+        GitHubRepositoryEntity githubRepository = requireGitHubRepository(projectId, mr.getProjectRepositoryId());
+        GitHubInstallationEntity installation = requireInstallation(githubRepository);
+        int effectiveLimit = requireCommitLimit(limit);
+        GitHubPullRequestCommitList commits = githubClient.getPullRequestCommits(
+                installation.getProviderInstallationId(), githubRepository.getOwnerLogin(), githubRepository.getName(),
+                requireProviderNumber(mr), effectiveLimit);
+        return new MergeRequestCommitListResponse(commits.totalCount(), commits.items().stream()
+                .map(commit -> new MergeRequestCommitResponse(commit.sha(), commit.message(), commit.authorName(),
+                        commit.authorUserId(), commit.committedAt()))
+                .toList());
+    }
+
+    /**
      * Refreshes the local mirror from GitHub's current Pull Request state.
      */
     public MergeRequestSummaryResponse sync(UUID projectId, UUID mergeRequestId, UUID userId) {
@@ -1131,8 +1153,11 @@ public class MergeRequestService {
         GitHubInstallationEntity installation = requireInstallation(githubRepository);
         GitHubPullRequestDetails remote = githubClient.getPullRequest(installation.getProviderInstallationId(),
                 githubRepository.getOwnerLogin(), githubRepository.getName(), requireProviderNumber(mr));
-        mr = inTransaction(() -> persistRemoteState(projectId, mergeRequestId, remote));
-        publishUpdated(mr);
+        RemoteStateUpdate update = inTransaction(() -> persistRemoteState(projectId, mergeRequestId, remote));
+        mr = update.mergeRequest();
+        if (update.changed()) {
+            publishUpdated(mr);
+        }
         return toSummary(mr, groupIdsByMr(List.of(mr)).getOrDefault(mr.getId(), List.of()), qualityGate(mr),
                 mrWebUrl(mr));
     }
@@ -1356,8 +1381,8 @@ public class MergeRequestService {
 
     // ---------- 私有辅助 ----------
 
-    private MergeRequestEntity persistRemoteState(UUID projectId, UUID mergeRequestId,
-                                                  GitHubPullRequestDetails remote) {
+    private RemoteStateUpdate persistRemoteState(UUID projectId, UUID mergeRequestId,
+                                                 GitHubPullRequestDetails remote) {
         MergeRequestEntity current = mergeRequestMapper.selectByIdForUpdate(mergeRequestId);
         if (current == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "MERGE_REQUEST_NOT_FOUND", "MR 不存在或不可见");
@@ -1366,24 +1391,38 @@ public class MergeRequestService {
         if (repository == null || !projectId.equals(repository.getProjectId())) {
             throw new ApiException(HttpStatus.NOT_FOUND, "MERGE_REQUEST_NOT_FOUND", "MR 不存在或不可见");
         }
-        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
-        current.setProviderNumber((long) remote.number());
-        current.setSourceBranch(remote.headBranch());
-        current.setTargetBranch(remote.baseBranch());
-        current.setHeadCommit(remote.headSha());
-        if (remote.title() != null) current.setTitle(remote.title());
         // 较早发起的同步请求不得把已经落库的 MERGED 终态覆盖回 OPEN。
-        if (!"MERGED".equals(current.getStatus()) || remote.merged()) {
-            current.setStatus(toLocalStatus(remote));
+        String nextStatus = ("MERGED".equals(current.getStatus()) && !remote.merged())
+                ? current.getStatus() : toLocalStatus(remote);
+        boolean remoteChanged = current.getProviderNumber() == null
+                || current.getProviderNumber().longValue() != remote.number()
+                || !Objects.equals(current.getSourceBranch(), remote.headBranch())
+                || !Objects.equals(current.getTargetBranch(), remote.baseBranch())
+                || !Objects.equals(current.getHeadCommit(), remote.headSha())
+                || (remote.title() != null && !Objects.equals(current.getTitle(), remote.title()))
+                || !Objects.equals(current.getStatus(), nextStatus)
+                || !Objects.equals(current.getMergeable(), remote.mergeable())
+                || !Objects.equals(current.getMergeableState(), remote.mergeableState())
+                || !Objects.equals(current.getBaseSha(), remote.baseSha());
+        if (remoteChanged) {
+            LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+            current.setProviderNumber((long) remote.number());
+            current.setSourceBranch(remote.headBranch());
+            current.setTargetBranch(remote.baseBranch());
+            current.setHeadCommit(remote.headSha());
+            if (remote.title() != null) current.setTitle(remote.title());
+            current.setStatus(nextStatus);
+            current.setProviderUpdatedAt(now);
+            current.setSyncedAt(now);
+            current.setMergeable(remote.mergeable());
+            current.setMergeableState(remote.mergeableState());
+            current.setBaseSha(remote.baseSha());
+            mergeRequestMapper.updateById(current);
         }
-        current.setProviderUpdatedAt(now);
-        current.setSyncedAt(now);
-        current.setMergeable(remote.mergeable());
-        current.setMergeableState(remote.mergeableState());
-        current.setBaseSha(remote.baseSha());
-        mergeRequestMapper.updateById(current);
+        String previousQualityGateStatus = current.getQualityGateStatus();
         refreshQualityGate(current);
-        return current;
+        return new RemoteStateUpdate(current, remoteChanged
+                || !Objects.equals(previousQualityGateStatus, current.getQualityGateStatus()));
     }
 
     /**
@@ -1411,9 +1450,11 @@ public class MergeRequestService {
             if (remote == null || remote.mergeable() == null) {
                 continue;
             }
-            MergeRequestEntity updated = inTransaction(() -> persistRemoteState(projectId, mr.getId(), remote));
-            publishUpdated(updated);
-            return updated;
+            RemoteStateUpdate update = inTransaction(() -> persistRemoteState(projectId, mr.getId(), remote));
+            if (update.changed()) {
+                publishUpdated(update.mergeRequest());
+            }
+            return update.mergeRequest();
         }
         return mr;
     }
@@ -2206,6 +2247,13 @@ public class MergeRequestService {
             return DEFAULT_LIMIT;
         }
         return Math.min(limit, MAX_LIMIT);
+    }
+
+    private int requireCommitLimit(int limit) {
+        if (limit < 1 || limit > MAX_LIMIT) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_LIMIT", "limit 必须在 1 到 100 之间");
+        }
+        return limit;
     }
 
     private String iso(LocalDateTime time) {

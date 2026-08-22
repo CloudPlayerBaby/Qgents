@@ -537,6 +537,40 @@ public class RestGitHubAppClient implements GitHubAppClient {
     }
 
     @Override
+    public GitHubPullRequestCommitList getPullRequestCommits(long installationId, String owner, String repo,
+                                                              int pullNumber, int limit) {
+        requireConfigured();
+        if (limit < 1 || limit > 100) {
+            throw new IllegalArgumentException("limit must be between 1 and 100");
+        }
+        try {
+            PullRequestResponse pullRequest = client.get()
+                    .uri("/repos/{owner}/{repo}/pulls/{pullNumber}", owner, repo, pullNumber)
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .retrieve()
+                    .body(PullRequestResponse.class);
+            if (pullRequest == null || pullRequest.commits() == null || pullRequest.commits() < 0) {
+                throw upstreamFailure();
+            }
+            PullRequestCommitResponse[] response = client.get()
+                    .uri(uriBuilder -> uriBuilder.path("/repos/{owner}/{repo}/pulls/{pullNumber}/commits")
+                            .queryParam("per_page", limit).build(owner, repo, pullNumber))
+                    .headers(headers -> githubHeaders(headers, installationTokenProvider.apply(installationId)))
+                    .retrieve()
+                    .body(PullRequestCommitResponse[].class);
+            if (response == null) {
+                throw upstreamFailure();
+            }
+            List<GitHubPullRequestCommitDetails> items = java.util.Arrays.stream(response)
+                    .map(this::toPullRequestCommit)
+                    .toList();
+            return new GitHubPullRequestCommitList(Math.max(pullRequest.commits(), items.size()), items);
+        } catch (RestClientException exception) {
+            throw upstreamFailure();
+        }
+    }
+
+    @Override
     public List<GitHubCheckRunDetails> getPullRequestChecks(long installationId, String owner, String repo, String headSha) {
         requireConfigured();
         try {
@@ -643,10 +677,22 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 response.htmlUrl(), response.mergeable(), response.mergeableState(), response.base().sha());
     }
 
+    private GitHubPullRequestCommitDetails toPullRequestCommit(PullRequestCommitResponse response) {
+        if (response == null || response.sha() == null || response.sha().isBlank() || response.commit() == null
+                || response.commit().message() == null || response.commit().message().isBlank()
+                || response.commit().author() == null || response.commit().author().name() == null
+                || response.commit().author().name().isBlank() || response.commit().author().date() == null
+                || response.commit().author().date().isBlank()) {
+            throw upstreamFailure();
+        }
+        return new GitHubPullRequestCommitDetails(response.sha(), response.commit().message(),
+                response.commit().author().name(), null, response.commit().author().date());
+    }
+
     private record PullRequestResponse(long id, int number, String state, String title,
                                        @JsonProperty("html_url") String htmlUrl, PullRequestRef head,
                                        PullRequestRef base, Boolean merged, Boolean mergeable,
-                                       @JsonProperty("mergeable_state") String mergeableState) {
+                                       @JsonProperty("mergeable_state") String mergeableState, Integer commits) {
     }
 
     private record PullRequestRef(String ref, String sha) {
@@ -661,6 +707,16 @@ public class RestGitHubAppClient implements GitHubAppClient {
     private record ReviewResponse(long id, String state,
                                   @JsonProperty("author_association") String authorAssociation, AccountResponse user) {
     }
+
+    private record PullRequestCommitResponse(String sha, PullRequestCommitMetadata commit) {
+    }
+
+    private record PullRequestCommitMetadata(String message, GitCommitAuthor author) {
+    }
+
+    private record GitCommitAuthor(String name, String date) {
+    }
+
 
     private record CommentResponse(long id, String body,
                                    @JsonProperty("html_url") String htmlUrl,

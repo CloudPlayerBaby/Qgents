@@ -372,11 +372,11 @@ public class EventService {
      *
      * @param recipientUserId 接收通知的用户 ID
      * @param notificationId  关联通知 ID（可为 null）
-     * @param kind            通知类型
+     * @param eventType       通知事件名，例如 notification.created 或 notification.removed
      * @param payload         脱敏事件载荷
      */
     @Transactional
-    public void publishNotification(UUID recipientUserId, UUID notificationId, String kind,
+    public void publishNotification(UUID recipientUserId, UUID notificationId, String eventType,
                                     Map<String, Object> payload) {
         if (recipientUserId == null) {
             return;
@@ -390,13 +390,13 @@ public class EventService {
         event.setRecipientUserId(recipientUserId);
         event.setSequenceNo(notificationEventMapper.maxSequence(recipientUserId) + 1);
         event.setNotificationId(notificationId);
-        event.setKind(kind);
+        event.setKind(eventType);
         event.setPayload(payload);
         event.setCreatedAt(now);
         notificationEventMapper.insert(event);
         // WebSocket 用户级聚合：仅推送该接收用户（其全部在线连接都收到）
         fan(Set.of(recipientUserId), "notification", null, null, null, id(recipientUserId), id(notificationId),
-                kind, payload);
+                eventType, payload);
     }
 
     /**
@@ -448,7 +448,7 @@ public class EventService {
                 for (NotificationEventEntity event : events) {
                     if (!send(emitter, SseEmitter.event()
                             .id(String.valueOf(event.getSequenceNo()))
-                            .name("notification.created")
+                            .name(notificationEventType(event.getKind()))
                             .data(event.getPayload()))) {
                         return;
                     }
@@ -671,6 +671,13 @@ public class EventService {
         } finally {
             closeSseConnection(connectionClosed);
         }
+    }
+
+    /**
+     * 兼容旧数据：早期创建事件曾错误持久化业务通知类型，SSE 协议仍须使用通知事件名。
+     */
+    String notificationEventType(String kind) {
+        return kind != null && kind.startsWith("notification.") ? kind : "notification.created";
     }
 
     private boolean send(SseEmitter emitter, SseEmitter.SseEventBuilder event) {

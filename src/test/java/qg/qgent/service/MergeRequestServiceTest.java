@@ -1257,6 +1257,63 @@ class MergeRequestServiceTest {
     }
 
     @Test
+    void syncDoesNotPublishWhenVisibleRemoteStateIsUnchanged() {
+        UUID projectId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID mergeRequestId = UUID.randomUUID();
+        UUID repositoryId = UUID.randomUUID();
+        MergeRequestEntity mr = new MergeRequestEntity();
+        mr.setId(mergeRequestId);
+        mr.setProjectRepositoryId(repositoryId);
+        mr.setStatus("OPEN");
+        mr.setProviderNumber(100L);
+        mr.setSourceBranch("feature/test");
+        mr.setTargetBranch("main");
+        mr.setHeadCommit("sha123");
+        mr.setTitle("Test PR");
+        mr.setMergeable(true);
+        mr.setMergeableState("clean");
+        mr.setBaseSha("base-sha");
+        mr.setQualityGateStatus("PASSED");
+        when(mergeRequestMapper.selectById(mergeRequestId)).thenReturn(mr);
+        ProjectRepositoryEntity repository = new ProjectRepositoryEntity();
+        repository.setId(repositoryId);
+        repository.setProjectId(projectId);
+        repository.setRepositoryId(UUID.randomUUID());
+        when(projectRepositoryMapper.selectById(repositoryId)).thenReturn(repository);
+        GitHubRepositoryEntity githubRepository = new GitHubRepositoryEntity();
+        githubRepository.setId(repository.getRepositoryId());
+        githubRepository.setInstallationId(UUID.randomUUID());
+        githubRepository.setOwnerLogin("owner");
+        githubRepository.setName("repo");
+        githubRepository.setAuthorizationStatus("AUTHORIZED");
+        githubRepository.setArchived(false);
+        when(githubRepositoryMapper.selectById(repository.getRepositoryId())).thenReturn(githubRepository);
+        ProjectEntity project = new ProjectEntity();
+        project.setId(projectId);
+        project.setTeamId(UUID.randomUUID());
+        when(projectMapper.selectById(projectId)).thenReturn(project);
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(githubRepository.getInstallationId());
+        installation.setStatus("ACTIVE");
+        installation.setProviderInstallationId(12345L);
+        installation.setTeamId(project.getTeamId());
+        when(githubInstallationMapper.selectById(githubRepository.getInstallationId())).thenReturn(installation);
+        when(githubClient.getPullRequest(12345L, "owner", "repo", 100)).thenReturn(
+                new GitHubPullRequestDetails(1L, 100, "open", "Test PR", "sha123", "feature/test", "main",
+                        false, "url", true, "clean", "base-sha"));
+        when(branchConfigMapper.selectList(any())).thenReturn(java.util.List.of());
+        when(qualityCheckMapper.selectList(any())).thenReturn(java.util.List.of());
+        when(mergeRequestGroupMapper.selectByMergeRequestIds(any())).thenReturn(java.util.List.of());
+
+        service.sync(projectId, mergeRequestId, userId);
+
+        verify(mergeRequestMapper, never()).updateById(mr);
+        verify(eventService, never()).publish(any(), any(), eq("merge-request.updated"), any(), any());
+        verifyNoInteractions(notificationService);
+    }
+
+    @Test
     void createFailsWhenInstallationNotActive() {
         UUID projectId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();

@@ -40,7 +40,7 @@ public class NotificationController {
 
     /**
      * 前端 SSE 需求清单 ③：通知级实时事件流（当前用户维度）。
-     * 事件名 notification.created；支持 Last-Event-ID 续传，游标过期返回 409。
+     * 事件名为 notification.created 或 notification.removed；支持 Last-Event-ID 续传，游标过期返回 409。
      */
     @GetMapping(value = "/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter events(@AuthenticationPrincipal UUID userId,

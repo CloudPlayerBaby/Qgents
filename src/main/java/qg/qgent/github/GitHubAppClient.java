@@ -124,6 +124,19 @@ public interface GitHubAppClient {
     GitHubPullRequestDetails getPullRequest(long installationId, String owner, String repo, int pullNumber);
 
     /**
+     * 查询 Pull Request 的真实提交记录。实现必须读取 GitHub Provider，不能从本地 MR headCommit 推测。
+     *
+     * @param installationId GitHub App 安装 ID
+     * @param owner 仓库所有者
+     * @param repo 仓库名称
+     * @param pullNumber GitHub Pull Request 编号
+     * @param limit 返回条数，取值范围 1 到 100
+     * @return GitHub 返回的提交总数和当前提交列表
+     */
+    GitHubPullRequestCommitList getPullRequestCommits(long installationId, String owner, String repo,
+                                                      int pullNumber, int limit);
+
+    /**
      * Gets check runs for a specific commit SHA. The result is GitHub data, not a Qgents quality-gate decision.
      */
     List<GitHubCheckRunDetails> getPullRequestChecks(long installationId, String owner, String repo, String headSha);
