@@ -43,15 +43,15 @@ public class GroupContext {
     private String requirementDescription;
 
     /**
-     * 需求群关联的项目仓库绑定 ID 列表。
+     * 项目当前 ACTIVE 的仓库绑定 ID 列表；所有需求群共享项目仓库范围。
      */
-    @Schema(description = "需求群关联的项目仓库绑定 ID 列表")
+    @Schema(description = "项目当前 ACTIVE 的仓库绑定 ID 列表，所有需求群共享")
     private List<String> repositoryIds;
 
     /**
-     * 需求群允许使用的仓库清单；任务运行时会补充 Workspace 别名和实际分支。
+     * 项目当前可用的仓库清单；任务运行时会补充 Workspace 别名和实际分支。
      */
-    @Schema(description = "需求群关联仓库的可读清单")
+    @Schema(description = "项目共享仓库的可读清单")
     private List<ContextRepository> repositories;
 
     /**

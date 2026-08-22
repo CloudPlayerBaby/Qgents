@@ -4,6 +4,7 @@ import com.auth0.jwt.JWT;
 import com.auth0.jwt.JWTVerifier;
 import com.auth0.jwt.algorithms.Algorithm;
 import com.auth0.jwt.interfaces.DecodedJWT;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
 import org.bouncycastle.openssl.PEMKeyPair;
@@ -314,6 +315,30 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 "GitHub API is unavailable or rejected the integration credentials");
     }
 
+    private ApiException mergeRejected(RestClientResponseException exception) {
+        int status = exception.getStatusCode().value();
+        String providerMessage = extractProviderMessage(exception.getResponseBodyAsString());
+        String message = providerMessage == null || providerMessage.isBlank()
+                ? "GitHub 拒绝了合并请求（HTTP " + status + "）"
+                : "GitHub 拒绝了合并请求：" + providerMessage;
+        return new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_MERGE_REJECTED", message,
+                List.of(java.util.Map.of("providerStatus", status, "providerMessage",
+                        providerMessage == null ? "" : providerMessage)));
+    }
+
+    private String extractProviderMessage(String body) {
+        if (body == null || body.isBlank()) {
+            return null;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("\\\"message\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"")
+                .matcher(body);
+        if (!matcher.find()) {
+            return null;
+        }
+        return matcher.group(1).replace("\\n", " ").replace("\\\"", "\\\"").trim();
+    }
+
     private record InstallationResponse(long id, AccountResponse account) {
     }
 
@@ -597,7 +622,13 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 throw upstreamFailure();
             }
             return new GitHubPullRequestMergeResult(response.merged(), response.sha(), response.message());
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub mergePullRequest rejected: owner={} repo={} number={} status={} body={}",
+                    owner, repo, pullNumber, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            throw mergeRejected(exception);
         } catch (RestClientException exception) {
+            log.warn("GitHub mergePullRequest failed before receiving a response: owner={} repo={} number={} {}",
+                    owner, repo, pullNumber, exception.getMessage());
             throw upstreamFailure();
         }
     }
@@ -636,6 +667,7 @@ public class RestGitHubAppClient implements GitHubAppClient {
                                    @JsonProperty("created_at") String createdAt) {
     }
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     private record MergeRequestBody(@JsonProperty("commit_title") String commitTitle,
                                     @JsonProperty("commit_message") String commitMessage,
                                     @JsonProperty("merge_method") String mergeMethod, String sha) {

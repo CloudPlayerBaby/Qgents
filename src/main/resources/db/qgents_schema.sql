@@ -442,6 +442,8 @@ CREATE TABLE IF NOT EXISTS
         quality_gate_status VARCHAR(32) NULL COMMENT '门禁汇总状态枚举：PENDING/PASSED/FAILED',
         merge_operation_id VARCHAR(64) NULL COMMENT '受控合并幂等操作ID',
         merge_operation_status VARCHAR(32) NOT NULL DEFAULT 'NOT_STARTED' COMMENT 'NOT_STARTED/RUNNING/COMPLETED/FAILED',
+        merge_operation_failure_code VARCHAR(128) NULL COMMENT '最近一次合并失败码',
+        merge_operation_failure_reason VARCHAR(512) NULL COMMENT '最近一次合并失败原因',
         merge_lease_expires_at DATETIME(6) NULL COMMENT '合并操作租约到期时间UTC',
         provider_updated_at DATETIME (6) NULL COMMENT 'GitHub侧更新时间（UTC）',
         synced_at DATETIME (6) NOT NULL COMMENT '本地最近同步时间（UTC）',

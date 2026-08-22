@@ -185,8 +185,11 @@ public class MergeRequestController {
     @PostMapping("/{mergeRequestId}/merge")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<?> merge(@PathVariable UUID projectId, @PathVariable UUID mergeRequestId,
-                                @AuthenticationPrincipal UUID userId, HttpServletRequest request) {
-        MergeRequestSummaryResponse data = mergeRequestService.merge(projectId, mergeRequestId, userId);
+                                @AuthenticationPrincipal UUID userId,
+                                @RequestBody(required = false) MergeRequestMergeRequest body,
+                                HttpServletRequest request) {
+        MergeRequestSummaryResponse data = mergeRequestService.merge(projectId, mergeRequestId, userId,
+                body == null ? null : body.getCommitMessage());
         return ok(data, request);
     }
 

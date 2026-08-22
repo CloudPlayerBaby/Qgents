@@ -21,6 +21,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -61,6 +62,10 @@ public class DiffReviewBatchService {
     private WorkBranchDevelopmentGuard developmentGuard;
     /** Optional in lightweight tests; production uses it to serialize review decisions with continuations. */
     private WorkspaceMapper workspaces;
+    /** 交付确认前刷新各仓库不可变 baseRef 对应的远端目标分支。 */
+    private WorkspaceRepositoryMapper workspaceRepositories;
+    /** GitHub/Worker 目标分支同步；纯领域单测可不注入。 */
+    private GitStoreSyncService gitStores;
     /** MR 前预检的进程内触发，不再经由 SSE eventType 桥接。 */
     private final ApplicationEventPublisher domainEvents;
 
@@ -117,6 +122,16 @@ public class DiffReviewBatchService {
         this.workspaces = workspaces;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setWorkspaceRepositoryMapper(WorkspaceRepositoryMapper workspaceRepositories) {
+        this.workspaceRepositories = workspaceRepositories;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setGitStoreSyncService(GitStoreSyncService gitStores) {
+        this.gitStores = gitStores;
+    }
+
     public DiffReviewBatchResponse get(UUID projectId, UUID taskId, UUID actor) {
         access.requireProjectMember(projectId, actor);
         DiffReviewBatchEntity batch = latest(projectId, taskId);
@@ -145,6 +160,7 @@ public class DiffReviewBatchService {
         TaskEntity task = requireTask(projectId, taskId);
         requireOwnerOrAdmin(task, actor);
         requireDiffDeliveryAllowed(task);
+        refreshTargetBranchesBeforeDelivery(task);
         WorkspaceWriteLease workspaceLease = acquireWorkspaceWriteLease(task);
         try {
             DiffReviewBatchEntity batch = transactions.execute(status -> claim(task));
@@ -238,6 +254,7 @@ public class DiffReviewBatchService {
         TaskEntity task = requireTask(projectId, taskId);
         requireOwnerOrAdmin(task, actor);
         requireDiffDeliveryAllowed(task);
+        refreshTargetBranchesBeforeDelivery(task);
         WorkspaceWriteLease workspaceLease = acquireWorkspaceWriteLease(task);
         try {
             DiffReviewBatchEntity batch = transactions.execute(status -> claimRetry(projectId, taskId));
@@ -423,6 +440,62 @@ public class DiffReviewBatchService {
                         "Workspace differs from the reviewed final Diff");
             }
         }
+    }
+
+    /**
+     * 交付确认前刷新 GitHub/Worker 中的目标分支引用。
+     *
+     * <p>目标分支推进不会改写 Workspace 的不可变 baseCommit，也不会自动 rebase 旧 Diff；
+     * 它只保证后续交付和 MR 预检看到的是远端最新目标分支。调用发生在领取交付租约前，
+     * 因此同步失败不会把批次先置成 DELIVERING。</p>
+     */
+    private void refreshTargetBranchesBeforeDelivery(TaskEntity task) {
+        if (gitStores == null || workspaceRepositories == null || task.getWorkspaceId() == null) {
+            return;
+        }
+        List<WorkspaceRepositoryEntity> worktrees = workspaceRepositories.selectByWorkspace(task.getWorkspaceId());
+        if (worktrees == null || worktrees.isEmpty()) {
+            return;
+        }
+        Map<UUID, WorkspaceRepositoryEntity> worktreeByRepository = worktrees.stream()
+                .filter(Objects::nonNull)
+                .filter(value -> value.getProjectRepositoryId() != null)
+                .collect(java.util.stream.Collectors.toMap(
+                        WorkspaceRepositoryEntity::getProjectRepositoryId,
+                        value -> value,
+                        (left, right) -> left));
+        List<DiffEntity> values = diffs(latest(task.getProjectId(), task.getId()).getId());
+        for (DiffEntity diff : values) {
+            if (diff.getProjectRepositoryId() == null) {
+                continue;
+            }
+            WorkspaceRepositoryEntity worktree = worktreeByRepository.get(diff.getProjectRepositoryId());
+            String targetBranch = targetBranch(worktree);
+            if (targetBranch == null) {
+                continue;
+            }
+            ProjectRepositoryEntity repository = repositories.selectById(diff.getProjectRepositoryId());
+            if (repository == null || !task.getProjectId().equals(repository.getProjectId())) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "REPOSITORY_NOT_FOUND", "交付目标仓库不存在或不可见");
+            }
+            String targetCommit = gitStores.refreshTargetBranch(task.getProjectId(), repository, targetBranch);
+            log.info("delivery target branch refreshed projectId={} taskId={} repositoryId={} targetBranch={} targetCommit={}",
+                    task.getProjectId(), task.getId(), diff.getProjectRepositoryId(), targetBranch, targetCommit);
+        }
+    }
+
+    private String targetBranch(WorkspaceRepositoryEntity worktree) {
+        if (worktree == null) {
+            return null;
+        }
+        if (worktree.getBaseRef() != null && !worktree.getBaseRef().isBlank()) {
+            return worktree.getBaseRef().trim();
+        }
+        String legacy = worktree.getBaseCommit();
+        if (legacy != null && !legacy.isBlank() && !legacy.matches("(?i)[0-9a-f]{40,64}")) {
+            return legacy.trim();
+        }
+        return null;
     }
 
     private void accept(TaskEntity task, UUID batchId, UUID actor, String claimToken) {

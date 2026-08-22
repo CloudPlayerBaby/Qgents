@@ -187,6 +187,9 @@ public class TaskOrchestrator {
             if (startStepId != null && "FAILED".equals(task.getStatus())) {
                 notificationService.clearTaskFailedNotifications(taskId.toString());
             }
+            // claim SQL 已把数据库状态推进到 RUNNING；同步内存对象，后续步骤状态卡片不能
+            // 再使用入口时读到的 PLANNING/PENDING/FAILED 旧值。
+            task.setStatus("RUNNING");
         }
         TaskExecutionContext ctx = new TaskExecutionContext(task);
         // 续跑来源：首个 TaskRun 的 retryOfTaskRunId 指向被重试的失败运行
@@ -245,6 +248,8 @@ public class TaskOrchestrator {
                     log.info("orchestrate plan claimed by concurrent executor, skip taskId={}", taskId);
                     return;
                 }
+                // 认领 SQL 不回填实体对象；步骤开始卡片使用该对象，因此必须同步为 RUNNING。
+                task.setStatus("RUNNING");
                 publishTaskRunningEvent(taskId);
             }
             List<TaskStepEntity> steps = loadSteps(taskId).stream()

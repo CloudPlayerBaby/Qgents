@@ -53,6 +53,16 @@ public class WorkBranchDevelopmentGuard {
     }
 
     /**
+     * 引用既有 Diff 续作的严格门禁。旧 Diff 已经进入 MR 生命周期后，不能再从原消息
+     * 创建续作 Task；与普通 Workspace 续作不同，已合并 MR 也必须被拦截，避免继续修改
+     * 已经交付的历史分支。
+     */
+    public void requireQuotedDiffContinuationAllowed(UUID projectId, UUID workspaceId) {
+        requireWorkspaceWritable(projectId, workspaceId, "QUOTED_DIFF_CONTINUATION_BLOCKED",
+                "当前 Diff 已进入 MR 流程，暂不能引用继续修改", true);
+    }
+
+    /**
      * Diff commit/push 前检查 Workspace 的所有仓库分支。
      */
     public void requireDiffDeliveryAllowed(UUID projectId, UUID workspaceId) {
@@ -89,6 +99,11 @@ public class WorkBranchDevelopmentGuard {
     }
 
     private void requireWorkspaceWritable(UUID projectId, UUID workspaceId, String code, String message) {
+        requireWorkspaceWritable(projectId, workspaceId, code, message, false);
+    }
+
+    private void requireWorkspaceWritable(UUID projectId, UUID workspaceId, String code, String message,
+                                           boolean includeMergedMr) {
         if (projectId == null || workspaceId == null) {
             throw new ApiException(HttpStatus.CONFLICT, "WORKSPACE_CONTINUATION_INVALID",
                     "Workspace 写入上下文不完整");
@@ -99,7 +114,8 @@ public class WorkBranchDevelopmentGuard {
         }
         List<Map<String, Object>> blockers = new ArrayList<>();
         for (WorkspaceRepositoryEntity worktree : values) {
-            MergeRequestEntity blocker = blockingMr(worktree.getProjectRepositoryId(), worktree.getSourceBranch());
+            MergeRequestEntity blocker = blockingMr(worktree.getProjectRepositoryId(), worktree.getSourceBranch(),
+                    includeMergedMr);
             if (blocker != null) {
                 blockers.add(detail(blocker));
             }
@@ -120,13 +136,17 @@ public class WorkBranchDevelopmentGuard {
     }
 
     private MergeRequestEntity blockingMr(UUID repositoryId, String sourceBranch) {
+        return blockingMr(repositoryId, sourceBranch, false);
+    }
+
+    private MergeRequestEntity blockingMr(UUID repositoryId, String sourceBranch, boolean includeMergedMr) {
         if (repositoryId == null || sourceBranch == null || sourceBranch.isBlank()) {
             return null;
         }
         return mergeRequests.selectOne(Wrappers.<MergeRequestEntity>lambdaQuery()
                 .eq(MergeRequestEntity::getProjectRepositoryId, repositoryId)
                 .eq(MergeRequestEntity::getSourceBranch, sourceBranch)
-                .ne(MergeRequestEntity::getStatus, "MERGED")
+                .ne(!includeMergedMr, MergeRequestEntity::getStatus, "MERGED")
                 .orderByDesc(MergeRequestEntity::getProviderUpdatedAt)
                 .orderByDesc(MergeRequestEntity::getCreatedAt)
                 .last("LIMIT 1"));

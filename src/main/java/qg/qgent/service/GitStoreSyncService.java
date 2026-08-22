@@ -94,6 +94,32 @@ public class GitStoreSyncService {
         throw new IllegalStateException("目标分支同步重试循环意外结束");
     }
 
+    /**
+     * 查询 GitHub 源分支当前 HEAD，用于在 Diff-first 发起预检前核对已确认交付的提交。
+     * 这里只读取远端事实，不回写 Workspace；远端若已经出现未经过 Qgents 审核的新提交，
+     * 预检必须拒绝并要求重新确认交付，不能静默把 Workspace head 更新成未经审核的提交。
+     */
+    public String resolveSourceBranchHead(UUID projectId, ProjectRepositoryEntity repository, String sourceBranch) {
+        if (repository == null || !projectId.equals(repository.getProjectId())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "REPOSITORY_NOT_FOUND", "仓库不存在或不可见");
+        }
+        String branch = normalizeTargetBranch(sourceBranch);
+        GitHubRepositoryEntity githubRepository = githubRepositories.selectById(repository.getRepositoryId());
+        if (githubRepository == null || !"AUTHORIZED".equals(githubRepository.getAuthorizationStatus())
+                || Boolean.TRUE.equals(githubRepository.getArchived())) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_REPOSITORY_UNAVAILABLE", "GitHub 仓库不可用于读取源分支");
+        }
+        GitHubInstallationEntity installation = installations.selectById(githubRepository.getInstallationId());
+        if (installation == null || !"ACTIVE".equals(installation.getStatus())
+                || installation.getProviderInstallationId() == null || installation.getTeamId() == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_INSTALLATION_UNAVAILABLE", "GitHub 安装不可用于读取源分支");
+        }
+        GitHubBranchDetails remote = github.getBranch(installation.getProviderInstallationId(),
+                githubRepository.getOwnerLogin(), githubRepository.getName(), branch);
+        return validSha(remote == null ? null : remote.commitSha(), "GITHUB_BRANCH_SHA_INVALID",
+                "GitHub 未返回有效的源分支提交");
+    }
+
     /** 每次重试均重新查询远端 HEAD 并签发新的单次 FETCH grant，禁止复用已兑换的 grant。 */
     private String refreshTargetBranchOnce(UUID projectId, ProjectRepositoryEntity repository, String branch,
                                            GitHubRepositoryEntity githubRepository,

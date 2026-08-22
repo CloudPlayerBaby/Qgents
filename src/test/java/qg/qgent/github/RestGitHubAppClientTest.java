@@ -2,6 +2,7 @@ package qg.qgent.github;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
@@ -217,16 +218,36 @@ class RestGitHubAppClientTest {
     void returnsGitHubMergeOutcomeInsteadOfAssumingSuccess() {
         server.expect(once(), requestTo("https://api.github.com/repos/owner/repo/pulls/42/merge"))
                 .andExpect(method(HttpMethod.PUT))
+                .andExpect(content().json("{\"commit_title\":\"Merge login\",\"merge_method\":\"squash\",\"sha\":\"head-sha\"}"))
                 .andRespond(withSuccess("""
                         {"sha":"merge-sha","merged":false,"message":"Pull Request is not mergeable"}
                         """, MediaType.APPLICATION_JSON));
 
         GitHubPullRequestMergeResult result = client.mergePullRequest(12345L, "owner", "repo", 42,
-                new GitHubPullRequestMergeRequest("Merge login", "", "squash", "head-sha"));
+                new GitHubPullRequestMergeRequest("Merge login", null, "squash", "head-sha"));
 
         assertFalse(result.merged());
         assertEquals("Pull Request is not mergeable", result.message());
         server.verify();
+    }
+
+    @Test
+    void preservesRejectedGitHubMergeReason() {
+        server.expect(once(), requestTo("https://api.github.com/repos/owner/repo/pulls/42/merge"))
+                .andExpect(method(HttpMethod.PUT))
+                .andRespond(withStatus(HttpStatus.FORBIDDEN)
+                        .body("{\"message\":\"Resource not accessible by integration\"}"));
+
+        try {
+            client.mergePullRequest(12345L, "owner", "repo", 42,
+                    new GitHubPullRequestMergeRequest("Merge login", "", "squash", "head-sha"));
+        } catch (qg.qgent.api.ApiException exception) {
+            assertEquals("GITHUB_MERGE_REJECTED", exception.code());
+            assertTrue(exception.getMessage().contains("Resource not accessible by integration"));
+            server.verify();
+            return;
+        }
+        throw new AssertionError("Expected GitHub merge failure");
     }
 
     @Test

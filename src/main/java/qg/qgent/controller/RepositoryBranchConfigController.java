@@ -67,6 +67,19 @@ public class RepositoryBranchConfigController {
     }
 
     /**
+     * 查询目标分支质量门禁（查询参数版本）。
+     * 分支名可能包含斜杠，不能依赖路径中的 %2F 传递，否则会被 Tomcat 在进入 Spring 前拒绝。
+     */
+    @GetMapping("/projects/{projectId}/repositories/{projectRepositoryId}/quality-gates")
+    public ApiResponse<QualityGateDto> getQualityGateByQuery(
+            @PathVariable("projectId") UUID projectId,
+            @PathVariable("projectRepositoryId") UUID projectRepositoryId,
+            @RequestParam("branch") String branch,
+            HttpServletRequest request) {
+        return ok(service.getQualityGate(currentActor.currentUserId(), projectId, projectRepositoryId, branch), request);
+    }
+
+    /**
      * 契约 §6.1：配置目标分支的质量门禁。
      */
     @PutMapping("/projects/{projectId}/repositories/{projectRepositoryId}/quality-gates/{branch}")
@@ -74,6 +87,19 @@ public class RepositoryBranchConfigController {
             @PathVariable("projectId") UUID projectId,
             @PathVariable("projectRepositoryId") UUID projectRepositoryId,
             @PathVariable("branch") String branch,
+            @Valid @RequestBody UpdateQualityGateRequest body,
+            HttpServletRequest request) {
+        return ok(service.updateQualityGate(currentActor.currentUserId(), projectId, projectRepositoryId, branch, body), request);
+    }
+
+    /**
+     * 配置目标分支质量门禁（查询参数版本，支持包含斜杠的分支名）。
+     */
+    @PutMapping("/projects/{projectId}/repositories/{projectRepositoryId}/quality-gates")
+    public ApiResponse<QualityGateDto> updateQualityGateByQuery(
+            @PathVariable("projectId") UUID projectId,
+            @PathVariable("projectRepositoryId") UUID projectRepositoryId,
+            @RequestParam("branch") String branch,
             @Valid @RequestBody UpdateQualityGateRequest body,
             HttpServletRequest request) {
         return ok(service.updateQualityGate(currentActor.currentUserId(), projectId, projectRepositoryId, branch, body), request);

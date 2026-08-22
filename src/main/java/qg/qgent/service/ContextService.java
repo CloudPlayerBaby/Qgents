@@ -97,8 +97,12 @@ public class ContextService {
         List<ContextSkill> skills = skillMapper.listPublishedCatalog(projectId, actor);
         List<ContextMemory> memories = memoryMapper.listMemories(projectId, actor, isAdmin, "APPROVED", null).stream()
                 .map(m -> new ContextMemory(m.getTitle(), m.getContent(), m.getCategory())).toList();
-        List<String> repositoryIds = groupRepoMapper.selectRepositoryIds(groupId).stream()
-                .map(UUID::toString).toList();
+        // 需求群共享项目仓库；历史 requirement_group_repositories 只保留兼容读取，
+        // 不再作为 Agent 上下文或任务候选范围的来源。
+        List<UUID> projectRepositoryIds = projectRepositoryMapper == null
+                ? groupRepoMapper.selectRepositoryIds(groupId)
+                : activeProjectRepositoryIds(projectId);
+        List<String> repositoryIds = projectRepositoryIds.stream().map(UUID::toString).toList();
         List<ContextRepository> repositories = repositoryManifest(projectId, repositoryIds);
 
         return new GroupContext(group.getId().toString(), projectId.toString(), group.getName(), group.getDescription(),
@@ -110,11 +114,11 @@ public class ContextService {
      * <p>
      * 触发消息可能早于近期窗口；此处按群内序号补入而非截断，避免 Task 核心来源在重试时丢失。
      * <p>
-     * 仓库范围以显式 {@code repositoryIds} 为准：新建 Workspace 传请求指定仓库、续作任务传
-     * Workspace worktree 仓库列表；缺省（null）时才回退到需求群绑定仓库，保证 Workspace 实际
-     * 挂载与 Agent 上下文中的仓库清单一致，避免"Workspace 有 3 个仓库、AI 上下文 repositories=0"。
+     * 仓库范围以显式 {@code repositoryIds} 为准：新建 Workspace 传项目 ACTIVE 仓库候选范围、
+     * 续作任务传 Workspace worktree 仓库列表。兼容入口缺省时使用项目 ACTIVE 仓库，不再回退到
+     * 需求群绑定仓库，保证所有需求群共享项目仓库。
      *
-     * @param repositoryIds 本次 Task 实际生效的项目仓库绑定 ID；null 表示沿用需求群绑定仓库
+     * @param repositoryIds 本次 Task 实际生效的项目仓库绑定 ID；null 表示使用项目 ACTIVE 仓库
      */
     public GroupContext buildTaskSnapshot(UUID actor, UUID projectId, UUID groupId, UUID triggerMessageId,
                                           List<UUID> repositoryIds) {
@@ -138,23 +142,41 @@ public class ContextService {
                 conversation, context.getSkills(), context.getMemories());
     }
 
-    /** 兼容入口：{@code repositoryIds} 缺省时沿用需求群绑定仓库。 */
+    /** 兼容入口：{@code repositoryIds} 缺省时使用项目 ACTIVE 仓库。 */
     public GroupContext buildTaskSnapshot(UUID actor, UUID projectId, UUID groupId, UUID triggerMessageId) {
         return buildTaskSnapshot(actor, projectId, groupId, triggerMessageId, null);
     }
 
     /**
-     * 以显式仓库范围替换快照中的仓库清单：null 表示沿用需求群绑定仓库（原样返回），
+     * 以显式仓库范围替换快照中的仓库清单：null 表示沿用项目 ACTIVE 仓库快照（原样返回），
      * 非 null 时 {@code repositoryIds} 与 {@code repositories} 一律以传入 ID 为准。
      */
     private GroupContext withRepositoryScope(GroupContext context, UUID projectId, List<UUID> repositoryIds) {
         if (repositoryIds == null) {
-            return context;
+            // 仅供旧构造器/轻量测试使用：未注入项目仓库 Mapper 时保留已组装的兼容快照。
+            if (projectRepositoryMapper == null) {
+                return context;
+            }
+            List<UUID> active = activeProjectRepositoryIds(projectId);
+            List<String> ids = active.stream().map(UUID::toString).toList();
+            return new GroupContext(context.getGroupId(), context.getProjectId(), context.getRequirementTitle(),
+                    context.getRequirementDescription(), ids, repositoryManifest(projectId, ids),
+                    context.getConversation(), context.getSkills(), context.getMemories());
         }
         List<String> ids = repositoryIds.stream().map(UUID::toString).distinct().toList();
         return new GroupContext(context.getGroupId(), context.getProjectId(), context.getRequirementTitle(),
                 context.getRequirementDescription(), ids, repositoryManifest(projectId, ids),
                 context.getConversation(), context.getSkills(), context.getMemories());
+    }
+
+    private List<UUID> activeProjectRepositoryIds(UUID projectId) {
+        if (projectRepositoryMapper == null) {
+            return List.of();
+        }
+        return projectRepositoryMapper.selectList(Wrappers.<ProjectRepositoryEntity>lambdaQuery()
+                        .eq(ProjectRepositoryEntity::getProjectId, projectId)
+                        .eq(ProjectRepositoryEntity::getStatus, "ACTIVE"))
+                .stream().map(ProjectRepositoryEntity::getId).toList();
     }
 
     private List<ContextRepository> repositoryManifest(UUID projectId, List<String> repositoryIds) {

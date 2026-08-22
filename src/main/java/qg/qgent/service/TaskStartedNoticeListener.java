@@ -75,12 +75,46 @@ public class TaskStartedNoticeListener {
         // 固定 clientMessageId：同一任务重复触发只插入一次
         body.setClientMessageId("task-started-" + task.getId());
         try {
-            messageService.sendAsAgent(task.getRequirementGroupId(), agentId, body);
+            sendNoticeWithDeadlockRetry(task.getRequirementGroupId(), agentId, body);
             log.info("task started notice inserted taskId={} groupId={}", task.getId(),
                     task.getRequirementGroupId());
         } catch (RuntimeException e) {
             log.warn("task started notice skipped taskId={}: {}", task.getId(), e.getMessage());
         }
+    }
+
+    /**
+     * The startup notice is best-effort and runs concurrently with other messages in the same group.
+     * A transient InnoDB deadlock must not turn a successful Task creation into a missing notice.
+     */
+    private void sendNoticeWithDeadlockRetry(UUID groupId, UUID agentId, MessageSendRequest body) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                messageService.sendAsAgent(groupId, agentId, body);
+                return;
+            } catch (RuntimeException failure) {
+                if (!isDeadlock(failure) || attempt == 2) {
+                    throw failure;
+                }
+                try {
+                    Thread.sleep(100L * (attempt + 1));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw failure;
+                }
+            }
+        }
+    }
+
+    private boolean isDeadlock(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            String message = current.getMessage();
+            if (message != null && (message.toLowerCase(java.util.Locale.ROOT).contains("deadlock")
+                    || message.toLowerCase(java.util.Locale.ROOT).contains("try restarting transaction"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String creatorDisplayName(UUID userId) {

@@ -171,7 +171,7 @@ class TaskDisplayServiceTest {
         when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
         PagedApiResponse<TaskListItemResponse> page = service.list(projectId, actor, null, null, null, null, null, null,
-                null, "req");
+                null, null, "req");
 
         TaskListItemResponse item = page.data().getFirst();
         assertNull(page.page().getNextCursor());
@@ -214,7 +214,7 @@ class TaskDisplayServiceTest {
         batch.setConfirmationSource("USER");
         when(diffBatches.selectList(any())).thenReturn(List.of(batch));
 
-        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
 
         assertEquals("DIFF_CONFIRMATION_REQUIRED", item.getAttention().getKind());
@@ -238,7 +238,7 @@ class TaskDisplayServiceTest {
         when(diffBatches.selectList(any())).thenReturn(List.of(batch));
         when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
-        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
 
         assertEquals("DIFF_REJECTED", item.getAttention().getKind());
@@ -361,7 +361,7 @@ class TaskDisplayServiceTest {
         group.setName("登录功能");
         when(groups.selectList(any())).thenReturn(List.of(group));
 
-        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
 
         assertEquals("EXECUTION_FAILED", item.getAttention().getKind());
@@ -483,7 +483,7 @@ class TaskDisplayServiceTest {
         when(groups.selectList(any())).thenReturn(List.of(group));
         when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
-        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, "req")
+        TaskListItemResponse item = service.list(projectId, actor, null, null, null, null, null, null, null, null, "req")
                 .data().getFirst();
 
         // PLANNER 不计入执行统计：规划期总步骤 0、无当前阶段
@@ -572,7 +572,7 @@ class TaskDisplayServiceTest {
         when(tasks.selectList(any())).thenReturn(List.of(task));
         when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
-        service.list(projectId, actor, null, null, null, null, "登录", null, null, "req");
+        service.list(projectId, actor, null, null, null, null, null, "登录", null, null, "req");
 
         ArgumentCaptor<AbstractWrapper<TaskEntity, ?, ?>> captor = ArgumentCaptor.forClass(AbstractWrapper.class);
         verify(tasks).selectList(captor.capture());
@@ -599,7 +599,7 @@ class TaskDisplayServiceTest {
         when(tasks.selectList(any())).thenReturn(List.of(task));
         when(groupService.visibleGroupIds(projectId, actor)).thenReturn(List.of(groupId));
 
-        service.list(projectId, actor, null, null, null, null, "   ", null, null, "req");
+        service.list(projectId, actor, null, null, null, null, null, "   ", null, null, "req");
 
         ArgumentCaptor<AbstractWrapper<TaskEntity, ?, ?>> captor = ArgumentCaptor.forClass(AbstractWrapper.class);
         verify(tasks).selectList(captor.capture());
@@ -610,7 +610,7 @@ class TaskDisplayServiceTest {
     void listRejectsKeywordLongerThan100UnicodeCharacters() {
         UUID projectId = UUID.randomUUID(), actor = UUID.randomUUID();
         ApiException ex = assertThrows(ApiException.class,
-                () -> service.list(projectId, actor, null, null, null, null, "长".repeat(101), null, null, "req"));
+                () -> service.list(projectId, actor, null, null, null, null, null, "长".repeat(101), null, null, "req"));
         assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, ex.status());
         assertEquals("INVALID_QUERY_PARAMETER", ex.code());
     }

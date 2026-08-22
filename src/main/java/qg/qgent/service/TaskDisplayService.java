@@ -173,6 +173,7 @@ public class TaskDisplayService {
         }
         List<TaskStepEntity> stepList = steps.selectList(Wrappers.<TaskStepEntity>lambdaQuery()
                 .eq(TaskStepEntity::getTaskId, taskId).orderByAsc(TaskStepEntity::getSequenceNo));
+        Set<UUID> activeRepositoryIds = activeRepositoryIds(stepList);
         List<TaskRunEntity> allRuns = runs.selectList(Wrappers.<TaskRunEntity>lambdaQuery()
                 .eq(TaskRunEntity::getTaskId, taskId));
         Map<UUID, List<InputRequestEntity>> inputByRun = loadInputByRun(allRuns);
@@ -201,7 +202,7 @@ public class TaskDisplayService {
                 groupSummary(groupById.get(task.getRequirementGroupId())),
                 userSummary(userById.get(task.getCreatedBy())), criteria, execution,
                 attention,
-                workspaceSummary(task, worktreeData), buildCapabilities(task, actor, stepList, batch),
+                workspaceSummary(task, worktreeData, activeRepositoryIds), buildCapabilities(task, actor, stepList, batch),
                 artifactSummary(taskId), diffReviewSummary(batch, batchDiffs), sourceMessage(task),
                 id(task.getTriggerMessageId()), iso(task.getCreatedAt()), iso(task.getUpdatedAt()));
     }
@@ -288,6 +289,19 @@ public class TaskDisplayService {
         Map<UUID, List<TaskStepEntity>> stepsByTask = steps
                 .selectList(Wrappers.<TaskStepEntity>lambdaQuery().in(TaskStepEntity::getTaskId, taskIds)).stream()
                 .collect(Collectors.groupingBy(TaskStepEntity::getTaskId));
+        Map<UUID, UUID> taskByStep = stepsByTask.entrySet().stream()
+                .flatMap(entry -> entry.getValue().stream().map(step -> Map.entry(step.getId(), entry.getKey())))
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        Map<UUID, Set<UUID>> writableRepositoriesByTask = taskByStep.isEmpty() ? Collections.emptyMap()
+                : stepRepositories.selectByStepIds(new ArrayList<>(taskByStep.keySet())).stream()
+                .filter(scope -> "WRITE".equals(scope.getAccessMode()))
+                .filter(scope -> {
+                    TaskStepEntity step = stepsByTask.getOrDefault(taskByStep.get(scope.getTaskStepId()), List.of()).stream()
+                            .filter(value -> value.getId().equals(scope.getTaskStepId())).findFirst().orElse(null);
+                    return step != null && "DEVELOPER".equals(step.getRole());
+                })
+                .collect(Collectors.groupingBy(scope -> taskByStep.get(scope.getTaskStepId()),
+                        Collectors.mapping(TaskStepRepositoryEntity::getProjectRepositoryId, Collectors.toSet())));
         List<TaskRunEntity> allRuns = loadTaskListRuns(taskIds);
         Map<UUID, List<TaskRunEntity>> runsByTask = allRuns.stream()
                 .collect(Collectors.groupingBy(TaskRunEntity::getTaskId));
@@ -315,21 +329,23 @@ public class TaskDisplayService {
 
         return page.stream().map(task -> toListItem(task,
                         stepsByTask.getOrDefault(task.getId(), List.of()),
-                        runsByTask.getOrDefault(task.getId(), List.of()), inputByRun,
-                        worktreesByTask.getOrDefault(task.getWorkspaceId(), List.of()), worktreeData, userById, groupById,
+                runsByTask.getOrDefault(task.getId(), List.of()), inputByRun,
+                        worktreesByTask.getOrDefault(task.getWorkspaceId(), List.of()),
+                        writableRepositoriesByTask.getOrDefault(task.getId(), Set.of()), worktreeData, userById, groupById,
                         batchByTask.get(task.getId()), diffsByBatch))
                 .toList();
     }
 
     private TaskListItemResponse toListItem(TaskEntity task, List<TaskStepEntity> stepList, List<TaskRunEntity> taskRuns,
                                             Map<UUID, List<InputRequestEntity>> inputByRun, List<WorkspaceRepositoryEntity> worktreeList,
-                                            WorktreeData worktreeData, Map<UUID, UserEntity> userById,
+                                            Set<UUID> activeRepositoryIds, WorktreeData worktreeData, Map<UUID, UserEntity> userById,
                                             Map<UUID, RequirementGroupEntity> groupById,
                                             DiffReviewBatchEntity batch, Map<UUID, List<DiffEntity>> diffsByBatch) {
         Attention attention = buildAttention(task, taskRuns, inputByRun, batch,
                 batch == null ? List.of() : diffsByBatch.getOrDefault(batch.getId(), List.of()));
         ExecutionSummary execution = buildExecutionSummary(stepList, taskRuns, attention != null);
         List<RepositorySummary> repositories = worktreeList.stream()
+                .filter(w -> activeRepositoryIds.contains(w.getProjectRepositoryId()))
                 .map(w -> repositorySummary(w, worktreeData.bindingById.get(w.getProjectRepositoryId()),
                         worktreeData.repoById.get(bindingRepositoryId(worktreeData, w.getProjectRepositoryId()))))
                 .toList();
@@ -561,13 +577,37 @@ public class TaskDisplayService {
                 worktree == null ? null : worktree.getHeadCommit());
     }
 
-    private WorkspaceSummary workspaceSummary(TaskEntity task, WorktreeData data) {
+    private WorkspaceSummary workspaceSummary(TaskEntity task, WorktreeData data, Set<UUID> activeRepositoryIds) {
         WorkspaceEntity workspace = workspaces.selectById(task.getWorkspaceId());
         List<RepositorySummary> repos = data.worktrees.stream()
+                .filter(w -> activeRepositoryIds.contains(w.getProjectRepositoryId()))
                 .map(w -> repositorySummary(w, data.bindingById.get(w.getProjectRepositoryId()),
                         data.repoById.get(bindingRepositoryId(data, w.getProjectRepositoryId()))))
                 .toList();
         return new WorkspaceSummary(id(task.getWorkspaceId()), workspace == null ? null : workspace.getStatus(), repos);
+    }
+
+    /**
+     * Planner 尚未物化开发步骤时返回空集合；物化完成后只暴露真正拥有 WRITE 权限的
+     * DEVELOPER 步骤仓库。TESTER/REVIEWER 的 READ 范围是执行上下文，不代表任务要修改
+     * 该仓库，不能把它们展示为任务目标仓库。
+     */
+    private Set<UUID> activeRepositoryIds(List<TaskStepEntity> stepList) {
+        if (stepList == null || stepList.isEmpty()) {
+            return Set.of();
+        }
+        Map<UUID, TaskStepEntity> byId = stepList.stream()
+                .collect(Collectors.toMap(TaskStepEntity::getId, Function.identity(), (first, ignored) -> first));
+        List<UUID> stepIds = stepList.stream().map(TaskStepEntity::getId).toList();
+        return stepRepositories.selectByStepIds(stepIds).stream()
+                .filter(scope -> "WRITE".equals(scope.getAccessMode()))
+                .filter(scope -> {
+                    TaskStepEntity step = byId.get(scope.getTaskStepId());
+                    return step != null && "DEVELOPER".equals(step.getRole());
+                })
+                .map(TaskStepRepositoryEntity::getProjectRepositoryId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     private ArtifactSummary artifactSummary(UUID taskId) {

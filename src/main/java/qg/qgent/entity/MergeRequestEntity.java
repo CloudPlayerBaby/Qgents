@@ -70,6 +70,9 @@ public class MergeRequestEntity {
     private String qualityGateStatus;
     private String mergeOperationId;
     private String mergeOperationStatus;
+    /** 最近一次异步合并失败的稳定错误码与用户可读原因。 */
+    private String mergeOperationFailureCode;
+    private String mergeOperationFailureReason;
     private LocalDateTime mergeLeaseExpiresAt;
     /**
      * GitHub 侧更新时间（UTC）。
