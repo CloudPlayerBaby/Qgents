@@ -127,6 +127,14 @@ public class RestGitHubAppClient implements GitHubAppClient {
                 throw upstreamFailure();
             }
             return new GitHubInstallationDetails(response.id(), response.account().login(), response.account().type());
+        } catch (RestClientResponseException exception) {
+            log.warn("GitHub installation lookup rejected: installationId={} status={} body={}",
+                    installationId, exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            if (exception.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "GITHUB_INSTALLATION_NOT_FOUND",
+                        "GitHub App Installation 不存在或已被删除");
+            }
+            throw upstreamFailure();
         } catch (RestClientException exception) {
             throw upstreamFailure();
         }
@@ -167,6 +175,10 @@ public class RestGitHubAppClient implements GitHubAppClient {
         } catch (RestClientResponseException exception) {
             log.warn("GitHub installation token request rejected: status={}, body={}",
                     exception.getStatusCode().value(), exception.getResponseBodyAsString());
+            if (exception.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "GITHUB_INSTALLATION_NOT_FOUND",
+                        "GitHub App Installation 不存在或已被删除");
+            }
             throw upstreamFailure();
         } catch (RestClientException exception) {
             log.warn("GitHub installation token request failed before receiving a response: {}",

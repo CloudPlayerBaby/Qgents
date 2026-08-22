@@ -40,6 +40,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.BindProjectRepositoryRequest;
 import qg.qgent.dto.CreateRemoteBranchRequest;
+import qg.qgent.dto.GitHubInstallationResponse;
 import qg.qgent.dto.NewProjectRepositoryRequest;
 import qg.qgent.dto.ProjectRepositoryResponse;
 import qg.qgent.dto.RemoteBranchResponse;
@@ -424,7 +425,6 @@ class GitHubRepositoryServiceTest {
         existingInstallation.setProviderInstallationId(providerInstallationId);
         existingInstallation.setStatus("DELETED");
         when(installationMapper.selectByProviderInstallationIdForUpdate(anyLong())).thenReturn(existingInstallation);
-        when(repositoryMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
 
         UUID returnedTeamId = service.handleInstallationCallback(providerInstallationId, "mock_state");
 
@@ -484,6 +484,39 @@ class GitHubRepositoryServiceTest {
                 .filter(r -> "REVOKED".equals(r.getAuthorizationStatus()))
                 .findFirst().orElseThrow();
         assertEquals(repo2.getId(), revokedRepo.getId());
+    }
+
+    @Test
+    void manualSyncMarksInstallationDeletedWhenGitHubReturnsNotFound() {
+        UUID teamId = UUID.randomUUID();
+        UUID localInstallationId = UUID.randomUUID();
+        long providerInstallationId = 98765L;
+        when(teamMemberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        GitHubInstallationEntity installation = new GitHubInstallationEntity();
+        installation.setId(localInstallationId);
+        installation.setTeamId(teamId);
+        installation.setProviderInstallationId(providerInstallationId);
+        installation.setStatus("ACTIVE");
+        when(installationMapper.selectOne(any(Wrapper.class))).thenReturn(installation);
+        when(installationMapper.selectByProviderInstallationIdForUpdate(providerInstallationId))
+                .thenReturn(installation);
+
+        GitHubRepositoryEntity repository = repository("main");
+        repository.setId(UUID.randomUUID());
+        repository.setInstallationId(localInstallationId);
+        repository.setAuthorizationStatus("AUTHORIZED");
+        when(repositoryMapper.selectList(any(Wrapper.class))).thenReturn(List.of(repository));
+        when(gitHubClient.getInstallation(providerInstallationId))
+                .thenThrow(new ApiException(HttpStatus.NOT_FOUND, "GITHUB_INSTALLATION_NOT_FOUND", "missing"));
+
+        GitHubInstallationResponse response = service.manualSyncInstallation(actorId, teamId, localInstallationId);
+
+        assertEquals("DELETED", response.getStatus());
+        assertEquals("DELETED", installation.getStatus());
+        assertEquals("REVOKED", repository.getAuthorizationStatus());
+        verify(installationMapper).updateById(installation);
+        verify(repositoryMapper).updateById(repository);
     }
 
     @Test
