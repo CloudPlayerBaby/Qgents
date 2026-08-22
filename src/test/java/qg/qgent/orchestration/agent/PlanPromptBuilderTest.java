@@ -52,6 +52,14 @@ class PlanPromptBuilderTest {
     }
 
     @Test
+    void delegatesPureReviewManualAcceptanceToIndependentReviewer() {
+        assertThat(new PlanPromptBuilder().buildPlanSystem())
+                .contains("全部 VERIFY 的任务")
+                .contains("独立 REVIEW 步骤完成")
+                .contains("绝不要求 Developer 产出检查报告");
+    }
+
+    @Test
     void appendsCustomAgentOverlayWhenPresentAndKeepsDeterministicGates() {
         String base = new PlanPromptBuilder().buildPlanSystem();
         String overlaid = new PlanPromptBuilder().buildPlanSystem("优先考虑团队约定的模块边界");
