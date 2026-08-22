@@ -71,6 +71,14 @@ class WorkerExceptionHandlerTest {
                 .andExpect(jsonPath("$.message").exists());
     }
 
+    @Test
+    void unexpectedExceptionReturnsUnifiedInternalError() throws Exception {
+        mockMvc.perform(get("/throws"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("WORKER_INTERNAL_ERROR"))
+                .andExpect(jsonPath("$.message").value("Worker 内部错误"));
+    }
+
     @RestController
     static class ProbeController {
         @PostMapping("/probe")
@@ -81,6 +89,11 @@ class WorkerExceptionHandlerTest {
         @PostMapping("/validated-probe")
         Map<String, Object> validatedProbe(@Valid @RequestBody ValidatedBody body) {
             return Map.of("value", body.value());
+        }
+
+        @org.springframework.web.bind.annotation.GetMapping("/throws")
+        Map<String, Object> throwsUnexpectedException() {
+            throw new IllegalStateException("internal detail must stay server-side");
         }
     }
 
