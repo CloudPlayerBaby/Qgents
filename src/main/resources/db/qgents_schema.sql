@@ -1074,6 +1074,8 @@ CREATE TABLE IF NOT EXISTS mr_preflight_requests (
     status VARCHAR(32) NOT NULL COMMENT '状态：REQUESTED/DRY_RUN_QUEUED/DRY_RUN_RUNNING/WAITING_CQ/CQ_REJECTED/CREATING_MR/MR_CREATED/FAILED/STALE',
     requested_by BINARY(16) NOT NULL COMMENT '发起用户ID（MR_FIRST 为Task创建人）',
     idempotency_key VARCHAR(128) NULL COMMENT '客户端幂等键，同一键返回同一预检',
+    mr_creation_attempt_count INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '真实 MR 创建尝试次数',
+    mr_creation_next_attempt_at DATETIME(6) NULL COMMENT '真实 MR 创建租约/下次重试时间',
     failure_code VARCHAR(128) NULL COMMENT '稳定失败分类码',
     failure_reason VARCHAR(1000) NULL COMMENT '用户可读失败原因',
     merge_request_id BINARY(16) NULL COMMENT '最终真实MR镜像ID',

@@ -30,6 +30,10 @@ public class MrPreflightRequestEntity {
     private String status;
     private UUID requestedBy;
     private String idempotencyKey;
+    /** MR 创建外部调用的持久化尝试次数，服务重启后不归零。 */
+    private Integer mrCreationAttemptCount;
+    /** 下次允许抢占 MR 创建的时间；同时作为短暂的创建租约，避免并发重复调用 GitHub。 */
+    private LocalDateTime mrCreationNextAttemptAt;
     private String failureCode;
     private String failureReason;
     private UUID mergeRequestId;

@@ -50,6 +50,8 @@ import java.util.HexFormat;
 @Service
 @Slf4j
 public class MrPreflightService {
+    /** 外部 MR 创建失败后最多自动尝试次数；次数持久化，进程重启不会重置。 */
+    public static final int MAX_MR_CREATION_ATTEMPTS = 5;
     /** 预检进行中即视为分支锁定；终态（MR_CREATED/CQ_REJECTED/FAILED/STALE）自动解锁。 */
     private static final java.util.Set<String> PREFLIGHT_LOCKED_STATUSES = java.util.Set.of(
             "REQUESTED", "DRY_RUN_QUEUED", "DRY_RUN_RUNNING", "WAITING_CQ", "CREATING_MR");
@@ -259,6 +261,8 @@ public class MrPreflightService {
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
         request.setDryRunId(UUID.fromString(dryRun.getId()));
         request.setStatus("DRY_RUN_QUEUED");
+        request.setMrCreationAttemptCount(0);
+        request.setMrCreationNextAttemptAt(null);
         request.setFailureCode(null);
         request.setFailureReason(null);
         request.setTargetCommit(dryRun.getTargetCommit() == null ? request.getTargetCommit() : dryRun.getTargetCommit());
@@ -302,7 +306,10 @@ public class MrPreflightService {
                 PreflightCqReviewEntity cq = latestCq(dryRun.getId(), request.getHeadCommit(),
                         request.getTargetCommit(), request.getRequestedBy());
                 if (cq != null && "APPROVED".equals(cq.getDecision())) {
-                    updateStatus(request, "CREATING_MR", null, null);
+                    // 创建失败后的 CREATING_MR 需要保留最近一次错误，不能被恢复轮询清空。
+                    if (!"CREATING_MR".equals(request.getStatus())) {
+                        updateStatus(request, "CREATING_MR", null, null);
+                    }
                 } else if (cq != null && "REJECTED".equals(cq.getDecision())) {
                     updateStatus(request, "CQ_REJECTED", null, null);
                 } else {
@@ -332,21 +339,52 @@ public class MrPreflightService {
         if (mergeRequestId == null) {
             return;
         }
-        MrPreflightRequestEntity request = preflightRequests.selectOne(Wrappers.<MrPreflightRequestEntity>query()
-                .eq("project_id", projectId)
-                .eq("dry_run_id", dryRunId)
-                .last("LIMIT 1"));
-        if (request == null) {
+        if (preflightRequests.markMrCreated(projectId, dryRunId, mergeRequestId) == 0) {
             return;
         }
-        if (mergeRequestId.equals(request.getMergeRequestId())) {
-            return;
+        publishPreflightUpdated(preflightRequests.selectOne(Wrappers.<MrPreflightRequestEntity>query()
+                .eq("project_id", projectId).eq("dry_run_id", dryRunId).last("LIMIT 1")));
+    }
+
+    /**
+     * 抢占一次真实 MR 创建调用。数据库条件更新保证事件监听器和恢复调度器不会同时调用 GitHub。
+     */
+    public boolean claimMrCreationAttempt(UUID projectId, UUID dryRunId, LocalDateTime now,
+                                          LocalDateTime leaseUntil) {
+        int updated = preflightRequests.claimMrCreationAttempt(projectId, dryRunId, now, leaseUntil,
+                MAX_MR_CREATION_ATTEMPTS);
+        if (updated == 0) {
+            return false;
         }
-        request.setMergeRequestId(mergeRequestId);
-        request.setStatus("MR_CREATED");
-        request.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
-        preflightRequests.updateById(request);
-        publishPreflightUpdated(request);
+        publishPreflightUpdated(preflightRequests.selectOne(Wrappers.<MrPreflightRequestEntity>query()
+                .eq("project_id", projectId).eq("dry_run_id", dryRunId).last("LIMIT 1")));
+        return true;
+    }
+
+    /** 记录 MR 创建失败；达到上限后进入 FAILED，避免移动端永久显示 CREATING_MR。 */
+    public void markMrCreationFailure(UUID projectId, UUID dryRunId, String failureCode,
+                                      String failureReason, LocalDateTime nextAttemptAt) {
+        MrPreflightRequestEntity[] changed = new MrPreflightRequestEntity[1];
+        transactions.executeWithoutResult(ignored -> {
+            MrPreflightRequestEntity request = preflightRequests.selectByProjectAndDryRunForUpdate(projectId, dryRunId);
+            if (request == null || request.getMergeRequestId() != null) {
+                return;
+            }
+            int attempts = request.getMrCreationAttemptCount() == null ? 0 : request.getMrCreationAttemptCount();
+            request.setFailureCode(failureCode);
+            request.setFailureReason(failureReason);
+            if (attempts >= MAX_MR_CREATION_ATTEMPTS) {
+                request.setStatus("FAILED");
+                request.setMrCreationNextAttemptAt(null);
+            } else {
+                request.setStatus("CREATING_MR");
+                request.setMrCreationNextAttemptAt(nextAttemptAt);
+            }
+            request.setUpdatedAt(LocalDateTime.now(ZoneOffset.UTC));
+            preflightRequests.updateById(request);
+            changed[0] = request;
+        });
+        publishPreflightUpdated(changed[0]);
     }
 
     private void ensureDryRun(UUID projectId, TaskEntity task, WorkspaceRepositoryEntity worktree,
@@ -440,6 +478,10 @@ public class MrPreflightService {
     private String deriveStatus(MrPreflightRequestEntity request) {
         if (request.getMergeRequestId() != null) {
             return "MR_CREATED";
+        }
+        // FAILED 是持久化终态，不能被“Dry Run PASSED + CQ APPROVED”重新推导成 CREATING_MR。
+        if ("FAILED".equals(request.getStatus()) || "STALE".equals(request.getStatus())) {
+            return request.getStatus();
         }
         if (request.getDryRunId() == null) {
             return "REQUESTED";

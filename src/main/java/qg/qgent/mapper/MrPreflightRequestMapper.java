@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 import qg.qgent.entity.MrPreflightRequestEntity;
 
 import java.util.List;
@@ -11,6 +12,37 @@ import java.util.UUID;
 
 @Mapper
 public interface MrPreflightRequestMapper extends BaseMapper<MrPreflightRequestEntity> {
+    @Select("select * from mr_preflight_requests where project_id=#{projectId} and dry_run_id=#{dryRunId} "
+            + "order by created_at desc limit 1 for update")
+    MrPreflightRequestEntity selectByProjectAndDryRunForUpdate(@Param("projectId") UUID projectId,
+                                                               @Param("dryRunId") UUID dryRunId);
+
+    /** 成功创建后仅允许第一个回调把预检申请推进到 MR_CREATED。 */
+    @Update("update mr_preflight_requests set merge_request_id=#{mergeRequestId}, status='MR_CREATED', "
+            + "failure_code=null, failure_reason=null, mr_creation_next_attempt_at=null, "
+            + "updated_at=UTC_TIMESTAMP(6) where project_id=#{projectId} and dry_run_id=#{dryRunId} "
+            + "and merge_request_id is null and status in ('CREATING_MR','FAILED')")
+    int markMrCreated(@Param("projectId") UUID projectId,
+                      @Param("dryRunId") UUID dryRunId,
+                      @Param("mergeRequestId") UUID mergeRequestId);
+
+    /**
+     * 为一次真实 MR 创建调用抢占持久化租约。
+     * 只有到达重试时间、尚未创建 MR 且未超过上限的申请才能成功抢占。
+     */
+    @Update("update mr_preflight_requests set status='CREATING_MR', "
+            + "mr_creation_attempt_count=coalesce(mr_creation_attempt_count,0)+1, "
+            + "mr_creation_next_attempt_at=#{leaseUntil}, updated_at=UTC_TIMESTAMP(6) "
+            + "where project_id=#{projectId} and dry_run_id=#{dryRunId} "
+            + "and merge_request_id is null and status in ('WAITING_CQ','CREATING_MR') "
+            + "and coalesce(mr_creation_attempt_count,0) < #{maxAttempts} "
+            + "and (mr_creation_next_attempt_at is null or mr_creation_next_attempt_at <= #{now})")
+    int claimMrCreationAttempt(@Param("projectId") UUID projectId,
+                               @Param("dryRunId") UUID dryRunId,
+                               @Param("now") java.time.LocalDateTime now,
+                               @Param("leaseUntil") java.time.LocalDateTime leaseUntil,
+                               @Param("maxAttempts") int maxAttempts);
+
     @Select("select * from mr_preflight_requests where id=#{id} for update")
     MrPreflightRequestEntity selectByIdForUpdate(@Param("id") UUID id);
 

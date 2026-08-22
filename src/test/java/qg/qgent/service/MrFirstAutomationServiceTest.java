@@ -81,6 +81,8 @@ class MrFirstAutomationServiceTest {
         when(repositories.selectById(repositoryId)).thenReturn(new ProjectRepositoryEntity());
         when(preflightGates.get(projectId, taskId, repositoryId, "develop", creator))
                 .thenReturn(new PreflightGateResponse(null, null, null, null, null, "PASSED", List.of(), null, null));
+        when(preflightService.claimMrCreationAttempt(eq(projectId), eq(dryRunId), any(), any()))
+                .thenReturn(true);
 
         service.onCqApproved(new PreflightCqApprovedDomainEvent(projectId, dryRunId));
 
@@ -115,6 +117,8 @@ class MrFirstAutomationServiceTest {
                 .thenReturn(new PreflightGateResponse(null, null, null, null, null, "PASSED", List.of(), null, null));
         when(preflightGates.get(projectId, taskId, waitingRepositoryId, "main", creator))
                 .thenReturn(new PreflightGateResponse(null, null, null, null, null, "WAITING_CQ", List.of(), null, null));
+        when(preflightService.claimMrCreationAttempt(eq(projectId), eq(dryRunId), any(), any()))
+                .thenReturn(true);
 
         service.onCqApproved(new PreflightCqApprovedDomainEvent(projectId, dryRunId));
 

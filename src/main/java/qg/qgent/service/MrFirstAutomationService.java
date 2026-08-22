@@ -28,6 +28,8 @@ import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 import java.util.List;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.UUID;
@@ -45,6 +47,7 @@ import java.util.UUID;
 public class MrFirstAutomationService {
     private static final Duration INITIAL_RETRY_DELAY = Duration.ofSeconds(5);
     private static final Duration MAX_RETRY_DELAY = Duration.ofMinutes(1);
+    private static final Duration MR_CREATION_CLAIM_LEASE = Duration.ofMinutes(2);
 
     private final TaskMapper tasks;
     private final WorkspaceRepositoryMapper worktrees;
@@ -110,6 +113,11 @@ public class MrFirstAutomationService {
         for (MrPreflightRequestEntity request : recoverable) {
             try {
                 preflightService.reconcile(request);
+                // reconcile 只负责根据 Dry Run/CQ 事实推进状态；达到 CREATING_MR 后必须
+                // 在同一恢复轮次显式触发幂等 MR 创建，避免事件丢失后永久停留在中间态。
+                if ("CREATING_MR".equals(request.getStatus()) && request.getDryRunId() != null) {
+                    createMergeRequest(request.getProjectId(), request.getDryRunId());
+                }
             } catch (RuntimeException failure) {
                 log.warn("preflight reconcile failed projectId={} preflightId={}: {}",
                         request.getProjectId(), request.getId(), failure.getMessage());
@@ -241,6 +249,11 @@ public class MrFirstAutomationService {
         } catch (RuntimeException ignored) {
             return;
         }
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        if (!preflightService.claimMrCreationAttempt(projectId, dryRunId, now,
+                now.plus(MR_CREATION_CLAIM_LEASE))) {
+            return;
+        }
         MergeRequestCreateRequest request = new MergeRequestCreateRequest();
         request.setTaskId(task.getId());
         request.setRepositoryId(dryRun.getProjectRepositoryId());
@@ -248,12 +261,32 @@ public class MrFirstAutomationService {
         request.setTitle(task.getTitle() == null || task.getTitle().isBlank() ? "Qgents Task " + task.getId() : task.getTitle());
         try {
             MergeRequestSummaryResponse summary = mrService.create(projectId, task.getCreatedBy(), request);
+            if (summary == null || summary.getId() == null || summary.getId().isBlank()) {
+                throw new IllegalStateException("MR 创建接口未返回 MR ID");
+            }
             markPreflightMrCreated(projectId, dryRunId, summary == null ? null : summary.getId());
             log.info("merge request ensured projectId={} taskId={} dryRunId={} repositoryId={} mrId={}",
                     projectId, task.getId(), dryRunId, dryRun.getProjectRepositoryId(),
                     summary == null ? null : summary.getId());
         } catch (RuntimeException failure) {
-            // MR 创建本身已有 operation lease 和幂等键；这里保留预检状态，补偿任务可重试。
+            int attempts = 1;
+            MrPreflightRequestEntity current = preflightRequests.selectOne(Wrappers.<MrPreflightRequestEntity>query()
+                    .eq("project_id", projectId).eq("dry_run_id", dryRunId).last("LIMIT 1"));
+            if (current != null && current.getMrCreationAttemptCount() != null) {
+                attempts = current.getMrCreationAttemptCount();
+            }
+            String failureCode = failure instanceof ApiException api && api.code() != null
+                    ? api.code() : "MR_CREATION_FAILED";
+            String failureReason = ExecutionContentSanitizer.sanitizeDiagnosticDetail(failure.getMessage());
+            if (failureReason == null || failureReason.isBlank()) {
+                failureReason = "真实 MR 创建失败";
+            }
+            Duration delay = INITIAL_RETRY_DELAY.multipliedBy(1L << Math.min(Math.max(attempts - 1, 0), 5));
+            if (delay.compareTo(MAX_RETRY_DELAY) > 0) delay = MAX_RETRY_DELAY;
+            preflightService.markMrCreationFailure(projectId, dryRunId, failureCode,
+                    attempts >= MrPreflightService.MAX_MR_CREATION_ATTEMPTS
+                            ? "MR 创建失败，已达到自动重试上限：" + failureReason : failureReason,
+                    LocalDateTime.now(ZoneOffset.UTC).plus(delay));
             log.warn("merge request creation deferred projectId={} taskId={} dryRunId={}: {}",
                     projectId, task.getId(), dryRunId, failure.getMessage());
         }
