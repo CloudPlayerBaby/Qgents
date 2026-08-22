@@ -62,8 +62,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         String path = request.getRequestURI();
 
         // GitHub Installations: POST, DELETE, POST /sync
-        boolean isGitHubInstallApi = path
-                .matches("^/api/v1/teams/[^/]+/integrations/github/installations(?:/[^/]+(?:/sync)?)?$");
+        boolean isGitHubInstallApi = path.matches("^/api/v1/teams/[^/]+/integrations/github/installations(?:/[^/]+(?:/sync)?)?$");
         boolean isGitHubOAuthWriteApi = path.matches("^/api/v1/me/integrations/github/oauth(?:/start)?$");
 
         // 项目下的所有写接口都可能被移动端、SSE 刷新后的前端重试或网络层重放。
@@ -170,7 +169,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
     }
 
     private void writeError(HttpServletRequest request, HttpServletResponse response, int status, String code,
-            String message) throws IOException {
+                            String message) throws IOException {
         response.setStatus(status);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);

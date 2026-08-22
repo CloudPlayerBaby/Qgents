@@ -3,6 +3,7 @@ package qg.qgent.service;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import qg.qgent.api.ApiException;
+import qg.qgent.auth.TokenService;
 import qg.qgent.dto.AttachmentPreviewUrlResponse;
 import qg.qgent.entity.AttachmentEntity;
 import qg.qgent.mapper.AttachmentMapper;
@@ -27,17 +28,18 @@ import static org.mockito.Mockito.when;
 /**
  * 附件内联预览服务单测：previewUrl / previewContent / previewType 分类 / 鉴权与状态拒绝。
  * <p>
- * 使用 Mockito 隔离 Mapper/存储/项目访问；预览地址不得包含认证凭证。
+ * 使用真实 TokenService（测试密钥签发短期 access token）与 Mockito 隔离 Mapper/存储/项目访问。
  */
 class AttachmentServiceTest {
 
     private final AttachmentMapper mapper = mock(AttachmentMapper.class);
     private final AttachmentStorageStrategy storage = mock(AttachmentStorageStrategy.class);
     private final ProjectAccessService access = mock(ProjectAccessService.class);
-    private final AttachmentService service = new AttachmentService(mapper, storage, access, 52428800, 900);
+    private final TokenService tokens = new TokenService("01234567890123456789012345678901", 15, 30, 30);
+    private final AttachmentService service = new AttachmentService(mapper, storage, access, tokens, 52428800, 900);
 
     @Test
-    void previewUrlReturnsCanonicalCookieProtectedUrlAndMetadata() {
+    void previewUrlReturnsSignedTokenUrlAndMetadata() {
         UUID projectId = UUID.randomUUID();
         UUID actor = UUID.randomUUID();
         UUID attachmentId = UUID.randomUUID();
@@ -53,9 +55,11 @@ class AttachmentServiceTest {
         assertThat(r.getPreviewType()).isEqualTo("IMAGE");
         assertThat(r.isPreviewable()).isTrue();
         assertThat(r.getDownloadUrl()).isEqualTo("https://oss.example/photo.png");
-        assertThat(r.getPreviewUrl()).isEqualTo("/api/v1/projects/" + projectId + "/attachments/" + attachmentId
-                + "/preview");
-        assertThat(r.getExpiresAt()).isNull();
+        assertThat(r.getPreviewUrl()).startsWith("/api/v1/projects/" + projectId + "/attachments/" + attachmentId
+                + "/preview?token=");
+        String token = r.getPreviewUrl().substring(r.getPreviewUrl().indexOf("token=") + "token=".length());
+        assertThat(tokens.verifyAccess(token)).isEqualTo(actor);
+        assertThat(r.getExpiresAt()).isNotNull();
     }
 
     @Test
@@ -69,7 +73,7 @@ class AttachmentServiceTest {
         AttachmentPreviewUrlResponse r = service.previewUrl(actor, projectId, attachmentId);
 
         assertThat(r.getDownloadUrl()).isNull();
-        assertThat(r.getPreviewUrl()).doesNotContain("?");
+        assertThat(r.getPreviewUrl()).contains("?token=");
     }
 
     @Test
@@ -225,7 +229,7 @@ class AttachmentServiceTest {
 
     @Test
     void uploadBytesRejectsExceedingMaxSize() {
-        AttachmentService small = new AttachmentService(mapper, storage, access, 10, 900);
+        AttachmentService small = new AttachmentService(mapper, storage, access, tokens, 10, 900);
         UUID projectId = UUID.randomUUID();
         UUID attachmentId = UUID.randomUUID();
         byte[] oversized = "more-than-ten-bytes".getBytes(StandardCharsets.UTF_8);

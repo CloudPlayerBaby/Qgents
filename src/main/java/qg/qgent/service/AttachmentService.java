@@ -5,6 +5,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import qg.qgent.api.ApiException;
+import qg.qgent.auth.TokenService;
 import qg.qgent.auth.UuidV7;
 import qg.qgent.dto.*;
 import qg.qgent.entity.AttachmentEntity;
@@ -32,16 +33,18 @@ public class AttachmentService {
     private final AttachmentMapper attachmentMapper;
     private final AttachmentStorageStrategy storage;
     private final ProjectAccessService access;
+    private final TokenService tokens;
     private final long maxSizeBytes;
     private final long downloadExpirySeconds;
 
     public AttachmentService(AttachmentMapper attachmentMapper, AttachmentStorageStrategy storage,
-                             ProjectAccessService access,
+                             ProjectAccessService access, TokenService tokens,
                              @Value("${app.attachment-max-size-bytes:52428800}") long maxSizeBytes,
                              @Value("${app.attachment-download-expiry-seconds:900}") long downloadExpirySeconds) {
         this.attachmentMapper = attachmentMapper;
         this.storage = storage;
         this.access = access;
+        this.tokens = tokens;
         this.maxSizeBytes = maxSizeBytes;
         this.downloadExpirySeconds = downloadExpirySeconds;
     }
@@ -211,8 +214,9 @@ public class AttachmentService {
     /**
      * 为已上传附件签发内联预览元数据与短期签名预览地址（契约 §4）。
      * <p>
-     * 校验项目成员资格、附件归属与 READY 后，返回不含凭证的预览地址；浏览器通过同站 HttpOnly Cookie
-     * 建立认证。下载地址不可用（本地存储回退）时 downloadUrl 为 null，前端可用 previewUrl 完成下载。
+     * 校验项目成员资格、附件归属与 READY 后，签发带短期 access token 的预览地址；浏览器/系统查看器
+     * 携带该地址直接打开，无需任何请求头。下载地址不可用（本地存储回退）时 downloadUrl 为 null，
+     * 前端可用 previewUrl 完成下载。token 只进 URL，不得写入日志、异常或 SSE 事件。
      *
      * @param actor        当前用户 ID
      * @param projectId    项目 ID
@@ -232,10 +236,13 @@ public class AttachmentService {
         } catch (UnsupportedOperationException e) {
             // 本地存储回退：不签发下载地址；previewUrl 仍可用（preview 对不支持的内容读取返回 501）
         }
-        String previewUrl = "/api/v1/projects/" + projectId + "/attachments/" + attachmentId + "/preview";
+        String accessToken = tokens.access(actor);
+        String previewUrl = "/api/v1/projects/" + projectId + "/attachments/" + attachmentId
+                + "/preview?token=" + accessToken;
+        LocalDateTime expiresAt = LocalDateTime.now(ZoneOffset.UTC).plusSeconds(tokens.accessSeconds());
         return new AttachmentPreviewUrlResponse(attachment.getId().toString(), attachment.getFileName(),
                 attachment.getMediaType(), attachment.getSizeBytes(),
-                !"UNSUPPORTED".equals(previewType), previewType, previewUrl, downloadUrl, null);
+                !"UNSUPPORTED".equals(previewType), previewType, previewUrl, downloadUrl, expiresAt);
     }
 
     /**

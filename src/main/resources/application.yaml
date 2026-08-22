@@ -148,11 +148,6 @@ app:
   jwt-secret: ${JWT_SECRET}
   access-token-minutes: ${ACCESS_TOKEN_MINUTES:15}
   refresh-token-days: ${REFRESH_TOKEN_DAYS:30}
-  auth:
-    # 生产必须为 true；仅 local profile 可显式关闭，以便 HTTP 本地联调。
-    cookie-secure: ${AUTH_COOKIE_SECURE:true}
-    # 迁移期保留 JSON Token 与 Bearer 输入；观测归零后设为 false 进入 Cookie-only 阶段。
-    legacy-token-compatibility: ${AUTH_LEGACY_TOKEN_COMPATIBILITY:true}
   reset-token-minutes: ${RESET_TOKEN_MINUTES:30}
   # 附件直传凭证：对象存储未接入前默认返回本地签名 URL，接入后由对应策略替换
   attachment-upload-base: ${ATTACHMENT_UPLOAD_BASE:/api/v1/internal/attachments}

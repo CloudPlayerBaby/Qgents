@@ -6,14 +6,11 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
-import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import qg.qgent.api.RequestIdFilter;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -22,25 +19,12 @@ import java.util.Map;
 
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
-    public static final String AUTH_SOURCE_ATTRIBUTE = JwtAuthenticationFilter.class.getName() + ".source";
     private final TokenService tokens;
     private final ObjectMapper mapper;
-    private final AuthCookieService cookies;
-    private final boolean legacyTokenCompatibility;
-    private final Counter cookieAuthenticationCounter;
-    private final Counter bearerAuthenticationCounter;
 
-    public JwtAuthenticationFilter(TokenService tokens, ObjectMapper mapper, AuthCookieService cookies,
-                                   MeterRegistry meterRegistry,
-                                   @org.springframework.beans.factory.annotation.Value("${app.auth.legacy-token-compatibility:true}") boolean legacyTokenCompatibility) {
+    public JwtAuthenticationFilter(TokenService tokens, ObjectMapper mapper) {
         this.tokens = tokens;
         this.mapper = mapper;
-        this.cookies = cookies;
-        this.legacyTokenCompatibility = legacyTokenCompatibility;
-        this.cookieAuthenticationCounter = Counter.builder("qgents.authentication.requests")
-                .tag("source", "cookie").register(meterRegistry);
-        this.bearerAuthenticationCounter = Counter.builder("qgents.authentication.requests")
-                .tag("source", "bearer").register(meterRegistry);
     }
 
     @Override
@@ -61,39 +45,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
             throws ServletException, IOException {
-        String cookieToken = cookies.accessToken(req);
-        String header = req.getHeader(HttpHeaders.AUTHORIZATION);
-        String token = cookieToken != null ? cookieToken : legacyTokenCompatibility ? bearerToken(header) : null;
-        if (token != null) {
-            var userId = tokens.verifyAccess(token);
+        // 尝试获取响应头
+        String header = req.getHeader("Authorization");
+        if (header != null && header.startsWith("Bearer ")) {
+            var userId = tokens.verifyAccess(header.substring(7));
             if (userId == null) {
-                if (isPublicAuthRoute(req)) {
-                    chain.doFilter(req, res);
-                    return;
-                }
                 unauthorized(req, res);
                 return;
             }
             SecurityContextHolder.getContext()
                     .setAuthentication(new UsernamePasswordAuthenticationToken(userId, null, List.of()));
-            if (cookieToken != null) {
-                req.setAttribute(AUTH_SOURCE_ATTRIBUTE, "cookie");
-                cookieAuthenticationCounter.increment();
-            } else {
-                req.setAttribute(AUTH_SOURCE_ATTRIBUTE, "bearer");
-                bearerAuthenticationCounter.increment();
-            }
         }
         chain.doFilter(req, res);
-    }
-
-    private String bearerToken(String header) {
-        return header != null && header.startsWith("Bearer ") ? header.substring(7) : null;
-    }
-
-    private boolean isPublicAuthRoute(HttpServletRequest request) {
-        String path = request.getRequestURI();
-        return path != null && path.startsWith("/api/v1/auth/");
     }
 
     // 处理未授权的请求，返回401错误

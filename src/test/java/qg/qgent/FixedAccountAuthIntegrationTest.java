@@ -111,14 +111,6 @@ public class FixedAccountAuthIntegrationTest {
 
         HttpResponse<String> loginResponse = httpClient.send(loginRequest, HttpResponse.BodyHandlers.ofString());
         Assertions.assertEquals(200, loginResponse.statusCode(), "固定账号登录失败");
-        Assertions.assertTrue(loginResponse.headers().allValues("Set-Cookie").stream()
-                        .anyMatch(value -> value.contains("qgents_access_token=")
-                                && value.contains("HttpOnly") && value.contains("SameSite=Strict")),
-                "登录必须下发 HttpOnly access Cookie");
-        Assertions.assertTrue(loginResponse.headers().allValues("Set-Cookie").stream()
-                        .anyMatch(value -> value.contains("qgents_refresh_token=")
-                                && value.contains("Path=/api/v1/auth") && value.contains("HttpOnly")),
-                "登录必须下发 Path 受限的 refresh Cookie");
         
         JsonNode loginRoot = objectMapper.readTree(loginResponse.body());
         AuthTokensResponse loginTokens = objectMapper.treeToValue(loginRoot.get("data"), AuthTokensResponse.class);

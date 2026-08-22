@@ -10,8 +10,9 @@ import java.time.LocalDateTime;
 /**
  * 附件预览地址响应（契约 §4：附件内联预览）。
  * <p>
- * 服务端按项目成员与附件归属校验后，返回不含凭证的预览地址与预览类型；浏览器拼接 ORIGIN 后通过
- * 同站 HttpOnly Cookie 访问。`downloadUrl` 为下载语义地址；当前存储策略不支持时可为 null。
+ * 服务端按项目成员与附件归属校验后，签发短期签名预览地址与预览类型；`previewUrl` 为相对路径
+ * （带短期 access token 查询参数），客户端拼接 ORIGIN 后可直接交给 &lt;img&gt;/iframe/系统查看器使用，
+ * 无需再带任何请求头。`downloadUrl` 为下载语义地址；当前存储策略不支持时可为 null。
  */
 @Data
 @NoArgsConstructor
@@ -55,9 +56,9 @@ public class AttachmentPreviewUrlResponse {
     private String previewType;
 
     /**
-     * 不含凭证的预览地址（相对路径）。
+     * 短期签名预览地址（相对路径，带 token 查询参数）；有效期见 expiresAt。
      */
-    @Schema(description = "Cookie 鉴权预览地址（相对路径，不含凭证）")
+    @Schema(description = "短期签名预览地址（相对路径，带 token 查询参数）")
     private String previewUrl;
 
     /**
@@ -67,8 +68,8 @@ public class AttachmentPreviewUrlResponse {
     private String downloadUrl;
 
     /**
-     * 预览地址不含临时 Token，始终为 null。
+     * previewUrl 过期时间（UTC）；过期后需重新调用本接口签发。
      */
-    @Schema(description = "预览地址有效期；Cookie 鉴权模式固定为 null")
+    @Schema(description = "previewUrl 过期时间")
     private LocalDateTime expiresAt;
 }
