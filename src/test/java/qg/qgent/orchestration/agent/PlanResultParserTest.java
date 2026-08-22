@@ -40,29 +40,51 @@ class PlanResultParserTest {
         assertThat(plan.getRisks()).containsExactly("risk1");
     }
 
-    @Test void parsesExplicitVerifyExecutionMode() {
-        String json = VALID_JSON.replace("\"description\":\"do it\"", "\"description\":\"inspect existing files\",\"executionMode\":\"VERIFY\"");
+    @Test void acceptsEmptyStepsForManualPureReview() {
+        String json = """
+                {
+                  "taskUnderstanding": "review existing configuration",
+                  "implementationGoals": ["confirm contract"],
+                  "steps": [],
+                  "testPlan": "perform manual review",
+                  "verificationMode": "MANUAL"
+                }
+                """;
+
         PlanResult plan = parser.parse(json);
-        assertThat(plan.getImplementationSteps().get(0).getExecutionMode()).isEqualTo("VERIFY");
+
+        assertThat(plan.getVerificationMode()).isEqualTo("MANUAL");
+        assertThat(plan.getImplementationSteps()).isEmpty();
     }
 
-    @Test void infersVerifyModeForLegacyInspectionStep() {
-        String json = VALID_JSON.replace("\"title\":\"impl\"", "\"title\":\"验证新增文件及现有检查脚本\"")
-                .replace("\"description\":\"do it\"", "\"description\":\"检查文件内容，不修改文件\"");
-        PlanResult plan = parser.parse(json);
-        assertThat(plan.getImplementationSteps().get(0).getExecutionMode()).isEqualTo("VERIFY");
+    @Test void rejectsEmptyStepsForAutomatedVerification() {
+        String json = """
+                {
+                  "taskUnderstanding": "run checks",
+                  "implementationGoals": ["confirm build"],
+                  "steps": [],
+                  "testPlan": "run tests",
+                  "verificationMode": "AUTOMATED"
+                }
+                """;
+
+        assertThatThrownBy(() -> parser.parse(json))
+                .isInstanceOf(PlanParseException.class)
+                .hasMessageContaining("at least one MUTATE step");
     }
 
-    @Test void infersVerifyModeWhenInspectionTitleMentionsNewFileAsTarget() {
-        String json = VALID_JSON.replace("\"title\":\"impl\"", "\"title\":\"验证新增文件及现有检查脚本\"")
-                .replace(",\"description\":\"do it\"", "");
-        PlanResult plan = parser.parse(json);
-        assertThat(plan.getImplementationSteps().get(0).getExecutionMode()).isEqualTo("VERIFY");
+    @Test void rejectsVerifyExecutionModeForNewPlan() {
+        String json = VALID_JSON.replace("\"description\":\"do it\"",
+                "\"description\":\"inspect existing files\",\"executionMode\":\"VERIFY\"");
+
+        assertThatThrownBy(() -> parser.parse(json))
+                .isInstanceOf(PlanParseException.class)
+                .hasMessageContaining("executionMode must be MUTATE");
     }
 
-    @Test void keepsMutationModeForExplicitRepairAfterVerification() {
-        String json = VALID_JSON.replace("\"title\":\"impl\"", "\"title\":\"验证并修复配置文件\"")
-                .replace("\"description\":\"do it\"", "\"description\":\"检查后修复不符合项\"");
+    @Test void defaultsOmittedExecutionModeToMutate() {
+        String json = VALID_JSON.replace("\"description\":\"do it\"", "\"description\":\"inspect then update files\"");
+
         PlanResult plan = parser.parse(json);
         assertThat(plan.getImplementationSteps().get(0).getExecutionMode()).isEqualTo("MUTATE");
     }

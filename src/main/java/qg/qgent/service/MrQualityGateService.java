@@ -105,10 +105,10 @@ public class MrQualityGateService {
         if (task == null || notifications == null) {
             return;
         }
-        notifications.notify(task.getCreatedBy(), task.getProjectId(), task.getRequirementGroupId(),
-                "MR_PENDING", "MR 待审查：" + mr.getTitle(),
+        notifications.notifyMrStatus(task.getCreatedBy(), task.getProjectId(), task.getRequirementGroupId(),
+                "MR 待审查：" + mr.getTitle(),
                 "任务「" + task.getTitle() + "」的 PR 已创建，请查看质量门禁并完成审查",
-                mr.getId().toString());
+                mr.getId().toString(), mr.getStatus());
     }
 
     /**

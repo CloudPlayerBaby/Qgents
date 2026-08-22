@@ -37,7 +37,7 @@ import java.util.UUID;
  *   <li>检测不到受支持构建工具时，纯文件任务走只读文件断言；</li>
  *   <li>ExecutionPort 返回 ok=false（Sandbox 未就绪等）→ FAILED_INFRASTRUCTURE 同相位重试；</li>
  *   <li><b>Test 不判定任务是否失败</b>：一切测试执行失败（代码缺陷/环境/超时/未检测到命令/文件断言/
- *       缺人工验收报告）统一 {@link RunOutcome#TEST_FAILED} 携带完整失败信息转交 Review 裁决——
+ *       缺自动化测试入口）统一 {@link RunOutcome#TEST_FAILED} 携带完整失败信息转交 Review 裁决——
  *       Review 独立审查代码逻辑，仅 BLOCKER/MAJOR 判失败并打回 Coding，否则放行；</li>
  *   <li>{@link TestFailureClassifier} 只在 LLM 分析前为环境类失败打上 environmentFailureCode 元数据
  *       （决定能否打回 Coding 与终态标注），不再决定失败路由；</li>
@@ -403,30 +403,20 @@ public class TestAgent implements Agent {
     }
 
     /**
-     * Pure review tasks have no build command by design. Their evidence is the
-     * structured Developer report, not a fabricated shell test.
+     * 纯审查任务没有构建命令和 Coding 产物是正常状态。Test 阶段不伪造 shell 测试，也不要求
+     * Developer 检查报告；实际人工验收由后续独立 Review 依据任务、代码现状和 Diff 完成。
      */
     private AgentRunOutcome manualVerification(AgentInput input) {
         TestResult test = new TestResult();
-        boolean hasReport = input.getCodingResult() != null
-                && input.getCodingResult().getSummary() != null
-                && !input.getCodingResult().getSummary().isBlank();
         test.setVerificationMode("MANUAL");
-        test.setSuccess(hasReport);
-        test.setExitCode(hasReport ? 0 : -1);
-        test.setSummary(hasReport
-                ? "纯审查任务已按测试计划完成人工验收"
-                : "纯审查任务缺少 Developer 检查报告，无法完成人工验收");
-        if (!hasReport) {
-            test.setFailures(List.of(failure("missing inspection report",
-                    "Developer 未产出可供验收的检查报告", "ERROR")));
-        }
+        test.setSuccess(true);
+        test.setExitCode(0);
+        test.setSummary("纯审查任务无需自动化测试或 Developer 检查报告，已移交独立 Review 人工验收");
 
         AgentRunOutcome outcome = new AgentRunOutcome();
         outcome.setPhase(input.getPhase());
         outcome.setTestResult(test);
-        // 缺 Developer 检查报告也交 Review 裁决，Test 不自行判定任务失败。
-        outcome.setOutcome(hasReport ? RunOutcome.SUCCEEDED : RunOutcome.TEST_FAILED);
+        outcome.setOutcome(RunOutcome.SUCCEEDED);
         outcome.setMessage(test.getSummary());
         return outcome;
     }

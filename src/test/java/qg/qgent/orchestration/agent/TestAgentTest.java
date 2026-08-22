@@ -319,17 +319,20 @@ class TestAgentTest {
     }
 
     @Test
-    void manualReviewFailsWhenDeveloperReportIsMissing() {
+    void manualReviewDoesNotRequireDeveloperReportForPureReviewTask() {
         when(codeAccess.listFiles(any())).thenReturn(List.of("README.md"));
         AgentInput manualInput = input();
         manualInput.getPlanResult().setVerificationMode("MANUAL");
-        manualInput.getCodingResult().setSummary(null);
-        manualInput.getCodingResult().setModifiedFiles(List.of());
+        manualInput.setCodingResult(null);
 
         AgentRunOutcome outcome = agent().run(manualInput);
 
-        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
-        assertThat(outcome.getTestResult().getSummary()).contains("缺少 Developer");
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        assertThat(outcome.getTestResult().isSuccess()).isTrue();
+        assertThat(outcome.getTestResult().getSummary()).contains("无需自动化测试或 Developer 检查报告")
+                .contains("独立 Review");
+        verify(executionPort, never()).execute(any(), anyList(), any());
+        verify(llm, never()).complete(anyString(), anyList());
     }
 
     @Test

@@ -11,11 +11,13 @@ import org.springframework.web.client.RestClientResponseException;
 import qg.qgent.api.ApiException;
 import qg.qgent.config.PerformanceMetrics;
 import qg.qgent.orchestration.ExecutionContentSanitizer;
+import qg.qgent.orchestration.tool.Sha256;
 
 import java.net.ConnectException;
 import java.net.NoRouteToHostException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
@@ -371,8 +373,9 @@ public class SandboxWorkerClient {
     private ApiException workerError(RestClientResponseException exception) {
         String code = "SANDBOX_WORKER_ERROR";
         String message = "Sandbox Worker 返回了无法处理的错误响应";
+        String body = null;
         try {
-            String body = exception.getResponseBodyAsString();
+            body = exception.getResponseBodyAsString();
             if (body != null && !body.isBlank()) {
                 WorkerErrorResponse error = objectMapper.readValue(body, WorkerErrorResponse.class);
                 if (error != null) {
@@ -387,9 +390,16 @@ public class SandboxWorkerClient {
         } catch (Exception ignored) {
             // 错误体非预期结构时退回通用错误码与安全消息。
         }
+        log.warn("sandbox worker returned non-2xx status={} statusText={} responseBytes={} responseSha256={} code={}",
+                exception.getStatusCode().value(), exception.getStatusText(), utf8Bytes(body),
+                Sha256.hex((body == null ? "" : body).getBytes(StandardCharsets.UTF_8)), code);
         HttpStatus status = HttpStatus.resolve(exception.getStatusCode().value());
         return new ApiException(status == null ? HttpStatus.BAD_GATEWAY : status, code,
                 safeDiagnosticMessage(message));
+    }
+
+    private static int utf8Bytes(String value) {
+        return value == null ? 0 : value.getBytes(StandardCharsets.UTF_8).length;
     }
 
     static SandboxWorkerTransportException transportFailure(RestClientException exception) {

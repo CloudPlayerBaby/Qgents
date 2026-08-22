@@ -21,6 +21,7 @@ import qg.qgent.mapper.MrPreflightRequestMapper;
 import qg.qgent.mapper.ProjectRepositoryMapper;
 import qg.qgent.mapper.TaskMapper;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
+import qg.qgent.orchestration.ExecutionContentSanitizer;
 import qg.qgent.service.event.MrFirstPreflightRequestedDomainEvent;
 import qg.qgent.service.event.PreflightCqApprovedDomainEvent;
 
@@ -163,8 +164,14 @@ public class MrFirstAutomationService {
                 }
                 // 外部基础设施失败暂不改变 Task，但要退避后再重试，避免每轮调度重复打 Worker。
                 scheduleRetry(repositoryKey);
-                log.warn("preflight request failed projectId={} taskId={} repositoryId={}: {}",
-                        projectId, taskId, worktree.getProjectRepositoryId(), failure.getMessage());
+                String failureCode = failure instanceof ApiException api ? api.code() : failure.getClass().getSimpleName();
+                String failureStatus = failure instanceof ApiException api && api.status() != null
+                        ? api.status().toString() : "";
+                log.warn("preflight request failed projectId={} taskId={} repositoryId={} exceptionType={} "
+                                + "failureCode={} status={} message={}",
+                        projectId, taskId, worktree.getProjectRepositoryId(), failure.getClass().getName(),
+                        failureCode, failureStatus,
+                        ExecutionContentSanitizer.sanitizeDiagnosticDetail(failure.getMessage()));
             } finally {
                 preflightInFlight.remove(repositoryKey);
             }
