@@ -67,4 +67,15 @@ public class WorkspaceWriteLeaseService {
         }
         workspaces.releaseWriteLease(lease.getProjectId(), lease.getWorkspaceId(), lease.getTaskId(), lease.token());
     }
+
+    /**
+     * 清理恢复器发现的终态 Task 残留租约。该路径不接受外部传入 token，安全性由 mapper 的
+     * Task 终态、租约持有者和过期时间条件共同保证。
+     */
+    public void releaseForTerminalTask(UUID projectId, UUID workspaceId, UUID taskId) {
+        if (projectId == null || workspaceId == null || taskId == null) {
+            return;
+        }
+        workspaces.releaseWriteLeaseForTerminalTask(projectId, workspaceId, taskId);
+    }
 }

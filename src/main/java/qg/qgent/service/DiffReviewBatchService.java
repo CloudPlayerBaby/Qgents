@@ -794,6 +794,7 @@ public class DiffReviewBatchService {
         content.put("deletions", values.stream().map(DiffEntity::getChangeStats).filter(java.util.Objects::nonNull)
                 .mapToInt(stats -> stats.get("deletions") instanceof Number n ? n.intValue() : 0).sum());
         content.put("reviewStatus", batch.getReviewStatus());
+        content.put("reviewReason", batch.getReviewReason());
         content.put("deliveryStatus", diffCardDeliveryStatus(batch, values));
         MessageSendRequest body = new MessageSendRequest();
         body.setType("DIFF");

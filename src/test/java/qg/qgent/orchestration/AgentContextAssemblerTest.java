@@ -324,6 +324,8 @@ class AgentContextAssemblerTest {
         batch.setId(batchId);
         batch.setProjectId(task.getProjectId());
         batch.setTaskId(task.getContinuationOfTaskId());
+        batch.setReviewStatus("REJECTED");
+        batch.setReviewReason("请补充边界条件测试");
         when(diffBatches.selectList(any())).thenReturn(List.of(batch));
         DiffEntity diff = new DiffEntity();
         diff.setId(UUID.randomUUID());
@@ -345,6 +347,7 @@ class AgentContextAssemblerTest {
         assertThat(head.getText()).contains(diff.getId().toString());
         assertThat(head.getText()).contains("新增 5 行");
         assertThat(head.getText()).contains("删除 3 行");
+        assertThat(head.getText()).contains("上一轮 Diff 被拒绝", "请补充边界条件测试");
         // 原群聊消息仍保留，紧随源 Diff 摘要之后
         assertThat(conversation.get(1).getText()).isEqualTo("补充需求");
     }

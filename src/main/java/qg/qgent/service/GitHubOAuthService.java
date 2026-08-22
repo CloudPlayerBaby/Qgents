@@ -225,9 +225,13 @@ public class GitHubOAuthService {
 
     public PersonalCredential requirePersonalCredential(UUID userId) {
         GitHubUserAuthorizationEntity entity = findByUser(userId);
-        if (entity == null || !"ACTIVE".equals(entity.getStatus())) {
+        if (entity == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "GITHUB_OAUTH_REQUIRED",
+                    "创建个人 GitHub 仓库前请先关联个人 GitHub 账号");
+        }
+        if (!"ACTIVE".equals(entity.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "GITHUB_OAUTH_REVOKED",
-                    "请先关联个人 GitHub 账号");
+                    "个人 GitHub 授权已失效，请重新关联 GitHub 账号");
         }
         return new PersonalCredential(cipher.decrypt(entity.getAccessTokenCiphertext()),
                 entity.getProviderUserId(), entity.getProviderLogin(), parseScopes(entity.getScopes()));

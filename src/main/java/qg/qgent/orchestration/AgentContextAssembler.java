@@ -21,6 +21,7 @@ import qg.qgent.orchestration.result.TestResult;
 import qg.qgent.service.ContextService;
 import qg.qgent.mapper.WorkspaceRepositoryMapper;
 import qg.qgent.entity.WorkspaceRepositoryEntity;
+import qg.qgent.orchestration.agent.PromptTextLimiter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -236,6 +237,11 @@ public class AgentContextAssembler {
         int deletions = diffs.stream().mapToInt(this::deletions).sum();
         String text = "本任务是源 Task 正式 Diff 的增量修改，基线 Diff：" + diffIds + "，变更统计：新增 "
                 + additions + " 行 / 删除 " + deletions + " 行";
+        String reviewReason = batch.getReviewReason();
+        if ("REJECTED".equals(batch.getReviewStatus()) && reviewReason != null && !reviewReason.isBlank()) {
+            text += "。上一轮 Diff 被拒绝，审查意见："
+                    + PromptTextLimiter.limitHeadTail(reviewReason.trim(), 4000);
+        }
         return new ContextMessage(0L, "DIFF", "AGENT", null, text);
     }
 
