@@ -1,11 +1,13 @@
 package qg.qgent.service;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
 import qg.qgent.api.ApiException;
 import qg.qgent.dto.ApiPageResponse;
@@ -732,7 +734,35 @@ class TaskRunServiceTest {
         verify(eventPublisher, never()).publishEvent(any());
     }
 
-    /** 源运行已被后续重试替代：存在 retry_of_task_run_id 指向它的运行 → 拒绝重试。 */
+    /** REVIEW_ASSERTION_TARGET_NOT_FOUND 是审查质量失败（needsCodingFix=true）而非配置错误：
+     * 重试必须受理交由 Coding 修复，不得被稳定失败码误拦为配置错误。 */
+    @Test
+    void retryAllowsReviewAssertionTargetNotFound() {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskRunEntity failed = run(projectId, runId);
+        failed.setTaskId(taskId);
+        failed.setTaskStepId(stepId);
+        failed.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(failed);
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("FAILED");
+        task.setFailureCode("REVIEW_ASSERTION_TARGET_NOT_FOUND");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        TaskRunSummaryResponse response = service.retry(projectId, runId, UUID.randomUUID());
+
+        assertNotEquals(runId.toString(), response.getId());
+        assertEquals("QUEUED", response.getStatus());
+        verify(runs).insert(any(TaskRunEntity.class));
+        verify(eventPublisher).publishEvent(any(TaskResumeRequestedEvent.class));
+    }
+
+    /** 源运行已被同一步骤的后续重试替代：存在 task_step_id 相同且 retry_of_task_run_id = A.id 的运行 → 拒绝重试。 */
     @Test
     void retryRejectsRunAlreadySucceededByLaterRun() {
         UUID projectId = UUID.randomUUID();
@@ -749,7 +779,7 @@ class TaskRunServiceTest {
         task.setProjectId(projectId);
         task.setStatus("RUNNING");
         when(tasks.selectById(taskId)).thenReturn(task);
-        // 已存在后续运行 B 指向 A（retry_of_task_run_id = A.id）→ A 已被替代，不能再重试
+        // 已存在同一步骤的后续运行 B 指向 A（retry_of_task_run_id = A.id）→ A 已被替代，不能再重试
         when(runs.selectCount(any())).thenReturn(1L);
 
         ApiException e = assertThrows(ApiException.class,
@@ -757,6 +787,66 @@ class TaskRunServiceTest {
 
         assertEquals("TASK_RUN_ALREADY_RETRIED", e.code());
         verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    /** 质量修复循环（REVIEWING FAILED_QUALITY requeue 回 CODING）创建的后继 run 指向修复 Coding
+     * 步骤（task_step_id 不同），不是「用户已重试本步骤」→ 不拦截，仍可手动重试。 */
+    @Test
+    void retryAllowsDifferentStepSuccessorFromQualityRepair() {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID reviewStepId = UUID.randomUUID();
+        TaskRunEntity failedReview = run(projectId, runId);
+        failedReview.setTaskId(taskId);
+        failedReview.setTaskStepId(reviewStepId);
+        failedReview.setRole("REVIEWER");
+        failedReview.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(failedReview);
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("FAILED");
+        when(tasks.selectById(taskId)).thenReturn(task);
+        // 质量修复后继 run 指向不同步骤，同步骤计数为 0 → 不拦截
+        when(runs.selectCount(any())).thenReturn(0L);
+
+        TaskRunSummaryResponse response = service.retry(projectId, runId, UUID.randomUUID());
+
+        assertNotEquals(runId.toString(), response.getId());
+        assertEquals("QUEUED", response.getStatus());
+        verify(runs).insert(any(TaskRunEntity.class));
+        verify(eventPublisher).publishEvent(any(TaskResumeRequestedEvent.class));
+    }
+
+    /** 后继检查必须同时按 retry_of_task_run_id 与 task_step_id 过滤，避免把质量修复循环的
+     * 跨步骤后继误判为「用户已重试本步骤」。 */
+    @Test
+    void successorCheckFiltersBySameTaskStep() {
+        UUID projectId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID stepId = UUID.randomUUID();
+        TaskRunEntity failed = run(projectId, runId);
+        failed.setTaskId(taskId);
+        failed.setTaskStepId(stepId);
+        failed.setStatus("FAILED");
+        when(runs.selectById(runId)).thenReturn(failed);
+        TaskEntity task = new TaskEntity();
+        task.setId(taskId);
+        task.setProjectId(projectId);
+        task.setStatus("FAILED");
+        when(tasks.selectById(taskId)).thenReturn(task);
+
+        ArgumentCaptor<Wrapper<TaskRunEntity>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        when(runs.selectCount(captor.capture())).thenReturn(1L);
+
+        assertThrows(ApiException.class, () -> service.retry(projectId, runId, UUID.randomUUID()));
+
+        String sql = captor.getValue().getSqlSegment();
+        assertNotNull(sql, "后继检查应生成 SQL 条件");
+        assertTrue(sql.contains("retry_of_task_run_id"), "应按后继来源过滤");
+        assertTrue(sql.contains("task_step_id"), "应限定同一步骤");
     }
 
     /** 任务 RUNNING（编排中）不接受外部续跑，避免与进行中的编排冲突。 */

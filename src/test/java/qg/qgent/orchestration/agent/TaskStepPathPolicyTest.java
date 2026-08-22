@@ -40,4 +40,21 @@ class TaskStepPathPolicyTest {
         assertThat(policy.isLegacyUnrestricted()).isTrue();
         assertThat(policy.allows("legacy/file.txt")).isTrue();
     }
+
+    @Test
+    void repoKeyOfExtractsFirstSegmentOfWorkspaceRelativePath() {
+        assertThat(TaskStepPathPolicy.repoKeyOf("repo-3/src/main/App.java")).isEqualTo("repo-3");
+        assertThat(TaskStepPathPolicy.repoKeyOf("repo-2/RegisterScreen.js")).isEqualTo("repo-2");
+        // Windows 分隔符归一化后再取首段。
+        assertThat(TaskStepPathPolicy.repoKeyOf("repo-1\\src\\App.java")).isEqualTo("repo-1");
+    }
+
+    @Test
+    void repoKeyOfReturnsNullForBareNamesOrUnsafePaths() {
+        assertThat(TaskStepPathPolicy.repoKeyOf(null)).isNull();
+        assertThat(TaskStepPathPolicy.repoKeyOf("")).isNull();
+        assertThat(TaskStepPathPolicy.repoKeyOf("App.java")).isNull();
+        assertThat(TaskStepPathPolicy.repoKeyOf("/abs/src/App.java")).isNull();
+        assertThat(TaskStepPathPolicy.repoKeyOf("../repo-3/file.txt")).isNull();
+    }
 }

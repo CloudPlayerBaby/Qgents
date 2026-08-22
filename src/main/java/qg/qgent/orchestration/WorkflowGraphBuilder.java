@@ -23,7 +23,9 @@ import java.util.Map;
  * <ul>
  *   <li>{@code next} → 按序下一节点（末节点 → END）；</li>
  *   <li>{@code retry} → 自身（同相位基础设施重试）；</li>
- *   <li>{@code requeue} → 最后一个 MUTATE 节点（Test/Review/专项检查质量失败回可写步骤修复）；</li>
+ *   <li>{@code requeue} → 静态的最后一个 MUTATE 节点；质量失败需要回更早的可写步骤时，
+ *       runStepNode 直接用修复步骤 ID 作为 route 值（图已为每个步骤 ID 注册自路由边），
+ *       使修复步骤按审查 findings 归属的仓库定向，而非固定回到最后一个 MUTATE；</li>
  *   <li>{@code END} → 终态。</li>
  * </ul>
  * 每次 orchestrate 按该任务的步骤现建图；步骤即节点，为后续 checkpoint / Agent 打断 / 重试
@@ -51,7 +53,8 @@ public class WorkflowGraphBuilder {
      *
      * @param steps         按执行顺序排列的任务步骤（至少一个；PLANNER 恒在首位）。
      * @param runner        每个节点的执行体（TaskOrchestrator.runStepNode）。
-     * @param requeueNodeId 质量失败回可写 MUTATE 步骤的目标节点名。
+     * @param requeueNodeId 质量失败回可写 MUTATE 步骤的静态目标节点名（最后一个 MUTATE）；
+     *                      runStepNode 可在 requeue 时以修复步骤 ID 覆盖该静态目标。
      */
     public CompiledGraph<TaskOrchestrationState> build(List<TaskStepEntity> steps, NodeRunner runner,
                                                        String requeueNodeId) {
@@ -67,7 +70,8 @@ public class WorkflowGraphBuilder {
      *
      * @param steps         按执行顺序排列的任务步骤（至少一个）。
      * @param runner        每个节点的执行体（TaskOrchestrator.runStepNode）。
-     * @param requeueNodeId 质量失败回可写 MUTATE 步骤的目标节点名。
+     * @param requeueNodeId 质量失败回可写 MUTATE 步骤的静态目标节点名（最后一个 MUTATE）；
+     *                      runStepNode 可在 requeue 时以修复步骤 ID 覆盖该静态目标。
      * @param startStepId   起始步骤 ID；null 表示从第一个步骤开始（全量）。
      */
     public CompiledGraph<TaskOrchestrationState> build(List<TaskStepEntity> steps, NodeRunner runner,
@@ -96,6 +100,12 @@ public class WorkflowGraphBuilder {
                 routes.put("next", next);
                 routes.put("retry", nodeId);
                 routes.put("requeue", requeueNodeId);
+                // 运行时按步骤 ID 动态路由：质量失败 requeue 时，runStepNode 直接以修复步骤 ID 作为
+                // route 值（当它不同于静态的最后一个 MUTATE 节点时），这里让任意步骤 ID 都能路由到
+                // 自身节点。静态 requeueNodeId 仍保留，兼容旧调用方与 startStepId 续跑场景。
+                for (TaskStepEntity each : steps) {
+                    routes.put(each.getId().toString(), each.getId().toString());
+                }
                 // TESTING 相位失败（验证/测试未通过）→ 交下一个 REVIEW 步骤裁决：Test 不判定
                 // 任务失败，Review 是最终裁决（见 OrchestrationStateMachine）。不能按序列 next
                 // 继续执行后续步骤——否则 VERIFY 失败后仍会继续执行 MUTATE 写步骤。之后没有

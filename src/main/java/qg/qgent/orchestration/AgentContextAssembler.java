@@ -14,6 +14,7 @@ import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.mapper.DiffMapper;
 import qg.qgent.mapper.DiffReviewBatchMapper;
 import qg.qgent.orchestration.agent.ReviewVerdictComputer;
+import qg.qgent.orchestration.agent.TaskStepPathPolicy;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.orchestration.result.ReviewResult;
@@ -24,9 +25,11 @@ import qg.qgent.entity.WorkspaceRepositoryEntity;
 import qg.qgent.orchestration.agent.PromptTextLimiter;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -107,7 +110,7 @@ public class AgentContextAssembler {
         input.setTaskRunId(taskRunId);
         input.setInstruction(step.getInstruction());
         input.setExecutionMode(step.getExecutionMode());
-        input.setAllowedPaths(step.getAllowedPaths());
+        input.setAllowedPaths(writablePaths(step, feedback));
         input.setTargetFiles(step.getTargetFiles());
         input.setFeedback(feedback == null ? null : formatFeedback(feedback, phase));
         input.setRetryContext(retryContext(feedback, inheritedPatchFailureCounts, step.getTargetFiles()));
@@ -355,6 +358,41 @@ public class AgentContextAssembler {
     private boolean isBlockerOrMajor(String severity) {
         String effective = severity == null ? "" : severity.toUpperCase(Locale.ROOT);
         return "BLOCKER".equals(effective) || "MAJOR".equals(effective);
+    }
+
+    /**
+     * 质量修复运行的可写路径：物化的 allowedPaths 只覆盖 Planner 声明的文件；若审查 findings 指向
+     * 的文件不在任何实现步骤声明内（如启动类），修复时会被 worker 的 ensureWritablePath 拒绝写入，
+     * 导致质量循环在物理写不进的文件上空转。仅当当前步骤可写（MUTATE）且 feedback 携带审查结果时，
+     * 把归一化后的 BLOCKER/MAJOR findings 文件并入允许路径——与 {@link #actionableFailures} 给修复
+     * 步骤展示的可修复项同源，保证「反馈要求修的」与「实际能写的」一致。只读相位（TEST/REVIEW）、
+     * 普通运行与基础设施反馈不扩权。物化的 allowedPaths 不被修改，仅在本次输入上临时合并。
+     */
+    private List<String> writablePaths(TaskStepEntity step, AgentRunOutcome feedback) {
+        if (feedback == null || feedback.getReviewResult() == null
+                || feedback.getReviewResult().getFindings() == null
+                || feedback.getReviewResult().getFindings().isEmpty()
+                || TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole()) != TaskStepExecutionMode.MUTATE) {
+            return step.getAllowedPaths();
+        }
+        List<ReviewResult.Finding> effective = verdictComputer.compute(feedback.getReviewResult().getFindings())
+                .normalizedFindings().stream()
+                .filter(finding -> isBlockerOrMajor(finding.getSeverity()))
+                .toList();
+        if (effective.isEmpty()) {
+            return step.getAllowedPaths();
+        }
+        Set<String> merged = new LinkedHashSet<>();
+        if (step.getAllowedPaths() != null) {
+            merged.addAll(step.getAllowedPaths());
+        }
+        for (ReviewResult.Finding finding : effective) {
+            String normalized = TaskStepPathPolicy.normalize(finding.getFile());
+            if (normalized != null) {
+                merged.add(normalized);
+            }
+        }
+        return List.copyOf(merged);
     }
 
     /**

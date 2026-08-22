@@ -12,6 +12,7 @@ import qg.qgent.dto.GroupContext;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.entity.*;
 import qg.qgent.mapper.*;
+import qg.qgent.orchestration.agent.TaskStepPathPolicy;
 import qg.qgent.orchestration.llm.LlmObservation;
 import qg.qgent.orchestration.result.CodingResult;
 import qg.qgent.orchestration.result.PlanResult;
@@ -258,6 +259,12 @@ public class TaskOrchestrator {
                 throw new IllegalStateException("materialized task has no executable steps");
             }
             ctx.steps = steps;
+            // 用户手动重试会新建编排会话：进程内 qualityFeedback 不跨会话继承，前一轮 FAILED_QUALITY
+            // 审查反馈会丢（表现为重试打回给开发时看不到上一轮问题）。从持久化 REVIEWING 产物重水合，
+            // 让新会话里 Coding/Review 仍能拿到上一轮审查 findings。
+            if (retryOfTaskRunId != null) {
+                rehydrateQualityFeedback(ctx, retryOfTaskRunId);
+            }
             String startNodeId = steps.stream().anyMatch(step -> step.getId().equals(startStepId))
                     ? startStepId.toString() : null;
             CompiledGraph<TaskOrchestrationState> graph = workflowGraphBuilder.build(steps,
@@ -702,8 +709,8 @@ public class TaskOrchestrator {
             ctx.bypassReason = null;
         }
         // 开发/测试/审查基础设施失败（同相位重试耗尽，或不可重试失败码直接判失败）→ 诚实放行：未真正
-        // 执行完成，如实标注。这属于「非代码缺陷」失败路径（用户策略：能放行就放行）；确认的
-        // BLOCKER/MAJOR 缺陷失败仍由下方 QUALITY_REPAIR_NOT_REQUESTED 等守卫判定保持失败，不受此覆盖影响。
+        // 执行完成，如实标注。这属于「非代码缺陷」失败路径（用户策略：能放行就放行）；质量缺陷失败
+        // 由下方 needsCodingFix=false / 无进展 / 循环耗尽守卫统一改为交付供人工核对，不在此放行。
         // TESTING/REVIEWING 放行后若计划后续还有 REVIEW 步骤，success 会被下方 hasFollowingStep 降级为
         // advance，并按「Test 不判任务失败、Review 是最终裁决」路由到 review 节点兜底审查（见 route 分支）。
         // CODING 放行则相反：开发未完成没有可用代码可验证，必须直接以 SUCCEEDED 结束、不得 advance
@@ -726,13 +733,13 @@ public class TaskOrchestrator {
         }
         // 质量修复循环现在只由 REVIEWING 的 FAILED_QUALITY 触发（Test 不再自行判定失败，测试失败
         // 统一 TEST_FAILED 交 Review 裁决）。仍需 Review 明确声明失败是否可由 Coding 修复；旧 Agent/
-        // 测试构造若没有结构化结果时保留历史兼容行为；一旦有结果且 needsCodingFix=false，直接终止，
-        // 避免把测试环境、命令配置或不可修复问题反复送回 Coding。
+        // 测试构造若没有结构化结果时保留历史兼容行为；一旦有结果且 needsCodingFix=false，不再把
+        // 测试环境、命令配置或不可修复问题反复送回 Coding——改为交付当前代码并如实标注放行原因，
+        // 由用户人工核对后手动提交 MR（findings 已在审查产物中保留，不伪装成审查通过）。
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
                 && !needsCodingFix(outcome)) {
-            ctx.recordQualityRepairUnavailable("QUALITY_REPAIR_NOT_REQUESTED",
-                    "质量检查未通过，但该检查结果标记为不能由开发步骤自动修复");
-            decision = StateMachineDecision.failed();
+            ctx.bypassReason = "质量检查判定问题无法由开发步骤自动修复，代码已保留供人工核对后手动提交 MR";
+            decision = StateMachineDecision.success();
         }
         // 只读任务可能没有任何可修复的 MUTATE 步骤。此时质量失败不能沿用
         // requeue 路由回到一个 VERIFY/TEST 节点，否则会重复验证同一事实直到耗尽循环。
@@ -761,9 +768,22 @@ public class TaskOrchestrator {
         if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING
                 && ctx.qualityConvergence.hasNoProgress(outcome)) {
             ctx.qualityConvergence.markNoProgress();
-            decision = StateMachineDecision.failed();
+            // 连续多轮无进展的循环再打回也只会重复耗 LLM 调用：不硬杀任务，改为交付当前代码
+            // 供人工核对（DIFF_FIRST 生成待确认 Diff；MR_FIRST 由 completeSuccess 放行不自动交付）。
+            ctx.bypassReason = "连续多轮质量验证未见修复进展，代码已保留供人工核对后手动提交 MR";
+            decision = StateMachineDecision.success();
         } else if (decision.getAction() == StateMachineDecision.Action.REQUEUE_CODING) {
             ctx.qualityConvergence.record(outcome);
+        }
+        // 质量修复循环预算耗尽（REVIEWING FAILED_QUALITY 且状态机已无 requeue 额度 → COMPLETE_FAILED）：
+        // 不再以任务 FAILED 收场，改为交付当前代码并如实标注，交用户人工核对后手动提交 MR。
+        // 只匹配 FAILED_QUALITY——REVIEWING 的 FAILED/TEST_FAILED（真实审查失败）仍正常判失败；
+        // 基础设施耗尽（FAILED_INFRASTRUCTURE）已由上方放行块处理，互不重叠。
+        if (phase == OrchestrationPhase.REVIEWING
+                && decision.getAction() == StateMachineDecision.Action.COMPLETE_FAILED
+                && outcome.getOutcome() == RunOutcome.FAILED_QUALITY) {
+            ctx.bypassReason = "质量验证多次未通过，修复循环已耗尽，代码已保留供人工核对后手动提交 MR";
+            decision = StateMachineDecision.success();
         }
         // Coding 自报失败但存在真实写入证据（如模型误判"无法确认文件是否创建"）时，
         // 给一次有界同相位重试：写入证据说明模型确实执行了修改，失败多为收尾误判而非
@@ -826,9 +846,14 @@ public class TaskOrchestrator {
                         && outcome.getOutcome() != RunOutcome.SUCCEEDED ? "review" : "next";
             }
             case REQUEUE_CODING -> {
-                resetStepsForQualityRework(task, ctx.steps, ctx.repairCodingStepId());
+                // 修复步骤按审查 findings 归属的仓库定向（可能不是最后一个 MUTATE）。此时
+                // 不能用静态 "requeue" 边（图构建时固定为最后一个 MUTATE 节点），而应直接以修复
+                // 步骤 ID 作为 route 值——WorkflowGraphBuilder 已为每个步骤 ID 注册自路由边；
+                // 修复步骤就是最后一个 MUTATE 时该值即静态目标，行为不变。
+                UUID repairStepId = ctx.repairCodingStepId(outcome);
+                resetStepsForQualityRework(task, ctx.steps, repairStepId);
                 ctx.retryOf = ctx.lastRunId;
-                route = "requeue";
+                route = repairStepId == null ? "requeue" : repairStepId.toString();
             }
             case RETRY_PHASE -> {
                 ctx.retryOf = ctx.lastRunId;
@@ -859,6 +884,103 @@ public class TaskOrchestrator {
         }
         // 没有结构化质量结果时沿用状态机原有行为，兼容旧 Agent 与历史数据。
         return true;
+    }
+
+    /**
+     * 用户手动重试进入新的编排会话时重水合前一轮质量审查反馈：从持久化 REVIEWING 产物重建
+     * FAILED_QUALITY 的 {@link AgentRunOutcome} 并注入 {@link TaskExecutionContext#seedQualityFeedback}。
+     * 优先取被重试运行自身的审查产物（用户重试的是 REVIEWER run），否则取任务最近一次仍需
+     * Coding 修复的 FAILED_QUALITY 审查产物。无匹配时静默返回（如重试纯基础设施失败的 Coding run）。
+     * 故意不携带 failureCode：避免把可能误分类的稳定码（如 REVIEW_ASSERTION_TARGET_NOT_FOUND）
+     * 重新注入开发上下文带偏修复方向，retryContext 会回退到 QUALITY_GATE_FAILED。
+     */
+    private void rehydrateQualityFeedback(TaskExecutionContext ctx, UUID retryOfTaskRunId) {
+        try {
+            TaskRunEntity retried = taskRunService.findById(retryOfTaskRunId);
+            TaskExecutionArtifactEntity source = null;
+            if (retried != null && "REVIEWER".equals(retried.getRole())) {
+                source = artifactService.latestFailedQualityReviewingArtifact(ctx.task.getId(), retryOfTaskRunId);
+            }
+            if (source == null) {
+                source = artifactService.latestFailedQualityReviewingArtifact(ctx.task.getId(), null);
+            }
+            if (source == null || source.getSummary() == null || source.getTaskStepId() == null) {
+                return;
+            }
+            ReviewResult review = reviewResultFromSummary(source.getSummary());
+            if (review == null) {
+                return;
+            }
+            AgentRunOutcome outcome = new AgentRunOutcome();
+            outcome.setPhase(OrchestrationPhase.REVIEWING);
+            outcome.setOutcome(RunOutcome.FAILED_QUALITY);
+            outcome.setReviewResult(review);
+            outcome.setMessage(review.getSummary());
+            ctx.seedQualityFeedback(source.getTaskStepId(), outcome);
+            log.info("quality feedback rehydrated taskId={} retryOfTaskRunId={} sourceStepId={}",
+                    ctx.task.getId(), retryOfTaskRunId, source.getTaskStepId());
+        } catch (RuntimeException e) {
+            // 重水合只是尽力而为：产物缺失或解析失败时不得阻断重试编排。
+            log.warn("quality feedback rehydration skipped taskId={} retryOfTaskRunId={}: {}", ctx.task.getId(),
+                    retryOfTaskRunId, e.getMessage());
+        }
+    }
+
+    /**
+     * 从持久化 REVIEWING 产物摘要重建 {@link ReviewResult}（reviewSummary 的逆操作，字段已在
+     * 落库时截断脱敏）。review 子 map 缺失或结构不符时返回 null。
+     */
+    private ReviewResult reviewResultFromSummary(Map<String, Object> summary) {
+        Object rawReview = summary.get("review");
+        if (!(rawReview instanceof Map<?, ?> raw)) {
+            return null;
+        }
+        Map<String, Object> review = stringKeyedMap(raw);
+        ReviewResult result = new ReviewResult();
+        result.setSuccess(Boolean.TRUE.equals(review.get("success")));
+        result.setSummary(stringOf(review.get("summary")));
+        result.setNeedsCodingFix(Boolean.TRUE.equals(review.get("needsCodingFix")));
+        result.setTestsNotExecuted(Boolean.TRUE.equals(review.get("testsNotExecuted")));
+        Object rawFindings = review.get("findings");
+        if (rawFindings instanceof Collection<?> collection) {
+            for (Object item : collection) {
+                if (!(item instanceof Map<?, ?> rawFinding)) {
+                    continue;
+                }
+                Map<String, Object> finding = stringKeyedMap(rawFinding);
+                ReviewResult.Finding target = new ReviewResult.Finding();
+                target.setSeverity(stringOf(finding.get("severity")));
+                target.setFile(stringOf(finding.get("file")));
+                Object line = finding.get("line");
+                target.setLine(line instanceof Number number ? number.intValue() : null);
+                target.setIssue(stringOf(finding.get("issue")));
+                target.setSuggestion(stringOf(finding.get("suggestion")));
+                result.getFindings().add(target);
+            }
+        }
+        Object rawSuggestions = review.get("suggestions");
+        if (rawSuggestions instanceof Collection<?> collection) {
+            for (Object item : collection) {
+                if (item != null) {
+                    result.getSuggestions().add(String.valueOf(item));
+                }
+            }
+        }
+        return result;
+    }
+
+    private Map<String, Object> stringKeyedMap(Map<?, ?> source) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        source.forEach((key, value) -> {
+            if (key != null) {
+                result.put(String.valueOf(key), value);
+            }
+        });
+        return result;
+    }
+
+    private String stringOf(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     /**
@@ -1325,10 +1447,6 @@ public class TaskOrchestrator {
             // 失败 run 未携带稳定失败码（如质量循环中的 Test/Review FAILED_QUALITY 无码）时，
             // 按任务级语义收敛：质量修复循环已耗尽 → 明确「质量循环耗尽」，而不是误导性的
             // TASK_FINALIZATION_FAILED（交付准备失败）。
-            if ((code == null || code.isBlank()) && ctx.qualityRepairUnavailable != null) {
-                code = ctx.qualityRepairUnavailable.code();
-                reason = ctx.qualityRepairUnavailable.reason();
-            }
             if (code == null || code.isBlank()) {
                 code = ctx.counters.getQualityFixLoops() > 0 ? "TASK_QUALITY_LOOPS_EXHAUSTED"
                         : "TASK_FINALIZATION_FAILED";
@@ -1918,11 +2036,6 @@ public class TaskOrchestrator {
         /** 当前 TaskStep 跨 TaskRun 继承的 patch 失败计数。 */
         private final Map<String, Integer> patchFailureCounts = new LinkedHashMap<>();
         /**
-         * 质量失败本应回修但无法路由到可写步骤时的明确终止原因。它优先于循环计数，
-         * 避免把“根本没有修复入口”误报成“多次修复后仍失败”。
-         */
-        private QualityRepairUnavailable qualityRepairUnavailable;
-        /**
          * 质量门禁阶段（测试/审查）被「放行」（绕过失败：测试未执行 / 审查未完成 / 发现问题但按
          * 策略放行）时的如实原因。
          * 非空时终态卡片如实标注该原因，并禁止 MR_FIRST 自动 commit/push/建 PR（代码留工作区
@@ -1972,6 +2085,18 @@ public class TaskOrchestrator {
             return null;
         }
 
+        /**
+         * 跨编排会话注入重水合的质量反馈（用户手动重试场景）：sourceStepId 为审查步骤，
+         * repair 步骤按该审查结果 findings 归属的仓库定向（与自动 requeue 的 feedbackFor 语义一致）。
+         */
+        private void seedQualityFeedback(UUID sourceStepId, AgentRunOutcome outcome) {
+            UUID repairStepId = repairCodingStepId(outcome);
+            if (repairStepId == null) {
+                return;
+            }
+            qualityFeedback = new QualityFeedback(sourceStepId, repairStepId, outcome);
+        }
+
         private void recordOutcome(UUID stepId, OrchestrationPhase phase, AgentRunOutcome outcome) {
             if (phase == OrchestrationPhase.CODING && outcome.getPatchFailureCounts() != null) {
                 patchFailureCounts.clear();
@@ -1990,7 +2115,7 @@ public class TaskOrchestrator {
             infraFeedback.remove(stepId);
             if (outcome.getOutcome() == RunOutcome.FAILED_QUALITY
                     && (phase == OrchestrationPhase.TESTING || phase == OrchestrationPhase.REVIEWING)) {
-                UUID repairStepId = repairCodingStepId();
+                UUID repairStepId = repairCodingStepId(outcome);
                 if (repairStepId != null) {
                     qualityFeedback = new QualityFeedback(stepId, repairStepId, outcome);
                 }
@@ -2008,28 +2133,104 @@ public class TaskOrchestrator {
             infraFeedback.remove(stepId);
         }
 
-        private void recordQualityRepairUnavailable(String code, String reason) {
-            qualityRepairUnavailable = new QualityRepairUnavailable(code, reason);
-        }
-
-        private UUID repairCodingStepId() {
+        /**
+         * 质量循环的修复步骤：默认取最后一个 MUTATE 步骤；给定审查结果时，按审查 findings 归属的
+         * 仓库把修复定向到对应 MUTATE 步骤，避免「修复步骤与问题不在同一仓库」导致质量循环空转
+         * （典型如 review 指出 repo-3 后端缺陷，而最后一个 MUTATE 步骤只声明了 repo-2 文件）。
+         * findings 无法定位仓库、或所有 MUTATE 步骤的仓库范围一致（单仓库任务）时回退默认行为。
+         */
+        private UUID repairCodingStepId(AgentRunOutcome reviewOutcome) {
             if (steps == null) {
                 return null;
             }
-            UUID mutableStepId = null;
+            UUID lastMutable = null;
+            Set<String> stepRepos = new HashSet<>();
             for (TaskStepEntity step : steps) {
                 if (TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole())
-                        == TaskStepExecutionMode.MUTATE) {
-                    mutableStepId = step.getId();
+                        != TaskStepExecutionMode.MUTATE) {
+                    continue;
+                }
+                lastMutable = step.getId();
+                stepRepos.addAll(repoKeysOf(step.getTargetFiles()));
+            }
+            if (lastMutable == null) {
+                return null;
+            }
+            // 单仓库或所有 MUTATE 步骤仓库范围一致时，仓库路由无意义，维持原行为。
+            if (stepRepos.size() <= 1) {
+                return lastMutable;
+            }
+            Set<String> findingRepos = findingReposOf(reviewOutcome);
+            if (findingRepos.isEmpty()) {
+                return lastMutable;
+            }
+            // 取覆盖 findings 仓库最多的 MUTATE 步骤；同分取更靠后（贴近原「最后一个 MUTATE」语义）。
+            UUID best = lastMutable;
+            int bestScore = 0;
+            for (TaskStepEntity step : steps) {
+                if (TaskStepExecutionMode.resolve(step.getExecutionMode(), step.getRole())
+                        != TaskStepExecutionMode.MUTATE) {
+                    continue;
+                }
+                int score = coveredRepos(step.getTargetFiles(), findingRepos);
+                if (score >= bestScore) {
+                    bestScore = score;
+                    best = step.getId();
                 }
             }
-            return mutableStepId;
+            return bestScore > 0 ? best : lastMutable;
+        }
+
+        /**
+         * 审查 findings 归属的仓库 key 集合；无审查结果或 findings 无法定位仓库时返回空集。
+         */
+        private static Set<String> findingReposOf(AgentRunOutcome reviewOutcome) {
+            if (reviewOutcome == null || reviewOutcome.getReviewResult() == null
+                    || reviewOutcome.getReviewResult().getFindings() == null) {
+                return Set.of();
+            }
+            Set<String> repos = new HashSet<>();
+            for (ReviewResult.Finding finding : reviewOutcome.getReviewResult().getFindings()) {
+                String key = TaskStepPathPolicy.repoKeyOf(finding.getFile());
+                if (key != null) {
+                    repos.add(key);
+                }
+            }
+            return repos;
+        }
+
+        /**
+         * 路径集合中的仓库 key 集合；null/空集合返回空集。
+         */
+        private static Set<String> repoKeysOf(List<String> paths) {
+            if (paths == null || paths.isEmpty()) {
+                return Set.of();
+            }
+            Set<String> keys = new HashSet<>();
+            for (String path : paths) {
+                String key = TaskStepPathPolicy.repoKeyOf(path);
+                if (key != null) {
+                    keys.add(key);
+                }
+            }
+            return keys;
+        }
+
+        /**
+         * 一个步骤的 target_files 覆盖了多少个 findings 归属仓库（按仓库 key 去重计数）。
+         */
+        private static int coveredRepos(List<String> targetFiles, Set<String> findingRepos) {
+            Set<String> covered = new HashSet<>();
+            for (String path : targetFiles == null ? List.<String>of() : targetFiles) {
+                String key = TaskStepPathPolicy.repoKeyOf(path);
+                if (key != null && findingRepos.contains(key)) {
+                    covered.add(key);
+                }
+            }
+            return covered.size();
         }
 
         private record QualityFeedback(UUID sourceStepId, UUID repairCodingStepId, AgentRunOutcome outcome) {
-        }
-
-        private record QualityRepairUnavailable(String code, String reason) {
         }
     }
 }

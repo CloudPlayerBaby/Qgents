@@ -88,6 +88,59 @@ public class TaskExecutionArtifactService {
         return result;
     }
 
+    /**
+     * 查找「质量审查未通过且需 Coding 修复」的最近一次 REVIEWING 产物（按序号降序取最新一条）。
+     * <p>
+     * 用户手动重试进入新的编排会话时，进程内质量反馈不会跨会话继承；本方法从持久化产物
+     * 重水合前一轮 FAILED_QUALITY 审查反馈。{@code taskRunId} 非空时限定为该运行（用户重试的
+     * 正是该审查运行）；为空时取整个任务的最新审查（重试的是 Coding/Test 等其他运行）。
+     * 只认最新一条：若最新审查已通过（SUCCEEDED），说明此前的 FAILED_QUALITY 问题已被处理，
+     * 返回 null 避免把已修复的旧问题重新喂给开发。
+     */
+    public TaskExecutionArtifactEntity latestFailedQualityReviewingArtifact(UUID taskId, UUID taskRunId) {
+        if (taskId == null) {
+            return null;
+        }
+        TaskExecutionArtifactEntity artifact = artifacts.selectList(Wrappers
+                        .<TaskExecutionArtifactEntity>lambdaQuery()
+                        .eq(TaskExecutionArtifactEntity::getTaskId, taskId)
+                        .eq(TaskExecutionArtifactEntity::getArtifactType, "REVIEWING")
+                        .eq(taskRunId != null, TaskExecutionArtifactEntity::getTaskRunId, taskRunId)
+                        .orderByDesc(TaskExecutionArtifactEntity::getSequenceNo)
+                        .last("LIMIT 1"))
+                .stream().findFirst().orElse(null);
+        return isFailedQualityReview(artifact) ? artifact : null;
+    }
+
+    private boolean isFailedQualityReview(TaskExecutionArtifactEntity artifact) {
+        if (artifact == null) {
+            return false;
+        }
+        Map<String, Object> summary = artifact.getSummary();
+        if (summary == null) {
+            return false;
+        }
+        if (!"FAILED_QUALITY".equals(String.valueOf(summary.get("outcome")))) {
+            return false;
+        }
+        Map<String, Object> review = reviewOf(summary);
+        return review != null && Boolean.TRUE.equals(review.get("needsCodingFix"));
+    }
+
+    private Map<String, Object> reviewOf(Map<String, Object> summary) {
+        Object value = summary.get("review");
+        if (!(value instanceof Map<?, ?> map)) {
+            return null;
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        map.forEach((key, item) -> {
+            if (key != null) {
+                result.put(String.valueOf(key), item);
+            }
+        });
+        return result;
+    }
+
     private TaskExecutionArtifactEntity create(TaskEntity task, TaskRunEntity run, TaskStepEntity step, String type,
                                                Map<String, Object> summary) {
         TaskEntity locked = tasks.selectByIdForUpdate(task.getId());

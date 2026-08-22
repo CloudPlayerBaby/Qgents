@@ -450,4 +450,96 @@ class AgentContextAssemblerTest {
 
         assertThat(input.getRetryContext().getPatchFailureCounts()).containsOnlyKeys("repo-1/conf/app.yml");
     }
+
+    private TaskStepEntity mutableStep(String instruction, List<String> allowedPaths) {
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setRole("DEVELOPER");
+        step.setExecutionMode("MUTATE");
+        step.setInstruction(instruction);
+        step.setAllowedPaths(allowedPaths);
+        return step;
+    }
+
+    @Test
+    void qualityRepairRunEnlargesAllowedPathsWithBlockerOrMajorFindingFiles() {
+        // 物化 allowedPaths 只覆盖 Planner 声明的文件；审查 findings 指向启动类等计划外文件时，
+        // 修复步骤必须能物理写入该文件，否则 worker 的 ensureWritablePath 会拒绝修复。
+        TaskEntity task = task();
+        TaskStepEntity step = mutableStep("修复",
+                List.of("repo-3/src/main/java/AuthController.java"));
+        ReviewResult.Finding major = new ReviewResult.Finding();
+        major.setSeverity("MAJOR");
+        major.setFile("repo-3/src/main/java/QgentsApplication.java");
+        major.setIssue("password stored in plaintext");
+        ReviewResult.Finding minor = new ReviewResult.Finding();
+        minor.setSeverity("MINOR");
+        minor.setFile("repo-3/src/main/java/Cosmetic.java");
+        minor.setIssue("typo in comment");
+        ReviewResult.Finding style = new ReviewResult.Finding();
+        style.setSeverity("MAJOR");
+        style.setFile("repo-3/src/main/java/Style.java");
+        style.setIssue("未使用 import");
+        AgentRunOutcome failed = reviewFailure(major, minor, style);
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, failed,
+                UUID.randomUUID(), null, null, null, null);
+
+        // 只并入归一化后 BLOCKER/MAJOR 的 findings 文件：启动类可写；MINOR 与风格降级项不放开；
+        // 物化的 allowedPaths 原样保留在前。
+        assertThat(input.getAllowedPaths()).containsExactly(
+                "repo-3/src/main/java/AuthController.java",
+                "repo-3/src/main/java/QgentsApplication.java");
+    }
+
+    @Test
+    void qualityRepairRunWithoutActionableFindingsKeepsAllowedPaths() {
+        TaskEntity task = task();
+        TaskStepEntity step = mutableStep("修复",
+                List.of("repo-3/src/main/java/AuthController.java"));
+        ReviewResult.Finding minor = new ReviewResult.Finding();
+        minor.setSeverity("MINOR");
+        minor.setFile("repo-3/src/main/java/Cosmetic.java");
+        minor.setIssue("typo in comment");
+        AgentRunOutcome failed = reviewFailure(minor);
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, failed,
+                UUID.randomUUID(), null, null, null, null);
+
+        assertThat(input.getAllowedPaths()).containsExactly("repo-3/src/main/java/AuthController.java");
+    }
+
+    @Test
+    void nonRepairRunKeepsAllowedPathsUnchanged() {
+        TaskEntity task = task();
+        TaskStepEntity step = mutableStep("实现",
+                List.of("repo-3/src/main/java/AuthController.java"));
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.CODING, null,
+                UUID.randomUUID(), null, null, null, null);
+
+        assertThat(input.getAllowedPaths()).containsExactly("repo-3/src/main/java/AuthController.java");
+    }
+
+    @Test
+    void qualityFeedbackDoesNotEnlargeReadOnlyStepAllowedPaths() {
+        // 只读相位（TEST/REVIEW）即使收到审查反馈也不扩权：扩权只属于可写修复步骤。
+        TaskEntity task = task();
+        TaskStepEntity step = new TaskStepEntity();
+        step.setId(UUID.randomUUID());
+        step.setRole("TESTER");
+        step.setExecutionMode("TEST");
+        step.setInstruction("执行测试");
+        step.setAllowedPaths(List.of("repo-3/src/main/java/AuthController.java"));
+        ReviewResult.Finding major = new ReviewResult.Finding();
+        major.setSeverity("MAJOR");
+        major.setFile("repo-3/src/main/java/QgentsApplication.java");
+        major.setIssue("password stored in plaintext");
+        AgentRunOutcome failed = reviewFailure(major);
+
+        AgentInput input = assembler.assemble(task, step, OrchestrationPhase.TESTING, failed,
+                UUID.randomUUID(), null, null, null, null);
+
+        assertThat(input.getAllowedPaths()).containsExactly("repo-3/src/main/java/AuthController.java");
+    }
 }

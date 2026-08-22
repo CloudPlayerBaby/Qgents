@@ -1,20 +1,26 @@
 package qg.qgent.service;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import org.junit.jupiter.api.Test;
+import qg.qgent.entity.TaskExecutionArtifactEntity;
 import qg.qgent.mapper.TaskExecutionArtifactMapper;
 import qg.qgent.mapper.TaskMapper;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class TaskExecutionArtifactServiceTest {
 
+    private final TaskExecutionArtifactMapper artifacts = mock(TaskExecutionArtifactMapper.class);
     private final TaskExecutionArtifactService service = new TaskExecutionArtifactService(
-            mock(TaskExecutionArtifactMapper.class), mock(TaskMapper.class),
-            mock(ProjectAccessService.class), mock(EventService.class));
+            artifacts, mock(TaskMapper.class), mock(ProjectAccessService.class), mock(EventService.class));
 
     @Test
     void redactsEmbeddedCredentialsAndHostPathsAtContentLevel() {
@@ -76,5 +82,78 @@ class TaskExecutionArtifactServiceTest {
         assertThat(testFailure).containsEntry("exitCode", 1).containsEntry("failureCount", 1);
         assertThat(String.valueOf(testFailure)).contains("CalculatorTest", "[raw output omitted]")
                 .doesNotContain("secret", "C:\\worker", "stderr:");
+    }
+
+    @Test
+    void latestFailedQualityReviewingReturnsNewestArtifactWhenFixableByCoding() {
+        TaskExecutionArtifactEntity failedQuality = reviewingArtifact(2, "FAILED_QUALITY", true, true);
+        when(artifacts.selectList(any(Wrapper.class))).thenReturn(List.of(failedQuality));
+
+        TaskExecutionArtifactEntity found = service.latestFailedQualityReviewingArtifact(UUID.randomUUID(), null);
+
+        assertThat(found).isSameAs(failedQuality);
+    }
+
+    @Test
+    void latestFailedQualityReviewingReturnsNullWhenNewestReviewPassed() {
+        // 最新审查已通过（SUCCEEDED）时，此前的 FAILED_QUALITY 问题已被处理，不得重新喂给开发。
+        when(artifacts.selectList(any(Wrapper.class))).thenReturn(List.of(
+                reviewingArtifact(3, "SUCCEEDED", true, true)));
+
+        TaskExecutionArtifactEntity found = service.latestFailedQualityReviewingArtifact(UUID.randomUUID(), null);
+
+        assertThat(found).isNull();
+    }
+
+    @Test
+    void latestFailedQualityReviewingReturnsNullWhenNotFixableByCoding() {
+        when(artifacts.selectList(any(Wrapper.class))).thenReturn(List.of(
+                reviewingArtifact(1, "FAILED_QUALITY", true, false)));
+
+        TaskExecutionArtifactEntity found = service.latestFailedQualityReviewingArtifact(UUID.randomUUID(), null);
+
+        assertThat(found).isNull();
+    }
+
+    @Test
+    void latestFailedQualityReviewingReturnsNullWhenNoReviewArtifact() {
+        when(artifacts.selectList(any(Wrapper.class))).thenReturn(List.of());
+
+        TaskExecutionArtifactEntity found = service.latestFailedQualityReviewingArtifact(UUID.randomUUID(), null);
+
+        assertThat(found).isNull();
+    }
+
+    @Test
+    void latestFailedQualityReviewingHonorsRunFilteredQueryResult() {
+        TaskExecutionArtifactEntity runArtifact = reviewingArtifact(1, "FAILED_QUALITY", true, true);
+        runArtifact.setTaskRunId(UUID.randomUUID());
+        when(artifacts.selectList(any(Wrapper.class))).thenReturn(List.of(runArtifact));
+
+        // 传入 taskRunId 的路径仍尊重查询返回结果；run 过滤条件由 MyBatis-Plus eq(condition,...)
+        // 表达，这里只验证方法把 runId 传进查询并正确处理返回。
+        TaskExecutionArtifactEntity found =
+                service.latestFailedQualityReviewingArtifact(UUID.randomUUID(), runArtifact.getTaskRunId());
+
+        assertThat(found).isSameAs(runArtifact);
+    }
+
+    private TaskExecutionArtifactEntity reviewingArtifact(int sequenceNo, String outcome, boolean needsCodingFix,
+                                                          boolean withReview) {
+        TaskExecutionArtifactEntity artifact = new TaskExecutionArtifactEntity();
+        artifact.setSequenceNo(sequenceNo);
+        artifact.setArtifactType("REVIEWING");
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("outcome", outcome);
+        if (withReview) {
+            Map<String, Object> review = new LinkedHashMap<>();
+            review.put("success", "SUCCEEDED".equals(outcome));
+            review.put("needsCodingFix", needsCodingFix);
+            review.put("findings", List.of(Map.of("severity", "MAJOR", "file", "src/A.java", "line", 3,
+                    "issue", "接口缺少参数校验", "suggestion", "补充校验")));
+            summary.put("review", review);
+        }
+        artifact.setSummary(summary);
+        return artifact;
     }
 }

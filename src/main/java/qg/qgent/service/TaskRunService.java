@@ -256,14 +256,18 @@ public class TaskRunService {
         if (source.getTaskStepId() == null) {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_NO_STEP", "该运行没有关联步骤，无法续跑");
         }
-        // 该运行已被后续重试替代：存在 retry_of_task_run_id = source.id 的运行，说明用户已对
-        // 它发起过续跑。此时再重试源运行是无效操作（新运行已接管同一 TaskStep 的后续执行），
-        // 后端强制拒绝返回 409，前端按钮显隐只是防误操作，这里才是最终保证。
+        // 该运行已被后续重试替代：存在与它同一步骤、且 retry_of_task_run_id = source.id 的运行，
+        // 说明用户已对本步骤发起过续跑，新运行已接管同一 TaskStep 的后续执行，再重试源运行是
+        // 无效操作 → 409。前端按钮显隐只是防误操作，这里才是最终保证。
+        // 质量修复循环（REVIEWING FAILED_QUALITY requeue 回 CODING）创建的后续运行指向的是修复
+        // Coding 步骤（task_step_id 不同），不属于「用户已重试本步骤」，不拦截——这类 FAILED_QUALITY
+        // 运行仍可手动重试，由编排器从源步骤续跑。
         Long successorCount = taskRunMapper.selectCount(Wrappers.<TaskRunEntity>lambdaQuery()
-                .eq(TaskRunEntity::getRetryOfTaskRunId, source.getId()));
+                .eq(TaskRunEntity::getRetryOfTaskRunId, source.getId())
+                .eq(TaskRunEntity::getTaskStepId, source.getTaskStepId()));
         if (successorCount != null && successorCount > 0) {
             throw new ApiException(HttpStatus.CONFLICT, "TASK_RUN_ALREADY_RETRIED",
-                    "该运行已有后续重试运行接管，不能再次重试");
+                    "该运行已被同一步骤的后续运行接管，不能再次重试");
         }
         // 进行中的任务由编排器内部重试/质量循环负责，不接受外部续跑；已交付/已完成的任务不接受重试。
         if (!RESUMABLE_TASK_STATUSES.contains(task.getStatus())) {
@@ -300,6 +304,10 @@ public class TaskRunService {
      * 确定性配置错误：重试无法自动修复，必须先由用户修改仓库/分支/环境配置。
      * 这类失败码当前由 {@code ExecutionContentSanitizer.userFailureRetryable} 标为可重试，
      * 但那是对「基础设施瞬态」的语义；配置错误即使重试也必然再次失败，不应 202 受理后静默吞掉。
+     * <p>
+     * REVIEW_ASSERTION_TARGET_NOT_FOUND 刻意不在此列：它虽是稳定失败码，但本质是审查发现
+     * 验收目标未实现（needsCodingFix=true）的质量问题，重试可由 Coding 补齐目标修复；真正修不动时
+     * 由质量循环耗尽交付供人工核对，不应把质量失败误判为配置错误拦住用户重试。
      */
     private static boolean isDeterministicConfigError(String failureCode) {
         if (failureCode == null || failureCode.isBlank()) {
@@ -307,7 +315,7 @@ public class TaskRunService {
         }
         return switch (failureCode.toUpperCase(Locale.ROOT)) {
             case "GIT_BRANCH_NOT_FOUND", "GIT_BASE_REF_NOT_FOUND", "GIT_REF_NOT_FOUND",
-                    "TEST_COMMAND_NOT_FOUND", "BUILD_ENVIRONMENT_UNAVAILABLE", "REVIEW_ASSERTION_TARGET_NOT_FOUND",
+                    "TEST_COMMAND_NOT_FOUND", "BUILD_ENVIRONMENT_UNAVAILABLE",
                     "QUALITY_REPAIR_STEP_UNAVAILABLE" -> true;
             default -> false;
         };

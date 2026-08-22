@@ -7,6 +7,7 @@ import qg.qgent.dto.GroupContext;
 import qg.qgent.dto.MessageSendRequest;
 import qg.qgent.entity.DiffEntity;
 import qg.qgent.entity.TaskEntity;
+import qg.qgent.entity.TaskExecutionArtifactEntity;
 import qg.qgent.entity.TaskRunEntity;
 import qg.qgent.entity.TaskStepEntity;
 import qg.qgent.mapper.DiffMapper;
@@ -27,6 +28,7 @@ import qg.qgent.service.TaskPlanMaterializationService;
 import qg.qgent.service.TaskRunService;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -350,7 +352,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void qualityLoopExhaustionPersistsExplicitFailureCodeInsteadOfFinalization() {
+    void qualityLoopExhaustionDeliversDiffInsteadOfFailing() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -360,7 +362,7 @@ class TaskOrchestratorTest {
         List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
         fixture.stubPlan(task, planner, all);
         // 质量循环上限 3 次：质量闭环改由 REVIEWING FAILED_QUALITY 驱动 requeue，前 3 次
-        // 触发 requeue，第 4 次循环耗尽落终态。每个闭环 = Test 失败交 Review → Review 判失败 → 回 Coding。
+        // 触发 requeue，第 4 次循环耗尽。每个闭环 = Test 失败交 Review → Review 判失败 → 回 Coding。
         AgentRunOutcome failedTest = fixture.outcome(OrchestrationPhase.TESTING, RunOutcome.FAILED_QUALITY);
         TestResult repairNeeded = new TestResult();
         repairNeeded.setSuccess(false);
@@ -376,10 +378,14 @@ class TaskOrchestratorTest {
                 fixture.success(OrchestrationPhase.CODING), failedTest, failedReview))
                 .orchestrate(task.getProjectId(), task.getId());
 
-        assertThat(fixture.updatedStatuses()).contains("FAILED");
-        assertThat(task.getFailureCode()).isEqualTo("TASK_QUALITY_LOOPS_EXHAUSTED");
-        assertThat(task.getFailureReason()).contains("质量");
-        assertThat(task.getFailureRetryable()).isTrue();
+        // 循环耗尽不再以任务 FAILED 收场：改为交付当前代码供用户人工核对（DIFF_FIRST 生成待确认
+        // Diff，findings 已在审查产物里完整保留），卡片如实标注放行原因，不伪装成审查通过。
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        assertThat(fixture.updatedStatuses()).doesNotContain("FAILED");
+        assertThat(task.getFailureCode()).isNull();
+        verify(fixture.diffs, times(1)).createPendingBatch(eq(task.getProjectId()), eq(task.getId()), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                String.valueOf(summary.get("bypassReason")).contains("修复循环已耗尽"));
     }
 
     @Test
@@ -1437,7 +1443,7 @@ class TaskOrchestratorTest {
     }
 
     @Test
-    void identicalReviewQualityFailureTwiceTerminatesEarlyWithoutExhaustingAllLoops() {
+    void identicalReviewQualityFailureTwiceDeliversDiffInsteadOfFailing() {
         Fixture fixture = new Fixture();
         TaskEntity task = fixture.task();
         TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
@@ -1457,7 +1463,8 @@ class TaskOrchestratorTest {
         reviewResult.setFindings(List.of(finding));
         failedReview.setReviewResult(reviewResult);
 
-        // 同一 MAJOR 连续两轮出现：第二轮判定不收敛，提前终止，不再空转第三次。
+        // 同一 MAJOR 连续两轮出现：第二轮判定不收敛，提前终止，不再空转第三次；但改为交付
+        // 当前代码供用户人工核对（DIFF_FIRST 生成待确认 Diff），不再以任务 FAILED 收场。
         fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
                 fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING), failedReview,
                 fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING), failedReview))
@@ -1469,9 +1476,191 @@ class TaskOrchestratorTest {
                 eq(tester.getId()), anyString(), any(), any(), any());
         verify(fixture.taskRuns, times(2)).createForStep(eq(task.getProjectId()), eq(task.getId()),
                 eq(reviewer.getId()), anyString(), any(), any(), any());
-        assertThat(fixture.updatedStatuses()).contains("FAILED");
-        assertThat(task.getFailureCode()).isEqualTo("TASK_QUALITY_LOOPS_EXHAUSTED");
-        assertThat(task.getFailureReason()).contains("未见修复进展");
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+        assertThat(fixture.updatedStatuses()).doesNotContain("FAILED");
+        assertThat(task.getFailureCode()).isNull();
+        verify(fixture.diffs, times(1)).createPendingBatch(eq(task.getProjectId()), eq(task.getId()), any());
+        assertThat(fixture.capturedArtifactSummaries()).anyMatch(summary ->
+                String.valueOf(summary.get("bypassReason")).contains("未见修复进展"));
+    }
+
+    @Test
+    void manualRetryRehydratesPreviousReviewQualityFeedback() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity developer = fixture.step(task, "DEVELOPER", 2);
+        TaskStepEntity tester = fixture.step(task, "TESTER", 3);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 4);
+        List<TaskStepEntity> all = List.of(planner, developer, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+
+        // 用户重试的正是上一次 FAILED_QUALITY 审查运行：新编排会话应认领该 retry（claimForRetry）。
+        UUID retriedRunId = UUID.randomUUID();
+        TaskRunEntity retriedRun = new TaskRunEntity();
+        retriedRun.setId(retriedRunId);
+        retriedRun.setRole("REVIEWER");
+        retriedRun.setTaskStepId(reviewer.getId());
+        when(fixture.taskRuns.findById(retriedRunId)).thenReturn(retriedRun);
+        when(fixture.tasks.claimForRetry(eq(task.getProjectId()), eq(task.getId()), eq(retriedRunId))).thenReturn(1);
+        // 该审查运行自身的 REVIEWING 产物带完整 findings。
+        TaskExecutionArtifactEntity artifact = new TaskExecutionArtifactEntity();
+        artifact.setTaskStepId(reviewer.getId());
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("outcome", "FAILED_QUALITY");
+        summary.put("review", Map.of("success", false, "needsCodingFix", true,
+                "findings", List.of(Map.of("severity", "MAJOR", "file", "src/AuthService.java",
+                        "line", 3, "issue", "missing ownership check"))));
+        artifact.setSummary(summary);
+        when(fixture.artifacts.latestFailedQualityReviewingArtifact(task.getId(), retriedRunId)).thenReturn(artifact);
+
+        // 新编排会话从 REVIEWER 步骤续跑；重水合后该步骤的 assemble 应拿到前一轮 FAILED_QUALITY
+        // 反馈（含重建的 findings，且不携带误分类 failureCode，避免带偏修复方向）。
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId(), reviewer.getId(), retriedRunId);
+
+        ArgumentCaptor<AgentRunOutcome> feedback = ArgumentCaptor.forClass(AgentRunOutcome.class);
+        verify(fixture.context).assemble(eq(task), eq(reviewer), eq(OrchestrationPhase.REVIEWING),
+                feedback.capture(), any(), any(), any(), any(), any(), any());
+        AgentRunOutcome rehydrated = feedback.getValue();
+        assertThat(rehydrated).isNotNull();
+        assertThat(rehydrated.getOutcome()).isEqualTo(RunOutcome.FAILED_QUALITY);
+        assertThat(rehydrated.getPhase()).isEqualTo(OrchestrationPhase.REVIEWING);
+        assertThat(rehydrated.getFailureCode()).isNull();
+        assertThat(rehydrated.getReviewResult()).isNotNull();
+        assertThat(rehydrated.getReviewResult().isNeedsCodingFix()).isTrue();
+        assertThat(rehydrated.getReviewResult().getFindings()).hasSize(1);
+        assertThat(rehydrated.getReviewResult().getFindings().get(0).getSeverity()).isEqualTo("MAJOR");
+        assertThat(rehydrated.getReviewResult().getFindings().get(0).getFile()).isEqualTo("src/AuthService.java");
+    }
+
+    @Test
+    void qualityFailureRoutesRepairToStepMatchingFindingRepoInsteadOfLastMutable() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity backend = fixture.step(task, "DEVELOPER", 2);
+        backend.setExecutionMode("MUTATE");
+        backend.setTargetFiles(List.of("repo-3/src/main/java/AuthController.java",
+                "repo-3/src/main/java/AuthService.java"));
+        TaskStepEntity frontend = fixture.step(task, "DEVELOPER", 3);
+        frontend.setExecutionMode("MUTATE");
+        frontend.setTargetFiles(List.of("repo-2/src/RegisterScreen.js"));
+        TaskStepEntity tester = fixture.step(task, "TESTER", 4);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 5);
+        List<TaskStepEntity> all = List.of(planner, backend, frontend, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+
+        // 审查 findings 指向 repo-3 后端缺陷，而最后一个 MUTATE 步骤（frontend）只声明 repo-2 文件。
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("MAJOR");
+        finding.setFile("repo-3/src/main/java/AuthService.java");
+        finding.setIssue("password stored in plaintext");
+        reviewResult.setFindings(List.of(finding));
+        failedReview.setReviewResult(reviewResult);
+
+        // 修复应路由到 target_files 覆盖 repo-3 的 backend 步骤（而非最后一个 MUTATE=frontend），
+        // 使修复指令与 target_files 同审查问题所在的仓库，避免质量循环在错误仓库空转。
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), failedReview,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        // backend（命中 findings 仓库）收到修复反馈；frontend 重跑但不携带修复反馈。
+        assertThat(fixture.feedbacksForStep(backend.getId())).containsExactly(null, failedReview);
+        assertThat(fixture.feedbacksForStep(frontend.getId())).containsExactly(null, null);
+        // 路由到更早的 backend 步骤时，resetStepsForQualityRework 从该步骤重置，后续 MUTATE 一并重跑。
+        assertThat(fixture.captureStepStatuses()).contains(backend.getId() + "=PENDING",
+                frontend.getId() + "=PENDING");
+        assertThat(fixture.updatedStatuses()).contains("WAITING_DIFF_CONFIRMATION");
+    }
+
+    @Test
+    void qualityFailureFallsBackToLastMutableWhenFindingsDoNotMatchAnyStepRepo() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity backend = fixture.step(task, "DEVELOPER", 2);
+        backend.setExecutionMode("MUTATE");
+        backend.setTargetFiles(List.of("repo-3/src/main/java/AuthService.java"));
+        TaskStepEntity frontend = fixture.step(task, "DEVELOPER", 3);
+        frontend.setExecutionMode("MUTATE");
+        frontend.setTargetFiles(List.of("repo-2/src/RegisterScreen.js"));
+        TaskStepEntity tester = fixture.step(task, "TESTER", 4);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 5);
+        List<TaskStepEntity> all = List.of(planner, backend, frontend, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+
+        // findings 归属 repo-5，不在任何 MUTATE 步骤的仓库范围内：无步骤可定向，回退最后一个 MUTATE。
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("MAJOR");
+        finding.setFile("repo-5/src/External.java");
+        reviewResult.setFindings(List.of(finding));
+        failedReview.setReviewResult(reviewResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), failedReview,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        // frontend（最后一个 MUTATE）收到修复反馈；backend 不重置、不携带修复反馈。
+        assertThat(fixture.feedbacksForStep(frontend.getId())).containsExactly(null, failedReview);
+        assertThat(fixture.feedbacksForStep(backend.getId())).containsExactly((AgentRunOutcome) null);
+        assertThat(fixture.captureStepStatuses()).doesNotContain(backend.getId() + "=PENDING")
+                .contains(frontend.getId() + "=PENDING");
+    }
+
+    @Test
+    void qualityFailureRoutesToLastMutableWhenAllStepsShareOneRepository() {
+        Fixture fixture = new Fixture();
+        TaskEntity task = fixture.task();
+        TaskStepEntity planner = fixture.step(task, "PLANNER", 1);
+        TaskStepEntity backend = fixture.step(task, "DEVELOPER", 2);
+        backend.setExecutionMode("MUTATE");
+        backend.setTargetFiles(List.of("repo-1/src/main/java/AuthService.java"));
+        TaskStepEntity frontend = fixture.step(task, "DEVELOPER", 3);
+        frontend.setExecutionMode("MUTATE");
+        frontend.setTargetFiles(List.of("repo-1/src/RegisterScreen.js"));
+        TaskStepEntity tester = fixture.step(task, "TESTER", 4);
+        TaskStepEntity reviewer = fixture.step(task, "REVIEWER", 5);
+        List<TaskStepEntity> all = List.of(planner, backend, frontend, tester, reviewer);
+        fixture.stubPlan(task, planner, all);
+
+        // 所有 MUTATE 步骤同属 repo-1（单仓库任务）：仓库路由无意义，维持最后一个 MUTATE 语义。
+        AgentRunOutcome failedReview = fixture.outcome(OrchestrationPhase.REVIEWING, RunOutcome.FAILED_QUALITY);
+        ReviewResult reviewResult = new ReviewResult();
+        reviewResult.setSuccess(false);
+        reviewResult.setNeedsCodingFix(true);
+        ReviewResult.Finding finding = new ReviewResult.Finding();
+        finding.setSeverity("MAJOR");
+        finding.setFile("repo-1/src/main/java/AuthService.java");
+        reviewResult.setFindings(List.of(finding));
+        failedReview.setReviewResult(reviewResult);
+
+        fixture.orchestrator(fixture.sequenceAgent(fixture.planSuccess(),
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.CODING),
+                fixture.success(OrchestrationPhase.TESTING), failedReview,
+                fixture.success(OrchestrationPhase.CODING), fixture.success(OrchestrationPhase.TESTING),
+                fixture.success(OrchestrationPhase.REVIEWING)))
+                .orchestrate(task.getProjectId(), task.getId());
+
+        assertThat(fixture.feedbacksForStep(frontend.getId())).containsExactly(null, failedReview);
+        assertThat(fixture.feedbacksForStep(backend.getId())).containsExactly((AgentRunOutcome) null);
+        assertThat(fixture.captureStepStatuses()).doesNotContain(backend.getId() + "=PENDING")
+                .contains(frontend.getId() + "=PENDING");
     }
 
     private static final class Fixture {

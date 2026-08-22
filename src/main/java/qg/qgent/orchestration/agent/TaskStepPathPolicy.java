@@ -84,6 +84,23 @@ public final class TaskStepPathPolicy {
     }
 
     /**
+     * 从工作区相对路径提取一级路径段作为仓库 key（如 {@code repo-2/src/App.js} → {@code repo-2}）。
+     * 仅含单段的裸文件名、空路径或不安全路径返回 null，表示无法确定仓库归属。质量循环用它把
+     * 修复步骤按审查 findings 归属的仓库定向，避免修复步骤与问题不在同一仓库导致循环空转。
+     */
+    public static String repoKeyOf(String path) {
+        String normalized = normalize(path);
+        if (normalized == null) {
+            return null;
+        }
+        int slash = normalized.indexOf('/');
+        if (slash <= 0) {
+            return null;
+        }
+        return normalized.substring(0, slash);
+    }
+
+    /**
      * Normalizes a workspace-relative path and rejects absolute paths and any
      * parent traversal segment. A null return means the input is unsafe.
      */
