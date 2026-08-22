@@ -276,8 +276,9 @@ public class MergeRequestService {
                 : List.of();
         Set<String> pendingIds = pendingCandidates.stream()
                 .map(MergeRequestSummaryResponse::getId).filter(Objects::nonNull).collect(Collectors.toSet());
-        UUID cursorUuid = parseCursor(cursor);
-        boolean cursorIsPending = cursor != null && pendingIds.contains(cursor);
+        ListCursor position = decodeListCursor(cursor);
+        boolean cursorIsPending = position != null && position.createdAt() == null
+                && pendingIds.contains(position.id().toString());
         QueryWrapper<MergeRequestEntity> query = Wrappers.<MergeRequestEntity>query()
                 .in("project_repository_id", repoIds)
                 // PENDING_CREATE is a transient projection built below. Older versions
@@ -285,9 +286,14 @@ public class MergeRequestService {
                 .ne("status", "PENDING_CREATE")
                 .eq(status != null && !status.isBlank(), "status", status)
                 .eq(repositoryId != null, "project_repository_id", repositoryId)
-                // While paging through synthetic pending rows, do not apply the synthetic UUID
-                // to real MR rows or real rows could be skipped between placeholder pages.
-                .lt(!cursorIsPending && cursorUuid != null, "id", cursorUuid)
+                .and(position != null && position.createdAt() != null, q ->
+                        q.lt("created_at", position.createdAt())
+                                .or(x -> x.eq("created_at", position.createdAt())
+                                        .lt("id", position.id())))
+                // Compatibility for cursors issued by older versions before the time cursor.
+                .lt(position != null && position.createdAt() == null && !cursorIsPending,
+                        "id", position == null ? null : position.id())
+                .orderByDesc("created_at")
                 .orderByDesc("id")
                 .last("LIMIT " + (size + 1));
         if (groupId != null) {
@@ -319,12 +325,9 @@ public class MergeRequestService {
                         gatesByMr.get(mr.getId()), webUrlsByMr.get(mr.getId())))
                 .collect(Collectors.toCollection(ArrayList::new));
 
-        // Pending placeholders occupy the first cursor phase; after a real MR cursor is
-        // returned, the normal real-MR cursor stream resumes and placeholders stay hidden.
         if (!pendingCandidates.isEmpty()) {
             List<MergeRequestSummaryResponse> pending = pendingCandidates.stream()
-                    .filter(value -> cursor == null || cursor.isBlank() || cursorIsPending)
-                    .filter(value -> !cursorIsPending || comparePlaceholderId(value.getId(), cursor) < 0)
+                    .filter(value -> isAfterCursor(value, position, cursorIsPending))
                     .toList();
             List<MergeRequestSummaryResponse> merged = new ArrayList<>(pending.size() + items.size());
             merged.addAll(pending);
@@ -332,11 +335,15 @@ public class MergeRequestService {
             items = merged;
         }
 
-        boolean hasMore = items.size() > size || (rows.size() > size && !cursorIsPending);
+        items.sort(this::compareListItems);
+        boolean hasMore = items.size() > size;
         if (items.size() > size) {
             items = new ArrayList<>(items.subList(0, size));
         }
-        String nextCursor = hasMore && !items.isEmpty() ? items.get(items.size() - 1).getId() : null;
+        String nextCursor = hasMore && !items.isEmpty()
+                ? encodeListCursor(responseCreatedAt(items.get(items.size() - 1)),
+                parseUuid(items.get(items.size() - 1).getId()))
+                : null;
         PageMeta meta = new PageMeta(nextCursor, hasMore);
         return new ApiPageResponse<>(items, meta, requestId);
     }
@@ -2036,10 +2043,88 @@ public class MergeRequestService {
             row.setCreateMode(placeholderCreateMode(task));
             result.add(row);
         }
-        result.sort(Comparator.comparing(MergeRequestSummaryResponse::getId,
-                Comparator.nullsLast(Comparator.reverseOrder())));
+        result.sort(this::compareListItems);
         return result;
     }
+
+    private boolean isAfterCursor(MergeRequestSummaryResponse row, ListCursor position,
+                                  boolean cursorIsPending) {
+        if (position == null) return true;
+        if (position.createdAt() == null) {
+            return cursorIsPending && comparePlaceholderId(row.getId(), position.id().toString()) < 0;
+        }
+        LocalDateTime createdAt = responseCreatedAt(row);
+        if (createdAt == null) return false;
+        int time = createdAt.compareTo(position.createdAt());
+        if (time < 0) return true;
+        return time == 0 && parseUuid(row.getId()).compareTo(position.id()) < 0;
+    }
+
+    private int compareListItems(MergeRequestSummaryResponse left, MergeRequestSummaryResponse right) {
+        LocalDateTime leftTime = responseCreatedAt(left);
+        LocalDateTime rightTime = responseCreatedAt(right);
+        if (leftTime == null && rightTime != null) return 1;
+        if (leftTime != null && rightTime == null) return -1;
+        if (leftTime != null && rightTime != null) {
+            int time = rightTime.compareTo(leftTime);
+            if (time != 0) return time;
+        }
+        return parseUuid(right.getId()).compareTo(parseUuid(left.getId()));
+    }
+
+    private LocalDateTime responseCreatedAt(MergeRequestSummaryResponse row) {
+        if (row == null || row.getCreatedAt() == null || row.getCreatedAt().isBlank()) return null;
+        try {
+            return Instant.parse(row.getCreatedAt()).atZone(ZoneOffset.UTC).toLocalDateTime();
+        } catch (RuntimeException ignored) {
+            try {
+                return LocalDateTime.parse(row.getCreatedAt());
+            } catch (RuntimeException ignoredAgain) {
+                return null;
+            }
+        }
+    }
+
+    private UUID parseUuid(String value) {
+        if (value == null || value.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", "MR 列表游标缺少 ID");
+        }
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", "MR 列表游标格式不合法");
+        }
+    }
+
+    private String encodeListCursor(LocalDateTime createdAt, UUID id) {
+        if (createdAt == null || id == null) return null;
+        String raw = "createdAt:" + createdAt + "|id:" + id;
+        return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private ListCursor decodeListCursor(String cursor) {
+        if (cursor == null || cursor.isBlank()) return null;
+        try {
+            String raw = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
+            String[] fields = raw.split("\\|", -1);
+            if (fields.length != 2 || !fields[0].startsWith("createdAt:") || !fields[1].startsWith("id:")) {
+                throw new IllegalArgumentException();
+            }
+            LocalDateTime createdAt = LocalDateTime.parse(fields[0].substring("createdAt:".length()));
+            UUID id = UUID.fromString(fields[1].substring("id:".length()));
+            return new ListCursor(createdAt, id);
+        } catch (RuntimeException encodedError) {
+            // 兼容时间游标上线前已经发给客户端的纯 UUID 游标。
+            try {
+                return new ListCursor(null, UUID.fromString(cursor));
+            } catch (RuntimeException legacyError) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", "MR 列表游标格式不合法");
+            }
+        }
+    }
+
+    private record ListCursor(LocalDateTime createdAt, UUID id) { }
 
     private String normalizeCommitMessage(String commitMessage) {
         if (commitMessage == null || commitMessage.isBlank()) {
@@ -2229,17 +2314,6 @@ public class MergeRequestService {
 
     private ApiPageResponse<MergeRequestSummaryResponse> emptyPage(String requestId) {
         return new ApiPageResponse<>(List.of(), new PageMeta(null, false), requestId);
-    }
-
-    private UUID parseCursor(String cursor) {
-        if (cursor == null || cursor.isBlank()) {
-            return null;
-        }
-        try {
-            return UUID.fromString(cursor);
-        } catch (IllegalArgumentException e) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", "游标格式不合法");
-        }
     }
 
     private int clampLimit(int limit) {
