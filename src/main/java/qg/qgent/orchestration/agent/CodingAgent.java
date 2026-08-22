@@ -139,7 +139,8 @@ public class CodingAgent implements Agent {
                 log.info("CODING_SELF_REPORT_CORRECTION_RETRY phase={} workspaceId={} taskRunId={} attempt={}",
                         input.getPhase(), input.getWorkspaceId(), input.getTaskRunId(), correctiveRetries);
                 String correctiveInstruction = CodingPromptBuilder.correctiveSelfReportInstruction(coding,
-                        correctiveRetries, MAX_SELF_REPORT_CORRECTION_RETRIES);
+                        correctiveRetries, MAX_SELF_REPORT_CORRECTION_RETRIES,
+                        observedWrites.correctiveToolGuidance());
                 coding = protocol.isNative()
                         ? executeCodingNative(input, observations, observedWrites, correctiveInstruction)
                         : executeCodingLegacy(input, observedWrites, correctiveInstruction);
@@ -228,6 +229,9 @@ public class CodingAgent implements Agent {
         }
         if (hasPatchRepairRequired(observedWrites)) {
             return false;
+        }
+        if (observedWrites.hasCorrectableToolFailure()) {
+            return true;
         }
         return observations == null || observations.stream().noneMatch(observation ->
                 observation != null && observation.protocolFailureCode() != null);

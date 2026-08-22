@@ -190,16 +190,27 @@ public class CodingPromptBuilder {
 
     /** 纠正模型过早的未完成判断，要求基于上轮证据继续实施。 */
     public static String correctiveSelfReportInstruction(CodingResult previous, int attempt, int maxAttempts) {
+        return correctiveSelfReportInstruction(previous, attempt, maxAttempts, "");
+    }
+
+    /**
+     * 纠正模型过早结束时，携带服务端记录的可纠正工具失败，避免模型只复述自身的笼统失败理由。
+     */
+    public static String correctiveSelfReportInstruction(CodingResult previous, int attempt, int maxAttempts,
+                                                         String toolGuidance) {
         String reason = previous == null || previous.getErrors() == null || previous.getErrors().isEmpty()
                 ? (previous == null || previous.getSummary() == null || previous.getSummary().isBlank()
                         ? "未提供原因" : previous.getSummary())
                 : previous.getErrors().getFirst();
+        String guidance = toolGuidance == null || toolGuidance.isBlank()
+                ? "" : "\n" + toolGuidance;
         return """
 
                 【继续完成】你上一轮返回 success=false，但这只表示当前尚未完成，不能代替实现。现在是第 %d/%d 次纠正机会。
                 上一轮说明：%s
+                %s
                 请重新检查工作区和任务目标，继续调用工具完成可完成的改动。不要因缺少目标文件、一次工具失败或不确定现状而直接放弃；缺少文件时应在允许范围内创建它。只有遇到无法通过进一步工具操作解决的明确阻塞时，才再次返回 success=false。
-                """.formatted(attempt, maxAttempts, reason);
+                """.formatted(attempt, maxAttempts, reason, guidance);
     }
 
     /**

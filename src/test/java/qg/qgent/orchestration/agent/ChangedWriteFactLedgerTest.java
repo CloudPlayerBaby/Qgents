@@ -62,4 +62,16 @@ class ChangedWriteFactLedgerTest {
                 "TOOL_PATCH_REPAIR_REQUIRED", true, "repair required")));
         assertThat(inherited.patchFailureCounts()).containsEntry("src/A.java", 3);
     }
+
+    @Test
+    void correctiveGuidanceClearsAfterSuccessfulSamePathNoop() {
+        ledger.recordToolOutcomes(List.of(
+                new ToolOutcome("write_file", "repo-1/src/services/apiClient.js", false, false,
+                        "TOOL_EXECUTION_FAILED", false,
+                        "write_file only creates new files; file already exists"),
+                new ToolOutcome("apply_patch", "repo-1/src/services/apiClient.js", true, false, null, false, null)));
+
+        assertThat(ledger.correctiveToolGuidance()).isEmpty();
+        assertThat(ledger.hasCorrectableToolFailure()).isFalse();
+    }
 }

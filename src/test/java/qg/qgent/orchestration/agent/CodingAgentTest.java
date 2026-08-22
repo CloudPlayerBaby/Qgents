@@ -31,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -526,6 +527,40 @@ class CodingAgentTest {
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         verify(llm, times(4)).nextToolTurn(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void nativeExistingFileFailureForcesCorrectiveRoundWithServerToolGuidance() {
+        when(codeAccess.listFiles(any())).thenReturn(List.of("repo-1/src/services/apiClient.js"));
+        AtomicInteger call = new AtomicInteger();
+        when(llm.nextToolTurn(anyString(), anyList(), anyList())).thenAnswer(invocation -> {
+            int current = call.getAndIncrement();
+            if (current == 0) {
+                @SuppressWarnings("unchecked")
+                List<ToolCallback> callbacks = invocation.getArgument(2);
+                callbacks.stream().filter(callback -> "write_file".equals(callback.getToolDefinition().name()))
+                        .findFirst().orElseThrow().call("{\"path\":\"repo-1/src/services/apiClient.js\",\"content\":\"code\"}");
+                return toolTurn("write_file");
+            }
+            if (current == 1) {
+                return finalTurn(bareResult(false, "无法继续", null), "stop");
+            }
+            return finalTurn(bareResult(true, "已按工具指引继续处理", null), "stop");
+        });
+
+        AgentRunOutcome outcome = nativeAgent().run(codingInput());
+
+        assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
+        verify(writer, never()).writeFile(any(), eq("repo-1/src/services/apiClient.js"), anyString());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Message>> historyCaptor = ArgumentCaptor.forClass(List.class);
+        verify(llm, times(3)).nextToolTurn(anyString(), historyCaptor.capture(), anyList());
+        UserMessage correctiveUser = (UserMessage) historyCaptor.getAllValues().get(2).get(0);
+        assertThat(correctiveUser.getText()).contains("服务端工具记录")
+                .contains("apiClient.js")
+                .contains("only creates new files")
+                .contains("apply_patch")
+                .contains("不要再次调用 write_file");
     }
 
     @Test

@@ -25,4 +25,12 @@ public class GitHubInstallationDetails {
      * 授权账号类型。
      */
     private String accountType;
+
+    /** GitHub App 仓库访问范围：ALL 或 SELECTED。 */
+    private String repositorySelection;
+
+    /** 兼容既有测试和旧适配器；旧数据视为未知范围，不能直接用于自动建仓。 */
+    public GitHubInstallationDetails(long installationId, String accountLogin, String accountType) {
+        this(installationId, accountLogin, accountType, null);
+    }
 }
