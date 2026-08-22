@@ -149,7 +149,7 @@ public class SecurityConfig {
         // 允许的请求头：Idempotency-Key（写接口幂等）、Last-Event-ID（SSE 续传）
         c.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Request-Id", "Idempotency-Key",
                 "Last-Event-ID"));
-        // 允许携带 Cookie
+        // 当前认证使用 Authorization Bearer，不启用跨域凭证（Cookie）传递。
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         // 注册跨域配置
         source.registerCorsConfiguration("/**", c);
