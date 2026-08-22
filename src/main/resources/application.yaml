@@ -3,15 +3,20 @@ spring:
     import: optional:file:.env[.properties]
   ai:
     openai:
-      # Qwen3-VL-Plus（DashScope OpenAI 兼容）：支持图片/文件多模态输入。
+      # Qwen3.8-Max（DashScope OpenAI 兼容）：统一多模态旗舰，支持图片/文档/PDF 输入，
+      # 并提供内置代码执行工具，兼顾多模态理解与编程能力。
       # 回退 DeepSeek：api-key=${DEEPSEEK_API_KEY} / base-url=https://api.deepseek.com/ / model=deepseek-v4-flash
       api-key: ${DASHSCOPE_API_KEY}
       base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
       chat:
         options:
-          model: qwen3-vl-plus
+          model: qwen3.8-max
           temperature: 0.2
-          max-tokens: 8192
+          # 限制单次输出上限：非流式请求必须等服务端生成完整个响应才返回，
+          # 过大的 max-tokens 会让超长输出（如 PLANNER 详细计划）超过服务端响应时限，
+          # 表现为请求挂起数分钟后被取消（Canceled）。4096 对大多数编码/规划足够；
+          # 若确需长输出，应改用流式而非放大本值。
+          max-tokens: 4096
   application:
     name: Qgents
   datasource:

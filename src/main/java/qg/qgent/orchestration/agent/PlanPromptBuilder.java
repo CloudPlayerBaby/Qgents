@@ -88,6 +88,7 @@ public class PlanPromptBuilder {
                 - files 必须是无 .. 的相对路径；只能引用给出的文件树中已有的文件，或明确需要新建的文件（在 description 说明）。
                 - 多仓库 Workspace 下，files 的每一项必须以对应仓库的 workspacePath 开头，格式为 workspacePath/仓库内路径；新建目录和新建文件同样必须带此前缀。禁止输出 src/App.vue、vue3/、package.json 这类无法确定仓库的裸路径。单仓库时才可使用仓库内相对路径。
                 - 不要臆造文件树中不存在的既有文件。
+                - 输出规模控制：你的响应会被一次性解析且不流式返回，超长输出会导致请求超时。请保持精简——taskUnderstanding、implementationGoals、testPlan 用简洁精炼的语言，不逐条堆砌；steps 每项的 description 与 acceptanceNotes 控制在 1~2 句话，machineAssertions 只写能机器校验的断言。
 
                 交付模式判定规则（deliveryMode 二选一，必须给出且只能给出 DIFF_FIRST 或 MR_FIRST）：
                 - MR_FIRST（大功能，自动 commit/push 后等待 MR 前预检）：改动涉及多个仓库；或实现步骤超过 2 个（多模块/跨前后端）；或属于新功能模块/架构级改动；或风险高、需要人逐行审查；或验证复杂度高（需要 Dry Run 验证合并冲突/兼容性）。MR 只能在 Dry Run 和独立 CQ+1 通过后由用户显式创建。
