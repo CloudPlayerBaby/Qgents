@@ -52,6 +52,7 @@ public class TaskRunRecoveryScheduler {
     private final ApplicationEventPublisher eventPublisher;
     private final TaskRunLogService taskRunLogService;
     private final TaskRunFailureDiagnosticService failureDiagnostics;
+    private final WorkspaceWriteLeaseService workspaceWriteLeases;
 
     /**
      * 无进行中 Run 的崩溃任务的陈旧阈值；可配置，默认 15 分钟。
@@ -75,7 +76,6 @@ public class TaskRunRecoveryScheduler {
         this(tasks, steps, runMapper, artifactService, eventService, eventPublisher, staleRunThreshold, null, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public TaskRunRecoveryScheduler(TaskMapper tasks, TaskStepMapper steps, TaskRunMapper runMapper,
                                     TaskExecutionArtifactService artifactService,
                                     EventService eventService,
@@ -83,6 +83,19 @@ public class TaskRunRecoveryScheduler {
                                      @Value("${qgents.task-recovery.stale-run-threshold:20m}") Duration staleRunThreshold,
                                      TaskRunLogService taskRunLogService,
                                      TaskRunFailureDiagnosticService failureDiagnostics) {
+        this(tasks, steps, runMapper, artifactService, eventService, eventPublisher, staleRunThreshold,
+                taskRunLogService, failureDiagnostics, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TaskRunRecoveryScheduler(TaskMapper tasks, TaskStepMapper steps, TaskRunMapper runMapper,
+                                    TaskExecutionArtifactService artifactService,
+                                    EventService eventService,
+                                    ApplicationEventPublisher eventPublisher,
+                                    @Value("${qgents.task-recovery.stale-run-threshold:20m}") Duration staleRunThreshold,
+                                    TaskRunLogService taskRunLogService,
+                                    TaskRunFailureDiagnosticService failureDiagnostics,
+                                    WorkspaceWriteLeaseService workspaceWriteLeases) {
         this.tasks = tasks;
         this.steps = steps;
         this.runMapper = runMapper;
@@ -92,6 +105,7 @@ public class TaskRunRecoveryScheduler {
         this.staleRunThreshold = staleRunThreshold;
         this.taskRunLogService = taskRunLogService;
         this.failureDiagnostics = failureDiagnostics;
+        this.workspaceWriteLeases = workspaceWriteLeases;
     }
 
     /**
@@ -141,6 +155,8 @@ public class TaskRunRecoveryScheduler {
                             artifactTypeForRole(run.getRole()), orphanSummary(run, step));
                 }
                 markStepFailedIfActive(run.getTaskId(), run.getTaskStepId());
+                // 先释放终态 Task 的残留写租约，再发布通知；通知失败不能让 Workspace 继续被锁住。
+                releaseTerminalTaskLease(task);
                 if (taskFailed) {
                     if (taskRunLogService != null) {
                         taskRunLogService.append(run, "TERMINAL", run.getRole(),
@@ -156,6 +172,19 @@ public class TaskRunRecoveryScheduler {
             } catch (RuntimeException e) {
                 log.warn("stale run reclaim skipped runId={}: {}", runId, e.getMessage());
             }
+        }
+    }
+
+    private void releaseTerminalTaskLease(TaskEntity task) {
+        if (workspaceWriteLeases == null || task == null || task.getWorkspaceId() == null) {
+            return;
+        }
+        try {
+            workspaceWriteLeases.releaseForTerminalTask(task.getProjectId(), task.getWorkspaceId(), task.getId());
+        } catch (RuntimeException e) {
+            // 租约清理失败不应掩盖已持久化的 TaskRun/Task 失败；下次恢复扫描继续兜底。
+            log.warn("failed to release terminal task workspace lease taskId={} workspaceId={}: {}",
+                    task.getId(), task.getWorkspaceId(), e.getMessage());
         }
     }
 

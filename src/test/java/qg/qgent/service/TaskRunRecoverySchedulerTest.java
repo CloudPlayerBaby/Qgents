@@ -39,8 +39,9 @@ class TaskRunRecoverySchedulerTest {
     private final EventService taskEvents = mock(EventService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final TaskRunFailureDiagnosticService failureDiagnostics = mock(TaskRunFailureDiagnosticService.class);
+    private final WorkspaceWriteLeaseService workspaceWriteLeases = mock(WorkspaceWriteLeaseService.class);
     private final TaskRunRecoveryScheduler scheduler = new TaskRunRecoveryScheduler(tasks, steps, runMapper,
-            artifacts, taskEvents, events, Duration.ofMinutes(20), null, failureDiagnostics);
+            artifacts, taskEvents, events, Duration.ofMinutes(20), null, failureDiagnostics, workspaceWriteLeases);
 
     @Test
     void recoversOrphanedTaskFromFirstIncompleteStep() {
@@ -208,11 +209,12 @@ class TaskRunRecoverySchedulerTest {
         UUID taskId = UUID.randomUUID();
         UUID stepId = UUID.randomUUID();
         UUID runId = UUID.randomUUID();
-        UUID firstIncomplete = UUID.randomUUID();
+        UUID workspaceId = UUID.randomUUID();
 
         TaskEntity task = new TaskEntity();
         task.setId(taskId);
         task.setProjectId(projectId);
+        task.setWorkspaceId(workspaceId);
         TaskRunEntity run = new TaskRunEntity();
         run.setId(runId);
         run.setTaskId(taskId);
@@ -241,8 +243,9 @@ class TaskRunRecoverySchedulerTest {
                 org.mockito.ArgumentMatchers.argThat(outcome ->
                         outcome.getOutcome() == qg.qgent.orchestration.RunOutcome.FAILED_INFRASTRUCTURE
                                 && "ORPHANED_RUN_TIMEOUT".equals(outcome.getDiagnosticFailureCode())));
-        InOrder persistenceBeforeEvent = org.mockito.Mockito.inOrder(artifacts, taskEvents);
+        InOrder persistenceBeforeEvent = org.mockito.Mockito.inOrder(artifacts, workspaceWriteLeases, taskEvents);
         persistenceBeforeEvent.verify(artifacts).createRunArtifact(eq(task), eq(run), eq(step), eq("CODING"), any());
+        persistenceBeforeEvent.verify(workspaceWriteLeases).releaseForTerminalTask(projectId, workspaceId, taskId);
         persistenceBeforeEvent.verify(taskEvents).publish(eq(projectId), eq(task.getRequirementGroupId()), eq("task.updated"),
                 eq(taskId.toString()), org.mockito.ArgumentMatchers.anyMap());
         verify(taskEvents).publish(eq(projectId), eq(task.getRequirementGroupId()), eq("task.updated"),
@@ -250,6 +253,7 @@ class TaskRunRecoverySchedulerTest {
         verify(taskEvents).publish(eq(projectId), eq(task.getRequirementGroupId()), eq("task-run.updated"),
                 eq(runId.toString()), org.mockito.ArgumentMatchers.anyMap());
         verify(events, never()).publishEvent(any());
+        verify(workspaceWriteLeases).releaseForTerminalTask(projectId, workspaceId, taskId);
     }
 
     @Test
