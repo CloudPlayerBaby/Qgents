@@ -250,6 +250,15 @@ class GitHubOAuthServiceTest {
     }
 
     @Test
+    void requirePersonalCredentialRejectsMissingAuthorizationWithActionableCode() {
+        UUID userId = UUID.randomUUID();
+        when(authorizationMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+
+        ApiException exception = assertThrows(ApiException.class, () -> service.requirePersonalCredential(userId));
+        assertEquals("GITHUB_OAUTH_REQUIRED", exception.code());
+    }
+
+    @Test
     void callbackReconcilesDuplicateKeyOnConcurrentSave() {
         UUID userId = UUID.randomUUID();
         UUID stateId = UUID.randomUUID();
