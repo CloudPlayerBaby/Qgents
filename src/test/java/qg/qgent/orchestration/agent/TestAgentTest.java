@@ -705,14 +705,13 @@ class TestAgentTest {
     // ---------- Plan/Step 结构化验证命令消费 ----------
 
     @Test
-    void consumesPlannedNodeVerificationCommand() {
-        // Planner 明确要求 node tests/todo.test.js（无 package.json 也能执行），
-        // TaskStep 持久化的 verificationCommands 优先于自动探测。
-        when(codeAccess.listFiles(any())).thenReturn(List.of("src/todo.js", "tests/todo.test.js"));
+    void filtersHistoricalNodeVerificationCommandAndFallsBackToAutoDetection() {
+        // 历史计划中的 node 命令不在 Worker 固定目录中，必须过滤并回退安全的自动探测。
+        when(codeAccess.listFiles(any())).thenReturn(List.of("pom.xml", "src/todo.js", "tests/todo.test.js"));
         when(executionPort.execute(any(), anyList(), any()))
                 .thenReturn(new ExecutionResult(true, 0, "all todo tests passed", "", null));
         when(llm.complete(anyString(), anyList()))
-                .thenReturn("{\"success\":true,\"summary\":\"node tests passed\",\"failures\":[],\"needsCodingFix\":false}");
+                .thenReturn("{\"success\":true,\"summary\":\"mvn tests passed\",\"failures\":[],\"needsCodingFix\":false}");
 
         AgentInput input = input();
         input.setVerificationCommands(List.of(plannedCommand(null, List.of("node", "tests/todo.test.js"))));
@@ -722,17 +721,17 @@ class TestAgentTest {
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.SUCCEEDED);
         TestResult test = outcome.getTestResult();
         assertThat(test.isSuccess()).isTrue();
-        assertThat(test.getCommand()).isEqualTo("node tests/todo.test.js");
-        verify(executionPort).execute(eq(workspaceId), eq(List.of("node", "tests/todo.test.js")), any());
+        assertThat(test.getCommand()).isEqualTo("mvn test");
+        verify(executionPort).execute(eq(workspaceId), eq(List.of("mvn", "test")), any());
     }
 
     @Test
     void consumesPerRepositoryPlannedCommandsAndMergesFailure() {
-        when(codeAccess.listFiles(any())).thenReturn(List.of("backend/pom.xml", "frontend/tests/a.test.js"));
+        when(codeAccess.listFiles(any())).thenReturn(List.of("backend/pom.xml", "frontend/package.json"));
         // backend 通过、frontend 失败 → 整体 TEST_FAILED（Test 不自判失败，交 Review 裁决）。
         when(executionPort.execute(any(), eq("backend"), eq(List.of("mvn", "test")), any()))
                 .thenReturn(new ExecutionResult(true, 0, "backend ok", "", null));
-        when(executionPort.execute(any(), eq("frontend"), eq(List.of("node", "tests/a.test.js")), any()))
+        when(executionPort.execute(any(), eq("frontend"), eq(List.of("npm", "test")), any()))
                 .thenReturn(new ExecutionResult(true, 1, "", "1 test failed", null));
         when(llm.complete(anyString(), anyList()))
                 .thenReturn("{\"success\":false,\"summary\":\"frontend test failed\",\"failures\":[{\"name\":\"a\",\"reason\":\"boom\",\"severity\":\"ERROR\"}],\"needsCodingFix\":true}");
@@ -740,16 +739,16 @@ class TestAgentTest {
         AgentInput input = input();
         input.setVerificationCommands(List.of(
                 plannedCommand("backend", List.of("mvn", "test")),
-                plannedCommand("frontend", List.of("node", "tests/a.test.js"))));
+                plannedCommand("frontend", List.of("npm", "test"))));
 
         AgentRunOutcome outcome = agent().run(input);
 
         assertThat(outcome.getOutcome()).isEqualTo(RunOutcome.TEST_FAILED);
         TestResult test = outcome.getTestResult();
         assertThat(test.isSuccess()).isFalse();
-        assertThat(test.getCommand()).isEqualTo("mvn test && node tests/a.test.js");
+        assertThat(test.getCommand()).isEqualTo("mvn test && npm test");
         verify(executionPort).execute(eq(workspaceId), eq("backend"), eq(List.of("mvn", "test")), any());
-        verify(executionPort).execute(eq(workspaceId), eq("frontend"), eq(List.of("node", "tests/a.test.js")), any());
+        verify(executionPort).execute(eq(workspaceId), eq("frontend"), eq(List.of("npm", "test")), any());
     }
 
     @Test

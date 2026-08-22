@@ -2,8 +2,8 @@
 -- TEST step. NULL keeps pre-migration steps compatible; newly materialized TEST
 -- steps populate it so the Test Agent can consume the commands during normal
 -- runs and after resume (where the in-memory PlanResult is null). The column
--- stores only whitelisted command templates (mvn/gradle/npm test or
--- node <tests/*.test.js>); arbitrary shell is rejected at parse time.
+-- stores only whitelisted command templates (mvn/gradle/npm test); arbitrary
+-- shell, file paths and module parameters are rejected at parse time.
 SET @verification_commands_exists = (
     SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task_steps' AND COLUMN_NAME = 'verification_commands'

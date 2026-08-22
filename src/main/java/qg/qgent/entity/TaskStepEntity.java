@@ -94,7 +94,7 @@ public class TaskStepEntity {
     public static class VerificationCommand {
         /** 目标仓库目录（Workspace 相对路径，与 worktree workspacePath 一致）；空表示 Workspace 根。 */
         private String repositoryPath;
-        /** 白名单验证命令，如 ["node", "tests/todo.test.js"]。 */
+        /** 白名单验证命令，如 ["mvn", "test"]。 */
         private List<String> command = new java.util.ArrayList<>();
     }
 }

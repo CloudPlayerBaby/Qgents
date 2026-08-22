@@ -19,6 +19,7 @@ import qg.qgent.orchestration.DeliveryMode;
 import qg.qgent.orchestration.DeliveryModeDecider;
 import qg.qgent.orchestration.TaskStepExecutionMode;
 import qg.qgent.orchestration.agent.TaskStepPathPolicy;
+import qg.qgent.orchestration.agent.TestCommandResolver;
 import qg.qgent.orchestration.result.PlanResult;
 import qg.qgent.entity.RepositoryBranchConfigEntity;
 import qg.qgent.mapper.RepositoryBranchConfigMapper;
@@ -313,8 +314,9 @@ public class TaskPlanMaterializationService {
                 || plan.getVerification().getCommands().isEmpty()) {
             return null;
         }
-        return plan.getVerification().getCommands().stream()
-                .filter(command -> command.getCommand() != null && !command.getCommand().isEmpty())
+        List<TaskStepEntity.VerificationCommand> commands = plan.getVerification().getCommands().stream()
+                .filter(command -> command.getCommand() != null
+                        && TestCommandResolver.isAllowedVerificationCommand(command.getCommand()))
                 .map(command -> {
                     TaskStepEntity.VerificationCommand frozen = new TaskStepEntity.VerificationCommand();
                     frozen.setRepositoryPath(command.getRepositoryPath());
@@ -322,6 +324,7 @@ public class TaskPlanMaterializationService {
                     return frozen;
                 })
                 .collect(java.util.stream.Collectors.toList());
+        return commands.isEmpty() ? null : commands;
     }
 
     /**

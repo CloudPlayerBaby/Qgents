@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
@@ -100,5 +101,21 @@ class WorkerSandboxExecutionPortTest {
         assertThat(result.ok()).isFalse();
         assertThat(result.exitCode()).isEqualTo(-1);
         assertThat(result.error()).isEqualTo("fixed development command failed");
+    }
+
+    @Test
+    void rejectsUnsupportedNodeAndModuleCommandsBeforeCallingWorker() {
+        when(sessions.require(WORKSPACE)).thenReturn(new SandboxSession(UUID.randomUUID(), WORKSPACE, SANDBOX,
+                "workspaces/" + WORKSPACE, List.of(REPO), Map.of("repo-1", REPO)));
+        ExecutionResult node = port.execute(WORKSPACE, List.of("node", "tests/todo.test.js"), Duration.ofMinutes(1));
+        ExecutionResult mavenModule = port.execute(WORKSPACE,
+                List.of("mvn", "-pl", "services/backend", "test"), Duration.ofMinutes(1));
+        ExecutionResult gradleModule = port.execute(WORKSPACE,
+                List.of("sh", "./gradlew", ":services:backend:test"), Duration.ofMinutes(1));
+
+        assertThat(node.error()).isEqualTo("command not allowed by fixed development catalog");
+        assertThat(mavenModule.error()).isEqualTo("command not allowed by fixed development catalog");
+        assertThat(gradleModule.error()).isEqualTo("command not allowed by fixed development catalog");
+        verifyNoInteractions(client);
     }
 }

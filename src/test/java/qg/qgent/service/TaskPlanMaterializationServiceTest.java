@@ -578,8 +578,10 @@ class TaskPlanMaterializationServiceTest {
         backend.setRepositoryPath("backend");
         backend.setCommand(List.of("sh", "./mvnw", "test"));
         PlanResult.VerificationCommand frontend = new PlanResult.VerificationCommand();
-        frontend.setCommand(List.of("node", "tests/todo.test.js"));
-        verification.setCommands(List.of(backend, frontend));
+        frontend.setCommand(List.of("npm", "test"));
+        PlanResult.VerificationCommand historicalNode = new PlanResult.VerificationCommand();
+        historicalNode.setCommand(List.of("node", "tests/todo.test.js"));
+        verification.setCommands(List.of(backend, frontend, historicalNode));
         plan.setVerification(verification);
 
         service.materialize(task, plan);
@@ -592,7 +594,7 @@ class TaskPlanMaterializationServiceTest {
         assertThat(tester.getVerificationCommands().get(0).getRepositoryPath()).isEqualTo("backend");
         assertThat(tester.getVerificationCommands().get(0).getCommand()).containsExactly("sh", "./mvnw", "test");
         assertThat(tester.getVerificationCommands().get(1).getRepositoryPath()).isNull();
-        assertThat(tester.getVerificationCommands().get(1).getCommand()).containsExactly("node", "tests/todo.test.js");
+        assertThat(tester.getVerificationCommands().get(1).getCommand()).containsExactly("npm", "test");
         // 开发步骤不冻结验证命令（null 关闭该语义）。
         assertThat(inserted.getAllValues().get(0).getVerificationCommands()).isNull();
         assertThat(inserted.getAllValues().get(1).getVerificationCommands()).isNull();

@@ -64,6 +64,13 @@ class TestCommandResolverTest {
     }
 
     @Test
+    void selectsNpmTestForFrontendTargetWhenBackendMavenAlsoExists() {
+        assertThat(resolver.resolveCommand(List.of("backend/pom.xml", "backend/src/Main.java",
+                        "frontend/package.json", "frontend/src/App.tsx"), List.of("frontend/src/App.tsx")))
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("npm", "test"), "frontend"));
+    }
+
+    @Test
     void ignoresUnrelatedGradleWorkspaceForDocumentationTarget() {
         assertThat(resolver.resolveCommand(List.of("gradlew", "build.gradle", "README.md"), List.of("README.md")))
                 .isNull();
@@ -76,19 +83,17 @@ class TestCommandResolverTest {
     }
 
     @Test
-    void scopesMavenMultiModuleToTheModifiedModule() {
+    void keepsMavenMultiModuleAtRepositoryScope() {
         assertThat(resolver.resolveCommand(List.of("pom.xml", "services/backend/pom.xml",
                         "services/backend/src/Main.java"), List.of("services/backend/src/Main.java")))
-                .isEqualTo(new TestCommandResolver.ResolvedCommand(
-                        List.of("mvn", "-pl", "services/backend", "test"), null));
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("mvn", "test"), null));
     }
 
     @Test
-    void scopesMavenMultiModuleKeepingWrapperChoice() {
+    void keepsMavenWrapperMultiModuleAtRepositoryScope() {
         assertThat(resolver.resolveCommand(List.of("pom.xml", "mvnw", "services/backend/pom.xml",
                         "services/backend/src/Main.java"), List.of("services/backend/src/Main.java")))
-                .isEqualTo(new TestCommandResolver.ResolvedCommand(
-                        List.of("sh", "./mvnw", "-pl", "services/backend", "test"), null));
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("sh", "./mvnw", "test"), null));
     }
 
     @Test
@@ -111,12 +116,11 @@ class TestCommandResolverTest {
     }
 
     @Test
-    void scopesGradleMultiProjectToTheModifiedProject() {
+    void keepsGradleMultiProjectAtRepositoryScope() {
         assertThat(resolver.resolveCommand(List.of("settings.gradle", "gradlew",
                         "services/backend/build.gradle", "services/backend/src/Main.java"),
                 List.of("services/backend/src/Main.java")))
-                .isEqualTo(new TestCommandResolver.ResolvedCommand(
-                        List.of("sh", "./gradlew", ":services:backend:test"), null));
+                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("sh", "./gradlew", "test"), null));
     }
 
     @Test
@@ -129,16 +133,15 @@ class TestCommandResolverTest {
     }
 
     @Test
-    void runsNodeTestFileWhenPackageJsonIsAbsent() {
-        // 无 package.json 但存在 tests/*.test.js：直接 node 执行（Planner 要求 node tests/todo.test.js）。
+    void doesNotRunBareNodeTestFileWhenPackageJsonIsAbsent() {
         assertThat(resolver.resolveCommand(List.of("tests/todo.test.js", "src/todo.js")))
-                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("node", "tests/todo.test.js"), null));
+                .isNull();
     }
 
     @Test
-    void runsNodeSpecFileWhenPackageJsonIsAbsent() {
+    void doesNotRunBareNodeSpecFileWhenPackageJsonIsAbsent() {
         assertThat(resolver.resolveCommand(List.of("tests/calc.spec.js", "src/calc.js")))
-                .isEqualTo(new TestCommandResolver.ResolvedCommand(List.of("node", "tests/calc.spec.js"), null));
+                .isNull();
     }
 
     @Test
@@ -152,12 +155,9 @@ class TestCommandResolverTest {
     }
 
     @Test
-    void bindsBareNodeTestFileToRepositoryWithoutPackageJson() {
-        TestCommandResolver.ResolvedCommand command = resolver.resolveCommand(List.of(
-                "svc-a/src/a.js", "svc-a/tests/a.test.js", "svc-b/src/b.js"));
-
-        assertThat(command.repositoryPath()).isEqualTo("svc-a");
-        assertThat(command.command()).containsExactly("node", "tests/a.test.js");
+    void doesNotBindBareNodeTestFileWithoutPackageJson() {
+        assertThat(resolver.resolveCommand(List.of("svc-a/src/a.js", "svc-a/tests/a.test.js", "svc-b/src/b.js")))
+                .isNull();
     }
 
     @Test
@@ -181,8 +181,6 @@ class TestCommandResolverTest {
         assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("gradle", "test"))).isTrue();
         assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("sh", "./gradlew", "test"))).isTrue();
         assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("npm", "test"))).isTrue();
-        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("node", "tests/todo.test.js"))).isTrue();
-        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("node", "test/calc.spec.mjs"))).isTrue();
     }
 
     @Test
@@ -192,6 +190,7 @@ class TestCommandResolverTest {
         assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("bash", "-c", "echo pwned"))).isFalse();
         assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("mvn", "clean", "install"))).isFalse();
         assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("npm", "run", "build"))).isFalse();
+        assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("node", "tests/todo.test.js"))).isFalse();
         assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("node", "src/app.js"))).isFalse();
         assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of("node", "tests/util.js"))).isFalse();
         assertThat(TestCommandResolver.isAllowedVerificationCommand(List.of())).isFalse();

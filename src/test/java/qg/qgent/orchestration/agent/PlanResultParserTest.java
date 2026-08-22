@@ -285,7 +285,7 @@ class PlanResultParserTest {
                 "risks": ["risk1"],
                 "verification": {"commands": [
                   {"repositoryPath": "backend", "command": ["sh", "./mvnw", "test"]},
-                  {"repositoryPath": "frontend", "command": ["node", "tests/todo.test.js"]},
+                  {"repositoryPath": "frontend", "command": ["npm", "test"]},
                   {"command": ["npm", "test"]}
                 ]}
                 """);
@@ -296,7 +296,7 @@ class PlanResultParserTest {
         assertThat(plan.getVerification().getCommands().get(0).getCommand()).containsExactly("sh", "./mvnw", "test");
         assertThat(plan.getVerification().getCommands().get(1).getRepositoryPath()).isEqualTo("frontend");
         assertThat(plan.getVerification().getCommands().get(1).getCommand())
-                .containsExactly("node", "tests/todo.test.js");
+                .containsExactly("npm", "test");
         assertThat(plan.getVerification().getCommands().get(2).getRepositoryPath()).isNull();
         assertThat(plan.getVerification().getCommands().get(2).getCommand()).containsExactly("npm", "test");
     }
@@ -314,14 +314,14 @@ class PlanResultParserTest {
                 "verification": {"commands": [
                   {"command": ["rm", "-rf", "/"]},
                   {"command": ["curl", "http://evil"]},
-                  {"command": ["node", "tests/todo.test.js"]}
+                  {"command": ["npm", "test"]}
                 ]}
                 """);
         PlanResult plan = parser.parse(json);
         assertThat(plan.getVerification()).isNotNull();
         assertThat(plan.getVerification().getCommands()).hasSize(1);
         assertThat(plan.getVerification().getCommands().get(0).getCommand())
-                .containsExactly("node", "tests/todo.test.js");
+                .containsExactly("npm", "test");
     }
 
     @Test
@@ -376,7 +376,7 @@ class PlanResultParserTest {
             if (i > 1) {
                 commands.append(',');
             }
-            commands.append("{\"command\":[\"node\",\"tests/test").append(i).append(".test.js\"]}");
+            commands.append("{\"command\":[\"npm\",\"test\"]}");
         }
         String json = VALID_JSON.replace("\"risks\": [\"risk1\"]",
                 "\"risks\": [\"risk1\"],\n  \"verification\": {\"commands\": [" + commands + "]}");

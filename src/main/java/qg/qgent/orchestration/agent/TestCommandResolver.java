@@ -22,9 +22,9 @@ public class TestCommandResolver {
      * 校验 Planner 输出的结构化验证命令是否命中白名单模板。
      * <p>
      * Plan 来自 LLM，不能信任其任意 shell 指令；只有与自动检测同源的固定测试模板可放行：
-     * Maven（mvn test / sh ./mvnw test）、Gradle（gradle test / sh ./gradlew test）、
-     * npm（npm test）与 Node 测试文件（node &lt;tests/*.test.js&gt; 等）。带模块参数的
-     * -pl / :module:test 收敛由运行时 {@link #scopeToModule} 完成，Plan 不输出。
+     * Maven（mvn test / sh ./mvnw test）、Gradle（gradle test / sh ./gradlew test）和
+     * npm（npm test）。这些命令与 Worker 的固定 development.run 目录一一对应，
+     * 不接受文件路径、模块参数或其他 argv。
      *
      * @param command 待校验的命令向量
      * @return 命中白名单模板返回 true；null / 空 / 任意 shell 命令返回 false
@@ -42,16 +42,8 @@ public class TestCommandResolver {
         if (command.equals(List.of("npm", "test"))) {
             return true;
         }
-        if (command.size() == 2 && "node".equals(command.get(0)) && isNodeTestFile(command.get(1))) {
-            return true;
-        }
         return false;
     }
-
-    /** 多模块 Maven 中单个子模块的构建入口标记（相对各模块目录自身）。 */
-    private static final List<String> MAVEN_MODULE_MARKERS = List.of("pom.xml");
-    /** Gradle 多项目中单个子项目的构建入口标记。 */
-    private static final List<String> GRADLE_MODULE_MARKERS = List.of("build.gradle", "build.gradle.kts");
 
     /**
      * 依据文件列表解析安全的测试命令。
@@ -105,82 +97,41 @@ public class TestCommandResolver {
                 return new ResolvedCommand(List.of("npm", "test"), root.isEmpty() ? null : root);
             }
         }
-        // 无 package.json 但有 Node 测试文件（tests/*.test.js / *.spec.js）：直接以 node 执行，
-        // 满足「Planner 明确要求 node tests/todo.test.js」的纯 Node 项目；命令来自文件树白名单，
-        // 不是 Planner 任意 shell 指令。
-        ResolvedCommand node = resolveNodeTestFiles(files, roots, filesByRoot);
-        if (node != null) {
-            return node;
-        }
         return null;
-    }
-
-    /**
-     * 无 package.json 时，从文件树中寻找 Node 测试文件并生成 {@code node <file>} 命令。
-     * 仅接受 {@code tests/} 或 {@code test/} 目录下、以 {@code .test.js} / {@code .spec.js} /
-     * {@code .test.mjs} / {@code .spec.mjs} 结尾的文件；路径来自文件树（白名单），
-     * 禁止从自然语言或 Planner 文本拼命令。
-     */
-    private ResolvedCommand resolveNodeTestFiles(List<String> files, Set<String> roots,
-                                                 Map<String, Set<String>> filesByRoot) {
-        for (String root : roots) {
-            Set<String> names = filesByRoot.get(root);
-            String testFile = names.stream()
-                    .filter(TestCommandResolver::isNodeTestFile)
-                    .sorted()
-                    .findFirst()
-                    .orElse(null);
-            if (testFile != null) {
-                return new ResolvedCommand(List.of("node", testFile), root.isEmpty() ? null : root);
-            }
-        }
-        return null;
-    }
-
-    /** 判断仓库相对路径是否为 Node 测试文件（tests/ 或 test/ 目录下，.test/.spec 后缀）。 */
-    private static boolean isNodeTestFile(String relative) {
-        if (relative == null || relative.isBlank()) {
-            return false;
-        }
-        String normalized = relative.replace('\\', '/');
-        if (!normalized.startsWith("tests/") && !normalized.startsWith("test/")) {
-            return false;
-        }
-        String lower = normalized.toLowerCase(java.util.Locale.ROOT);
-        return lower.endsWith(".test.js") || lower.endsWith(".spec.js")
-                || lower.endsWith(".test.mjs") || lower.endsWith(".spec.mjs")
-                || lower.endsWith(".test.jsx") || lower.endsWith(".spec.jsx");
     }
 
     /** 按本次 Coding 实际修改目标筛选命令，避免无关构建文件触发错误的 Gradle/Maven 测试。 */
     public ResolvedCommand resolveCommand(List<String> files, List<String> targets) {
-        ResolvedCommand resolved = resolveCommand(files);
-        if (targets == null || targets.isEmpty()) return resolved;
-        if (targets.stream().map(TestCommandResolver::fileName).anyMatch(TestCommandResolver::isNodeTarget)) {
-            ResolvedCommand node = resolveNodeCommand(files, targets);
-            return node;
+        if (targets == null || targets.isEmpty()) {
+            return resolveCommand(files);
         }
+        if (targets.stream().map(TestCommandResolver::fileName).anyMatch(TestCommandResolver::isNodeTarget)) {
+            return resolveNpmCommandForNodeTargets(files, targets);
+        }
+        ResolvedCommand resolved = resolveCommand(files);
         if (resolved == null) return null;
         if (!targetsMatchCommand(resolved.command(), resolved.repositoryPath(), targets)) return null;
-        return scopeToModule(files, resolved, targets);
+        return resolved;
     }
 
-    private ResolvedCommand resolveNodeCommand(List<String> files, List<String> targets) {
-        for (String target : targets) {
-            String root = root(target.replace('\\', '/'));
-            Set<String> names = files.stream().filter(file -> belongsToRoot(root, file))
-                    .map(file -> relative(root, file)).collect(java.util.stream.Collectors.toSet());
-            if (hasFile(names, "package.json")) {
-                return new ResolvedCommand(List.of("npm", "test"), root.isEmpty() ? null : root);
-            }
-            // 无 package.json 但有 Node 测试文件：直接 node 执行（文件树白名单）。
-            String testFile = names.stream().filter(TestCommandResolver::isNodeTestFile).sorted().findFirst()
-                    .orElse(null);
-            if (testFile != null) {
-                return new ResolvedCommand(List.of("node", testFile), root.isEmpty() ? null : root);
-            }
+    /**
+     * Node 目标只在所属 package.json 仓库执行 npm test，避免多仓库 Workspace 中后端 Maven
+     * 入口遮蔽前端测试。无 package.json 时不执行裸 node，交由文件断言路径处理。
+     */
+    private ResolvedCommand resolveNpmCommandForNodeTargets(List<String> files, List<String> targets) {
+        if (files == null || files.isEmpty()) {
+            return null;
         }
-        return null;
+        return files.stream()
+                .filter(file -> "package.json".equals(fileName(file)))
+                .map(TestCommandResolver::candidateRoot)
+                .distinct()
+                .sorted(java.util.Comparator.comparingInt(String::length).reversed())
+                .filter(root -> targets.stream().allMatch(target -> target != null
+                        && belongsToRoot(root, target.replace('\\', '/'))))
+                .map(root -> new ResolvedCommand(List.of("npm", "test"), root.isEmpty() ? null : root))
+                .findFirst()
+                .orElse(null);
     }
 
     private boolean targetsMatchCommand(List<String> command, String repositoryPath, List<String> targets) {
@@ -197,120 +148,6 @@ public class TestCommandResolver {
         return true;
     }
 
-    /**
-     * 把整仓库测试命令收敛到改动所在的唯一模块/项目：
-     * Maven 多模块使用 {@code mvn test -pl <模块>}，Gradle 多项目使用 {@code :<项目路径>:test}。
-     * 无法唯一确定模块（无嵌套模块、改动横跨多个模块、或命令不是 Maven/Gradle）时原样返回整仓库命令，
-     * 保守不误杀；"缺兄弟模块产物"等依赖解析失败由 TestFailureClassifier 归为环境问题重试。
-     */
-    private ResolvedCommand scopeToModule(List<String> files, ResolvedCommand resolved, List<String> targets) {
-        List<String> command = resolved.command();
-        boolean maven = isMavenCommand(command);
-        boolean gradle = isGradleCommand(command);
-        if (!maven && !gradle) {
-            return resolved; // npm 已按 package 根执行，无需收敛
-        }
-        Set<String> modules = new java.util.TreeSet<>();
-        for (String target : targets) {
-            String module = moduleForTarget(resolved.repositoryPath(), target, files,
-                    maven ? MAVEN_MODULE_MARKERS : GRADLE_MODULE_MARKERS);
-            if (module != null) {
-                modules.add(module);
-            }
-        }
-        if (modules.size() != 1) {
-            return resolved; // 0=单模块仓库，>1=改动横跨多模块，均退回整仓库命令
-        }
-        String module = modules.iterator().next();
-        return maven
-                ? new ResolvedCommand(withMavenModule(command, module), resolved.repositoryPath())
-                : new ResolvedCommand(withGradleModuleTask(command, module), resolved.repositoryPath());
-    }
-
-    private static boolean isMavenCommand(List<String> command) {
-        if (command.isEmpty()) {
-            return false;
-        }
-        return "mvn".equals(command.get(0))
-                || (command.size() > 1 && "./mvnw".equals(command.get(1)));
-    }
-
-    private static boolean isGradleCommand(List<String> command) {
-        if (command.isEmpty()) {
-            return false;
-        }
-        return "gradle".equals(command.get(0))
-                || (command.size() > 1 && "./gradlew".equals(command.get(1)));
-    }
-
-    /** Maven 命令在 test 目标前插入 {@code -pl <模块>}，保留 wrapper 选择。 */
-    private static List<String> withMavenModule(List<String> command, String module) {
-        List<String> scoped = new java.util.ArrayList<>(command);
-        int testIndex = scoped.lastIndexOf("test");
-        if (testIndex >= 0) {
-            scoped.addAll(testIndex, List.of("-pl", module));
-        } else {
-            scoped.add("-pl");
-            scoped.add(module);
-        }
-        return scoped;
-    }
-
-    /** Gradle 命令把 test 任务替换为 {@code :<模块路径>:test}（目录路径转冒号分隔）。 */
-    private static List<String> withGradleModuleTask(List<String> command, String module) {
-        List<String> scoped = new java.util.ArrayList<>(command);
-        String task = ":" + module.replace('/', ':') + ":test";
-        int testIndex = scoped.lastIndexOf("test");
-        if (testIndex >= 0) {
-            scoped.set(testIndex, task);
-        } else {
-            scoped.add(task);
-        }
-        return scoped;
-    }
-
-    /**
-     * 求 target 在 repositoryPath 仓库内所属模块目录（相对仓库根）：包含构建入口文件的最近祖先目录。
-     * 无嵌套模块（最近祖先即仓库根）、target 不属于该仓库或为 null 时返回 null，调用方退回整仓库命令。
-     */
-    private static String moduleForTarget(String repositoryPath, String target, List<String> files,
-                                          List<String> buildMarkers) {
-        if (target == null) {
-            return null;
-        }
-        String normalized = target.replace('\\', '/');
-        String root = repositoryPath == null ? "" : repositoryPath;
-        String rel;
-        if (root.isEmpty()) {
-            rel = normalized;
-        } else if (normalized.equals(root)) {
-            return null;
-        } else if (normalized.startsWith(root + "/")) {
-            rel = normalized.substring(root.length() + 1);
-        } else {
-            return null;
-        }
-        int idx = rel.lastIndexOf('/');
-        while (idx > 0) {
-            String candidate = rel.substring(0, idx);
-            String entryBase = root.isEmpty() ? candidate : root + "/" + candidate;
-            if (hasAnyBuildFile(files, entryBase, buildMarkers)) {
-                return candidate;
-            }
-            idx = rel.lastIndexOf('/', idx - 1);
-        }
-        return null;
-    }
-
-    private static boolean hasAnyBuildFile(List<String> files, String dir, List<String> buildMarkers) {
-        for (String marker : buildMarkers) {
-            String entry = dir.isEmpty() ? marker : dir + "/" + marker;
-            if (files.contains(entry)) {
-                return true;
-            }
-        }
-        return false;
-    }
 
     private static String fileName(String path) {
         String normalized = path == null ? "" : path.replace('\\', '/');
@@ -369,15 +206,6 @@ public class TestCommandResolver {
             if (normalized.endsWith(suffix)) {
                 return normalized.substring(0, normalized.length() - suffix.length());
             }
-        }
-        // Node 测试文件（tests/*.test.js 等）：仓库根 = 去掉 tests/test 段后的目录。
-        // tests/todo.test.js → ""（工作区根）；svc-a/tests/a.test.js → "svc-a"。
-        if (isNodeTestFile(normalized)) {
-            int idx = normalized.indexOf("/tests/");
-            if (idx < 0) {
-                idx = normalized.indexOf("/test/");
-            }
-            return idx < 0 ? "" : normalized.substring(0, idx);
         }
         return root(normalized);
     }
